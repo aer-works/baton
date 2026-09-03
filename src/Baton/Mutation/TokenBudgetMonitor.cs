@@ -68,10 +68,10 @@ public sealed class TokenBudgetMonitor
     private long? _inputLevel;
     // #1666: the parent conversation's and the sub-agent bucket's own levels, tracked SEPARATELY so a
     // sub-agent's smaller context (WorkerUsage.IsSubAgentTurn) can never replace a larger parent
-    // reading -- _inputLevel above is reported as the max of these two, never either one alone. Each
-    // stays a replacing level within its own bucket (a real drop in the PARENT's own context, e.g.
-    // after compaction, still shows), which is the whole point: only cross-bucket contamination from
-    // fan-out is what this guards against, not a genuine same-agent level change.
+    // reading -- _inputLevel above is reported as the max of these two, never either one alone.
+    // _subAgentInputLevel is cleared the moment a parent line arrives (review F3) so the bucket stays
+    // transient rather than a permanent high-water mark -- spec/baton.md §3 has the fuller statement
+    // of what this buys and why.
     private long? _parentInputLevel;
     private long? _subAgentInputLevel;
     private long? _latestTokensIn;
@@ -190,7 +190,9 @@ public sealed class TokenBudgetMonitor
                     // (typically much smaller) context never overwrites the parent's tracked level, and
                     // a parent turn never overwrites a sub-agent's. The reported level is the max of the
                     // two, so it can only rise or hold on a fan-out turn, never dip below what the
-                    // parent already showed.
+                    // parent already showed. Review F3: a parent line also CLEARS the sub-agent bucket,
+                    // so a stale sub-agent high-water mark can never keep pinning the reported level
+                    // above a genuine post-compaction parent drop once the parent speaks again.
                     if (usage.IsSubAgentTurn)
                     {
                         _subAgentInputLevel = level;
@@ -198,6 +200,7 @@ public sealed class TokenBudgetMonitor
                     else
                     {
                         _parentInputLevel = level;
+                        _subAgentInputLevel = null;
                     }
 
                     _inputLevel = Math.Max(_parentInputLevel ?? 0, _subAgentInputLevel ?? 0);

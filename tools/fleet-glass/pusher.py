@@ -625,7 +625,12 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
                     billed_tokens += cache_creation
                     turns += 1
                     usage_seen = True
-                if numeric(in_tok) and numeric(cache_read) and numeric(cache_creation):
+                # #1666 review F5: a sub-agent's own turn (root `parent_tool_use_id` a string) never
+                # updates the reported context -- mirrors the engine's TokenBudgetMonitor, which tracks
+                # the sub-agent bucket separately and clears it on the next parent line rather than
+                # letting a smaller sub-agent reading replace the parent's (spec/baton.md §3).
+                if numeric(in_tok) and numeric(cache_read) and numeric(cache_creation) \
+                        and not isinstance(evt.get("parent_tool_use_id"), str):
                     # The context LEVEL is unaffected: it is what the vendor loaded for this request,
                     # and the placeholder `input_tokens` contributes 2 tokens to a six-figure sum.
                     context = {
@@ -3466,6 +3471,33 @@ def _selftest() -> int:
                   "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 200,
                   "cache_creation_input_tokens": 0}}}),
           ]).get("context") == {"contextTokens": 205, "cacheReadTokens": 200})
+    # #1666 review F5: parent trio (300) -> sub-agent trio with a SMALLER context (40) -> parent trio
+    # with a SMALLER value than the first (100, e.g. a genuine post-compaction drop). Mirrors the
+    # engine's TokenBudgetMonitorTests same-bucket-drop arm: the sub-agent line must not touch
+    # `context` at all, but a later genuine parent drop still must.
+    context_bucket_lines = [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 290,
+            "cache_creation_input_tokens": 5}}}),
+        json.dumps({"type": "assistant", "parent_tool_use_id": "toolu_01subagent",
+                    "message": {"usage": {
+                        "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 30,
+                        "cache_creation_input_tokens": 5}}}),
+    ]
+    check("a sub-agent trio line (root parent_tool_use_id a string) leaves `context` UNCHANGED, "
+          "matching the engine's cleared-bucket rule that a sub-agent reading never sets the parent's "
+          "reported level",
+          extract_live_counts(context_bucket_lines).get("context")
+          == {"contextTokens": 300, "cacheReadTokens": 290})
+    context_bucket_lines_then_parent_drop = context_bucket_lines + [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 90,
+            "cache_creation_input_tokens": 5}}}),
+    ]
+    check("a later PARENT trio line with a smaller value still drops `context` -- a genuine drop is "
+          "never pinned by an earlier, larger sub-agent reading",
+          extract_live_counts(context_bucket_lines_then_parent_drop).get("context")
+          == {"contextTokens": 100, "cacheReadTokens": 90})
     check("billedTokens/turns are ABSENT, never a substituted zero, when no line reports usage",
           "billedTokens" not in extract_live_counts([
               json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})])

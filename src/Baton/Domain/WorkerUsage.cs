@@ -16,6 +16,11 @@ namespace Baton.Domain;
 /// this field would otherwise double-count it. Null for every ordinary vendor-parsed reading
 /// (<c>IWorkerUsageParser</c>'s two methods never set it). Kept, unchanged in meaning, as the
 /// DISPLAYED context size (#1682) — no longer what a budget arrests on; see <paramref name="BilledTokens"/>.
+/// #1666 review F6: on <see cref="Mutation.TokenBudgetMonitor"/>'s own snapshot this is the MAX of two
+/// per-bucket levels (parent vs. sub-agent), not the sum of that same snapshot's own
+/// <paramref name="TokensIn"/>/<paramref name="CacheCreationTokens"/> — those two stay whichever raw
+/// line arrived last, parent or sub-agent, so during a fan-out turn they can describe a different line
+/// than the one this field's max came from.
 /// </param>
 /// <param name="BilledTokens">
 /// #1682: the additive quantity a token budget actually arrests on — a running Σ, across every
@@ -56,8 +61,9 @@ namespace Baton.Domain;
 /// #1666: <see langword="true"/> when this reading's raw line was a sub-agent's own turn rather than
 /// the parent conversation's — spec/baton.md §3 has the measured shape that marks one and why
 /// <see cref="Mutation.TokenBudgetMonitor"/> tracks this bucket's level separately rather than letting
-/// it replace the parent's larger one. False for every agy reading (that vendor's shape has no
-/// analogous field) and for claude's own non-sub-agent turns.
+/// it replace the parent's larger one. False for every agy reading (review F4: unmeasured on that
+/// vendor, not structurally absent — spec/baton.md §3 has the fuller statement and what's owed).
+/// True/false for claude's own sub-agent vs. non-sub-agent turns.
 /// </param>
 public sealed record WorkerUsage(
     long? TokensIn = null,

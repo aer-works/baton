@@ -1016,12 +1016,26 @@ work — a systematic under-count in the runaway-fan-out shape the budget exists
 now carries `IsSubAgentTurn` (set by `ClaudeUsageParser.TryParseIncrementalUsage` off that same root
 field); `TokenBudgetMonitor` tracks the parent's and the sub-agent bucket's levels SEPARATELY and
 reports their max, so a smaller sub-agent reading can never overwrite a larger parent one (or the
-reverse) — only a genuine same-bucket change still moves the reported level. `BilledTokens` itself was
+reverse) — only a genuine same-bucket change still moves the reported level. Review F3: the sub-agent
+bucket is also CLEARED the moment a parent line arrives, so it is transient rather than a permanent
+cross-bucket high-water mark — a genuine drop in the parent's own context (e.g. after compaction)
+always shows again as soon as the parent speaks, even if some earlier sub-agent turn reported a larger
+figure than either the parent's old or new reading. `BilledTokens` itself was
 never affected: it already sums every line's delta, parent or sub-agent, deduped only by `message.id`
-(above) — this fix is scoped to the DISPLAY-only level, not the arrest predicate. `tools/fleet-glass/pusher.py`'s
-`extract_live_counts` builds its own `contextTokens`/`cacheReadTokens` the same "latest line, no
-`parent_tool_use_id` filter" way, independently of this engine-side fix — mirrors the same defect,
-left unchanged here pending a follow-up decision on whether the pusher needs the identical fix.
+(above) — this fix is scoped to the DISPLAY-only level, not the arrest predicate. **This fix is
+claude-only.** `AgyUsageParser.TryParseIncrementalUsage` sets no `IsSubAgentTurn`, so every agy line
+lands in the parent bucket and agy's level keeps the pre-#1666 replace-on-every-line behaviour;
+whether agy's own stream marks a sub-agent turn at all is UNMEASURED (review F4) — neither
+`docs/vendor-doc-audit.md` nor `docs/vendor-capabilities.md` records agy's sub-agent usage-line shape,
+though both record that agy has sub-agents at all. That measurement is owed as a follow-up, not done
+here. `tools/fleet-glass/pusher.py`'s
+`extract_live_counts` built its own `contextTokens`/`cacheReadTokens` the same "latest line, no
+`parent_tool_use_id` filter" way — mirrored the same defect, and now applies the same rule (review
+F5, `tools/fleet-glass/pusher.py`'s `extract_live_counts`): a sub-agent line (`parent_tool_use_id` a string) is skipped for the
+`context` assignment entirely, so only a parent line ever updates glass's reported figure — the same
+outcome the engine reaches via its two-bucket clear above, by a simpler route (no bucket to clear,
+because the sub-agent reading was never recorded in the first place). Engine and glass now agree;
+stated once here.
 
 **Cache-read tokens are excluded from `BilledTokens` (#1686 review F5, stated here for the first time —
 the exclusion was previously implicit in the formula, never justified).** `cache_read_input_tokens`
@@ -1142,9 +1156,11 @@ incrementing the count an operator sees on the lane card. `pusher.py` now counts
 "ERROR")` for the tool branch too, and `AgyEngineAndPusherUsageGateTests` was extended to cover the
 tool-count gate alongside the usage gate it already pinned. The monitor reads every top-level
 `"type":"assistant"` line with no discrimination by
-`parent_tool_use_id` — whole-tree, including subagent turns, the SAME completeness property
-`docs/vendor-doc-audit.md` (#1623 re-review N5) measured missing from the terminal line's own
-cumulative figure (undercounts by ~22% with a single subagent in the tree).
+`parent_tool_use_id` for the billed Σ or the tool count — whole-tree, including subagent turns, the
+SAME completeness property `docs/vendor-doc-audit.md` (#1623 re-review N5) measured missing from the
+terminal line's own cumulative figure (undercounts by ~22% with a single subagent in the tree). (The
+tracked context LEVEL does discriminate by `parent_tool_use_id`, as of #1666 above — this paragraph is
+about the billed Σ and the tool-step count only.)
 
 Crossing the budget cancels the execution via a linked `CancellationTokenSource` (never the
 operator-facing `CancellationRequested`/`ExecutionCancelled` pair — that's intent; this is the engine's
