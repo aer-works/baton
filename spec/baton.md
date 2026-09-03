@@ -3247,6 +3247,10 @@ Ratified design (operator, 2026-09-01) — closes the "a conductor can relax the
 
 Both failures are lifted by the `operator-merge` PR label, applied by the operator. Self-application — a conductor or worker adding the label to its own PR — is a forbidden act; the mechanism does not prevent it (both PR author and label-applier can be the same shared operator credential), but it is permanently visible in PR history, which is the property the design relies on instead of a technical block.
 
+### C-16 — Every CI job carries `timeout-minutes` (#1743)
+
+A stalled runner (not a code failure) held release PR #1652's `windows-shard-other` job `in_progress` for two hours against GitHub's six-hour default. Every job in `.github/workflows/ci.yml`, `diff-shape.yml`, and `pr-body-lint.yml` now sets `timeout-minutes` to roughly twice its observed maximum duration, rounded up (`flake-watch.yml`'s job already carried one, sized on its own reasoning); the ceilings themselves live in those workflow files, not restated here.
+
 ---
 
 ## Appendix: full subsystem ruling table
