@@ -647,7 +647,7 @@ public sealed record FleetRoomStatusView(
     // above are -- never re-derived here. A terminal room reports when its run ENDED; before this
     // field the fleet reported no terminal instant at all and a consumer wanting one had to stat a
     // file. Why this surface omits the field on a legacy room where the retention sweep instead falls
-    // back: §3 of the spec, under `terminalAt`.
+    // back to a mtime is part of spec/baton.md §3's absence rules.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null);

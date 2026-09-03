@@ -2139,8 +2139,8 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     /// <summary>
-    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above. Pins the
-    /// omit-rather-than-back-fill half of the rule §3 of the spec states.
+    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above: pins the
+    /// omit-rather-than-back-fill clause of spec/baton.md §3.
     /// </summary>
     [Fact]
     public async Task TerminalSentinelWrittenBeforeTheField_OmitsTerminalAt_RatherThanUsingItsMtime()
