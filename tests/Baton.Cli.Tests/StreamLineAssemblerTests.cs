@@ -48,6 +48,20 @@ public sealed class StreamLineAssemblerTests
         Assert.Equal(["windows line", "next"], lines);
     }
 
+    /// <summary>
+    /// #1574 second-reader finding 3; the failure it fixes is on <see cref="StreamLineAssembler"/>'s
+    /// class-level remarks.
+    /// </summary>
+    [Fact]
+    public void BareCarriageReturn_TerminatesALineOnItsOwn()
+    {
+        var assembler = new StreamLineAssembler();
+
+        var lines = assembler.Append(Encoding.UTF8.GetBytes("50%\r75%\r100%\n"));
+
+        Assert.Equal(["50%", "75%", "100%"], lines);
+    }
+
     [Fact]
     public void FinalUnterminatedLine_IsHeldNotRendered()
     {

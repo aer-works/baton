@@ -167,6 +167,17 @@ public static class StatusCommand
     /// <paramref name="printedEventCount"/> as it appears, until re-projecting reaches
     /// <see cref="WorkflowStatus.Terminal"/> or <paramref name="cancellationToken"/> is cancelled.
     /// Tails stdout/stderr streams of running executions interleaved with event lines.
+    /// <para>
+    /// Every exit path flushes <paramref name="lineAssemblers"/>' pending partial lines exactly once
+    /// (#1574 second-reader finding 2): the <c>justWentTerminal</c> branch below already flushes as
+    /// part of its normal, non-cancelled return, so the outer <c>finally</c> skips it there via
+    /// <c>flushedFinal</c>; every OTHER way out -- Ctrl-C during <see cref="Task.Delay"/>, or an
+    /// <see cref="OperationCanceledException"/> from <see cref="FlowEventLogReader.ReadAllAsync"/>/
+    /// <see cref="FlowEventLogReader.ReadAllEntriesWithTimestampsAsync"/> escaping this method entirely
+    /// -- previously returned (or propagated) with no flush at all, silently dropping whatever partial
+    /// line the assembler was already holding. Pre-#1574 raw tailing never buffered, so it never had
+    /// anything to lose on cancellation; this restores that guarantee for the buffered renderer.
+    /// </para>
     /// </summary>
     private static async Task FollowAsync(
         TextWriter output,
@@ -185,59 +196,71 @@ public static class StatusCommand
         IReadOnlyDictionary<string, string> adapterNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         IWorkerAdapter? ResolveAdapter(string executionId) =>
             RoomAdapterLookup.ResolveAdapter(executionId, adapterNameByExecutionId, WorkerAdapterRegistry.Default);
+        var flushedFinal = false;
 
-        while (true)
+        try
         {
-            try
+            while (true)
             {
-                await Task.Delay(PollIntervalMs, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            var logFile = new FileInfo(logPath);
-            var currentLength = logFile.Exists ? logFile.Length : 0;
-
-            if (currentLength != lastObservedLength)
-            {
-                lastObservedLength = currentLength;
-
-                var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
-                for (var i = printedEventCount; i < events.Count; i++)
+                try
                 {
-                    output.WriteLine(events[i]);
+                    await Task.Delay(PollIntervalMs, cancellationToken).ConfigureAwait(false);
                 }
-
-                printedEventCount = events.Count;
-                adapterNameByExecutionId = RoomAdapterLookup.BuildAdapterNameByExecutionId(events, bindings);
-
-                var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
-                var state = StateProjector.Project(events, snapshot, checkpoint);
-                var justWentTerminal = state.Status == WorkflowStatus.Terminal;
-                TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter, flushPending: justWentTerminal);
-
-                if (justWentTerminal)
+                catch (OperationCanceledException)
                 {
-                    output.WriteLine($"Workflow status: {state.Status}");
-
-                    // #1360 F5 (review): the one invocation shape where a human is actually watching
-                    // for what a run cost never re-rendered the roll-up PrintState prints before a
-                    // follow starts -- a fresh read here (once, at follow's own exit, not per poll)
-                    // is cheaper than restructuring the loop above to carry timestamped LogEntry
-                    // alongside the plain FlowEvent list it already tracks.
-                    var finalEntries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
-                    var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
-                    var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
-                        finalEntries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectoryPath);
-                    output.WriteLine(FormatUsageSummary(usageByExecutionId));
                     return;
                 }
+
+                var logFile = new FileInfo(logPath);
+                var currentLength = logFile.Exists ? logFile.Length : 0;
+
+                if (currentLength != lastObservedLength)
+                {
+                    lastObservedLength = currentLength;
+
+                    var events = await reader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                    for (var i = printedEventCount; i < events.Count; i++)
+                    {
+                        output.WriteLine(events[i]);
+                    }
+
+                    printedEventCount = events.Count;
+                    adapterNameByExecutionId = RoomAdapterLookup.BuildAdapterNameByExecutionId(events, bindings);
+
+                    var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+                    var state = StateProjector.Project(events, snapshot, checkpoint);
+                    var justWentTerminal = state.Status == WorkflowStatus.Terminal;
+                    TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter, flushPending: justWentTerminal);
+                    flushedFinal = justWentTerminal;
+
+                    if (justWentTerminal)
+                    {
+                        output.WriteLine($"Workflow status: {state.Status}");
+
+                        // #1360 F5 (review): the one invocation shape where a human is actually watching
+                        // for what a run cost never re-rendered the roll-up PrintState prints before a
+                        // follow starts -- a fresh read here (once, at follow's own exit, not per poll)
+                        // is cheaper than restructuring the loop above to carry timestamped LogEntry
+                        // alongside the plain FlowEvent list it already tracks.
+                        var finalEntries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
+                        var artifactsRootPath = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
+                        var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
+                            finalEntries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectoryPath);
+                        output.WriteLine(FormatUsageSummary(usageByExecutionId));
+                        return;
+                    }
+                }
+                else
+                {
+                    TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter);
+                }
             }
-            else
+        }
+        finally
+        {
+            if (!flushedFinal)
             {
-                TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter);
+                TailStreams(output, artifactsDir, streamOffsets, lineAssemblers, ResolveAdapter, flushPending: true);
             }
         }
     }

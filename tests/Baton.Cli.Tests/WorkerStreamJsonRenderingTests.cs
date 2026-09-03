@@ -162,6 +162,103 @@ public sealed class WorkerStreamJsonRenderingTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Builds an adapter-recognized <c>assistant</c>/<c>text</c> stream-json line whose text carries a
+    /// real ANSI control-character escape sequence -- via <see cref="JsonSerializer"/> rather than a
+    /// hand-typed JSON literal, so the control byte is guaranteed to round-trip through a proper JSON
+    /// escape (exactly how a real vendor CLI would encode it), never embedded as a raw, invalid-JSON
+    /// control byte in the source fixture.
+    /// </summary>
+    private static string BuildAnsiCarryingAssistantTextLine(char escapeByte)
+    {
+        var ansiText = $"line one{escapeByte}[31mred{escapeByte}[0m";
+        return JsonSerializer.Serialize(new
+        {
+            type = "assistant",
+            message = new { content = new object[] { new { type = "text", text = ansiText } } },
+        });
+    }
+
+    /// <summary>
+    /// #1574 second-reader finding 1; the failure it fixes is documented on
+    /// <see cref="WorkerStreamLineRenderer"/> itself. Asserts the escaped rendering still carries the
+    /// surrounding text, and that the raw control byte never reaches the writer.
+    /// </summary>
+    [Fact]
+    public void StatusFollow_TailStreams_EscapesControlCharactersInAdapterRecognizedText()
+    {
+        var escapeByte = (char)0x1b;
+        var ansiLine = BuildAnsiCarryingAssistantTextLine(escapeByte);
+        var testRoot = Path.Combine(Path.GetTempPath(), $"baton-status-ansi-{Guid.NewGuid():N}");
+        var execDir = Path.Combine(testRoot, "execution_exec-ansi-1");
+        Directory.CreateDirectory(execDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(execDir, ExecutionStreamLogger.StdoutLogFileName), ansiLine + "\n");
+
+            var output = new StringWriter();
+            var offsets = new Dictionary<string, long>(StringComparer.Ordinal);
+            var assemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
+            var claudeAdapter = new ClaudeWorkerAdapter();
+
+            StatusCommand.TailStreams(output, testRoot, offsets, assemblers, _ => claudeAdapter);
+
+            var statusText = output.ToString();
+            Assert.Contains("line one", statusText);
+            Assert.Contains("31mred", statusText);
+            Assert.DoesNotContain(escapeByte, statusText);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// The <c>room_detail</c> counterpart of the test above: same ANSI-carrying line, same adapter,
+    /// different surface. Neither surface may let a raw control byte through.
+    /// </summary>
+    [Fact]
+    public async Task RoomDetail_EscapesControlCharactersInAdapterRecognizedText()
+    {
+        var escapeByte = (char)0x1b;
+        var ansiLine = BuildAnsiCarryingAssistantTextLine(escapeByte);
+        var roomDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, "ansi-room");
+        Directory.CreateDirectory(roomDir);
+
+        var execId = new ExecutionId("exec-ansi-2");
+        var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
+        var executionDir = ArtifactManager.AllocateOutputDirectory(artifactsRoot, execId);
+        await File.WriteAllTextAsync(
+            Path.Combine(executionDir, ExecutionStreamLogger.StdoutLogFileName),
+            ansiLine + "\n",
+            TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["worker"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("worker", [], [], []),
+                "prompt",
+                TimeSpan.FromMinutes(1),
+                StreamJson: true),
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(roomDir, "bindings.json"), JsonSerializer.Serialize(bindings), TestContext.Current.CancellationToken);
+        await WriteFlowLedgerAsync(roomDir, execId);
+
+        var tool = new RoomDetailTool();
+        var result = await tool.CallAsync(Parse("""{ "room": "ansi-room" }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var view = JsonSerializer.Deserialize<RoomDetailView>(result.Text);
+        var text = view!.Stdout!.Text;
+
+        Assert.Contains("line one", text);
+        Assert.Contains("31mred", text);
+        Assert.DoesNotContain(escapeByte, text);
+    }
+
     private static async Task WriteBindingsAndStdoutAsync(string roomDir, ExecutionId execId)
     {
         var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
