@@ -225,8 +225,7 @@ _NEUTERING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Skip=", re.compile(r"Skip\s*=")),
     ("#if false", re.compile(r"#if\s+false")),
     ("#if <ALWAYS-FALSE>NEVER", re.compile(r"#if\s+[A-Z_]*NEVER")),
-    ("Assert.Skip", re.compile(r"Assert\.Skip")),
-    (".Skip(", re.compile(r"\.Skip\(")),
+    ("Assert.Skip(", re.compile(r"Assert\.Skip\s*\(")),
 )
 
 # Only checked against .mjs files.
@@ -1195,6 +1194,99 @@ def selftest() -> int:
         else:
             print("  OK (ah) assertion reindented within one hunk -> PASS (same-hunk pairing still tolerates moves)")
 
+        # (ai) Criterion 4 control, #1758 fix round 2: adding an ordinary LINQ `.Skip(n)` call to
+        # an existing test file -- pure addition, but not a neutering shape -> PASS. Proves
+        # dropping the bare `.Skip(` entry didn't reintroduce a false positive on this repo's own
+        # idiom (ChannelPopulationTests, ConcurrencySlotGateTests, etc. all use it).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ai", base_sha], cwd=repo, check=True, env=env)
+        linq_skip_file = repo / "tests" / "LinqSkipTests.cs"
+        linq_skip_file.write_text(
+            "public class LinqSkipTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        var items = new[] { 1, 2, 3 };\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add fixture"], cwd=repo, check=True, env=env)
+        ai_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        linq_skip_file.write_text(
+            "public class LinqSkipTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        var items = new[] { 1, 2, 3 };\n"
+            "        var rest = items.Skip(1).ToList();\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add LINQ .Skip(1) call"], cwd=repo, check=True, env=env)
+        head_ai = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ai, msgs_ai = check_diff_shape(ai_base, head_ai, labels=[], cwd=repo)
+        if not passed_ai:
+            failures.append(f"(ai) added LINQ .Skip(1) call failed unexpectedly: {msgs_ai}")
+        else:
+            print("  OK (ai) added LINQ .Skip(1) call (pure addition) -> PASS")
+
+        # (aj) Criterion 4 control, #1758 fix round 2: adding `Assert.SkipUnless(...)` -- xUnit
+        # v3's sanctioned conditional-skip API, not neutering -> PASS. Proves narrowing
+        # `Assert\.Skip` to `Assert\.Skip\s*\(` excludes `SkipUnless`/`SkipWhen` (10+ existing
+        # call sites in this repo, e.g. DecideCommandEndToEndTests).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-aj", base_sha], cwd=repo, check=True, env=env)
+        skip_unless_file = repo / "tests" / "SkipUnlessTests.cs"
+        skip_unless_file.write_text(
+            "public class SkipUnlessTests\n{\n    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add fixture"], cwd=repo, check=True, env=env)
+        aj_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        skip_unless_file.write_text(
+            "public class SkipUnlessTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        Assert.SkipUnless(OperatingSystem.IsWindows(), \"windows-only\");\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add Assert.SkipUnless call"], cwd=repo, check=True, env=env)
+        head_aj = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_aj, msgs_aj = check_diff_shape(aj_base, head_aj, labels=[], cwd=repo)
+        if not passed_aj:
+            failures.append(f"(aj) added Assert.SkipUnless(...) call failed unexpectedly: {msgs_aj}")
+        else:
+            print("  OK (aj) added Assert.SkipUnless(...) call (pure addition) -> PASS")
+
+        # (ak) Criterion 4, #1758 fix round 2: adding `Assert.Skip("x");` -- the narrowed
+        # `Assert\.Skip\s*\(` pattern must still fire on the real neutering call it exists to
+        # catch, proving the narrowing in (aj) didn't overshoot into disabling detection entirely.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ak", base_sha], cwd=repo, check=True, env=env)
+        assert_skip_file = repo / "tests" / "AssertSkipTests.cs"
+        assert_skip_file.write_text(
+            "public class AssertSkipTests\n{\n    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add fixture"], cwd=repo, check=True, env=env)
+        ak_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        assert_skip_file.write_text(
+            "public class AssertSkipTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        Assert.Skip(\"x\");\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add Assert.Skip call"], cwd=repo, check=True, env=env)
+        head_ak = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ak, msgs_ak = check_diff_shape(ak_base, head_ak, labels=[], cwd=repo)
+        if passed_ak:
+            failures.append("(ak) added Assert.Skip(\"x\"); did not fail as expected")
+        else:
+            print("  OK (ak) added Assert.Skip(\"x\"); (pure addition) -> FAIL (criterion 4)")
+
         # (h) main()'s GITHUB_EVENT_PATH fallback, with no --labels passed -- the actual channel
         # CI uses. A synthetic event payload carries two labels including operator-merge; the
         # failing shape (head_a) must be lifted, and the negative arm (label absent) must not be.
@@ -1235,7 +1327,7 @@ def selftest() -> int:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 38 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 41 discrimination arms passed)")
     return 0
 
 
