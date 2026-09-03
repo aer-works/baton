@@ -6,10 +6,13 @@ namespace Baton.Mutation;
 
 /// <summary>
 /// The result of one <see cref="VerifyRunner.RunProcessAsync"/> call (#1623). <see cref="Passed"/>
-/// mirrors the verify command's own exit code; <see cref="FailingMembers"/>/<see cref="Tail"/> are
-/// populated only when it fails, and only when the summary line's shape is recognized — never
-/// fabricated. <see cref="Tail"/> is each failing member's OWN output (#1701), not a blind tail of the
-/// whole combined stream — see <see cref="VerifyRunner.BuildTail"/>.
+/// mirrors the verify command's own exit code EXCEPT when the caller's token is cancelled, which
+/// always wins regardless of what the child's exit code happened to be (#1722) — a cancellation
+/// observed after a fast child's natural exit is otherwise a fail-open race, not a flaky test.
+/// <see cref="FailingMembers"/>/<see cref="Tail"/> are populated only when it fails, and only when the
+/// summary line's shape is recognized — never fabricated. <see cref="Tail"/> is each failing member's
+/// OWN output (#1701), not a blind tail of the whole combined stream — see
+/// <see cref="VerifyRunner.BuildTail"/>.
 /// <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine restarts (F3).
 /// </summary>
 public sealed record VerifyOutcome(
@@ -89,6 +92,14 @@ public static class VerifyRunner
     internal static async Task<VerifyOutcome> RunProcessAsync(
         string program, IReadOnlyList<string> args, string? workingDirectory, CancellationToken cancellationToken)
     {
+        // #1722: an already-cancelled token never launches at all -- a fast child could otherwise
+        // exit before this method observes the cancellation (see the post-capture check below), and
+        // there is no reason to spawn a process whose result is already decided.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: "Verify command cancelled before it was launched.", Kind: VerifyFailedKind.Cancelled);
+        }
+
         int exitCode;
         string text;
         try
@@ -120,6 +131,15 @@ public static class VerifyRunner
             // The OS refusing to spawn `pixi` at all -- not the worker's fault, but the honest outcome
             // is still "verify did not confirm this execution", never a silent pass. Settles Indeterminate.
             return new VerifyOutcome(false, FailingMembers: null, Tail: $"Verify command failed to complete: {ex.Message}", Kind: VerifyFailedKind.GatesFailed);
+        }
+
+        // #1722: cancellation takes precedence over whatever exit code the child happened to produce.
+        // BatonTask can observe a cancellation registered against an already-finished job as a no-op
+        // (docs on BatonTask.RunAsync's cancellationToken param) -- a fast child that exits 0 in the
+        // gap between the cancel firing and the kill landing must still report Cancelled, not Passed.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new VerifyOutcome(false, FailingMembers: null, Tail: "Verify command cancelled.", Kind: VerifyFailedKind.Cancelled);
         }
 
         if (exitCode == 0)

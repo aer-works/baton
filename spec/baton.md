@@ -815,8 +815,15 @@ also what `baton status --json` now surfaces per step as `verifyTail`, so a flak
 the room without reconstructing it by hand. An operator cancel landing inside the verify window is the one exception: `VerifyFailedKind.Cancelled`
 observed together with the caller's own cancellation token already firing means the journal *can*
 decide (it holds the cancel), so `MutationInterface` appends `FlowEvent.ExecutionCancelled` instead —
-room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record of what was
-running. A verify *timeout* still settles `Indeterminate` through the ordinary `VerifyFailed` path.
+room reads `Cancelled`, retry stays open, `VerifyStarted` survives as the diagnostic record that verify
+was entered — not that a child necessarily existed: when the cancel precedes the spawn, the runner's
+pre-spawn check returns `Cancelled` and no process ever ran. A verify *timeout* still settles
+`Indeterminate` through the ordinary `VerifyFailed` path.
+Cancellation dominates the child's exit code, whatever it was (#1722): `VerifyRunner.RunProcessAsync`
+checks the caller's token both before spawning and after the child returns, so a fast child that
+happens to exit 0 in the gap before a cancellation kill lands is still reported `Cancelled`, never
+`Passed` — a cancelled verify reported as passed is a fail-open gate result, not a flaky race to
+tolerate.
 Worker briefs no longer ask for the full gate suite themselves; the prompt-level foreground instruction
 from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
 gates, should run in the foreground) now that this is the braces.

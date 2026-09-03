@@ -176,4 +176,56 @@ public sealed class VerifyRunnerTests
         Assert.False(outcome.Passed);
         Assert.Equal(Baton.Domain.VerifyFailedKind.Cancelled, outcome.Kind);
     }
+
+    [Fact]
+    public async Task A_pre_cancelled_token_never_launches_the_process()
+    {
+        // #1722: the actual production race was a FAST child (`cmd /c exit 0`) exiting before the
+        // cancellation was observed, so a marker file written by that same child is not a reliable
+        // instrument here -- even on unpatched code the child is USUALLY killed fast enough that the
+        // marker is never written, even though the process still launched. A wall-clock threshold is
+        // not the instrument either: this file already records one load flake of that shape (see the
+        // comment on Cancellation_during_verify_reports_Cancelled_kind). The pre-spawn guard is the only
+        // arm that can produce this exact Tail, and it textually precedes RunProcessAsync's sole
+        // CaptureAsync call, so pinning the Tail pins "never launched" by construction, deterministically:
+        // on unpatched code the outcome is either Pass (Tail null) or the BatonCancelException arm's
+        // "Verify command cancelled: ..." text, never this string.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", "exit 0"], workingDirectory: null, cts.Token);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.Cancelled, outcome.Kind);
+        Assert.Equal("Verify command cancelled before it was launched.", outcome.Tail);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_a_still_running_child_reports_Cancelled_and_kills_the_tree()
+    {
+        // #1722: cancel WHILE a long-running child is mid-flight (rather than pre-cancelling), and
+        // prove the tree is actually killed rather than orphaned -- a second command chained after
+        // the long-running one would create a marker file if the child were left to finish, which
+        // must never happen once the token fires.
+        var markerPath = Path.Combine(Path.GetTempPath(), $"baton-1722-{Guid.NewGuid():N}.marker");
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+            var outcome = await VerifyRunner.RunProcessAsync(
+                "cmd",
+                ["/c", $"ping -n 10 127.0.0.1 >nul & echo marker > \"{markerPath}\" & exit 0"],
+                workingDirectory: null,
+                cts.Token);
+
+            Assert.False(outcome.Passed);
+            Assert.Equal(Baton.Domain.VerifyFailedKind.Cancelled, outcome.Kind);
+            Assert.False(File.Exists(markerPath), "the marker file exists, so the child tree kept running (and exited 0) past cancellation instead of being killed");
+        }
+        finally
+        {
+            Baton.Tests.Shared.FileCleanup.Delete(markerPath);
+        }
+    }
 }
