@@ -298,41 +298,42 @@ public static class AgyHookCheckCommand
             // Deny beats allow (0022, #390): a standing "never" refuses the command BEFORE any
             // allow-narrowing, so an unscoped grant (empty allow list) or a matching allow pattern
             // cannot reopen a family the operator has closed.
-            if (deniedShellPatternList.Patterns.Count > 0)
+            //
+            // #1685: routed through the same top-level chained-command segmentation the claude hook
+            // uses (ShellCommandPatternMatcher.EvaluateChainedCommand, shared rather than copied —
+            // see its own remarks for the segmentation rule and what it fails closed on). Evaluating
+            // the whole line as one string here used to mean the metacharacter scan inside
+            // IsDenied/IsAllowed rejected a chained line (`git push --force && true`) before either
+            // pattern list was even consulted, so a standing 'never' silently stopped applying the
+            // moment a command carried a chain operator.
+            //
+            // UNLIKE the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch), this
+            // call is NOT nested under "allow patterns non-empty". claude's primary enforcement of the
+            // DenyAlways rung is --disallowedTools Bash(pattern), independent of this hook -- nesting
+            // there only narrows a belt-and-braces second layer, and that layer's own whole-line
+            // matching is why the nesting is safe to leave as-is (spec/baton.md §9). agy has no such
+            // flag-level backstop: permission rules on agy are global-only (decision 0029), so this
+            // hook is the ONLY enforcement of DenyAlways agy has. Nesting the deny check under a
+            // non-empty allow list here would reopen exactly the hole this fix closes, on every
+            // unscoped role (e.g. `implement`/`janitor`) carrying a standing deny.
+            if (deniedShellPatternList.Patterns.Count > 0 || shellPatternList.Patterns.Count > 0)
             {
                 if (commandLine is null)
                 {
                     return DenyJson(
-                        "AER: the 'run_command' tool has standing deny patterns, but this gate could not " +
-                        "read toolCall.args.CommandLine in the hook payload and denied this call rather " +
-                        "than allowing it unchecked.");
+                        "AER: the 'run_command' tool is scoped by shell command patterns, but this gate " +
+                        "could not read toolCall.args.CommandLine in the hook payload and denied this " +
+                        "call rather than allowing it unchecked.");
                 }
 
-                if (Baton.Vendors.ShellCommandPatternMatcher.IsDenied(commandLine, deniedShellPatternList.Patterns))
-                {
-                    return DenyJson(
-                        $"AER: the command line '{commandLine}' matches a standing 'never' rule for this " +
-                        "session's grant (deny-always) and was refused.");
-                }
-            }
+                var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(
+                    commandLine, shellPatternList.Patterns, deniedShellPatternList.Patterns);
 
-            // Present with no patterns is the deliberate unscoped-shell grant: allow. Only a non-empty
-            // pattern set narrows the shell, and then the command line must match it.
-            if (shellPatternList.Patterns.Count > 0)
-            {
-                if (commandLine is null)
+                if (!result.IsAllowed)
                 {
                     return DenyJson(
-                        "AER: the 'run_command' tool is granted with shell command patterns, but this gate " +
-                        "could not read toolCall.args.CommandLine in the hook payload and denied this call " +
-                        "rather than allowing it unchecked.");
-                }
-
-                if (!Baton.Vendors.ShellCommandPatternMatcher.IsAllowed(commandLine, shellPatternList.Patterns))
-                {
-                    return DenyJson(
-                        $"AER: the command line '{commandLine}' is denied because it does not match the " +
-                        "shell command patterns allowed by this session's grant.");
+                        $"AER: the command line '{commandLine}' is denied under this session's shell " +
+                        $"grant — {result.Reason}.");
                 }
             }
 

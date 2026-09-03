@@ -156,6 +156,76 @@ public class AgyHookCheckCommandTests
         Assert.Equal("allow", Decide(payload, "agy:", deniedShellPatterns: null));
     }
 
+    // ---- Chained-command segmentation (#1685) ----
+    //
+    // The DenyAlways rung above was checked against the whole command line as one string. That scan
+    // rejects any unquoted shell metacharacter outright (#659) -- including '&' -- so a chained line
+    // like `git push --force && true` was denied by the metacharacter scan itself, before either
+    // pattern list was ever consulted, and read as "cannot judge, deny" rather than "the deny pattern
+    // matched". The DIFFERENCE that matters: that denial carried the wrong reason and, on a SCOPED
+    // allow list, would have refused a chain none of whose segments a standing deny even names. The
+    // fix routes agy through the same segmentation claude's Bash hook uses
+    // (ShellCommandPatternMatcher.EvaluateChainedCommand) so every top-level segment is judged on its
+    // own terms: deny-checked, then (only under a scoped grant) allow-checked.
+
+    private static string CommandPayload(string command) => $$"""
+        {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+         "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+         "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}},"Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                     "name":"run_command"},
+         "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+        """;
+
+    [Fact]
+    public void An_unscoped_grant_still_denies_a_standing_deny_riding_a_chained_command()
+    {
+        // The shell is granted unscoped ("agy:" = allow anything), yet a standing 'never' on git push
+        // must still catch it chained after a no-op tail -- the exact shape #1685 was filed on.
+        var payload = CommandPayload("git push --force && true");
+        Assert.Equal(
+            "deny",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void An_unscoped_grant_denies_a_standing_deny_riding_the_first_segment_of_a_chain()
+    {
+        // Same claim, the other position: the standing deny must be caught wherever it sits in the
+        // chain, not only when it happens to lead.
+        var payload = CommandPayload("true && git push --force");
+        Assert.Equal(
+            "deny",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void A_scoped_grant_allows_a_chain_whose_every_segment_matches_the_allow_list()
+    {
+        // The discriminating control: segmentation must not degrade into a blanket chain refusal.
+        // Both segments independently match the review role's own allowlist, so the chain is allowed.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var payload = CommandPayload("git status && git log -1");
+        Assert.Equal(
+            "allow",
+            Decide(
+                payload, "agy:write_to_file,replace_file_content",
+                shellPatterns: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+                deniedShellPatterns: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!)));
+    }
+
+    [Fact]
+    public void A_segment_carrying_an_unquoted_metacharacter_fails_closed()
+    {
+        // The segmentation scanner will not trust a boundary decision around a command substitution
+        // (or any other character it does not recognise), so the whole line denies rather than risk a
+        // hidden command riding through a boundary it guessed wrong -- fail-closed, same polarity as
+        // the whole-line scan this replaces.
+        var payload = CommandPayload("git status && echo $(whoami)");
+        Assert.Equal(
+            "deny",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
     [Fact]
     public void The_shell_patterns_variable_matches_the_adapter_side_contract()
     {
