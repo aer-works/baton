@@ -3006,6 +3006,15 @@ something is actively running. §6's "Board + detail-pane IA" and "Telemetry on 
 are this decision's full technical contract (schema, field provenance, the `—` no-fabrication rule);
 this entry records only the decision itself and why it deviates from the mock it was ruled from.
 
+<!-- record-once-ok: #1603 tools/diff-shape/diff_shape.py -->
+### C-15 — Diff-shape CI gate: test-only PR self-weakening and protected tooling (#1603)
+
+Ratified design (operator, 2026-09-01) — closes the "a conductor can relax the bounds on its own authority" hole. A required CI check (`diff-shape`, `.github/workflows/diff-shape.yml`, `tools/diff-shape/diff_shape.py`) that fails when either holds:
+1. **Test-only PR weakening:** the PR touches no `src/` code AND the diff contains a deleted or changed line in a pre-existing test file (pure additions of new test files or appended lines pass; mixed engine+test PRs touching `src/` are exempt).
+2. **Protected tooling edit:** any file in the protected-tooling set (`tools/gates/`, `pixi.toml`, `.github/workflows/`, and `tools/diff-shape/diff_shape.py` itself) is edited (additions included).
+
+Both failures are lifted by the `operator-merge` PR label.
+
 ---
 
 ## Appendix: full subsystem ruling table

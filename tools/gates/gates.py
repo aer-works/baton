@@ -82,6 +82,8 @@ OVERLAP = [
     # BATON_HOME, never the live tools root, same overlap-safety shape as tool-refresh-selftest
     # above.
     "launcher-selftest",
+    # #1603: pure Python selftest for test weakening, additions, mixed PR, protected tooling, and operator-merge label.
+    "diff-shape-selftest",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.
