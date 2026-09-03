@@ -59,13 +59,13 @@ public sealed class OperatorRecoveryCitationsPinToSpecSectionsTests
             "naming the conductor's own judgement after inspecting the \" + \"workspace. See spec/baton.md §3.\");",
             Section: 3,
             "the conductor's own judgement after inspecting the workspace IS something to reject"),
-        // ResolveCommand.cs: a VerifyFailed/Arrested Indeterminate is pointed at fixing the underlying
-        // cause and re-dispatching, since baton resolve has nothing to accept or reject for either.
+        // ResolveCommand.cs: a VerifyFailed/Arrested Indeterminate is pointed at `--close --reason`
+        // (#1622 (d)/#1700) or at fixing the underlying cause and re-dispatching.
         new(
             "src/Baton.Cli/ResolveCommand.cs",
-            "fix the underlying cause, then re-dispatch — a fresh execution reopens the \" + \"step. See spec/baton.md §3.\");",
+            "and re-dispatch — a fresh execution reopens the step. See spec/baton.md §3.\");",
             Section: 3,
-            "from `VerifyFailed`/`Arrested` (which never do)"),
+            "**`--close --reason <text>` (#1622 (d)/#1700) is the verb for the other two producers**"),
         // RedispatchCommand.cs: a parent room with no terminal.json (engine died mid-wait) is pointed
         // at the same section 3 --room-dir recovery.
         new(
@@ -88,13 +88,12 @@ public sealed class OperatorRecoveryCitationsPinToSpecSectionsTests
             Section: 3,
             "`ContractFailure` has no captured body to accept, so only `--reject --reason <text>` admits it"),
         // RedispatchCommand.cs: an Indeterminate parent with a VerifyFailed/Arrested/unknown producer
-        // is told redispatch is permanently unavailable and pointed at a fresh dispatch instead.
+        // is pointed at `--close --reason` (which lifts the refusal, #1622 (d)/#1700) or a fresh dispatch.
         new(
             "src/Baton.Cli/RedispatchCommand.cs",
-            "fix the underlying cause, and run \" + $\"{DescribeFreshDispatchRemedy(workerName, parentEntry)} into a fresh room — \" + \"see spec/baton.md §3.",
+            "fix the underlying cause first — a fresh room is \" + $\"{DescribeFreshDispatchRemedy(workerName, parentEntry)}. See spec/baton.md §3.\",",
             Section: 3,
-            "redispatch is permanently unavailable here — only a brand-new `baton dispatch` room reopens " +
-            "the step"),
+            "short of `--close` or a brand-new `baton dispatch`"),
         // StatusCommand.cs: the #1582 fix itself -- a parked step whose scheduling engine died is
         // pointed at the section 3 --room-dir recovery (was section 7 before #1582).
         new(
