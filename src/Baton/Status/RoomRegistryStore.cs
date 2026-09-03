@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -480,56 +479,23 @@ public static class RoomRegistryStore
     }
 
     /// <summary>
+    /// The lock name prefix <see cref="MutexGuardedFileLock"/> combines with a digest of the registry
+    /// file path — kept as the exact literal this store always used before the extraction to
+    /// <see cref="MutexGuardedFileLock"/> (#1570). That type's own remarks state why the literal must
+    /// not move.
+    /// </summary>
+    private const string LockNamePrefix = "baton-room-registry";
+
+    /// <summary>
     /// Runs <paramref name="action"/> holding a named <see cref="Mutex"/> keyed on
     /// <paramref name="registryFilePath"/>, so every process touching the same registry file — reader
-    /// or writer — serializes against every other one. Acquire, <paramref name="action"/>, and release
-    /// all happen synchronously on the calling thread — see the type's remarks on why an
-    /// <c>await</c> inside this cannot be allowed. The path is hashed rather than used verbatim because
-    /// a raw path is neither a valid nor a safely short Windows kernel-object name (backslashes,
-    /// length limits); the digest just needs to collide only when the paths do — which is exactly why
-    /// it is hashed through <see cref="BatonPaths.RecordKey"/> first, not the raw string: two spellings of
-    /// the same file (forward vs. backward slashes, a different <c>BATON_HOME</c> casing) must still hash
-    /// to the one mutex name, or two processes pointed at the same file take out two different locks
-    /// and the registry corruption this mutex exists to prevent is right back.
+    /// or writer — serializes against every other one. <see cref="MutexGuardedFileLock"/> (#1570) is
+    /// the mechanism itself, shared with <see cref="QuotaLedgerStore"/> — this store's own remarks on
+    /// why every critical section must stay synchronous, and on the digest, moved there with it.
     /// </summary>
-    private static T RunUnderLock<T>(string registryFilePath, Func<T> action)
-    {
-        var digest = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(BatonPaths.RecordKey(registryFilePath).ToUpperInvariant())));
-        using var mutex = new Mutex(initiallyOwned: false, name: $"Global\\baton-room-registry-{digest}");
-
-        bool owned;
-        try
-        {
-            owned = mutex.WaitOne(LockTimeout);
-        }
-        catch (AbandonedMutexException)
-        {
-            // A prior holder crashed mid-access. Per Mutex's own contract, ownership still transfers
-            // to us when this is thrown -- whatever partial state it left behind is already handled by
-            // the tolerant, skip-malformed-lines read path above, not something to react to here.
-            owned = true;
-        }
-
-        if (!owned)
-        {
-            throw new IOException($"Timed out after {LockTimeout} waiting for the room registry lock on '{registryFilePath}'.");
-        }
-
-        try
-        {
-            return action();
-        }
-        finally
-        {
-            mutex.ReleaseMutex();
-        }
-    }
+    private static T RunUnderLock<T>(string registryFilePath, Func<T> action) =>
+        MutexGuardedFileLock.RunUnderLock(registryFilePath, LockNamePrefix, LockTimeout, action);
 
     private static void RunUnderLock(string registryFilePath, Action action) =>
-        RunUnderLock<object?>(registryFilePath, () =>
-        {
-            action();
-            return null;
-        });
+        MutexGuardedFileLock.RunUnderLock(registryFilePath, LockNamePrefix, LockTimeout, action);
 }

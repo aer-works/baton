@@ -178,6 +178,17 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
+    /// <c>{Root}/quota-ledger.jsonl</c> — see <see cref="QuotaLedgerStore"/> (spec/baton.md §7) for
+    /// what this holds: one append-only line per settled execution's own usage, written engine-side at
+    /// settle (issue #1570, quota-design S4b). Guarded by the same <see cref="MutexGuardedFileLock"/>
+    /// mechanism as <see cref="RoomRegistryFile"/>, a distinct file with its own lock name.
+    /// </summary>
+    public static string QuotaLedgerFile => Path.Combine(Root, QuotaLedgerFileName);
+
+    /// <summary>Filename of <see cref="QuotaLedgerFile"/> relative to a root.</summary>
+    public const string QuotaLedgerFileName = "quota-ledger.jsonl";
+
+    /// <summary>
     /// <c>{Root}/fleet/projection.json</c> — the daemon-written fleet projection file (#1557,
     /// spec/baton.md §7's fourth kept responsibility): the same <c>fleet_status</c> room array
     /// (spec/baton.md §6) plus per-room <c>live</c>/<c>pruned</c> and the top-level <c>derived_at</c>,
