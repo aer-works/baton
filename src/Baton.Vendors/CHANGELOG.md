@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.29.0](https://github.com/philipreese/baton/compare/vendors-v0.28.0...vendors-v0.29.0) (2026-09-03)
+
+
+### Features
+
+* **cli:** Add baton room delete and baton rooms prune ([#1667](https://github.com/philipreese/baton/issues/1667)) ([b0e0702](https://github.com/philipreese/baton/commit/b0e0702755c5d5a17f6ba556bc853b856fbcd3e5))
+* **engine:** Run the verify step and enforce per-execution token budgets ([#1654](https://github.com/philipreese/baton/issues/1654)) ([3e1e42f](https://github.com/philipreese/baton/commit/3e1e42f608669c5cd1132fd615a1b308a1af1e6a))
+* **glass:** Surface the redispatch lineage chain that room.json already records ([#1717](https://github.com/philipreese/baton/issues/1717)) ([f8de18c](https://github.com/philipreese/baton/commit/f8de18cb575b67368a141e8e2e9697d2175edde5))
+* **infra:** Install baton side by side per commit so a refresh needs no drain ([#1670](https://github.com/philipreese/baton/issues/1670)) ([cedac75](https://github.com/philipreese/baton/commit/cedac759f63a2ac097abbeb4e1d11b70a2d3f978))
+* **vendors:** Let agy run the review role via the PreToolUse hook route ([#1675](https://github.com/philipreese/baton/issues/1675)) ([6d71093](https://github.com/philipreese/baton/commit/6d71093fb0f60d6f980e4032ec84a5bc3ea77cf1))
+
+
+### Bug Fixes
+
+* **dispatch:** Add a sliding-window billed-rate arrest trigger, and ship it unset because no value separates ([#1707](https://github.com/philipreese/baton/issues/1707)) ([8eba760](https://github.com/philipreese/baton/commit/8eba760d02abb6c3dbd43278562cd156e220e9e5))
+* **dispatch:** Arrest on billed tokens and a tool-step cap instead of the context level ([#1686](https://github.com/philipreese/baton/issues/1686)) ([428098f](https://github.com/philipreese/baton/commit/428098f11254920775a4346de6517a38e7a6f520))
+* **dispatch:** Evaluate agy's standing deny list on chained commands ([#1725](https://github.com/philipreese/baton/issues/1725)) ([113e406](https://github.com/philipreese/baton/commit/113e406b1a97f422a801a6b3d728c4269139ba1b))
+* **dispatch:** Match shell command patterns on word boundaries and deny the flag-driven git and gh escapes ([#1683](https://github.com/philipreese/baton/issues/1683)) ([23c8654](https://github.com/philipreese/baton/commit/23c86542468984d645ea103fcfeba11871d8d0d1))
+* **dispatch:** Settle an exit-0 contract failure Indeterminate instead of retrying on a mutated workspace ([#1664](https://github.com/philipreese/baton/issues/1664)) ([d35ca09](https://github.com/philipreese/baton/commit/d35ca09ec8bf0cd79f5ee26425174b1caff60068))
+* **flow:** Exit-0 quota veto, work-product evidence, and a resolve path for verify/arrest dead ends ([#1720](https://github.com/philipreese/baton/issues/1720)) ([c5cfe08](https://github.com/philipreese/baton/commit/c5cfe0834e4caf490de0c679f0363d540e61cbb9))
+* **flow:** Resolve the verify command from the workspace, always deliver --output ([#1708](https://github.com/philipreese/baton/issues/1708)) ([571f568](https://github.com/philipreese/baton/commit/571f5680a917f0985a1ee44571d6da05f7bb4946))
+* **flow:** Stop decide's worktree provisioning from racing a live run --wait pump's flow.lock ([#1650](https://github.com/philipreese/baton/issues/1650)) ([8e20c85](https://github.com/philipreese/baton/commit/8e20c85026c6b9c3e700d2fbe00ae1c2002ab1f1))
+* **vendors:** Refuse a suffix-less agy model up front, before spawn ([#1695](https://github.com/philipreese/baton/issues/1695)) ([d492ffa](https://github.com/philipreese/baton/commit/d492ffaf62da7a81ee3e2ccaa755cd80e816a535))
+* **vendors:** Verify agy's PreToolUse hook is live before trusting it as sole narrowing ([#1732](https://github.com/philipreese/baton/issues/1732)) ([0ddf15c](https://github.com/philipreese/baton/commit/0ddf15c3741db2957f5c4c63f640c54df748bbf4))
+
+
+### Code Refactoring
+
+* **vendors:** Fold the four [#1496](https://github.com/philipreese/baton/issues/1496)-exempt env readers into BatonEnvironmentSnapshot ([#1729](https://github.com/philipreese/baton/issues/1729)) ([e23fd8b](https://github.com/philipreese/baton/commit/e23fd8b738d9cf854c0be08572e8062ebf21d0be))
+
 ## [0.28.0](https://github.com/philipreese/baton/compare/vendors-v0.27.0...vendors-v0.28.0) (2026-09-02)
 
 

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.29.0](https://github.com/philipreese/baton/compare/flow-v0.28.0...flow-v0.29.0) (2026-09-03)
+
+
+### Features
+
+* **cli:** Add baton room delete and baton rooms prune ([#1667](https://github.com/philipreese/baton/issues/1667)) ([b0e0702](https://github.com/philipreese/baton/commit/b0e0702755c5d5a17f6ba556bc853b856fbcd3e5))
+* **cli:** Widen cancel's room-level target to include quota-parked lanes ([#1641](https://github.com/philipreese/baton/issues/1641)) ([c4c2a82](https://github.com/philipreese/baton/commit/c4c2a8279db008c14d7ee56adc348d577ed783d7))
+* **dispatch:** Settle captured-response lanes Indeterminate and add the baton resolve verb ([#1644](https://github.com/philipreese/baton/issues/1644)) ([ec8b5eb](https://github.com/philipreese/baton/commit/ec8b5eb6a8840eac550a4515488c97662018cb2e))
+* **engine:** Run the verify step and enforce per-execution token budgets ([#1654](https://github.com/philipreese/baton/issues/1654)) ([3e1e42f](https://github.com/philipreese/baton/commit/3e1e42f608669c5cd1132fd615a1b308a1af1e6a))
+* **infra:** Install baton side by side per commit so a refresh needs no drain ([#1670](https://github.com/philipreese/baton/issues/1670)) ([cedac75](https://github.com/philipreese/baton/commit/cedac759f63a2ac097abbeb4e1d11b70a2d3f978))
+* **tools:** Add one-command tool refresh with drain, reinstall, verify and drift warning ([#1653](https://github.com/philipreese/baton/issues/1653)) ([f7c4cca](https://github.com/philipreese/baton/commit/f7c4ccadaf14d72f5421bbf2a733e19bbba27c1c))
+
+
+### Bug Fixes
+
+* **cli:** Never sweep a live cancel request written during run startup ([#1665](https://github.com/philipreese/baton/issues/1665)) ([a01a892](https://github.com/philipreese/baton/commit/a01a892a1cfb3705369e5db2d2bb79a728f9c9af))
+* **dispatch:** Add a sliding-window billed-rate arrest trigger, and ship it unset because no value separates ([#1707](https://github.com/philipreese/baton/issues/1707)) ([8eba760](https://github.com/philipreese/baton/commit/8eba760d02abb6c3dbd43278562cd156e220e9e5))
+* **dispatch:** Arrest on billed tokens and a tool-step cap instead of the context level ([#1686](https://github.com/philipreese/baton/issues/1686)) ([428098f](https://github.com/philipreese/baton/commit/428098f11254920775a4346de6517a38e7a6f520))
+* **dispatch:** Bill claude's live cache-creation as a floor and reconcile against the terminal usage ([#1716](https://github.com/philipreese/baton/issues/1716)) ([1c30225](https://github.com/philipreese/baton/commit/1c302259b814bdf59cf1f6111d0df0b2ac76e7a0))
+* **dispatch:** Settle an exit-0 contract failure Indeterminate instead of retrying on a mutated workspace ([#1664](https://github.com/philipreese/baton/issues/1664)) ([d35ca09](https://github.com/philipreese/baton/commit/d35ca09ec8bf0cd79f5ee26425174b1caff60068))
+* **flow:** Exit-0 quota veto, work-product evidence, and a resolve path for verify/arrest dead ends ([#1720](https://github.com/philipreese/baton/issues/1720)) ([c5cfe08](https://github.com/philipreese/baton/commit/c5cfe0834e4caf490de0c679f0363d540e61cbb9))
+* **flow:** Give cancellation precedence over the child's exit code in the verify runner ([#1736](https://github.com/philipreese/baton/issues/1736)) ([93f39e5](https://github.com/philipreese/baton/commit/93f39e59c86228def7919d64bb194e6ee2e0625e))
+* **flow:** Keep the token-budget level from dipping on a fan-out parent's sub-agent turns ([#1740](https://github.com/philipreese/baton/issues/1740)) ([db6c5ac](https://github.com/philipreese/baton/commit/db6c5ac73f6022abbb91829ade3db6a71fffa505))
+* **flow:** Refuse baton decide against a Paused step with an unresolved capture ([#1705](https://github.com/philipreese/baton/issues/1705)) ([3d2fbe2](https://github.com/philipreese/baton/commit/3d2fbe22d97d175b44fa2480b3af5656411352ea))
+* **flow:** Resolve the verify command from the workspace, always deliver --output ([#1708](https://github.com/philipreese/baton/issues/1708)) ([571f568](https://github.com/philipreese/baton/commit/571f5680a917f0985a1ee44571d6da05f7bb4946))
+* **flow:** Stop decide's worktree provisioning from racing a live run --wait pump's flow.lock ([#1650](https://github.com/philipreese/baton/issues/1650)) ([8e20c85](https://github.com/philipreese/baton/commit/8e20c85026c6b9c3e700d2fbe00ae1c2002ab1f1))
+* **infra:** tool-refresh pointer-flip retry; verifyFailed carries per-member output ([#1711](https://github.com/philipreese/baton/issues/1711)) ([8ad40ed](https://github.com/philipreese/baton/commit/8ad40ed69ba0778c9c1d94ad2a3d4a15c0de241c))
+* **store:** Keep throwaway repro rooms out of the room registry and off the glass ([#1661](https://github.com/philipreese/baton/issues/1661)) ([85c562e](https://github.com/philipreese/baton/commit/85c562e635c13da8f376cbf045c279dc940a3637))
+* **vendors:** Verify agy's PreToolUse hook is live before trusting it as sole narrowing ([#1732](https://github.com/philipreese/baton/issues/1732)) ([0ddf15c](https://github.com/philipreese/baton/commit/0ddf15c3741db2957f5c4c63f640c54df748bbf4))
+
+
+### Code Refactoring
+
+* **vendors:** Fold the four [#1496](https://github.com/philipreese/baton/issues/1496)-exempt env readers into BatonEnvironmentSnapshot ([#1729](https://github.com/philipreese/baton/issues/1729)) ([e23fd8b](https://github.com/philipreese/baton/commit/e23fd8b738d9cf854c0be08572e8062ebf21d0be))
+
+
+### Miscellaneous
+
+* **flow:** Pin the billed-reconciliation arms, seed the rollover counter from disk, and close the [#1716](https://github.com/philipreese/baton/issues/1716) LOWs ([#1739](https://github.com/philipreese/baton/issues/1739)) ([996f9d8](https://github.com/philipreese/baton/commit/996f9d82a0ed8a4b67df91c111023704a1a606a6))
+
 ## [0.28.0](https://github.com/philipreese/baton/compare/flow-v0.27.0...flow-v0.28.0) (2026-09-02)
 
 
