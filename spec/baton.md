@@ -1306,14 +1306,25 @@ not the three carrying a token budget, because #1686 review F1 was exactly a fou
 an unmeasured cap while three documents said it held none. Second, the mechanism ships anyway, complete
 and tested, because it is what makes a future calibration possible: `TokenBudgetMonitor` now takes an
 injected `TimeProvider` and keeps a trailing-window Σ of the SAME deduped per-turn billed samples
-#1682's total already takes, exposes the largest window it ever held
-(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed), and records that peak plus
-the armed limit onto `FlowEvent.ExecutionArrested`. **Scoped precisely, because an earlier draft of this
-paragraph over-claimed it (#1707 review): that record is written on an ARREST, and a normally-completed
-execution journals no `ExecutionArrested`, so the ledger carries no peak for exactly the lanes whose
-peaks a false-positive calibration needs.** Nothing is lost — every completed room keeps its own
-`.stdout.log`, which is what the sweep reads — but #1686 review F14's phase 1 is only half landed here:
-the live measurement exists and is exposed, and persisting it for a non-arrested execution is #1709.
+#1682's total already takes, and exposes the largest window it ever held
+(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed). **Corrected 2026-09-03
+(#1709): an earlier draft of this paragraph said that reading was recorded only onto
+`FlowEvent.ExecutionArrested`, which inverted the population the calibration actually needs — a
+normally-completed execution journalled no `ExecutionArrested` at all, so the ledger carried a peak for
+exactly the lanes that DIDN'T need one and none for the false-positive side that does.** The peak is now
+journalled once on whichever terminal outcome event an execution actually reaches —
+`FlowEvent.ExecutionSucceeded`/`FlowEvent.ExecutionFailed` carry the identical
+`PeakBilledInWindow` field `ExecutionArrested` already did, stamped by the same live
+`TokenBudgetMonitor` when one was in scope (a Process dispatch with a token budget, tool-step cap, or
+billed-rate limit armed) and left null when it was not (a non-Process dispatch, a crash-recovery
+classification of a recorded exit — no live monitor survives an engine restart — or a spawn refusal
+before dispatch). `ExecutionUsageProjector` surfaces it as `peakBilledInWindow` in `terminal.json`/
+`status --json`'s per-execution usage object, distinct from that same view's `liveBilledTokens` (a
+REPLAY reconstruction over the captured stream, computed fresh on every read): this field is the number
+the running execution actually measured, read back from the ledger verbatim. #1686 review F14's phase 1
+is fully landed by this: the live measurement exists, is exposed, and now reaches every terminal
+outcome, not only an arrest — a sweep can read journalled measurements across a normal-room population
+instead of reconstructing per-line arrival times from `.stdout.log`.
 
 Mechanics, stated once. The window is fixed at 5 minutes (`TokenBudgetMonitor.BilledRateWindow`) and
 only the ceiling is configurable, so two roles' limits stay comparable; it is closed at both ends, so a

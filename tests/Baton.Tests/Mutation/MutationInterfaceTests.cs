@@ -951,6 +951,59 @@ public class MutationInterfaceTests
     }
 
     [Fact]
+    public async Task StartWorkflowAsync_stamps_PeakBilledInWindow_on_ExecutionSucceeded_when_a_live_budget_monitor_watched_the_run()
+    {
+        // #1709: the wiring the arrest test above proves for ExecutionArrested, mirrored for the
+        // ordinary Succeeded case an arrest never reaches -- exercises the real MutationInterface
+        // wiring (a real TokenBudgetMonitor built from binding.TokenBudget, live through the real
+        // BatonTask/CoreDispatcher pipeline, never crossing its budget) so ToOutcomeEvent's
+        // budgetMonitor.SnapshotPeakBilledInWindow() call is proven live, not only at
+        // FlowEventSerializationTests'/ExecutionUsageProjectorTests' unit level.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var scriptDirectory = Path.Combine(roomDirectory, "scripts");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-peak-succeeded"),
+                new WorkflowTemplateId("peak-succeeded"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    EmitUsageLineThenWriteFile(scriptDirectory, cacheCreationInputTokens: 5000, "plan", "architect"),
+                    TimeSpan.FromSeconds(30),
+                    Adapter: "claude",
+                    // Well above the 5,000 the usage line carries -- this must complete normally,
+                    // never arrest, so the peak reaches ExecutionSucceeded rather than ExecutionArrested.
+                    TokenBudget: 1_000_000),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-peak-succeeded"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionArrested>());
+            var succeeded = Assert.Single(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Equal(5000, succeeded.PeakBilledInWindow);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task StartWorkflowAsync_arrests_an_execution_that_crosses_its_tool_step_cap_with_zero_usage_lines()
     {
         // #1682: the SECOND, independent producer -- exercises the real MutationInterface wiring the

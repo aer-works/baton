@@ -240,6 +240,37 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
+    /// #1709: emits one live claude-shaped usage line — real bytes for a <c>TokenBudgetMonitor</c>
+    /// watching the stream to accumulate, the same "assistant" shape the arrest tests above use — then
+    /// writes the declared output and exits 0. Standing in for an ordinary Succeeded execution that ran
+    /// with a live budget monitor in scope but never crossed it, so
+    /// <see cref="Domain.FlowEvent.ExecutionSucceeded.PeakBilledInWindow"/>'s wiring in
+    /// <c>MutationInterface</c> is proven through the real dispatch pipeline, not only at the projector.
+    /// </summary>
+    public static CoreDispatchTarget EmitUsageLineThenWriteFile(
+        string scriptDirectory, long cacheCreationInputTokens, string outputName, string content)
+    {
+        var usageLine = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":2,"
+            + $"\"cache_creation_input_tokens\":{cacheCreationInputTokens},\"cache_read_input_tokens\":0,\"output_tokens\":3"
+            + "}}}";
+        var outputPath = OperatingSystem.IsWindows()
+            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
+            : $"$BATON_OUTPUT_DIR/{outputName}";
+
+        var body = OperatingSystem.IsWindows()
+            ? "@echo off\n" +
+              $"echo {usageLine}\n" +
+              $"echo {content}>\"{outputPath}\"\n" +
+              "exit /b 0\n"
+            : "#!/bin/sh\n" +
+              $"echo '{usageLine}'\n" +
+              $"echo {content} > \"{outputPath}\"\n" +
+              "exit 0\n";
+
+        return FromScript(scriptDirectory, body);
+    }
+
+    /// <summary>
     /// Appends <paramref name="suffix"/> to the first resolved input's content instead of a bare
     /// copy — the architect–critic loop's Critic, so its output visibly differs across reruns and
     /// assertions can tell "fed the new plan back in" apart from "produced the same file again".

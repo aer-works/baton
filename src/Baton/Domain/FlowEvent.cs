@@ -55,11 +55,22 @@ public abstract record FlowEvent
     /// </param>
     /// <param name="Hollow">Companion to <paramref name="WorkspaceChanged"/>; see its own remarks.</param>
     /// <param name="HollowReason">Non-null only when <paramref name="Hollow"/> is true.</param>
+    /// <param name="PeakBilledInWindow">
+    /// #1709: the same <c>TokenBudgetMonitor.SnapshotPeakBilledInWindow()</c> reading
+    /// <see cref="ExecutionArrested.PeakBilledInWindow"/> already carries, stamped here so a
+    /// normally-completed execution's peak reaches the ledger too — before this field, only an arrest
+    /// journalled one, which inverted the population spec/baton.md §3's billed-rate calibration
+    /// actually needs (the false-positive side). Null whenever this execution ran with no live
+    /// <c>TokenBudgetMonitor</c> in scope (a non-Process dispatch, a crash-recovery classification of a
+    /// recorded exit, or a spawn refusal before dispatch), and on any ledger line written before this
+    /// field existed.
+    /// </param>
     public sealed record ExecutionSucceeded(
         ExecutionId ExecutionId,
         bool? WorkspaceChanged = null,
         bool? Hollow = null,
-        string? HollowReason = null) : FlowEvent;
+        string? HollowReason = null,
+        long? PeakBilledInWindow = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as failed.</summary>
     /// <param name="Reason">
@@ -90,13 +101,19 @@ public abstract record FlowEvent
     /// <param name="UnsatisfiedOutputNames">
     /// <c>Outcomes.OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames</c>, carried the same hop.
     /// </param>
+    /// <param name="PeakBilledInWindow">
+    /// #1709: see <see cref="ExecutionSucceeded.PeakBilledInWindow"/>'s remarks — the identical field,
+    /// stamped on the other ordinary terminal outcome so every completed execution (not only a
+    /// successful one) carries the same measurement. Null under the same conditions that field is.
+    /// </param>
     public sealed record ExecutionFailed(
         ExecutionId ExecutionId,
         FailureClassification? FailureClassification,
         string? Reason = null,
         DateTimeOffset? RetryNotBefore = null,
         string? CapturedResponseFile = null,
-        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null,
+        long? PeakBilledInWindow = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as cancelled.</summary>
     public sealed record ExecutionCancelled(ExecutionId ExecutionId) : FlowEvent;
@@ -315,10 +332,10 @@ public abstract record FlowEvent
     /// <param name="PeakBilledInWindow">
     /// #1691: the largest Σ billed tokens this execution held inside one trailing
     /// <c>TokenBudgetMonitor.BilledRateWindow</c> — the OBSERVED rate, recorded whether or not
-    /// <paramref name="BilledRateLimit"/> was set. Note the scope: this is an ARREST record, so a
-    /// normally-completed execution's peak reaches no ledger line at all — #1709, and spec/baton.md §3
-    /// states what that does and does not buy a future calibration. Null on any ledger line written
-    /// before #1691.
+    /// <paramref name="BilledRateLimit"/> was set. Null on any ledger line written before #1691.
+    /// #1709 added the identical field to <see cref="ExecutionSucceeded"/>/<see cref="ExecutionFailed"/>
+    /// so a normally-completed execution's peak reaches the ledger too — this field keeps its own
+    /// meaning unchanged (the reading at arrest time specifically), never merged with theirs.
     /// </param>
     /// <param name="BilledRateLimit">
     /// #1691: the limit <paramref name="PeakBilledInWindow"/> was compared against, or null when no
