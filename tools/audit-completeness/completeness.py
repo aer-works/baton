@@ -419,8 +419,8 @@ def step9_pinned_models_exist():
 
     # The tier model pins live in the shared worker-role catalog now (#888), not a dispatch.py literal:
     # WorkerTiers.json maps each tier to {adapter, model, effort}, and the engine reads it directly
-    # (until #1759 retired it, `tools/baton-agy-loop/dispatch.py` read the same file). Check that
-    # source DIRECTLY rather than importing dispatch.py -- the check then reads the truth instead of a
+    # (`tools/baton-agy-loop/dispatch.py` read the same file too, before #1759's retirement removed
+    # it). Check that source DIRECTLY rather than importing dispatch.py -- the check then reads the truth instead of a
     # Python view rebuilt from the same file, and it survived dispatch.py's retirement (the front door
     # replaces it, #887) instead of breaking with it.
     tiers_path = os.path.join(ROOT, "src", "Baton.Vendors", "WorkerTiers.json")
