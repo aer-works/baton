@@ -339,6 +339,94 @@ def install_launcher(deps: Deps, dry_run: bool, print_fn: Callable[[str], None])
     return True
 
 
+def daemon_process_query_cmd() -> List[str]:
+    """The CIM query used to find live baton.exe daemon processes (#1773) -- reused by both the
+    pre-restart orphan kill and the post-restart verify, so the two checks can never drift about
+    what counts as 'the daemon process'."""
+    return [
+        "powershell", "-NoProfile", "-Command",
+        "Get-CimInstance -ClassName Win32_Process -Filter \"Name='baton.exe'\" | "
+        # Anchored on the verb position (first arg after the executable) rather than a bare
+        # '*daemon*' substring match, which would also catch e.g. `baton dispatch --spec-text
+        # "... daemon ..."` and kill an unrelated live process on every refresh (#1777 fix round F2).
+        "Where-Object { $_.CommandLine -match '^(\"[^\"]+\"|\\S+)\\s+daemon(\\s|$)' } | "
+        "ForEach-Object { \"{0}|{1}\" -f $_.ProcessId, $_.ExecutablePath }",
+    ]
+
+
+def find_daemon_processes(deps: Deps) -> List[tuple]:
+    """Returns (pid, executable_path) pairs for every live `baton.exe ... daemon` process. The
+    process tree, not the scheduled task's own reported state, is the source of truth for whether a
+    daemon instance is actually running and where its executable lives."""
+    result = deps.run(daemon_process_query_cmd())
+    processes: List[tuple] = []
+    if result.returncode != 0:
+        return processes
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if "|" not in line:
+            continue
+        pid_str, path = line.split("|", 1)
+        pid_str, path = pid_str.strip(), path.strip()
+        if not pid_str.isdigit():
+            continue
+        processes.append((int(pid_str), path))
+    return processes
+
+
+def kill_orphaned_daemon_processes(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> None:
+    """#1773: `Stop-ScheduledTask` only kills the scheduled task's wrapper process (`powershell.exe
+    -Command "& { baton daemon *>> daemon.log }"`); `baton.exe daemon` itself is a grandchild spawned
+    via `baton.cmd` and survives on the OLD sha, still holding the singleton mutex. The restarted
+    task's new instance then refuses (mutex already held) and exits 0 -- which looks like a clean
+    restart but has silently orphaned the daemon on stale code. Kill every live daemon process by
+    command line before the task is (re)started, so the new instance can actually take the mutex."""
+    if dry_run:
+        print_fn("tool-refresh: [dry-run] would find and stop any orphaned baton.exe daemon process")
+        return
+    for pid, path in find_daemon_processes(deps):
+        deps.run(["powershell", "-NoProfile", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"])
+        print_fn(f"tool-refresh: stopped orphaned baton.exe daemon process pid={pid} path={path}")
+
+
+def daemon_task_state(deps: Deps) -> Optional[str]:
+    """Returns the `baton-daemon` scheduled task's State (e.g. 'Ready', 'Disabled'), or None if the
+    task does not exist on this machine (#1777 fix round F1). A dev machine that never ran
+    register-daemon-task.ps1, or the operator's machine while the task is deliberately Disabled,
+    must not have refresh fail on a restart it was never asked to perform -- installing the tool is
+    this script's job; restarting a daemon task is a courtesy to a task that may not exist yet."""
+    result = deps.run([
+        "powershell", "-NoProfile", "-Command",
+        "Get-ScheduledTask -TaskName baton-daemon -ErrorAction SilentlyContinue | "
+        "Select-Object -ExpandProperty State",
+    ])
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+DAEMON_VERIFY_RETRIES = 5
+DAEMON_VERIFY_BACKOFF_S = 1.0
+
+
+def verify_daemon_started_under(deps: Deps, tool_dir: str, print_fn: Callable[[str], None]) -> bool:
+    """Confirms a NEW baton.exe daemon process is running with an executable path under tool_dir --
+    the just-installed tools/<sha> -- rather than assuming Start-ScheduledTask succeeded just because
+    it returned 0. Polls briefly since the task's process can take a moment to actually launch."""
+    # A bare startswith would accept a sibling side-path install too -- tools/abc123 is a prefix of
+    # tools/abc123-1 as strings, even though they are different installed directories. Comparing
+    # against the directory PLUS a trailing separator is what makes this a containment check, not a
+    # string-prefix check (review finding on #1773's first pass).
+    tool_dir_norm = os.path.normcase(os.path.normpath(tool_dir)) + os.sep
+    for attempt in range(DAEMON_VERIFY_RETRIES):
+        for _pid, path in find_daemon_processes(deps):
+            if path and os.path.normcase(os.path.normpath(path)).startswith(tool_dir_norm):
+                return True
+        if attempt < DAEMON_VERIFY_RETRIES - 1:
+            deps.sleep(DAEMON_VERIFY_BACKOFF_S)
+    return False
+
+
 def scan_live_room_shas(rooms_root: str) -> Set[str]:
     """Finds all tool SHAs referenced in live (non-terminal) rooms."""
     live_shas: Set[str] = set()
@@ -551,13 +639,44 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
 
         # #1557: the daemon has no HTTP listener or other external signal to poll for a new tool
         # head, so it needs the same restart-on-refresh treatment the pusher already gets.
+        # #1773: kill any orphaned baton.exe daemon process first (see kill_orphaned_daemon_processes),
+        # then confirm after restart that a fresh instance actually came up under the new tool_dir.
+        kill_orphaned_daemon_processes(deps, dry_run, print_fn)
+
         daemon_restart_cmd = [
             "powershell", "-NoProfile", "-Command",
             "Stop-ScheduledTask -TaskName baton-daemon -ErrorAction SilentlyContinue; "
             "Start-ScheduledTask -TaskName baton-daemon -ErrorAction SilentlyContinue",
         ]
-        run_step(deps, daemon_restart_cmd, dry_run, print_fn)
-        print_fn("tool-refresh: restarted baton-daemon scheduled task")
+
+        if dry_run:
+            run_step(deps, daemon_restart_cmd, dry_run, print_fn)
+            print_fn("tool-refresh: restarted baton-daemon scheduled task")
+        else:
+            # #1777 fix round F1: a machine where the task was never registered, or where it is
+            # deliberately Disabled, must not fail the whole refresh over a restart it was never
+            # asked to perform. The orphan kill above still runs regardless -- a stray daemon
+            # process is wrong whether or not the task exists.
+            task_state = daemon_task_state(deps)
+            if task_state is None or task_state == "Disabled":
+                reason = "absent" if task_state is None else "Disabled"
+                print_fn(
+                    f"tool-refresh: baton-daemon scheduled task is {reason} -- skipped restart and "
+                    "post-restart verify (orphan kill above still ran)"
+                )
+            else:
+                run_step(deps, daemon_restart_cmd, dry_run, print_fn)
+                print_fn("tool-refresh: restarted baton-daemon scheduled task")
+
+                if not verify_daemon_started_under(deps, tool_dir, print_fn):
+                    print_fn(
+                        f"tool-refresh: no baton.exe daemon process came up under {tool_dir} after "
+                        "restarting baton-daemon -- an orphaned instance on the old sha may still be "
+                        "holding the singleton mutex, or the task failed to launch. Refusing to declare "
+                        "the refresh done."
+                    )
+                    return 1
+                print_fn(f"tool-refresh: confirmed baton.exe daemon running under {tool_dir}")
 
     # Prune old tool installations
     prune_tools(deps, dry_run, print_fn, keep_count=3)
@@ -873,6 +992,11 @@ def _selftest_refresh_end_to_end_mocked() -> bool:
                 return CommandResult(0, "[]\n")
             if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
                 return CommandResult(0)
+            if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                return CommandResult(0, "Ready\n")
+            if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                exe_path = os.path.join(tools_root, "c0ffee11", "baton.exe")
+                return CommandResult(0, f"4242|{exe_path}\n")
             if cmd[0] == "powershell":
                 return CommandResult(0)
             raise AssertionError(f"unexpected command in refresh selftest: {cmd}")
@@ -919,6 +1043,86 @@ def _selftest_refresh_end_to_end_mocked() -> bool:
             ok = False
         if not any("baton-daemon" in c for c in powershell_cmds):
             print(f"  FAILED: baton-daemon scheduled task was not restarted. powershell commands: {powershell_cmds}")
+            ok = False
+
+        # #1773: the orphan-kill query must run BEFORE the task is restarted -- killing after would
+        # let a fresh instance race the still-live orphan for the mutex. There are two Win32_Process
+        # queries in the trace (kill_orphaned_daemon_processes, then verify_daemon_started_under);
+        # the first one is what must precede "Start-ScheduledTask -TaskName baton-daemon".
+        win32_indexes = [i for i, c in enumerate(powershell_cmds) if "Win32_Process" in c]
+        daemon_restart_index = next(
+            i for i, c in enumerate(powershell_cmds) if "Start-ScheduledTask -TaskName baton-daemon" in c)
+        if not win32_indexes or win32_indexes[0] >= daemon_restart_index:
+            print(
+                f"  FAILED: orphan-kill Win32_Process query did not run before the baton-daemon restart. "
+                f"powershell commands: {powershell_cmds}"
+            )
+            ok = False
+
+        if not any("confirmed baton.exe daemon running under" in m for m in messages):
+            print(f"  FAILED: refresh did not report a confirmed post-restart daemon process. Messages: {messages}")
+            ok = False
+
+    return ok
+
+
+def _selftest_fail_closed_on_daemon_verify_failure() -> bool:
+    """#1773: if no baton.exe daemon process comes up under the just-installed tool_dir after
+    restarting baton-daemon (e.g. an orphan on the old sha is still holding the mutex), refresh must
+    fail closed -- not report success because Start-ScheduledTask itself returned 0."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        baton_home = os.path.join(td, "baton")
+        tools_root = os.path.join(baton_home, "tools")
+        rooms_root = os.path.join(baton_home, "rooms")
+        dotnet_tools_root = os.path.join(td, "dotnet_tools")
+        nuget_root = os.path.join(td, "nuget")
+        repo_root = _fixture_repo(os.path.join(td, "repo"), "6.6.6")
+
+        def run(cmd: List[str]) -> CommandResult:
+            if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
+                return CommandResult(0, "6060606\n")
+            if cmd[:3] == ["pixi", "run", "pack"]:
+                return CommandResult(0)
+            if cmd[:3] == ["dotnet", "tool", "list"]:
+                return CommandResult(0, "")
+            if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
+                tool_dir = os.path.join(tools_root, "6060606")
+                os.makedirs(tool_dir, exist_ok=True)
+                target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+                open(target_exe, "w").close()
+                return CommandResult(0)
+            if len(cmd) == 2 and cmd[1] == "--version":
+                return CommandResult(0, "6.6.6\n")
+            if len(cmd) == 3 and cmd[1:] == ["templates", "--json"]:
+                return CommandResult(0, "[]\n")
+            if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
+                return CommandResult(0)
+            if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                return CommandResult(0, "Ready\n")
+            if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                # No matching process ever reports back -- e.g. the task never actually launched it.
+                return CommandResult(0, "")
+            if cmd[0] == "powershell":
+                return CommandResult(0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        deps = Deps(
+            run=run, baton_home=baton_home, rooms_root=rooms_root,
+            tools_root=tools_root, dotnet_tools_root=dotnet_tools_root,
+            nuget_packages_root=nuget_root, repo_root=repo_root, sleep=lambda s: None,
+        )
+        _assert_isolated(deps)
+
+        messages: List[str] = []
+        code = refresh(deps, dry_run=False, print_fn=messages.append)
+        if code == 0:
+            print("  FAILED: refresh exited 0 despite no baton.exe daemon process coming up after restart")
+            ok = False
+        if not any("no baton.exe daemon process came up under" in m for m in messages):
+            print(f"  FAILED: refresh did not report the daemon-verify failure loudly. Messages: {messages}")
             ok = False
 
     return ok
@@ -1129,6 +1333,11 @@ def _selftest_rerefresh_skips_reinstall_when_sha_already_verified() -> bool:
                 return CommandResult(0, "[]\n")
             if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
                 return CommandResult(0)
+            if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                return CommandResult(0, "Ready\n")
+            if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                exe_path = os.path.join(tools_root, "deadbeef", "baton.exe")
+                return CommandResult(0, f"4343|{exe_path}\n")
             if cmd[0] == "powershell":
                 return CommandResult(0)
             raise AssertionError(f"unexpected command in re-refresh selftest: {cmd}")
@@ -1199,6 +1408,7 @@ def _selftest_rerefresh_sidepaths_when_live_and_broken() -> bool:
             f.write("broken01\n")
 
         install_calls: List[List[str]] = []
+        installed_dirs: List[str] = []
 
         def run(cmd: List[str]) -> CommandResult:
             if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
@@ -1210,6 +1420,7 @@ def _selftest_rerefresh_sidepaths_when_live_and_broken() -> bool:
             if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
                 install_calls.append(cmd)
                 install_dir = cmd[cmd.index("--tool-path") + 1]
+                installed_dirs.append(install_dir)
                 os.makedirs(install_dir, exist_ok=True)
                 target_exe = os.path.join(install_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
                 open(target_exe, "w").close()
@@ -1224,6 +1435,11 @@ def _selftest_rerefresh_sidepaths_when_live_and_broken() -> bool:
                 return CommandResult(0, "[]\n")
             if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
                 return CommandResult(0)
+            if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                return CommandResult(0, "Ready\n")
+            if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                exe_path = os.path.join(installed_dirs[-1], "baton.exe") if installed_dirs else ""
+                return CommandResult(0, f"4444|{exe_path}\n" if exe_path else "")
             if cmd[0] == "powershell":
                 return CommandResult(0)
             raise AssertionError(f"unexpected command in side-path selftest: {cmd}")
@@ -1321,6 +1537,153 @@ def _selftest_install_launcher_fails_closed_on_stale_exe() -> bool:
     return ok
 
 
+def _selftest_daemon_orphan_kill_and_verify() -> bool:
+    """#1773: `Stop-ScheduledTask` only kills the scheduled task's wrapper, not the `baton.exe daemon`
+    grandchild -- an orphan on the old sha keeps holding the singleton mutex, so the restarted task's
+    new instance silently refuses. Proves kill_orphaned_daemon_processes stops whatever the CIM query
+    reports (and does nothing under --dry-run), and that verify_daemon_started_under only accepts a
+    process whose path is actually under the just-installed tool_dir."""
+    ok = True
+
+    stop_calls: List[List[str]] = []
+
+    def run_with_orphan(cmd: List[str]) -> CommandResult:
+        if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+            return CommandResult(0, "4321|C:\\baton\\tools\\oldsha\\baton.exe\n")
+        if cmd[0] == "powershell" and "Stop-Process" in cmd[3]:
+            stop_calls.append(cmd)
+            return CommandResult(0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    deps = Deps(run=run_with_orphan)
+    messages: List[str] = []
+    kill_orphaned_daemon_processes(deps, dry_run=False, print_fn=messages.append)
+    if not any("Stop-Process -Id 4321" in " ".join(c) for c in stop_calls):
+        print(f"  FAILED: kill_orphaned_daemon_processes did not stop the orphaned pid. calls: {stop_calls}")
+        ok = False
+    if not any("4321" in m for m in messages):
+        print(f"  FAILED: kill_orphaned_daemon_processes did not log the stopped pid. messages: {messages}")
+        ok = False
+
+    def run_should_not_be_called(cmd: List[str]) -> CommandResult:
+        raise AssertionError(f"--dry-run must not run commands, got: {cmd}")
+
+    deps_dry = Deps(run=run_should_not_be_called)
+    kill_orphaned_daemon_processes(deps_dry, dry_run=True, print_fn=lambda m: None)
+
+    def run_wrong_dir(cmd: List[str]) -> CommandResult:
+        if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+            return CommandResult(0, "9999|C:\\baton\\tools\\othersha\\baton.exe\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    deps2 = Deps(run=run_wrong_dir, sleep=lambda s: None)
+    if verify_daemon_started_under(deps2, os.path.join("C:\\", "baton", "tools", "newsha"), lambda m: None):
+        print("  FAILED: verify_daemon_started_under accepted a process under a different tool_dir")
+        ok = False
+
+    def run_right_dir(cmd: List[str]) -> CommandResult:
+        if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+            return CommandResult(0, "8888|C:\\baton\\tools\\newsha\\baton.exe\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    deps3 = Deps(run=run_right_dir, sleep=lambda s: None)
+    if not verify_daemon_started_under(deps3, os.path.join("C:\\", "baton", "tools", "newsha"), lambda m: None):
+        print("  FAILED: verify_daemon_started_under rejected a process actually under tool_dir")
+        ok = False
+
+    return ok
+
+
+def _selftest_daemon_task_absent_or_disabled_skips_restart_and_verify() -> bool:
+    """#1777 fix round F1: a machine that never registered baton-daemon, or where the task is
+    deliberately Disabled, must not fail the refresh over a restart it was never asked to perform.
+    Orphan-kill still runs; the restart and post-restart verify are skipped, and refresh exits 0."""
+    import tempfile
+
+    ok = True
+    for label, task_stdout in [("absent", ""), ("Disabled", "Disabled\n")]:
+        with tempfile.TemporaryDirectory() as td:
+            baton_home = os.path.join(td, "baton")
+            tools_root = os.path.join(baton_home, "tools")
+            rooms_root = os.path.join(baton_home, "rooms")
+            dotnet_tools_root = os.path.join(td, "dotnet_tools")
+            nuget_root = os.path.join(td, "nuget")
+            repo_root = _fixture_repo(os.path.join(td, "repo"), "3.3.3")
+
+            commands_run: List[List[str]] = []
+
+            def run(cmd: List[str], task_stdout: str = task_stdout) -> CommandResult:
+                commands_run.append(cmd)
+                if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
+                    return CommandResult(0, "3a3a3a3\n")
+                if cmd[:3] == ["pixi", "run", "pack"]:
+                    return CommandResult(0)
+                if cmd[:3] == ["dotnet", "tool", "list"]:
+                    return CommandResult(0, "")
+                if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
+                    tool_dir = os.path.join(tools_root, "3a3a3a3")
+                    os.makedirs(tool_dir, exist_ok=True)
+                    target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+                    open(target_exe, "w").close()
+                    return CommandResult(0)
+                if len(cmd) == 2 and cmd[1] == "--version":
+                    return CommandResult(0, "3.3.3\n")
+                if len(cmd) == 3 and cmd[1:] == ["templates", "--json"]:
+                    return CommandResult(0, "[]\n")
+                if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
+                    return CommandResult(0)
+                if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                    return CommandResult(0, task_stdout)
+                if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                    return CommandResult(0, "")
+                if cmd[0] == "powershell":
+                    return CommandResult(0)
+                raise AssertionError(f"unexpected command in daemon-task-{label} selftest: {cmd}")
+
+            deps = Deps(
+                run=run, baton_home=baton_home, rooms_root=rooms_root,
+                tools_root=tools_root, dotnet_tools_root=dotnet_tools_root,
+                nuget_packages_root=nuget_root, repo_root=repo_root
+            )
+            _assert_isolated(deps)
+
+            messages: List[str] = []
+            code = refresh(deps, dry_run=False, print_fn=messages.append)
+            if code != 0:
+                print(f"  FAILED ({label}): refresh exited {code}, want 0. Messages: {messages}")
+                ok = False
+
+            powershell_cmds = [" ".join(c) for c in commands_run if c and c[0] == "powershell"]
+            if any("Start-ScheduledTask -TaskName baton-daemon" in c for c in powershell_cmds):
+                print(f"  FAILED ({label}): baton-daemon restart was attempted despite the task being {label}")
+                ok = False
+            if not any(f"baton-daemon scheduled task is {label}" in m for m in messages):
+                print(f"  FAILED ({label}): no skip message naming the task state was printed. Messages: {messages}")
+                ok = False
+            # Orphan-kill is unconditional: an orphan on the old sha is wrong whether or not the task
+            # is registered, so the Win32_Process query must run even on the skip paths.
+            if not any("Win32_Process" in c for c in powershell_cmds):
+                print(f"  FAILED ({label}): orphan-kill Win32_Process query did not run on the skip path. powershell commands: {powershell_cmds}")
+                ok = False
+
+    return ok
+
+
+def _selftest_daemon_query_matches_verb_position_not_anywhere() -> bool:
+    """#1777 fix round F2: `-like '*daemon*'` matched the substring anywhere on the command line, so
+    a `baton dispatch --spec-text "... daemon ..."` process would be wrongly Stop-Process'd on every
+    refresh. The query must anchor on the verb position (first arg after the executable)."""
+    ok = True
+    query = daemon_process_query_cmd()[-1]
+    if "*daemon*" in query:
+        print(f"  FAILED: query still contains an unanchored '*daemon*' match: {query!r}")
+        ok = False
+    if "\\s+daemon(\\s|$)" not in query:
+        print(f"  FAILED: query does not anchor 'daemon' at the verb position. query: {query!r}")
+        ok = False
+    return ok
+
+
 def selftest() -> int:
     arms = [
         ("version compare", _selftest_version_compare),
@@ -1335,6 +1698,10 @@ def selftest() -> int:
         ("re-refresh skips reinstall when the SHA is already verified", _selftest_rerefresh_skips_reinstall_when_sha_already_verified),
         ("re-refresh side-paths when live and broken", _selftest_rerefresh_sidepaths_when_live_and_broken),
         ("install_launcher fails closed on a stale exe", _selftest_install_launcher_fails_closed_on_stale_exe),
+        ("daemon orphan-kill stops the reported pid, and verify only accepts the right tool_dir", _selftest_daemon_orphan_kill_and_verify),
+        ("fail closed when no daemon process comes up under the new tool_dir after restart", _selftest_fail_closed_on_daemon_verify_failure),
+        ("daemon task absent/disabled skips restart and verify, refresh still exits 0", _selftest_daemon_task_absent_or_disabled_skips_restart_and_verify),
+        ("daemon process query anchors on the verb position, not '*daemon*' anywhere", _selftest_daemon_query_matches_verb_position_not_anywhere),
     ]
     ok = True
     for name, fn in arms:

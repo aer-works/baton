@@ -69,13 +69,16 @@ public sealed class ExecutionStreamLogger
     /// </para>
     /// <para>
     /// #1351: this is the single filtered listing seam spec/baton.md's Fleet Glass section (§6, the
-    /// C-11 entry) now names — a fact stated once, referenced from there rather than restated. As of
-    /// #1351, no production caller enumerates an execution's output directory at all (nothing to
-    /// filter yet), and <c>Baton.Architecture.Tests.ExecutionOutputDirectoryListingTests</c> is the
-    /// tripwire: it pins every raw file-listing call site in <c>src/</c> to a reviewed allowlist, so
-    /// the next one that appears fails the build unless it either routes through a filtered listing
-    /// using this method or is added to that allowlist with proof it does not read an execution's
-    /// output directory.
+    /// C-11 entry) now names — a fact stated once, referenced from there rather than restated.
+    /// <c>Baton.Cli.Daemon.FleetProjectionWriter</c> (#1557) is the first production caller that
+    /// enumerates an execution's former output directory — walking a pruned execution's directory to
+    /// size it for <c>pruned[].bytes</c> — and deliberately sums unfiltered rather than applying this
+    /// filter; see that method's own comment for why. <c>Baton.Architecture.Tests.ExecutionOutputDirectoryListingTests</c>
+    /// is the tripwire: it pins every raw file-listing call site in <c>src/</c> to a reviewed
+    /// allowlist, so the next one that appears fails the build unless it either routes through a
+    /// filtered listing using this method or is added to that allowlist with proof it does not read an
+    /// execution's output directory (or, as here, a one-line justification for why it deliberately
+    /// does not filter).
     /// </para>
     /// </summary>
     public static bool IsStreamLogFileName(string fileName) =>

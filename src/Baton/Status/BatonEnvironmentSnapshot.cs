@@ -71,6 +71,7 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionPruneEnabledOverride = null,
     string? RetentionPruneGraceSecondsOverride = null,
     string? WatchReaperRetentionHoursOverride = null,
+    string? FleetProjectionIntervalSecondsOverride = null,
     string? ExecutionProgressIntervalSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
@@ -110,6 +111,7 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionPruneEnabledOverride: null,
         RetentionPruneGraceSecondsOverride: null,
         WatchReaperRetentionHoursOverride: null,
+        FleetProjectionIntervalSecondsOverride: null,
         ExecutionProgressIntervalSecondsOverride: null);
 
     /// <summary>
@@ -154,6 +156,10 @@ public sealed record BatonEnvironmentSnapshot(
         // "BATON_WATCH_REAPER_RETENTION_HOURS" -- Baton.Cli.Daemon.WatchSweep's own
         // ReaperRetentionHoursEnvironmentVariable (#1488 fix round, spec/baton.md §2).
         WatchReaperRetentionHoursOverride: Environment.GetEnvironmentVariable("BATON_WATCH_REAPER_RETENTION_HOURS"),
+        // "BATON_FLEET_PROJECTION_INTERVAL_SECONDS" -- Baton.Cli.Daemon.FleetProjectionWriter's own
+        // IntervalSecondsEnvironmentVariable (#1557), same fold reason as the five BATON_RETENTION_*
+        // fields above.
+        FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"),
         // "BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS" -- #1549's heartbeat cadence,
         // Baton.Cli.ExecutionProgressHeartbeat.IntervalSecondsEnvironmentVariable.
         ExecutionProgressIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS"));

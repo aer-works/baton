@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Baton.Vendors;
 using Baton.Concurrency;
 using Baton.Status;
@@ -10,6 +12,26 @@ public static class DaemonHost
 {
     public static Task RunDaemonAsync(string[] args) => RunDaemonAsync(args, onHostBuilt: null);
 
+    /// <summary>
+    /// The daemon singleton mutex's name, scoped by the resolved storage root (<see cref="BatonPaths.Root"/>)
+    /// rather than just <see cref="Environment.UserName"/> (#1773). Two daemons under two different homes on
+    /// the same account — e.g. the operator's real <c>~/.baton</c> and a test's temp home via
+    /// <see cref="BatonEnvironmentSnapshot.BeginScope"/> — must never contend for the same OS mutex; a
+    /// username-only name made every test that skipped <c>--no-mutex</c> collide with (or seize) whatever
+    /// the operator's own daemon held. The root is hashed rather than embedded verbatim so the name stays a
+    /// bounded, filesystem-path-free token regardless of how long or unusual the root is.
+    /// </summary>
+    internal static string MutexName(string root)
+    {
+        // Lower-cased before hashing: BatonPaths.RecordKeyComparer is OrdinalIgnoreCase precisely
+        // because Windows paths are case-insensitive (BatonPaths.cs remarks) -- hashing the
+        // case-preserving RecordKey would let two casings of the same home resolve to two mutex
+        // names, i.e. two daemons, which is the exact under-locking that comparer exists to prevent.
+        var key = BatonPaths.RecordKey(root).ToLowerInvariant();
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..16];
+        return $"Global\\BatonDaemonMutex_{Environment.UserName}_{hash}";
+    }
+
     /// <summary>Test-only seam (Baton.Cli.Tests, via <c>InternalsVisibleTo</c>): <paramref name="onHostBuilt"/>
     /// runs after the host is built but before <c>RunAsync</c>, so a test can inspect DI registrations and/or
     /// register a stop trigger. Without it, <c>RunAsync</c> blocks until an external process signal that never
@@ -20,8 +42,7 @@ public static class DaemonHost
         Mutex? mutex = null;
         if (!noMutex)
         {
-            var username = Environment.UserName;
-            mutex = new Mutex(true, $"Global\\BatonDaemonMutex_{username}", out var createdNew);
+            mutex = new Mutex(true, MutexName(BatonPaths.Root), out var createdNew);
             if (!createdNew)
             {
                 Console.WriteLine("Another instance of the Baton daemon is already running.");
@@ -50,6 +71,9 @@ public static class DaemonHost
 
         // #1488: WatchSweep -- baton watch's firing half. Contract: spec/baton.md §2.
         builder.Services.AddHostedService<WatchSweep>();
+        // #1557: writes BatonPaths.FleetProjectionFile every ~30s -- spec/baton.md §7's fourth kept
+        // daemon responsibility, outbound-only (no listener added).
+        builder.Services.AddHostedService<FleetProjectionWriter>();
 
         var host = builder.Build();
         onHostBuilt?.Invoke(host);
