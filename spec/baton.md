@@ -2668,7 +2668,6 @@ trigger is not registrable by a standard user and is not used (#1770).
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
-- **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 - **The fleet projection file (#1557 PR-A)** — `FleetProjectionWriter` (`src/Baton.Cli/Daemon/`, a
   hosted service registered beside `RoomRetentionSweep`) rewrites `BatonPaths.FleetProjectionFile`
   (`{Root}/fleet/projection.json`) atomically roughly every 30s (env-var-configurable, clamped, same
@@ -2678,6 +2677,7 @@ trigger is not registrable by a standard user and is not used (#1770).
   this section states: the daemon only ever writes this file, never serves it over a listener. No
   pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
   own derivation.
+- **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,
 `/api/ws/progress`), sidecar/Tailscale supervision, a desktop-owner-only auth tier, template-picker

@@ -82,6 +82,9 @@ public class DaemonHostTests
         try
         {
             Assert.Equal(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeA));
+            // Two casings of one home are one home (BatonPaths.RecordKeyComparer is OrdinalIgnoreCase);
+            // MutexName lower-cases before hashing so they cannot become two daemons.
+            Assert.Equal(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeA.ToUpperInvariant()));
             Assert.NotEqual(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeB));
         }
         finally

@@ -1660,6 +1660,11 @@ def _selftest_daemon_task_absent_or_disabled_skips_restart_and_verify() -> bool:
             if not any(f"baton-daemon scheduled task is {label}" in m for m in messages):
                 print(f"  FAILED ({label}): no skip message naming the task state was printed. Messages: {messages}")
                 ok = False
+            # Orphan-kill is unconditional: an orphan on the old sha is wrong whether or not the task
+            # is registered, so the Win32_Process query must run even on the skip paths.
+            if not any("Win32_Process" in c for c in powershell_cmds):
+                print(f"  FAILED ({label}): orphan-kill Win32_Process query did not run on the skip path. powershell commands: {powershell_cmds}")
+                ok = False
 
     return ok
 
