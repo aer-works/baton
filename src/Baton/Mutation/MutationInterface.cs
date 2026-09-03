@@ -939,26 +939,15 @@ public static class MutationInterface
         // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
         DateTimeOffset? lastQuotaParkNotified = null;
 
-        // #1634: every ExecutionId a CancellationRequested has named IN A ROUND THIS CALL HAS ITSELF
-        // READ, accumulated across rounds since each round's incremental log read only carries events
-        // since the last checkpoint (persists the same way lastQuotaParkNotified above does) — NOT
-        // FlowState.CancellationRequestedExecutionIds, which StateProjector filters to targets with no
-        // terminal event yet (unfulfilled-for-live-delivery purposes,
-        // NonProcessCancellationDetector/ProcessCrashRecoveryDetector's own sense of the word). A
-        // parked target's execution already carries a terminal ExecutionFailed, so it is exactly the
-        // shape that filtered list drops — this raw set is what lets the ledger-read rule below see
-        // it anyway.
-        // Deliberately NOT sourced from the durable, unfiltered equivalent this room's checkpoint
-        // already carries (ProjectionCheckpoint.State.CancellationRequestedExecutionIds, never pruned
-        // by StateProjector) even though it would also work and would survive this pump exiting and a
-        // later one resuming from a saved checkpoint: swapping to it surfaces a second question this
-        // fix does not settle — whether a host-stop-authored CancellationRequested (RequestStopAsync
-        // journals one for every still-registered execution on ANY Ctrl-C, not an operator targeting
-        // this step) should still read as a cancel on a later resumed pump the way it does not read as
-        // one in THIS pump (see the !hostStopRequested gate below). Left for a follow-up once that is
-        // decided; this pump-local set only ever sees what THIS call itself read, which is enough for
-        // the poller-less DIRECT-path race #1634 is about, since that call journals its own
-        // CancellationRequested before this loop's very first round.
+        // #1634: this pump's own view of the ledger's raw CancellationRequested targets,
+        // re-accumulated every round the same way lastQuotaParkNotified above persists across
+        // rounds — deliberately not FlowState.CancellationRequestedExecutionIds (filtered to
+        // non-terminal targets by StateProjector, which drops every parked one) and deliberately not
+        // ProjectionCheckpoint.State.CancellationRequestedExecutionIds, the durable unfiltered
+        // equivalent this room's checkpoint already carries. Why either alternative was passed over:
+        // spec/baton.md §2. This pump-local set only ever sees what THIS call itself read, which is
+        // enough for the poller-less DIRECT-path race #1634 is about, since that call journals its
+        // own CancellationRequested before this loop's very first round.
         var cancellationRequestedExecutionIds = new HashSet<ExecutionId>();
 
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
@@ -1267,32 +1256,15 @@ public static class MutationInterface
                     continue;
                 }
 
-                // #1634: a parked step's ledger may already carry a CancellationRequested that the
-                // MarkParkedCancelIntent/SettleParkedCancelIntentsAsync wake was never armed to see
-                // -- that latch is armed only by CancelRequestPoller.TickAsync, which a poller-less
-                // pump (CancelCommand's DIRECT path -- this very call, when reached that way) never
-                // runs. Neither GetRetryObligations below nor DependencyResolver.GetReadySteps
-                // (which schedules and dispatches the redispatch, respectively) consults the ledger
-                // at all, so an overdue park's already-journalled CancellationRequested would
-                // otherwise be silently orphaned and the step redispatched instead of cancelled --
-                // the redispatch race this fixes. A journalled cancel this pump call has itself
-                // observed is a fact regardless of which pump wrote it: read it here, before either
-                // mechanism gets a chance to redispatch. Sourced from cancellationRequestedExecutionIds
-                // (see its own remarks for scope and why FlowState's filtered list cannot be used),
-                // filtered through IsParkedRetryTarget, the identical shape
-                // SettleParkedCancelIntentsAsync validates against, so this produces the same
-                // terminal that path would. spec/baton.md §2.
-                //
-                // #1634 (second-reader review): gated on !hostStopRequested, same as readyStepIds
-                // below -- RequestStopAsync (the Ctrl-C path) journals CancellationRequested for
-                // EVERY still-registered execution, which is "wind this pump down", not an operator
-                // cancelling that specific step. Without this gate, a step that failed and was
-                // re-parked in the same round a host stop landed would read as operator-cancelled and
-                // settle Cancelled -- putting it out of RetryWithRevision's reach
-                // (ExternalDecisionValidator's own IsParkedRetryTarget-shaped admission check), which
-                // could previously reopen it. A host-stop CancellationRequested is left for the
-                // ordinary crash-recovery/next-run path to reconcile instead, exactly as before this
-                // fix existed.
+                // #1634: a poller-less pump (e.g. CancelCommand's DIRECT path) never delivers a
+                // parked step's cancel through MarkParkedCancelIntent/SettleParkedCancelIntentsAsync,
+                // so read the ledger directly here, before GetRetryObligations/
+                // DependencyResolver.GetReadySteps get a chance to redispatch it instead. Sourced from
+                // cancellationRequestedExecutionIds (see its own remarks for scope), filtered through
+                // IsParkedRetryTarget -- the same terminal SettleParkedCancelIntentsAsync would
+                // produce. Gated on !hostStopRequested, same guard readyStepIds uses below: a host
+                // stop's own CancellationRequested (RequestStopAsync) must not settle this. Full
+                // sequence and the ledger-read rule: spec/baton.md §2.
                 var parkedCancelExecutionIds = hostStopRequested
                     ? []
                     : cancellationRequestedExecutionIds
