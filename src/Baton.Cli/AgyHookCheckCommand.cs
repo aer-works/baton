@@ -307,23 +307,20 @@ public static class AgyHookCheckCommand
             // pattern list was even consulted, so a standing 'never' silently stopped applying the
             // moment a command carried a chain operator.
             //
-            // UNLIKE the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch), this
-            // call is NOT nested under "allow patterns non-empty". claude's primary enforcement of the
-            // DenyAlways rung is --disallowedTools Bash(pattern), independent of this hook -- nesting
-            // there only narrows a belt-and-braces second layer, and that layer's own whole-line
-            // matching is why the nesting is safe to leave as-is (spec/baton.md §9). agy has no such
-            // flag-level backstop: permission rules on agy are global-only (decision 0029), so this
-            // hook is the ONLY enforcement of DenyAlways agy has. Nesting the deny check under a
-            // non-empty allow list here would reopen exactly the hole this fix closes, on every
-            // unscoped role (e.g. `implement`/`janitor`) carrying a standing deny.
+            // UNLIKE the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch), this call
+            // is NOT nested under "allow patterns non-empty": agy has no --disallowedTools-level
+            // backstop for the DenyAlways rung, so this hook is its only enforcement, and it is an
+            // anchored-prefix one — on an unscoped grant no allow list stands behind it (see this
+            // matcher's class comment on what a deny pattern cannot bind). spec/baton.md §9 is the
+            // canonical record of why this asymmetry with claude is safe.
             if (deniedShellPatternList.Patterns.Count > 0 || shellPatternList.Patterns.Count > 0)
             {
                 if (commandLine is null)
                 {
                     return DenyJson(
-                        "AER: the 'run_command' tool is scoped by shell command patterns, but this gate " +
-                        "could not read toolCall.args.CommandLine in the hook payload and denied this " +
-                        "call rather than allowing it unchecked.");
+                        "AER: the 'run_command' tool is gated by this session's shell command patterns " +
+                        "(allowed, denied, or both), but this gate could not read toolCall.args.CommandLine " +
+                        "in the hook payload and denied this call rather than allowing it unchecked.");
                 }
 
                 var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(

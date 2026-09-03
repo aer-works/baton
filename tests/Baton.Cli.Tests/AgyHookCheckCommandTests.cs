@@ -210,7 +210,8 @@ public class AgyHookCheckCommandTests
             Decide(
                 payload, "agy:write_to_file,replace_file_content",
                 shellPatterns: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
-                deniedShellPatterns: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!)));
+                deniedShellPatterns: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+                deniedShellOptionTokens: "agy:" + string.Join(",", review.Grant.DeniedShellOptionTokens!)));
     }
 
     [Fact]
@@ -224,6 +225,18 @@ public class AgyHookCheckCommandTests
         Assert.Equal(
             "deny",
             Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void An_unscoped_grant_still_allows_a_command_the_standing_deny_does_not_name()
+    {
+        // The discriminating control for the relaxed empty-allow-list branch: with no allow list, the
+        // deny half is the ONLY thing that may refuse. Without this arm, reverting that relaxation
+        // turns every unscoped role with a standing deny into a blanket refusal, all-green.
+        Assert.Equal(
+            "allow",
+            Decide(CommandPayload("git status"), "agy:",
+                shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
     }
 
     [Fact]
