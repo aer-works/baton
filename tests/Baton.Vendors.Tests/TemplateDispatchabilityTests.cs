@@ -11,9 +11,12 @@ namespace Baton.Vendors.Tests;
 /// retired — every role in the catalog must actually be dispatchable, not merely internally consistent.
 /// <see cref="WorkflowTemplateCatalog"/>'s only shipped template (<c>implement-review</c>) composes its
 /// phases entirely from <see cref="WorkerRoleCatalog"/> roles (each phase's <c>RoleId</c> resolves
-/// through it, enforced at catalog load), so iterating every catalog role already covers every built-in
-/// template's every step — a second, redundant walk over <see cref="WorkflowTemplateCatalog.All"/> would
-/// join to the same population by construction (record-once).
+/// through it, enforced at catalog load), so iterating every catalog role covers every ROLE a built-in
+/// template can name. It does not cover the composed-template dispatch path itself:
+/// <see cref="WorkflowTemplateComposer"/> materializes phases with worktree auto-provisioning withheld,
+/// so <c>baton dispatch implement-review --adapter agy</c> reaches the write-withheld <c>review</c>
+/// phase without the provisioned worktree the audited-write widening demands and is refused there —
+/// a pre-existing shape neither this walk nor the retired Python check modelled (#1765 review).
 ///
 /// <para>
 /// <b>The production path, not just the coherence rule.</b> <c>grant_refusal</c>'s Python check asked
