@@ -1,8 +1,10 @@
-"""Diff-shape CI gate validator (#1603).
+"""Diff-shape CI gate validator (#1603, widened #1744).
 
 Evaluates PR git diff against test-weakening and protected-tooling rules:
 - Fails on test-only PRs containing deleted/modified lines in pre-existing test files.
-- Fails on edits to protected tooling paths (tools/gates/, pixi.toml, .github/workflows/, tools/diff-shape/).
+- Fails on edits to the protected-tooling set -- see PROTECTED_TOOLING_PATHS and
+  PIXI_PROTECTED_TASK_RULE below (the sole enumeration; spec/baton.md C-15 cites this file rather
+  than restating the list).
 - Lifted when the operator-merge label is attached.
 """
 from __future__ import annotations
@@ -10,10 +12,161 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# record-once (#1744): the sole enumeration of the whole-file/directory half of the
+# protected-tooling set. is_protected_tooling() and the failure message both read this list
+# rather than restating it. `kind` is "dir" (prefix match) or "file" (exact match).
+PROTECTED_TOOLING_PATHS: tuple[tuple[str, str, str], ...] = (
+    ("dir", "tools/gates/", "the gates orchestrator itself"),
+    ("dir", ".github/workflows/", "the CI workflow definitions gates run under"),
+    ("dir", "tools/diff-shape/", "this gate's own implementation"),
+    ("dir", "tools/audit-completeness/", "the audit-* checker bodies gates.py's OVERLAP/AFTER_BUILD phases run"),
+    ("file", "tools/vendor-verify/verify.py", "the @check registry the vendor gates read"),
+    ("file", "tools/buildlock.py", "the build lock every gate run goes through"),
+    ("dir", "tools/flake-watch/", "the flake ledger CI consults"),
+    ("dir", "tests/Baton.Architecture.Tests/", "compiled enforcement: spawn gate, state vocabularies, citation pins"),
+    # #1754: gates.py's own OVERLAP/AFTER_BUILD_FAST comments say each of these is a wired member
+    # (not merely a pixi.toml line), contradicting #1744's "not enforcement" exclusion of their
+    # directories -- protecting the specific file, not the whole directory, so a genuinely unwired
+    # sibling (tools/fleet-glass/pusher.py) stays unprotected.
+    ("file", "tools/fleet-glass/worker.selftest.mjs", "the only thing standing between worker.js's paging/heartbeat-merge logic and a silent revert (gates.py OVERLAP)"),
+    ("file", "tools/tool-refresh/refresh.py", "tool-refresh-selftest's body (gates.py OVERLAP)"),
+    ("file", "tools/baton-agy-loop/dispatch.py", "baton-dispatch-selftest's body (gates.py AFTER_BUILD_FAST)"),
+    ("file", "tests/Launcher.Tests.ps1", "launcher-selftest's body -- exercises baton.cmd/baton.ps1 against a mock exe fixture (gates.py OVERLAP)"),
+    ("dir", "tools/Baton.VendorProbe/", "vendor-check's actual body, the loud half of the drift grace window (gates.py AFTER_BUILD_FAST); a directory because it is a compiled project"),
+)
+
+# pixi.toml is protected at LINE level, not whole-file (#1744 narrowing of #1603's original
+# whole-file rule -- see spec/baton.md C-15). A task name matching any of these rules has its
+# definition lines protected; everything else in the file (an ordinary task addition/edit) passes.
+PIXI_PROTECTED_TASK_RULE = (
+    "pixi.toml task definitions matching gates*, gate-sabotage, diff-shape*, audit-*, "
+    "*-selftest, vendor-check, vendor-verify, lint, fmt-check, or test-no-build "
+    "(line-level, not the whole file)"
+)
+
+
+def _is_protected_pixi_task(name: str) -> bool:
+    """Whether a pixi.toml task name falls under PIXI_PROTECTED_TASK_RULE."""
+    if name.startswith("gates"):
+        return True
+    if name == "gate-sabotage":
+        return True
+    if name.startswith("diff-shape"):
+        return True
+    if name.startswith("audit-"):
+        return True
+    if name.endswith("-selftest"):
+        return True
+    if name in ("vendor-check", "vendor-verify", "lint", "fmt-check", "test-no-build"):
+        return True
+    return False
+
+
+_PIXI_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+)\s*=")
+_PIXI_SUBTABLE_RE = re.compile(r"^\[tasks\.([A-Za-z0-9_-]+)\]")
+
+
+def _pixi_protected_line_numbers(content: str) -> set[int]:
+    """Return 1-indexed line numbers, within pixi.toml's [tasks] table, that belong to a
+    protected task's own definition (see PIXI_PROTECTED_TASK_RULE)."""
+    lines = content.splitlines()
+    protected: set[int] = set()
+
+    section_start = None
+    section_end = len(lines)
+    for i, line in enumerate(lines):
+        if line.strip() == "[tasks]":
+            section_start = i + 1
+            continue
+        if section_start is not None and re.match(r"^\[(?!tasks\.)", line.strip()):
+            section_end = i
+            break
+    if section_start is None:
+        return protected
+
+    i = section_start
+    while i < section_end:
+        line = lines[i]
+        m_sub = _PIXI_SUBTABLE_RE.match(line)
+        m_key = _PIXI_KEY_RE.match(line)
+        if m_sub:
+            name = m_sub.group(1)
+            start = i
+            j = i + 1
+            while j < section_end and not _PIXI_KEY_RE.match(lines[j]) and not _PIXI_SUBTABLE_RE.match(lines[j]):
+                j += 1
+            if _is_protected_pixi_task(name):
+                protected.update(range(start + 1, j + 1))
+            i = j
+            continue
+        if m_key:
+            name = m_key.group(1)
+            start = i
+            # Follow a multi-line inline-table value by brace balance; every current task closes
+            # its `{ ... }` on one line, but this stays correct if that ever changes.
+            depth = line.count("{") - line.count("}")
+            j = i + 1
+            while depth > 0 and j < section_end:
+                depth += lines[j].count("{") - lines[j].count("}")
+                j += 1
+            if _is_protected_pixi_task(name):
+                protected.update(range(start + 1, j + 1))
+            i = j
+            continue
+        i += 1
+
+    return protected
+
+
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _pixi_toml_protected_hunk_touched(base: str, head: str, cwd: str | None, env: dict[str, str]) -> bool:
+    """Whether the pixi.toml diff between base and head touches a protected task's definition
+    lines (#1744 line-level narrowing)."""
+    merge_base = subprocess.run(
+        ["git", "merge-base", base, head], cwd=cwd, capture_output=True, text=True, check=True, env=env,
+    ).stdout.strip()
+
+    def _show(rev: str) -> str:
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:pixi.toml"], cwd=cwd, capture_output=True, text=True, env=env,
+        )
+        return proc.stdout if proc.returncode == 0 else ""
+
+    old_protected = _pixi_protected_line_numbers(_show(merge_base))
+    new_protected = _pixi_protected_line_numbers(_show(head))
+
+    diff_proc = subprocess.run(
+        ["git", "diff", "-U0", f"{base}...{head}", "--", "pixi.toml"],
+        cwd=cwd, capture_output=True, text=True, check=True, env=env,
+    )
+
+    old_line = new_line = 0
+    for dline in diff_proc.stdout.splitlines():
+        m = _HUNK_RE.match(dline)
+        if m:
+            old_line = int(m.group(1))
+            new_line = int(m.group(3))
+            continue
+        if dline.startswith("---") or dline.startswith("+++"):
+            continue
+        if dline.startswith("-"):
+            if old_line in old_protected:
+                return True
+            old_line += 1
+        elif dline.startswith("+"):
+            if new_line in new_protected:
+                return True
+            new_line += 1
+
+    return False
 
 
 def scrubbed_env() -> dict[str, str]:
@@ -22,16 +175,16 @@ def scrubbed_env() -> dict[str, str]:
 
 
 def is_protected_tooling(path: str) -> bool:
-    """Check if path belongs to the protected-tooling set."""
+    """Check if path belongs to the protected-tooling set (whole-file/directory half -- pixi.toml
+    is handled separately, at line level, by _pixi_toml_protected_hunk_touched)."""
     p = path.replace("\\", "/")
-    if p == "pixi.toml":
-        return True
-    if p.startswith("tools/gates/") or p == "tools/gates":
-        return True
-    if p.startswith(".github/workflows/") or p == ".github/workflows":
-        return True
-    if p.startswith("tools/diff-shape/") or p == "tools/diff-shape":
-        return True
+    for kind, entry, _reason in PROTECTED_TOOLING_PATHS:
+        if kind == "file":
+            if p == entry:
+                return True
+        else:
+            if p == entry.rstrip("/") or p.startswith(entry):
+                return True
     return False
 
 
@@ -98,8 +251,17 @@ def check_diff_shape(
     # Condition 1: Check if any src/ code was touched
     touches_src = any(path.replace("\\", "/").startswith("src/") for _, path in touched_files)
 
-    # Protected tooling check
-    protected_edits = [path for _, path in touched_files if is_protected_tooling(path)]
+    # Protected tooling check. pixi.toml is line-level (#1744): only a hunk touching a protected
+    # task's own definition trips it, so an ordinary pixi task addition/edit passes.
+    protected_edits: list[str] = []
+    for _, path in touched_files:
+        p = path.replace("\\", "/")
+        if p == "pixi.toml":
+            if _pixi_toml_protected_hunk_touched(base, head, cwd_str, env):
+                protected_edits.append(f"{path} (protected task definition)")
+            continue
+        if is_protected_tooling(path):
+            protected_edits.append(path)
 
     # Check for deleted/changed lines in pre-existing test files
     weakened_tests: list[tuple[str, list[str]]] = []
@@ -161,6 +323,10 @@ def check_diff_shape(
         messages.append("!! Protected tooling set was edited:")
         for path in protected_edits:
             messages.append(f"   * {path}")
+        messages.append("   Protected set:")
+        messages.append(f"   * {PIXI_PROTECTED_TASK_RULE}")
+        for _kind, entry, reason in PROTECTED_TOOLING_PATHS:
+            messages.append(f"   * {entry} -- {reason}")
 
     if is_failing:
         if has_operator_label:
@@ -203,6 +369,19 @@ def selftest() -> int:
         src_dir.mkdir(parents=True)
         src_file = src_dir / "Engine.cs"
         src_file.write_text("class Engine {}\n", encoding="utf-8")
+
+        # A realistic-shaped pixi.toml: a protected task (gates), a protected audit-* task
+        # (audit-recordonce), a protected test-no-build task, and an ordinary task, so the
+        # line-level rule has something to discriminate against (arms i/j/k/r below).
+        pixi_file = repo / "pixi.toml"
+        pixi_file.write_text(
+            "[tasks]\n"
+            'build = { cmd = "dotnet build" }\n'
+            'gates = { cmd = "python tools/gates/gates.py" }\n'
+            'audit-recordonce = { cmd = "python tools/audit-completeness/recordonce.py" }\n'
+            'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }\n',
+            encoding="utf-8",
+        )
 
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
         subprocess.run(["git", "commit", "-q", "-m", "initial base"], cwd=repo, check=True, env=env)
@@ -250,7 +429,11 @@ def selftest() -> int:
         else:
             print("  OK (c) mixed src+test change -> PASS")
 
-        # (d) Protected tooling edit -> FAIL
+        # (d) Whole-file pixi.toml deletion, through the LINE-level rule -> FAIL. #1744: pixi.toml
+        # itself no longer routes through is_protected_tooling (see sabotage.py's own comment on
+        # its diff-shape-selftest fixture), so this exercises _pixi_toml_protected_hunk_touched's
+        # deletion path instead -- redundant with arms i/j/k's coverage of the same path, kept for
+        # the "whole file gone" shape specifically.
         subprocess.run(["git", "checkout", "-q", "-b", "branch-d", base_sha], cwd=repo, check=True, env=env)
         pixi_file = repo / "pixi.toml"
         pixi_file.write_text("[tasks]\n", encoding="utf-8")
@@ -309,6 +492,124 @@ def selftest() -> int:
         else:
             print("  OK (g) renamed+weakened test file -> FAIL")
 
+        # (i) pixi.toml: adding an unrelated task -> PASS (#1744 line-level narrowing).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-i", base_sha], cwd=repo, check=True, env=env)
+        with pixi_file.open("a", encoding="utf-8") as f:
+            f.write('unrelated-task = { cmd = "echo hi" }\n')
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add unrelated pixi task"], cwd=repo, check=True, env=env)
+        head_i = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_i, msgs_i = check_diff_shape(base_sha, head_i, labels=[], cwd=repo)
+        if not passed_i:
+            failures.append(f"(i) pixi.toml unrelated task addition failed unexpectedly: {msgs_i}")
+        else:
+            print("  OK (i) pixi.toml unrelated task addition -> PASS")
+
+        # (j) pixi.toml: editing the `gates` task's cmd -> FAIL.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-j", base_sha], cwd=repo, check=True, env=env)
+        pixi_file.write_text(
+            pixi_file.read_text(encoding="utf-8").replace(
+                'gates = { cmd = "python tools/gates/gates.py" }',
+                'gates = { cmd = "python tools/gates/gates.py --extra" }',
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "edit gates task cmd"], cwd=repo, check=True, env=env)
+        head_j = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_j, msgs_j = check_diff_shape(base_sha, head_j, labels=[], cwd=repo)
+        if passed_j:
+            failures.append("(j) editing the gates task's cmd did not fail as expected")
+        else:
+            print("  OK (j) pixi.toml gates task cmd edit -> FAIL")
+
+        # (k) pixi.toml: editing an audit-* task line (audit-recordonce) -> FAIL.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-k", base_sha], cwd=repo, check=True, env=env)
+        pixi_file.write_text(
+            pixi_file.read_text(encoding="utf-8").replace(
+                'audit-recordonce = { cmd = "python tools/audit-completeness/recordonce.py" }',
+                'audit-recordonce = { cmd = "python tools/audit-completeness/recordonce.py --extra" }',
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "edit audit-recordonce task line"], cwd=repo, check=True, env=env)
+        head_k = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_k, msgs_k = check_diff_shape(base_sha, head_k, labels=[], cwd=repo)
+        if passed_k:
+            failures.append("(k) editing the audit-recordonce task line did not fail as expected")
+        else:
+            print("  OK (k) pixi.toml audit-recordonce task edit -> FAIL")
+
+        # (r) pixi.toml: editing the test-no-build task line -> FAIL (#1754 F2 -- test-no-build is
+        # AFTER_BUILD_FULL's test leg in gates.py; a neutered cmd here drops test coverage from
+        # every `pixi run gates` without touching a test file or tripping the old rule).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-r", base_sha], cwd=repo, check=True, env=env)
+        pixi_file.write_text(
+            pixi_file.read_text(encoding="utf-8").replace(
+                'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }',
+                'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1 --filter Foo!=Bar" }',
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "edit test-no-build task line"], cwd=repo, check=True, env=env)
+        head_r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_r, msgs_r = check_diff_shape(base_sha, head_r, labels=[], cwd=repo)
+        if passed_r:
+            failures.append("(r) editing the test-no-build task line did not fail as expected")
+        else:
+            print("  OK (r) pixi.toml test-no-build task edit -> FAIL")
+
+        # (l)-(p): the widened protected-tooling directories/files (#1744) -- one arm each, FAIL.
+        widened_targets = [
+            ("l", "tools/audit-completeness/completeness.py"),
+            ("m", "tools/vendor-verify/verify.py"),
+            ("n", "tools/buildlock.py"),
+            ("o", "tools/flake-watch/summarize.py"),
+            ("p", "tests/Baton.Architecture.Tests/SpawnGateTests.cs"),
+            # (s)-(w): the #1754 widening -- the wired selftest bodies #1744's ruling had wrongly
+            # excluded as "not enforcement", plus vendor-check's actual body.
+            ("s", "tools/fleet-glass/worker.selftest.mjs"),
+            ("t", "tools/tool-refresh/refresh.py"),
+            ("u", "tools/baton-agy-loop/dispatch.py"),
+            ("v", "tests/Launcher.Tests.ps1"),
+            ("w", "tools/Baton.VendorProbe/Program.cs"),
+        ]
+        for label, rel_path in widened_targets:
+            subprocess.run(["git", "checkout", "-q", "-b", f"branch-{label}", base_sha], cwd=repo, check=True, env=env)
+            target = repo / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("// edit\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+            subprocess.run(["git", "commit", "-q", "-m", f"edit {rel_path}"], cwd=repo, check=True, env=env)
+            head_x = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+            passed_x, msgs_x = check_diff_shape(base_sha, head_x, labels=[], cwd=repo)
+            if passed_x:
+                failures.append(f"({label}) editing {rel_path} did not fail as expected")
+            else:
+                print(f"  OK ({label}) {rel_path} edit -> FAIL")
+
+        # (q) Control: a genuinely unprotected sibling in a partly-protected directory, plus
+        # .githooks/, stay unprotected -> PASS. tools/fleet-glass/glass.html (not
+        # worker.selftest.mjs, protected by name since #1754) proves the widening protects the
+        # specific wired file rather than the whole tools/fleet-glass/ directory.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-q", base_sha], cwd=repo, check=True, env=env)
+        (repo / "tools" / "fleet-glass").mkdir(parents=True, exist_ok=True)
+        (repo / "tools" / "fleet-glass" / "glass.html").write_text("<!-- x -->\n", encoding="utf-8")
+        (repo / ".githooks").mkdir(parents=True, exist_ok=True)
+        (repo / ".githooks" / "pre-push").write_text("# x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "edit non-protected tools"], cwd=repo, check=True, env=env)
+        head_q = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_q, msgs_q = check_diff_shape(base_sha, head_q, labels=[], cwd=repo)
+        if not passed_q:
+            failures.append(f"(q) editing tools/fleet-glass/glass.html and .githooks/ failed unexpectedly: {msgs_q}")
+        else:
+            print("  OK (q) tools/fleet-glass/glass.html and .githooks/ edits -> PASS")
+
         # (h) main()'s GITHUB_EVENT_PATH fallback, with no --labels passed -- the actual channel
         # CI uses. A synthetic event payload carries two labels including operator-merge; the
         # failing shape (head_a) must be lifted, and the negative arm (label absent) must not be.
@@ -349,7 +650,7 @@ def selftest() -> int:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 8 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 23 discrimination arms passed)")
     return 0
 
 

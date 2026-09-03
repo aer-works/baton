@@ -344,13 +344,17 @@ def _sabotage_diff_shape_selftest() -> None:
         tools_dir.mkdir(parents=True)
         src = (ROOT / "tools" / "diff-shape" / "diff_shape.py").read_text(encoding="utf-8")
         # Mutate is_protected_tooling to always report nothing protected -- the selftest's own
-        # (d) arm asserts a protected-tooling edit fails, so a neutered predicate must go red.
+        # widened-path arms (l)-(p) and (s)-(w) assert those protected-tooling edits fail, so a
+        # neutered predicate must go red (#1744: pixi.toml itself no longer routes through this
+        # function, so those arms -- not (d) -- are what a neutered predicate now flips).
         mutated = src.replace(
             "def is_protected_tooling(path: str) -> bool:\n"
-            '    """Check if path belongs to the protected-tooling set."""\n'
+            '    """Check if path belongs to the protected-tooling set (whole-file/directory half -- pixi.toml\n'
+            '    is handled separately, at line level, by _pixi_toml_protected_hunk_touched)."""\n'
             "    p = path.replace(\"\\\\\", \"/\")",
             "def is_protected_tooling(path: str) -> bool:\n"
-            '    """Check if path belongs to the protected-tooling set."""\n'
+            '    """Check if path belongs to the protected-tooling set (whole-file/directory half -- pixi.toml\n'
+            '    is handled separately, at line level, by _pixi_toml_protected_hunk_touched)."""\n'
             "    return False\n"
             "    p = path.replace(\"\\\\\", \"/\")",
         )
