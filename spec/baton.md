@@ -2794,28 +2794,29 @@ so an older and a newer `baton` build still contend on the one lock. `QuotaLedge
 harvests engine-side, at settle — `Program.cs`'s own terminal-sentinel write site — from the terminal
 usage `ExecutionUsageProjector` already has in hand for every execution with a recorded start and exit:
 one ledger line per execution — `AppendAsync`'s own doc comment states why it skips an execution id
-the file already holds, and against what repeated-settle shapes. `Adapter`/`Model` are read off
-the frozen `ExecutionRequest` fields (#1567), with the identical `StepRebound` override
-`ExecutionUsageProjector` applies for the crash-recovery resubmit divergence (#1583) — never
-re-derived from *today's* `bindings.json` at read time, which is the read-time re-attribution #802's
-proposal (§0.5) warns a failover rebind would otherwise cause on an unfrozen record. Fails open exactly
+the file already holds, and against what repeated-settle shapes. `Adapter`/`Model` come from
+`ExecutionBindingResolver` (`src/Baton/Status/ExecutionBindingResolver.cs`) — the one primitive that
+resolves the frozen `ExecutionRequest` fields (#1567) with the `StepRebound` override for the
+crash-recovery resubmit divergence (#1583), shared with `ExecutionUsageProjector`'s own parser choice
+rather than each store re-deriving the precedence — never re-derived from *today's* `bindings.json` at
+read time, which is the read-time re-attribution #802's proposal (§0.5) warns a failover rebind would
+otherwise cause on an unfrozen record. Fails open exactly
 like the registry: `IOException`/`UnauthorizedAccessException`/
 `WaitHandleCannotBeOpenedException` are reported on stderr and swallowed by the caller, never surfacing
 as a run failure — the registry's own sanctioned exception to the no-silent-swallow rule, applied to a
 second store sharing its mechanism.
 
 **Accepted losses, stated rather than hidden.** A lane killed before it ever settles writes nothing
-here — the settle-time appender's structural gap, not a bug. `baton ledger --rebuild` re-walks every
-still-live room's own `flow.jsonl` and merges the result into whatever the ledger already holds, by
-execution id — never summing, so running it twice against an unchanged fleet is idempotent. It
-recovers strictly LESS than the ledger can hold: `RoomRetentionSweep` (above) moves execution
-directories out of a live room's reach on its own schedule, so a room already pruned is invisible to
-the walk — but an execution the ledger already recorded for that room survives a rebuild regardless:
-`QuotaLedgerStore.RebuildAsync`'s own remarks state the merge rule this rests on, not restated here. A
-lane that died before
-settling was never recorded to begin with, on either path. Cite the ruling above — "accumulation from
-lane logs is attribution only, never the reset-time source of truth" — rather than restating it: this
-is that doctrine's burn half, not a second one.
+here, on either path — the settle-time appender's structural gap, not a bug. `baton ledger --rebuild`
+re-walks every still-live room's own `flow.jsonl` and merges the result into whatever the ledger
+already holds, by execution id — never summing, so running it twice against an unchanged fleet is
+idempotent. It recovers strictly LESS than the ledger can hold: `RoomRetentionSweep` (above) moves
+execution directories out of a live room's reach on its own schedule, so a room already pruned is
+invisible to the walk — but an execution the ledger already recorded for that room survives a rebuild
+regardless: `QuotaLedgerStore.RebuildAsync`'s own remarks state the merge rule this rests on, not
+restated here. Cite the ruling above — "accumulation from lane logs is attribution only, never the
+reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
+second one.
 
 ---
 
