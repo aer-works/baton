@@ -48,6 +48,9 @@ public static class DaemonHost
         // #1025: room retention sweep (journal compaction)
         builder.Services.AddHostedService<RoomRetentionSweep>();
 
+        // #1488: fires pending `baton watch` registrations once their room reaches Terminal.
+        builder.Services.AddHostedService<WatchSweep>();
+
         var host = builder.Build();
         onHostBuilt?.Invoke(host);
         await host.RunAsync();

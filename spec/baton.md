@@ -246,6 +246,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
 | `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `CancelOptionsParser.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json] [--repo <checkout-dir>]` | `StatusOptionsParser.cs` |
+| `watch` | `baton watch <room-dir> --notify <command\|url>` \| `baton watch --list` \| `baton watch --clear-fired` | `WatchOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
 | `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
@@ -254,6 +255,34 @@ through `RoleDispatch.Materialize` against the real role catalog.
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
+
+**`watch` (#1488): one-shot, block-free registration, never a poll loop.** `baton status --follow`
+(above) blocks its own process until the room reaches Terminal; `watch` is the opposite shape a
+harness needs to end its turn immediately after dispatch — it writes one file under
+`{BatonPaths.Watches}` (`{BATON_HOME}/watches/<watch-id>.json`, `WatchStore.cs`) and returns. Terminal
+detection is the identical predicate `FleetStatusTool`, `rooms prune --terminal`, and `room delete`
+already read a room's terminal state through — `TerminalSentinelWriter.TryReadAsync(room-dir)` returns
+non-null — never a second definition. An already-terminal room at registration fires immediately, in
+the registering process, before it returns (no lost wake-up); a room that reaches Terminal afterward
+fires from `WatchSweep`, a `baton daemon`-hosted `BackgroundService` (§7) polling every pending watch
+on a 15-second cadence — the same host `RoomRetentionSweep` already runs on, not a second long-running
+process. **Firing is exactly-once-or-lost, never double.** `WatchStore.TryClaimAsync` marks a watch's
+`firedAt` under a per-file named `Mutex` every access to that file takes (mirroring
+`RoomRegistryStore`'s own `RunUnderLock`, §8), atomically checking-and-setting in one critical section
+— so a registration's own immediate check and a concurrent `WatchSweep` iteration can never both
+observe an unclaimed watch and both notify: exactly one claims, the other is a no-op. A process that
+crashes after a successful claim but before the notify send completes loses that notification rather
+than risking a duplicate — nothing re-tries a claimed watch. `--notify <target>` is either an absolute
+`http`/`https` URL (POSTed the notification as its JSON body) or a command line, spawned once with the
+identical JSON on stdin and in the `BATON_WATCH_EVENT` environment variable — never interpolated into
+the command string itself. The JSON carries `{room, state, verdict, outputs, terminalAt}`: `verdict` is
+the parsed content of a file literally named `verdict.json` among the room's declared outputs, when one
+exists (omitted otherwise — most workflows have none). `baton watch --list` prints every registered
+watch, pending and fired; `baton watch --clear-fired` deletes the fired ones. **Depends on `baton
+daemon` running for any transition after registration** — an already-terminal room at registration
+time is the only case this feature guarantees without one; `baton watch`'s own registration warns on
+stderr when no daemon mutex (`Global\BatonDaemonMutex_{user}`) is found for the current user, though a
+daemon started with `--no-mutex` is invisible to that check and reads as running regardless.
 
 **`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
 exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
@@ -2516,6 +2545,9 @@ than silently dropping out with the rest of the deleted daemon surface:
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
   them (`src/Baton/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
+- **`WatchSweep`** (`Program.cs`, a hosted service, #1488) — fires pending `baton watch`
+  registrations once their room reaches Terminal; the full contract (exactly-once claim, notify
+  shapes, the daemon dependency) is §2's, under `watch`, not restated here.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Baton.Vendors/DaemonSettingsStore.cs`,
   reading/writing `BatonPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
