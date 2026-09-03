@@ -247,6 +247,12 @@ public static class CancelRequestPoller
                 requestPath,
                 content.Target,
                 "target still running but not reachable through the in-flight registry (likely non-process work, #1530) — use Ctrl+C on the pump or wait for it to settle");
+
+            // #1549: a concrete targetExecutionId is resolved on this branch (unlike the malformed-content
+            // or ambiguous-'latest' rejections above, which reject before any execution-scoped id exists
+            // to key a journal fact on) — so this is the one rejection shape that can also become a
+            // content-free flow.jsonl fact, not just a file-and-stderr one.
+            await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, cancellationToken).ConfigureAwait(false);
         }
     }
 }

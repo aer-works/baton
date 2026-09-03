@@ -71,7 +71,8 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionPruneEnabledOverride = null,
     string? RetentionPruneGraceSecondsOverride = null,
     string? WatchReaperRetentionHoursOverride = null,
-    string? FleetProjectionIntervalSecondsOverride = null)
+    string? FleetProjectionIntervalSecondsOverride = null,
+    string? ExecutionProgressIntervalSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -110,7 +111,8 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionPruneEnabledOverride: null,
         RetentionPruneGraceSecondsOverride: null,
         WatchReaperRetentionHoursOverride: null,
-        FleetProjectionIntervalSecondsOverride: null);
+        FleetProjectionIntervalSecondsOverride: null,
+        ExecutionProgressIntervalSecondsOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -157,7 +159,10 @@ public sealed record BatonEnvironmentSnapshot(
         // "BATON_FLEET_PROJECTION_INTERVAL_SECONDS" -- Baton.Cli.Daemon.FleetProjectionWriter's own
         // IntervalSecondsEnvironmentVariable (#1557), same fold reason as the five BATON_RETENTION_*
         // fields above.
-        FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"));
+        FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"),
+        // "BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS" -- #1549's heartbeat cadence,
+        // Baton.Cli.ExecutionProgressHeartbeat.IntervalSecondsEnvironmentVariable.
+        ExecutionProgressIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient

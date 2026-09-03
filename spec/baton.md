@@ -92,6 +92,44 @@ infrastructure is a separate cleanup this document does not scope — but a harn
 `room.jsonl` as **inert**: nothing in the dispatch/decide/status/fleet_status surface this spec
 describes writes to it or reads from it.
 
+**The progress heartbeat and the coarse lifecycle events (#1549).** §7's "false Running ⚠" entry
+below records the symptom this closes: journal-event age was useless as a liveness signal because a
+healthy lane could go a long stretch without writing to `flow.jsonl` at all. Three additions to the
+`FlowEvent` vocabulary fix that at the source. Each is content-free (an `ExecutionId` and nothing
+else — the wire timestamp every journal line already carries covers "when"), and each carries its
+full producer-side contract as a doc comment on its own case in `FlowEvent.cs` — cited here by name,
+not restated:
+
+- **`ExecutionProgress`**. Producer: `Baton.Cli.ExecutionProgressHeartbeat`, a poller
+  `RunCommand.ExecuteAsync` starts alongside `CancelRequestPoller` for every `run`/`dispatch`/
+  `redispatch` invocation (all three funnel through that one method) but not `resume`/`supply` — the
+  same command split `CancelRequestPoller` itself already has. `ExecutionProgressHeartbeat`'s own
+  remarks are the canonical description of its cadence, its `.stdout.log`-mtime gate, and why silence
+  under a wedge is the intended behaviour rather than a gap. Cadence is env-configurable
+  (`BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS` through `BatonEnvironmentSnapshot`, default 5 minutes)
+  the same way `RoomRetentionSweep`'s interval knobs already are. Write-budget arithmetic: KV writes
+  are governed by the pusher's per-producer daily ledger (§7's #1690 entry — snapshot pushes draw on
+  their own fixed daily sub-budget with adaptive pacing, never one write per journal event), so a
+  heartbeat changes a coalesced push's *contents*, never its *count*, and spends nothing extra against
+  the 1,000/day cap.
+- **`CancellationDelivered`** and **`CancellationRejected`**, both scoped to the operator
+  `cancel.request` path only (the host-stop wind-down stays as it was — deliberately, to keep an
+  ordinary shutdown quiet). `FlowEvent.cs`'s own doc comments on each case are the canonical statement
+  of exactly which branch of `InFlightExecutionRegistry`/`CancelRequestPoller` produces them and why
+  each is a distinct fact from the pre-existing `CancellationRequested`.
+- **Retry scheduled and artifact collection, the other two of the four moments #1537's enumeration
+  (PR #1564's body) named, needed nothing new.** Checked against `FlowEvent.cs` directly rather than
+  assumed (`common-sense`): `StepRetryScheduled` already exists and is already emitted. An engine-side
+  "artifact collection" moment does not exist as a step distinct from the terminal outcome
+  classification itself, so a fourth event would fire at the same instant as an existing one — pure
+  duplication, the exact journal noise the issue's own per-gate-evaluation exclusion already guards
+  against. Deliberately not added; this sentence is that decision's durable record.
+
+All three new cases project as explicit no-ops in `StateProjector`, and — per PR #1564's own audit —
+reach every downstream mailbox surface unfiltered without any widening of their own, since nothing
+in that pipeline (`extract_timeline`, `RoomDetailTool`'s tag map, `room_detail`'s schema in §6)
+filters by event type in the first place.
+
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
 - **`baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>]
@@ -2473,7 +2511,9 @@ can have zero journal events between `executionStarted` and `executionExited` (#
 measurement: 6 false STALL-shaped flags out of 6 live rooms), so every long-running tool call read
 as stale. `ageLine` now keys the ⚠ on `room.live.lastActivityAt` (the `rooms[].live` field above,
 itself a real `.stdout.log` mtime) when the room carries a `live` section at all, and falls back to
-the journal-event age only for a Running room `live` was never attached to.
+the journal-event age only for a Running room `live` was never attached to. §2's `ExecutionProgress`
+entry is the engine half this glass-only stopgap was always waiting on: the journal-event age this
+paragraph falls back to is now honest too, not just `room.live.lastActivityAt`.
 
 **Fleet Glass write budget (#1690).** Cloudflare's free-tier KV namespace caps at 1,000 writes/day;
 the mailbox blew it TWICE (2026-09-02) because the pre-#1690 design budgeted one write per snapshot
@@ -2740,6 +2780,7 @@ trigger is not registrable by a standard user and is not used (#1770).
   this section states: the daemon only ever writes this file, never serves it over a listener. No
   pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
   own derivation.
+- **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,
 `/api/ws/progress`), sidecar/Tailscale supervision, a desktop-owner-only auth tier, template-picker
@@ -2780,6 +2821,42 @@ for the `agy` half recorded in `docs/vendor-capabilities.md` (the vendor registe
 this paragraph on vendor facts). Nothing in `src/` at HEAD implements a `/usage` poll for either
 vendor yet — the measurement is the settled basis the quota ledger is built against, not a shipped
 code path. Both vendors participate in the ledger.
+
+### The burn ledger — shipped (#1570)
+
+Distinct from the runway ledger above (the `/usage` poll, still unbuilt): this is the *burn* half —
+which lane spent what, on which vendor — cross-room, append-only JSONL at `BatonPaths.QuotaLedgerFile`
+(`{BatonPaths.Root}/quota-ledger.jsonl`), guarded by the identical named-`Mutex` mechanism §8 documents
+for `room-registry.jsonl`. That mechanism was extracted to `MutexGuardedFileLock`
+(`src/Baton/Status/MutexGuardedFileLock.cs`) so this store shares it rather than copying it —
+`RoomRegistryStore`'s own `RunUnderLock` is now a thin wrapper over the same primitive, name-preserving,
+so an older and a newer `baton` build still contend on the one lock. `QuotaLedgerStore.BuildEntries`
+harvests engine-side, at settle — `Program.cs`'s own terminal-sentinel write site — from the terminal
+usage `ExecutionUsageProjector` already has in hand for every execution with a recorded start and exit:
+one ledger line per execution — `AppendAsync`'s own doc comment states why it skips an execution id
+the file already holds, and against what repeated-settle shapes. `Adapter`/`Model` come from
+`ExecutionBindingResolver` (`src/Baton/Status/ExecutionBindingResolver.cs`) — the one primitive that
+resolves the frozen `ExecutionRequest` fields (#1567) with the `StepRebound` override for the
+crash-recovery resubmit divergence (#1583), shared with `ExecutionUsageProjector`'s own parser choice
+rather than each store re-deriving the precedence — never re-derived from *today's* `bindings.json` at
+read time, which is the read-time re-attribution #802's proposal (§0.5) warns a failover rebind would
+otherwise cause on an unfrozen record. Fails open exactly
+like the registry: `IOException`/`UnauthorizedAccessException`/
+`WaitHandleCannotBeOpenedException` are reported on stderr and swallowed by the caller, never surfacing
+as a run failure — the registry's own sanctioned exception to the no-silent-swallow rule, applied to a
+second store sharing its mechanism.
+
+**Accepted losses, stated rather than hidden.** A lane killed before it ever settles writes nothing
+here, on either path — the settle-time appender's structural gap, not a bug. `baton ledger --rebuild`
+re-walks every still-live room's own `flow.jsonl` and merges the result into whatever the ledger
+already holds, by execution id — never summing, so running it twice against an unchanged fleet is
+idempotent. It recovers strictly LESS than the ledger can hold: `RoomRetentionSweep` (above) moves
+execution directories out of a live room's reach on its own schedule, so a room already pruned is
+invisible to the walk — but an execution the ledger already recorded for that room survives a rebuild
+regardless: `QuotaLedgerStore.RebuildAsync`'s own remarks state the merge rule this rests on, not
+restated here. Cite the ruling above — "accumulation from lane logs is attribution only, never the
+reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
+second one.
 
 ---
 
@@ -3615,9 +3692,10 @@ reach:
 - **The exact shape of the outbound push mailbox (§6).** Unbuilt; I could not verify anything about
   its intended transport beyond "quota data rides it" and "gate-pending visibility rides it," both
   stated as rulings rather than measured facts.
-- **The room registry's (§8) registration mechanism**, and whether it shares an implementation with
-  the quota ledger (§7) or is fully separate. Both are named as parallel new-build items with no
-  stated relationship; I treated them as independent.
+- **Resolved by #1570.** The room registry's (§8) registration mechanism and the quota burn ledger's
+  (§7) do share an implementation — `MutexGuardedFileLock`, §7's own burn-ledger subsection names it.
+  Left here rather than deleted so this appendix stays an honest record of what this document's
+  original author could not verify at the time, not a claim about the tree today.
 - **Whether `Baton`/`Baton.Vendors` have silently accreted a human-watching assumption anywhere
   outside the paths this document cites directly** (terminal sentinel, status projection, hook
   enforcement, `FailureClassification`, `PermissionGrant`). I did not do a full pass of scheduling

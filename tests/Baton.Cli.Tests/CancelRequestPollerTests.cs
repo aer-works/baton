@@ -194,6 +194,13 @@ public class CancelRequestPollerTests
             Assert.NotNull(rejected);
             Assert.Equal("exec-non-process", rejected.Target);
             Assert.Contains("target still running but not reachable through the in-flight registry (likely non-process work, #1530)", rejected.Reason);
+
+            // #1549: this rejection resolved a concrete ExecutionId, so it also becomes a content-free
+            // journal fact alongside the file-and-stderr rejection above.
+            var reader = new FlowEventLogReader(logPath);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
+            Assert.Equal(execId, cancellationRejected.ExecutionId);
         }
         finally
         {

@@ -87,7 +87,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "trust", "room", "rooms", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "trust", "room", "rooms", "ledger", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -114,6 +114,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine($"       {TrustOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RoomDeleteOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RoomsPruneOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {LedgerCommand.Usage[7..]}");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
@@ -229,6 +230,18 @@ try
         return 0;
     }
 
+    // #1570: fleet-level, not a room mutation and produces no CommandResult (no workflow pump) --
+    // joins room/rooms above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "ledger")
+    {
+        if (args.Length < 2 || args[1] != "--rebuild")
+        {
+            throw new CliArgumentException($"Unknown 'baton ledger' invocation. {LedgerCommand.Usage}");
+        }
+
+        return await LedgerCommand.RebuildAsync(Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
+    }
+
     CommandResult result;
     switch (args[0])
     {
@@ -329,6 +342,22 @@ try
         // CancellationToken.None: a Ctrl-C that already carried the workflow to Terminal must not
         // then lose the sentinel write for the terminal state it just reached.
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
+
+        // #1570: the fleet-level burn ledger, appended right after the sentinel -- terminalEntries is
+        // already in hand from the read above, so this costs one more in-memory pass, not a second
+        // flow.jsonl read (spec/baton.md §7's harvest-at-settle ruling). Fire-and-forget with respect
+        // to the run, same posture as the sentinel write's own fail-open contract
+        // (QuotaLedgerStore.AppendAsync's doc comment states the exact rule this leans on): a ledger
+        // write must never be the reason a run that already reached Terminal reports as failed.
+        try
+        {
+            var ledgerEntries = QuotaLedgerStore.BuildEntries(terminalEntries, terminalRoomDirectoryPath);
+            await QuotaLedgerStore.AppendAsync(ledgerEntries, BatonPaths.QuotaLedgerFile, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            Console.Error.WriteLine($"Could not append to the quota ledger at '{BatonPaths.QuotaLedgerFile}': {ex.Message}.");
+        }
     }
     else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
     {

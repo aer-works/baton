@@ -47,16 +47,51 @@ public class DaemonHostTests
     [Fact]
     public async Task RunDaemonAsync_SecondInstance_RefusesWithoutBuildingOrRunningAHost()
     {
-        var mutexName = $"Global\\BatonDaemonMutex_{Environment.UserName}";
-        using var heldByAnotherInstance = new Mutex(true, mutexName, out var thisTestOwnsIt);
-        Assert.True(thisTestOwnsIt); // sanity: nothing else on this machine already holds it
+        var tempHome = CreateTempHome();
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
+        try
+        {
+            // #1773: the mutex is scoped by the resolved home, not just the username -- this test takes
+            // that same isolated temp-home mutex rather than the real Global\BatonDaemonMutex_{user} the
+            // operator's own daemon under ~/.baton holds, so it can never contend with (or seize) it.
+            var mutexName = DaemonHost.MutexName(tempHome);
+            using var heldByAnotherInstance = new Mutex(true, mutexName, out var thisTestOwnsIt);
+            Assert.True(thisTestOwnsIt);
 
-        // Second-instance detection happens before Host.CreateApplicationBuilder/RunAsync, so a refused
-        // instance must return promptly -- it must NOT fall through to host.RunAsync(), which blocks
-        // forever absent an external stop signal. The timeout is a hang backstop, not an expected wait:
-        // if the refusal branch regressed, this call would otherwise hang the whole test run.
-        await DaemonHost.RunDaemonAsync(args: [])
-            .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
+            // Second-instance detection happens before Host.CreateApplicationBuilder/RunAsync, so a refused
+            // instance must return promptly -- it must NOT fall through to host.RunAsync(), which blocks
+            // forever absent an external stop signal. The timeout is a hang backstop, not an expected wait:
+            // if the refusal branch regressed, this call would otherwise hang the whole test run.
+            await DaemonHost.RunDaemonAsync(args: [])
+                .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            if (Directory.Exists(tempHome))
+            {
+                Directory.Delete(tempHome, true);
+            }
+        }
+    }
+
+    [Fact]
+    public void MutexName_DiffersAcrossHomes_SameWithinOneHome()
+    {
+        var homeA = CreateTempHome();
+        var homeB = CreateTempHome();
+        try
+        {
+            Assert.Equal(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeA));
+            // Two casings of one home are one home (BatonPaths.RecordKeyComparer is OrdinalIgnoreCase);
+            // MutexName lower-cases before hashing so they cannot become two daemons.
+            Assert.Equal(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeA.ToUpperInvariant()));
+            Assert.NotEqual(DaemonHost.MutexName(homeA), DaemonHost.MutexName(homeB));
+        }
+        finally
+        {
+            Directory.Delete(homeA, true);
+            Directory.Delete(homeB, true);
+        }
     }
 
     [Fact]
