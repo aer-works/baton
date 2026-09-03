@@ -294,7 +294,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Label: ExtractRoomLabel(terminalBindings),
                 Workstream: ExtractRoomWorkstream(terminalBindings),
                 ParentRoomPath: terminalLineage.ParentRoomDirectoryPath,
-                ParentExecutionId: terminalLineage.ParentExecutionId);
+                ParentExecutionId: terminalLineage.ParentExecutionId,
+                TerminalAt: sentinel.TerminalAt);
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -421,7 +422,12 @@ public sealed class FleetStatusTool : IMcpTool
                 Label: ExtractRoomLabel(bindings),
                 Workstream: ExtractRoomWorkstream(bindings),
                 ParentRoomPath: lineage.ParentRoomDirectoryPath,
-                ParentExecutionId: lineage.ParentExecutionId);
+                ParentExecutionId: lineage.ParentExecutionId,
+                // #1157: view.TerminalAt is null on every non-terminal room by construction
+                // (WorkflowStatusProjector.Project gates it on WorkflowStatus.Terminal), so this needs
+                // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
+                // which never turns a terminal room into a Running one.
+                TerminalAt: view.TerminalAt);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -636,7 +642,19 @@ public sealed record FleetRoomStatusView(
     string? ParentRoomPath = null,
     [property: JsonPropertyName("parentExecutionId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ParentExecutionId = null);
+    string? ParentExecutionId = null,
+    // #1157: the room-level WorkflowStatusView.TerminalAt, copied the same way Rejected/ResolvedBy
+    // above are -- never re-derived here, and never terminal.json's or flow.jsonl's mtime. A terminal
+    // room reports when its run ENDED; before this field the fleet reported no terminal instant at
+    // all, and a consumer wanting one had to stat a file. Omitted rather than back-filled from a
+    // mtime for the two legacy shapes spec/baton.md §3 names (a pre-#745 journal, and a terminal.json
+    // frozen before this field existed -- TerminalSentinelWriter never re-derives a written sentinel,
+    // #1522 review finding 4): fleet_status only displays, so absent is the honest answer and there is
+    // no destructive decision here that a proxy would be better than nothing for. The retention sweep,
+    // which does have such a decision, falls back explicitly instead (RoomRetentionSweep.PruneRoomAsync).
+    [property: JsonPropertyName("terminalAt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TerminalAt = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

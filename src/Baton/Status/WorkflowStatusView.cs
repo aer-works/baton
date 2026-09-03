@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Projection;
 using Baton.Scheduling;
 
 namespace Baton.Status;
@@ -191,7 +192,16 @@ public sealed record WorkflowStatusView(
     // verb — it is the wider fact, so it is set on `--close` runs where `Rejected` stays false.
     [property: JsonPropertyName("resolvedBy")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ResolvedBy = null);
+    string? ResolvedBy = null,
+    // #1157: when this run ended (ISO-8601, UTC) -- Projection.TerminalInstantResolver's answer off
+    // the journal's own writer stamps, never flow.jsonl's or terminal.json's mtime. See spec/baton.md
+    // §3's `terminalAt` entry for the absence rules; the short form is that it is present only for a
+    // terminal run whose transition line carries a writer stamp, and absent (never fabricated) in
+    // every other case, including a pre-#745 journal and a terminal.json written before this field
+    // existed -- TerminalSentinelWriter never re-derives a sentinel once written.
+    [property: JsonPropertyName("terminalAt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TerminalAt = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -377,8 +387,20 @@ public static class WorkflowStatusProjector
             }
         }
 
+        // #1157: only a terminal run has an instant to report, and only a caller that handed in the
+        // entries can source one -- a `usage`-less caller (entries omitted) gets the field omitted
+        // too rather than a second read of flow.jsonl this projector is documented never to do.
+        // The prefix replays TerminalInstantResolver does are pure, so that documented no-I/O
+        // property is unaffected; the non-terminal path pays nothing for them.
+        string? terminalAt = null;
+        if (state.Status == WorkflowStatus.Terminal && entries is { Count: > 0 })
+        {
+            terminalAt = TerminalInstantResolver.Resolve(entries, snapshot)?.ToString("O");
+        }
+
         return new WorkflowStatusView(
-            WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected, ResolvedBy: resolvedBy);
+            WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected,
+            ResolvedBy: resolvedBy, TerminalAt: terminalAt);
     }
 
     /// <summary>

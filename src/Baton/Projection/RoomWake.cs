@@ -27,7 +27,17 @@ public sealed record RoomWake(HeldWorkRef Ref, RoomWakeKind Kind);
 /// <c>flow.jsonl</c> exists at all (the #774 orphan check), and — only meaningful when it does —
 /// whether its projected <see cref="WorkflowStatus"/> is <see cref="WorkflowStatus.Terminal"/>.
 /// </summary>
-public readonly record struct WorkflowProbeResult(bool JournalExists, bool IsTerminal);
+/// <param name="TerminalAtUtc">
+/// #1157: when the run ended — <see cref="TerminalInstantResolver.Resolve"/>'s answer, never
+/// <c>flow.jsonl</c>'s mtime. Always <c>null</c> when <paramref name="IsTerminal"/> is <c>false</c>
+/// (nothing may invent a terminal instant for a room that has not ended, spec/baton.md §3), and
+/// <c>null</c> on a terminal room whose transition line predates writer stamping — see that
+/// method's own remarks for all three null cases, which it is the caller's job to tell apart.
+/// </param>
+public readonly record struct WorkflowProbeResult(
+    bool JournalExists,
+    bool IsTerminal,
+    DateTime? TerminalAtUtc = null);
 
 /// <summary>
 /// Wake set = f(<see cref="RoomState"/>, workflow probes) — pure, synchronous, no wall-clock, no I/O.
