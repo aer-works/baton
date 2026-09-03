@@ -160,7 +160,7 @@ public class HookCheckCommandTests
         var exitCode = RunBash(command, "claude:git diff*", stderr: stderr);
 
         Assert.Equal(HookCheckCommand.DeniedExitCode, exitCode);
-        Assert.Contains("scoped shell grant", stderr.ToString(), StringComparison.Ordinal);
+        Assert.Contains("shell grant", stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -271,6 +271,66 @@ public class HookCheckCommandTests
         var exitCode = HookCheckCommand.Execute(
             stdin, stderr, "claude:Edit,Write",
             shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
+
+        Assert.Equal(expectedExitCode, exitCode);
+    }
+
+    [Theory]
+    // #1731: the write roles may not create/apply labels, merge a PR, or call the API on their own --
+    // spec/baton.md §9 records the shape of the grant these rows exercise through the real catalog.
+    [InlineData("implement", "gh pr create --title x --body-file y", HookCheckCommand.AllowedExitCode)]
+    [InlineData("implement", "gh pr edit 1 --body-file y", HookCheckCommand.AllowedExitCode)]
+    [InlineData("implement", "gh label create x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "gh pr edit 1 --add-label x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "gh pr edit 1 --remove-label x", HookCheckCommand.DeniedExitCode)]
+    // Found-while-fixing, same PR (spec/baton.md §9 has the full "why"): `--label` at PR/issue
+    // creation time attaches a label too, closed by adding it to the token list alongside
+    // `--add-label`/`--remove-label`.
+    [InlineData("implement", "gh pr create --title x --label operator-merge", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "gh issue create --title x --label operator-merge", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "gh pr merge 1 --squash", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "gh api repos/a/b", HookCheckCommand.DeniedExitCode)]
+    [InlineData("implement", "true && gh label create x", HookCheckCommand.DeniedExitCode)]
+    // Operator ruling (spec/baton.md §9, this PR): on an UNSCOPED grant with a deny list, `$`/`<`/`>`/
+    // `\` are ordinary characters, not fatal ones -- routine build-tooling syntax must not deny
+    // outright. The earlier lane's permissive-metacharacter attempt (found-while-fixing #1733) was
+    // itself reverted (found-while-fixing #1735 comment) over a different implementation
+    // (substring/prefix matching with a character-class carve-out); this lane's token-head match is
+    // the ruling's replacement mechanism, spelled out at `EvaluateChainedCommand`, not restated here.
+    [InlineData("implement", "dotnet test > out.txt", HookCheckCommand.AllowedExitCode)]
+    [InlineData("implement", "echo $PATH", HookCheckCommand.AllowedExitCode)]
+    [InlineData("janitor", "gh pr create --title x --body-file y", HookCheckCommand.AllowedExitCode)]
+    [InlineData("janitor", "gh pr edit 1 --body-file y", HookCheckCommand.AllowedExitCode)]
+    [InlineData("janitor", "gh label create x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "gh pr edit 1 --add-label x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "gh pr edit 1 --remove-label x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "gh pr merge 1 --squash", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "gh api repos/a/b", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "true && gh label create x", HookCheckCommand.DeniedExitCode)]
+    [InlineData("janitor", "dotnet test > out.txt", HookCheckCommand.AllowedExitCode)]
+    [InlineData("janitor", "echo $PATH", HookCheckCommand.AllowedExitCode)]
+    public void Unscoped_write_role_denies_label_merge_and_api_writes_from_the_catalog(
+        string roleId, string command, int expectedExitCode)
+    {
+        var role = Baton.Vendors.WorkerRoleCatalog.For(roleId);
+        Assert.Null(role.Grant.ShellCommandPatterns); // stays unscoped -- item 1's "do NOT add" requirement
+        var deniedShellPatternsRaw = role.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "claude:" + string.Join(",", role.Grant.DeniedShellCommandPatterns)
+            : "claude:";
+        var deniedShellOptionTokensRaw = role.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "claude:" + string.Join(",", role.Grant.DeniedShellOptionTokens)
+            : "claude:";
+
+        var payload = """{"tool_name": "Bash", "tool_input": {"command": COMMAND_JSON}}"""
+            .Replace("COMMAND_JSON", System.Text.Json.JsonSerializer.Serialize(command));
+        using var stdin = new StringReader(payload);
+        using var stderr = new StringWriter();
+
+        var exitCode = HookCheckCommand.Execute(
+            stdin, stderr, "claude:Edit,Write",
+            shellPatternsRaw: "claude:", // unscoped: Present, empty pattern list
             deniedShellPatternsRaw: deniedShellPatternsRaw,
             deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
 

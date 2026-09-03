@@ -934,7 +934,7 @@ public class ClaudeWorkerAdapterTests
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
 
         Assert.Equal(2, exitCode);
-        Assert.Contains("scoped shell grant", stderr, StringComparison.Ordinal);
+        Assert.Contains("this session's shell grant", stderr, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -972,7 +972,7 @@ public class ClaudeWorkerAdapterTests
         var (escapeExitCode, escapeStderr) = RunResolvedHookCommand(
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
         Assert.Equal(2, escapeExitCode);
-        Assert.Contains("scoped shell grant", escapeStderr, StringComparison.Ordinal);
+        Assert.Contains("this session's shell grant", escapeStderr, StringComparison.Ordinal);
 
         var (diffExitCode, diffStderr) = RunResolvedHookCommand(
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");

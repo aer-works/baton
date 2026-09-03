@@ -279,8 +279,10 @@ public static class ShellCommandPatternMatcher
     /// The <c>DenyAlways</c> rung's standing-"never" check (0022, M-Phase-6 #390) — reused by
     /// <see cref="EvaluateChainedCommand"/> (segment-level since #1685) to refuse a <c>run_command</c>
     /// whose command line matches a persisted
-    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry, deny-beats-allow. (claude enforces
-    /// the same rung through <c>--disallowedTools</c> rather than this matcher.) Returns
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry, deny-beats-allow. (claude also
+    /// carries this rung on <c>--disallowedTools</c>, but that flag only matches an unchained command
+    /// line — #1731 — so <c>EvaluateChainedCommand</c> reaches this on both vendors, on both a scoped
+    /// and an unscoped grant.) Returns
     /// <see langword="true"/> iff <paramref name="commandLine"/> matches at least one pattern in
     /// <paramref name="deniedPatterns"/>. Same glob shape and the same metacharacter fail-closed rules as
     /// <see cref="IsAllowed"/> (deliberately reuses it): a command this scanner cannot parse safely is
@@ -465,18 +467,37 @@ public static class ShellCommandPatternMatcher
                 ScopedShellVerdict.Unparseable, null, "unparseable under scoped grant (empty command line)");
         }
 
-        if (!TrySegmentChainedCommand(commandLine, out var segments, out var unparseableReason))
+        // #1731 operator ruling, recorded once at spec/baton.md §9: fail-closed metacharacter
+        // rejection stays exactly as-is for a SCOPED grant; an UNSCOPED grant with a deny list takes
+        // the permissive path below instead.
+        bool unscopedWithDeny = allowedPatterns is not { Count: > 0 } && deniedPatterns is { Count: > 0 };
+
+        if (!TrySegmentChainedCommand(commandLine, unscopedWithDeny, out var segments, out var unparseableReason))
         {
-            return new ScopedShellResult(ScopedShellVerdict.Unparseable, null, unparseableReason!);
+            if (!unscopedWithDeny)
+            {
+                return new ScopedShellResult(ScopedShellVerdict.Unparseable, null, unparseableReason!);
+            }
+
+            // Never Unparseable-deny on this scope (spec/baton.md §9): a boundary this scanner will
+            // not guess for is folded into one segment rather than refused.
+            segments = [commandLine.Trim()];
         }
 
         foreach (var segment in segments)
         {
-            if (deniedPatterns is { Count: > 0 } && IsAllowed(segment, deniedPatterns))
+            if (deniedPatterns is { Count: > 0 })
             {
-                return new ScopedShellResult(
-                    ScopedShellVerdict.DeniedSegment, segment,
-                    $"segment '{segment}' matches this session's standing deny list");
+                bool segmentDenied = unscopedWithDeny
+                    ? IsDeniedByTokenizedHead(segment, deniedPatterns)
+                    : IsAllowed(segment, deniedPatterns);
+
+                if (segmentDenied)
+                {
+                    return new ScopedShellResult(
+                        ScopedShellVerdict.DeniedSegment, segment,
+                        $"segment '{segment}' matches this session's standing deny list");
+                }
             }
 
             if (allowedPatterns is { Count: > 0 } && !IsAllowed(segment, allowedPatterns))
@@ -491,13 +512,70 @@ public static class ShellCommandPatternMatcher
     }
 
     /// <summary>
+    /// The unscoped-grant deny match (#1731): compares a deny pattern's whitespace-tokenized head
+    /// (<c>"gh label*"</c> → <c>["gh", "label"]</c>) against the same number of leading whitespace
+    /// tokens of <paramref name="segment"/>, exact and ordinal. Deliberately not a substring/prefix
+    /// scan like <see cref="IsAllowed"/> — the accepted cost of that choice is recorded once at
+    /// spec/baton.md §9, not restated here.
+    /// </summary>
+    private static bool IsDeniedByTokenizedHead(string segment, IReadOnlyList<string> deniedPatterns)
+    {
+        var tokens = segment.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var pattern in deniedPatterns)
+        {
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                continue;
+            }
+
+            var patternBody = pattern.EndsWith('*') ? pattern[..^1] : pattern;
+            var patternTokens = patternBody.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (patternTokens.Length == 0 || patternTokens.Length > tokens.Length)
+            {
+                continue;
+            }
+
+            bool matches = true;
+            for (int i = 0; i < patternTokens.Length; i++)
+            {
+                if (!tokens[i].Equals(patternTokens[i], StringComparison.Ordinal))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Splits <paramref name="commandLine"/> at top-level (unquoted) <c>;</c>, <c>&amp;&amp;</c>,
     /// <c>||</c>, <c>|</c> and a lone <c>&amp;</c> boundaries. Returns <see langword="false"/> the
     /// moment it meets a character it will not trust a boundary decision around; see
     /// <see cref="EvaluateChainedCommand"/>'s own remarks for the exact set and why.
     /// </summary>
+    /// <param name="permissiveMetacharacters">
+    /// #1731: when <see langword="true"/> (an unscoped grant with a standing deny list),
+    /// <c>$</c>, <c>&lt;</c>, <c>&gt;</c> and <c>\</c> are ordinary characters instead of fatal ones
+    /// -- routine build-tooling syntax (redirection, env-var references, Windows paths) no longer
+    /// denies outright. Backtick, subshell parens, an embedded newline and an unterminated quote stay
+    /// fatal to a boundary decision either way; the caller falls back to evaluating the whole line as
+    /// one segment rather than returning Unparseable when this flag is set.
+    /// </param>
     private static bool TrySegmentChainedCommand(
-        string commandLine, out IReadOnlyList<string> segments, out string? unparseableReason)
+        string commandLine, bool permissiveMetacharacters, out IReadOnlyList<string> segments,
+        out string? unparseableReason)
     {
         var result = new List<string>();
         var current = new System.Text.StringBuilder();
@@ -551,6 +629,9 @@ public static class ShellCommandPatternMatcher
                     continue;
                 case '"':
                     inDoubleQuote = true;
+                    current.Append(c);
+                    continue;
+                case '$' or '<' or '>' or '\\' when permissiveMetacharacters:
                     current.Append(c);
                     continue;
                 case '`' or '$' or '<' or '>' or '(' or ')' or '\\':

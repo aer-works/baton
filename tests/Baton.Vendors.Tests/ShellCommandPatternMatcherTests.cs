@@ -270,6 +270,94 @@ public class ShellCommandPatternMatcherTests
         Assert.Equal(expectedAllowed, result.IsAllowed);
     }
 
+    // --- #1731: implement/janitor are the first unscoped roles (empty allow list) to carry
+    // denied_shell_command_patterns, which routes every command through this segmenter for the first
+    // time. The operator ruling and its reasoning live at spec/baton.md §9, not restated here; these
+    // rows pin the resulting behaviour. A SCOPED grant (review) is unaffected and stays fail-closed.
+    [Theory]
+    [InlineData("dotnet test > out.txt")] // bare output redirection
+    [InlineData("dotnet test 2>&1")] // fd redirection
+    [InlineData("echo $PATH")] // bare variable reference
+    [InlineData("echo ${PATH}")] // braced parameter expansion, no nested substitution
+    [InlineData("dotnet test < input.txt")] // bare input redirection
+    [InlineData(@"git add C:\Users\worker\repo\file.txt")] // Windows absolute path, pre-existing (#659)
+    [InlineData(@"cd C:\Users\pbree\source\repos\w1 && dotnet build")] // backslash + chain operator
+    public void An_unscoped_deny_only_grant_permits_ordinary_redirection_variable_references_and_paths(
+        string command)
+    {
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            command, implement.Grant.ShellCommandPatterns, implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.True(result.IsAllowed, result.Reason);
+    }
+
+    [Fact]
+    public void An_unscoped_deny_only_grant_still_permits_an_ordinary_chain_with_no_metacharacters()
+    {
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            "true && gh pr create --title x", implement.Grant.ShellCommandPatterns,
+            implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.True(result.IsAllowed, result.Reason);
+    }
+
+    [Fact]
+    public void Leading_redirection_ahead_of_a_denied_command_is_the_accepted_bypass_on_an_unscoped_grant()
+    {
+        // The ruling's named cost, pinned rather than hidden (full reasoning at spec/baton.md §9, not
+        // restated here): a leading redirection moves `gh` out of head position and evades
+        // `IsDeniedByTokenizedHead`. A SCOPED grant would still deny this outright as Unparseable (the
+        // metacharacter is still fatal there); this test is specifically about the unscoped case.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            ">out.txt gh label create x", implement.Grant.ShellCommandPatterns,
+            implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.True(result.IsAllowed, result.Reason);
+    }
+
+    [Theory]
+    [InlineData("gh $'\\''; gh label create x #'")] // the documented ANSI-C-quote chain-hiding escape
+    [InlineData("$(gh label create x)")] // command substitution
+    [InlineData("`gh label create x`")] // backtick substitution
+    [InlineData("(gh label create x)")] // subshell grouping
+    [InlineData("echo $(gh label create x)")] // substitution nested in an otherwise-ordinary command
+    public void An_unscoped_deny_only_grant_never_returns_unparseable_even_around_hiding_constructs(
+        string command)
+    {
+        // #1731's ruling (spec/baton.md §9): a segment boundary this scanner will not guess for is no
+        // longer refused outright on this scope. Backtick/subshell/ANSI-C-quote forms still defeat the
+        // segmenter's own boundary tracking, so these rows fold to a single whole-line check and may
+        // come out Allowed -- an accepted cost, same shape as the redirection bypass above -- but the
+        // verdict must never be Unparseable here.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            command, implement.Grant.ShellCommandPatterns, implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.NotEqual(ShellCommandPatternMatcher.ScopedShellVerdict.Unparseable, result.Verdict);
+    }
+
+    [Theory]
+    [InlineData("git $'\\''; rm -rf / #'")] // the documented ANSI-C-quote chain-hiding escape
+    [InlineData("git diff; echo escaped")] // an ordinary chain past the allowed prefix
+    public void A_scoped_grant_still_fails_closed_exactly_as_before(string command)
+    {
+        // The control for the ruling: a SCOPED grant (a non-empty allow list, like review's) never
+        // takes the permissive path above -- it is unaffected by this PR and its fail-closed behaviour
+        // is unchanged.
+        string[] allowed = ["git diff*"];
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(command, allowed, null);
+
+        Assert.False(result.IsAllowed);
+    }
+
     [Theory]
     [InlineData("git merge origin/main", true)]
     [InlineData("git merge --no-ff x", true)]

@@ -215,15 +215,17 @@ public class AgyHookCheckCommandTests
     }
 
     [Fact]
-    public void A_segment_carrying_an_unquoted_metacharacter_fails_closed()
+    public void An_unscoped_deny_only_grant_never_denies_as_unparseable_even_around_a_substitution()
     {
-        // The segmentation scanner will not trust a boundary decision around a command substitution
-        // (or any other character it does not recognise), so the whole line denies rather than risk a
-        // hidden command riding through a boundary it guessed wrong -- fail-closed, same polarity as
-        // the whole-line scan this replaces.
+        // #1731 operator ruling (spec/baton.md §9) superseded this test's original claim: a command
+        // substitution used to deny the whole line as Unparseable here too, same polarity as the
+        // whole-line scan it replaced. `EvaluateChainedCommand`'s own remarks state the current
+        // mechanism; "git push*" simply does not match this line's head tokens either way, so it
+        // allows. A SCOPED grant (review) is unaffected -- see
+        // HookCheckCommandTests.An_unparseable_command_fails_closed_under_a_scoped_grant.
         var payload = CommandPayload("git status && echo $(whoami)");
         Assert.Equal(
-            "deny",
+            "allow",
             Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
     }
 
@@ -576,6 +578,71 @@ public class AgyHookCheckCommandTests
         var exitCode = AgyHookCheckCommand.Execute(
             stdin, stdout, "agy:write_to_file,replace_file_content",
             shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(expectedDecision, doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Theory]
+    // #1731's grant shape, agy's side (spec/baton.md §9): #1725's segment-level deny check is not
+    // nested under a non-empty allow list here, so this rung engages the same way on an unscoped
+    // grant as on review's scoped one.
+    [InlineData("implement", "gh pr create --title x --body-file y", "allow")]
+    [InlineData("implement", "gh pr edit 1 --body-file y", "allow")]
+    [InlineData("implement", "gh label create x", "deny")]
+    [InlineData("implement", "gh pr edit 1 --add-label x", "deny")]
+    [InlineData("implement", "gh pr edit 1 --remove-label x", "deny")]
+    // Found-while-fixing, same PR: `--label` at creation time attaches a label too, and was never
+    // covered by the issue's own token list.
+    [InlineData("implement", "gh pr create --title x --label operator-merge", "deny")]
+    [InlineData("implement", "gh issue create --title x --label operator-merge", "deny")]
+    [InlineData("implement", "gh pr merge 1 --squash", "deny")]
+    [InlineData("implement", "gh api repos/a/b", "deny")]
+    [InlineData("implement", "true && gh label create x", "deny")]
+    // #1731 found-while-fixing: adding a deny list to an unscoped agy role (the first one to carry
+    // one) routes every run_command through EvaluateChainedCommand's segmenter for the first time.
+    // The operator ruling recorded at spec/baton.md §9 is what makes these rows allow rather than
+    // deny -- read there for the reasoning; this pins the resulting behaviour through the real catalog.
+    [InlineData("implement", "dotnet test > out.txt", "allow")]
+    [InlineData("implement", "echo $PATH", "allow")]
+    [InlineData("janitor", "gh pr create --title x --body-file y", "allow")]
+    [InlineData("janitor", "gh pr edit 1 --body-file y", "allow")]
+    [InlineData("janitor", "gh label create x", "deny")]
+    [InlineData("janitor", "gh pr edit 1 --add-label x", "deny")]
+    [InlineData("janitor", "gh pr edit 1 --remove-label x", "deny")]
+    [InlineData("janitor", "gh pr merge 1 --squash", "deny")]
+    [InlineData("janitor", "gh api repos/a/b", "deny")]
+    [InlineData("janitor", "true && gh label create x", "deny")]
+    [InlineData("janitor", "dotnet test > out.txt", "allow")]
+    [InlineData("janitor", "echo $PATH", "allow")]
+    public void Unscoped_write_role_denies_label_merge_and_api_writes_from_the_catalog(
+        string roleId, string command, string expectedDecision)
+    {
+        var role = Baton.Vendors.WorkerRoleCatalog.For(roleId);
+        Assert.Null(role.Grant.ShellCommandPatterns); // stays unscoped -- item 1's "do NOT add" requirement
+        var deniedShellPatternsRaw = role.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", role.Grant.DeniedShellCommandPatterns)
+            : "agy:";
+        var deniedShellOptionTokensRaw = role.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "agy:" + string.Join(",", role.Grant.DeniedShellOptionTokens)
+            : "agy:";
+
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:", // unscoped: Present, empty pattern list
             deniedShellPatternsRaw: deniedShellPatternsRaw,
             deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
 
