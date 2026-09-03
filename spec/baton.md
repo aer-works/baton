@@ -2887,20 +2887,103 @@ absence would have broken every already-shipped unscoped shell role the moment t
 unscoped grant reads the same way, matching `AgyHookCheckCommand`'s existing treatment of an empty
 pattern list on that vendor. **`AgyHookCheckCommand` now routes through the same
 `EvaluateChainedCommand` segmentation (#1685), evaluating the DenyAlways channel on every top-level
-segment even when the allow list is empty** — unlike claude, whose deny check stays nested under a
-non-empty allow list because `--disallowedTools` is its own primary enforcement of that rung, a layer
-agy has no equivalent for, so agy cannot afford the same nesting. Two user-visible behaviour changes
-follow from this: a scoped agy grant now permits chains it used to refuse outright (a segment riding
-after an allowed prefix on a `;`/`&&`/`||`/`|` boundary is judged on its own terms rather than failing
-the old whole-line scan), and an unscoped-with-deny grant now refuses an unparseable line — one
+segment even when the allow list is empty.** Two user-visible behaviour changes follow from this: a
+scoped agy grant now permits chains it used to refuse outright (a segment riding after an allowed
+prefix on a `;`/`&&`/`||`/`|` boundary is judged on its own terms rather than failing the old
+whole-line scan), and an unscoped-with-deny grant now refuses an unparseable line — one
 `TrySegmentChainedCommand` will not guess a boundary for — that it used to allow, since the segmenter's
-own fail-closed verdict applies before either pattern list is consulted.
+own fail-closed verdict applies before either pattern list is consulted. **#1733 corrected this
+paragraph's own prior claim that claude's deny check could stay nested under a non-empty allow list
+because `--disallowedTools` was its own primary enforcement of the DenyAlways rung.** That reasoning
+held only for an unchained command: `--disallowedTools Bash(pattern)` matches the whole command line
+as typed (#1461, above), so it never caught a denied family riding a chain after an allowed or
+unscoped prefix. #1731 gave `implement`/`janitor` (both unscoped) a standing deny list, which is what
+exposed the gap — `true && gh label create x` reached neither claude backstop. `HookCheckCommand.Decide`
+now runs `EvaluateChainedCommand`'s segmented deny check whenever either the allow or the deny pattern
+list is non-empty — `deniedShellPatterns.Count > 0 || shellPatternList.Patterns.Count > 0` — matching
+`AgyHookCheckCommand`'s condition above exactly; neither is nested under the other's allow list. That
+parity holds when both channels are Present — an Absent or WrongVendor deny channel still reads
+oppositely on the two vendors, same as the allow channel already does above: claude collapses it to
+`Array.Empty` and skips the deny half, agy denies `run_command` outright. Not new to #1731 and not
+exploitable today (both adapters emit both channels unconditionally), but it is the one place the
+parity claim does not extend, and #1731 is not what closed it.
+**#1731 found-while-fixing, same PR: `--label` at PR/issue *creation* time was missing from the
+deny list.** `gh pr create --label operator-merge`/`gh issue create --label operator-merge` attach a
+label exactly as `gh pr edit --add-label` does, and neither the issue's own token list nor
+`denied_shell_option_tokens` covered it until `--label` was added alongside `--add-label`/
+`--remove-label`. The short form `-l` is deliberately not covered — `IsDeniedByOptionToken` matches
+any whitespace-split token anywhere on the line, and `-l` would deny unrelated commands like `ls -l`.
 `PermissionGrant.ShellCommandsAreReadOnly`
 (new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
 without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s
 coherence check — it only counts when a non-empty pattern list backs it (an unscoped shell claiming
 read-only is refused as incoherent); see that type's own doc comment for exactly what the assertion
 claims and does not derive.
+
+**#1731: `implement`/`janitor` stay unscoped but now carry a standing deny list — a write role may not
+create or apply a label, merge a PR, or call `gh api`, on either vendor; the label itself is applied
+by the operator, per C-15 (#1730), not restated here.**
+
+**#1731 found-while-fixing, same PR: `EvaluateChainedCommand`'s fail-closed metacharacter set was
+never exercised against a broad, unscoped grant before this issue, and (before the operator ruling
+below) it denied ordinary commands outright.** `implement`/`janitor` are the first unscoped roles with
+a deny list, so adding one routed every command through `TrySegmentChainedCommand`'s segmentation for
+the first time (on both vendors — agy already ran it unconditionally since #1725, claude as of #1733
+above). That segmenter's fail-closed character set (`` ` ``, `$`, `<`, `>`, `(`, `)`, `\`) was tuned
+for `review`'s narrow, scoped, read-only allow list, where nothing outside the enumerated patterns
+should execute at all — it had never run against a role trusted with arbitrary shell commands. A
+second-reader review measured the result: `dotnet test > out.txt`, `echo $PATH`, and any command
+containing a literal `\` (including a Windows absolute path, e.g. `git add C:\Users\...\x`,
+pre-existing since #659 and now inherited by these two roles for the first time) — all routine, denied
+every one outright as unparseable, not merely the specific named commands (`gh label`/`gh pr merge`/
+`gh api`). What follows is that finding's resolution, not the current behaviour.
+<br><br>
+A first relaxation attempt (`permissiveMetacharacters`, treating bare `$`/`<`/`>` as ordinary unless
+immediately followed by a character that opens real execution) was reverted in the same PR after a
+second adversarial review measured that it opened new, silent deny-list bypasses a prefix-anchored
+matcher cannot safely close: leading or mid-command shell redirection (`>out.txt gh label create x`,
+`gh 2>/dev/null label create x`) moves the denied command's literal text out from under a
+start-anchored prefix match, and unquoted `${...}`-based word splitting (`gh${IFS}label create x`)
+makes the scanned source text never contain the denied substring even though real bash execution
+collapses it back to the denied command.
+
+**Operator ruling (same PR, superseding the paragraph above): on an UNSCOPED grant that carries a
+non-empty deny list, `$`, `<`, `>` and `\` are ordinary characters, not fatal ones — the over-block was
+the wrong call, not the bypasses.** `implement`/`janitor` already hold `WriteFiles`/`NetworkAccess`;
+their deny list exists to catch a *cooperative* worker drifting into `gh label`/`gh pr merge`/`gh api`,
+not to hold a line against an adversary who can already read, write and reach the network by simply
+not routing through this one channel. Denying `dotnet test > out.txt` and `echo $PATH` outright bought
+no containment that combination of grants does not already forfeit — it only made the roles harder to
+use. A `review`-shaped SCOPED grant (a non-empty allow list) is a real security boundary — its allow
+list *is* what stands between the worker and everything else — and stays exactly as fail-closed as
+before; nothing here changes for it.
+
+The mechanism: `EvaluateChainedCommand` still splits an unscoped-with-deny command at the same
+`&&`/`||`/`;`/`|` boundaries as any other grant, and (#1748 F1) an unquoted top-level newline is
+now one of those boundaries too on this scope rather than a fatal character — a multi-line
+`Bash`/`run_command` payload (heredoc, scripted step) is routine cooperative-worker shape, not
+adversarial evasion, so folding it into one segment was over-permissive in the wrong direction. Each
+segment's deny check matches a deny pattern against the segment's whitespace-tokenized *head* rather
+than a substring/prefix scan (`gh label*` against `gh label create x` compares `["gh","label"]` to
+the segment's first two tokens, not the raw text) — and a segment `TrySegmentChainedCommand` still
+cannot find a boundary for (a backtick, `$(`, a subshell, an unterminated quote) is evaluated as one
+unsplit whole-line segment instead of refused as `Unparseable`; that verdict no longer fires at all
+on this scope, except the pre-existing empty/whitespace-only-command-line guard, which still fires
+before either pattern list is consulted (harmless in effect, but not "no longer fires at all"). On
+that whole-line fold, the deny match (#1748 F2) scans every token offset in the folded segment, not
+only its head, and strips a leading backtick/`$(`/`(`/quote off each compared token — a denied
+command riding inside a hiding construct, or sitting in a genuine segment elsewhere on a line an
+unrelated construct folded, still denies. **This reopens one family of bypasses on purpose, and
+accepts it — anything that moves `gh` off a segment's head without folding the line**:
+`>out.txt gh label create x` (leading redirection), `gh${IFS}label create x` and the escaped-space
+form `gh\ label create x` (neither tokenizes to a leading `gh`), and `gh $'\''; gh label create x #'`
+(a balanced quote span hides the `;`, so segmentation succeeds and the fold's every-offset scan never
+runs). Closing them for real needs actual shell argv reconstruction, which is a
+different, larger project than a glob matcher; the operator judged that project not worth building
+for a channel that is a drift guard rather than a boundary. See
+`ShellCommandPatternMatcher.EvaluateChainedCommand`'s own remarks for the mechanism, scoped to what
+applies on a SCOPED vs. an UNSCOPED-with-deny grant; this paragraph is the ruling, not restated
+there.
 
 **Network honesty: `review`'s `network_access` stays `false`, and `gh` reaches github.com anyway.**
 The categorical `NetworkAccess` grant (claude's `WebFetch`/`WebSearch`, arbitrary URLs) is

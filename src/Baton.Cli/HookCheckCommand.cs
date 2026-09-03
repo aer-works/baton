@@ -61,9 +61,8 @@ public static class HookCheckCommand
     /// DenyAlways rung, #390) — same literal as <c>AgyHookCheckCommand.DeniedShellPatternsEnvironmentVariable</c>
     /// and <c>ClaudeWorkerAdapter.DeniedShellPatternsVariable</c> (record-once). Belt-and-braces here:
     /// claude's primary enforcement of this rung is <c>--disallowedTools Bash(pattern)</c>, which
-    /// survives a silently-dead hook (#530); this channel lets the segment-level check below also
-    /// refuse a denied family riding a chain, which <c>--disallowedTools</c>' own whole-line matching
-    /// does not provably reach (spec/baton.md §9).
+    /// survives a silently-dead hook (#530); this channel lets the segment-level check below reach
+    /// what that flag's own whole-line matching cannot provably reach on its own (spec/baton.md §9).
     /// </summary>
     public const string DeniedShellPatternsEnvironmentVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
 
@@ -296,20 +295,26 @@ public static class HookCheckCommand
             // deny-on-absent would fail every existing unscoped `RunShellCommands: true` claude role
             // (`implement`, `janitor`) the moment this shipped, which is exactly what #1459's own issue
             // body flags as the reason this was deferred out of #1456.
-            if (shellPatternList.Status == ShellPatternListStatus.Present && shellPatternList.Patterns.Count > 0)
-            {
-                var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
-                var deniedShellPatterns = deniedShellPatternList.Status == ShellPatternListStatus.Present
-                    ? deniedShellPatternList.Patterns
-                    : Array.Empty<string>();
+            var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
+            var deniedShellPatterns = deniedShellPatternList.Status == ShellPatternListStatus.Present
+                ? deniedShellPatternList.Patterns
+                : Array.Empty<string>();
 
+            // #1731: NOT nested under shellPatternList.Patterns.Count > 0 alone, matching
+            // AgyHookCheckCommand's condition (`deniedShellPatternList.Patterns.Count > 0 ||
+            // shellPatternList.Patterns.Count > 0`, #1725) -- see spec/baton.md §9 for why claude's
+            // own --disallowedTools flag is not a sufficient backstop on its own for this rung.
+            if (deniedShellPatterns.Count > 0 || shellPatternList.Patterns.Count > 0)
+            {
                 var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(
                     shellCommandLine, shellPatternList.Patterns, deniedShellPatterns);
 
                 if (!result.IsAllowed)
                 {
-                    stderr.WriteLine($"AER: the 'Bash' command is denied under this session's scoped " +
-                                     $"shell grant — {result.Reason}.");
+                    // "scoped" would misstate this for implement/janitor (#1731): this rung now also
+                    // engages on an unscoped grant that carries a deny list, not only a scoped allow.
+                    stderr.WriteLine($"AER: the 'Bash' command is denied under this session's shell " +
+                                     $"grant — {result.Reason}.");
                     return DeniedExitCode;
                 }
             }

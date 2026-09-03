@@ -1009,7 +1009,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// refused even under an unscoped grant and without re-asking. Under the runtime gate this is the
     /// <em>whole</em> of what <c>--disallowedTools</c> carries (withheld categories ride the ask band);
     /// off the gate it rides alongside them. Enforced independently of the <c>PreToolUse</c> hook, so it
-    /// survives a silently-dead hook (#530) — which is why claude needs no hook-side deny check.
+    /// survives a silently-dead hook (#530). <b>#1731 corrected the claim that claude "needs no
+    /// hook-side deny check"</b> — this flag matches the whole command line as typed (#1461), so it
+    /// never catches a denied family riding a chain (<c>true &amp;&amp; gh label create x</c>); the hook's
+    /// own segmented deny check (<c>HookCheckCommand</c>, <c>toolName == "Bash"</c>) closes that gap and
+    /// is not merely belt-and-braces on top of this flag. See spec/baton.md §9.
     /// <para>
     /// <b><see cref="PermissionGrant.DeniedShellOptionTokens"/> deliberately emits nothing here
     /// (#1683 F2)</b> — that rung is hook-only on this vendor. The reasoning and the measurement gap
