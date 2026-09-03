@@ -129,6 +129,9 @@ public static class StatusCommand
 
             PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath);
 
+            var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
+            var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
+
             if (options.Follow)
             {
                 var artifactsDir = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
@@ -137,8 +140,8 @@ public static class StatusCommand
                 TailStreams(
                     output,
                     artifactsDir,
-                    new Dictionary<string, long>(StringComparer.Ordinal),
-                    new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal),
+                    streamOffsets,
+                    lineAssemblers,
                     executionId => RoomAdapterLookup.ResolveAdapter(executionId, initialAdapterNames, WorkerAdapterRegistry.Default),
                     // Already Terminal means FollowAsync below never runs, so this is the only/last
                     // tail this room will ever get -- flush its pending partial line now (#1574).
@@ -150,7 +153,13 @@ public static class StatusCommand
                 return;
             }
 
-            await FollowAsync(output, reader, snapshot, events.Count, logPath, options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+            // The initial tail above already advanced streamOffsets/lineAssemblers past whatever it
+            // printed -- carrying the SAME dictionaries into the follow loop (rather than the loop
+            // building its own from scratch) is what makes its first poll resume from there instead
+            // of offset 0, which re-tailed and printed the initial content a second time (#1721).
+            await FollowAsync(
+                output, reader, snapshot, events.Count, logPath, options.RoomDirectoryPath,
+                streamOffsets, lineAssemblers, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (options.Follow && cancellationToken.IsCancellationRequested)
         {
@@ -167,6 +176,12 @@ public static class StatusCommand
     /// <paramref name="printedEventCount"/> as it appears, until re-projecting reaches
     /// <see cref="WorkflowStatus.Terminal"/> or <paramref name="cancellationToken"/> is cancelled.
     /// Tails stdout/stderr streams of running executions interleaved with event lines.
+    /// <para>
+    /// <paramref name="streamOffsets"/> and <paramref name="lineAssemblers"/> are the SAME instances
+    /// the caller's initial <see cref="TailStreams"/> call already advanced, never fresh ones built
+    /// here -- resuming from those offsets is what stops the loop's first poll from re-tailing (and
+    /// reprinting) whatever the initial tail already printed (#1721).
+    /// </para>
     /// <para>
     /// Every exit path flushes <paramref name="lineAssemblers"/>' pending partial lines exactly once
     /// (#1574 second-reader finding 2): the <c>justWentTerminal</c> branch below already flushes as
@@ -186,12 +201,12 @@ public static class StatusCommand
         int printedEventCount,
         string logPath,
         string roomDirectoryPath,
+        Dictionary<string, long> streamOffsets,
+        Dictionary<string, StreamLineAssembler> lineAssemblers,
         CancellationToken cancellationToken)
     {
         var lastObservedLength = -1L;
         var artifactsDir = Path.Combine(roomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
-        var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
-        var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
         var bindings = await RoomAdapterLookup.TryLoadBindingsAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
         IReadOnlyDictionary<string, string> adapterNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         IWorkerAdapter? ResolveAdapter(string executionId) =>
