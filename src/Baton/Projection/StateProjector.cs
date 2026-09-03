@@ -633,9 +633,12 @@ public static class StateProjector
         // real spend is at least this, never at most. A pre-#1682 ledger line carries the flag's
         // default (false) and keeps the wording it always had.
         var figureVerb = arrested.Usage?.BilledIsFloor == true ? "measured as a floor — the real spend is at least this" : "measured";
+        // #1745: names the adapter whose (possibly per-adapter) budget applied -- see
+        // FlowEvent.ExecutionArrested.Adapter's own remarks for when it is null.
+        var adapterClause = arrested.Adapter is { Length: > 0 } adapter ? $" on adapter '{adapter}'" : string.Empty;
         return billed > 0
-            ? $"Execution arrested: token budget exceeded ({billed} {figureLabel} {figureVerb}) — awaiting conductor resolution."
-            : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
+            ? $"Execution arrested: token budget exceeded ({billed} {figureLabel} {figureVerb}){adapterClause} — awaiting conductor resolution."
+            : $"Execution arrested: token budget exceeded{adapterClause} — awaiting conductor resolution.";
     }
 
     private static FlowState DeriveFlowState(

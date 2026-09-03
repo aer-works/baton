@@ -87,14 +87,18 @@ every other role declare none. A verify failure is never a blind retry: it settl
 (`verifyStarted`/`verifyPassed`/`verifyFailed` in `flow.jsonl`) — a conductor resolves it, the same way
 an ambiguous captured-response outcome does (spec/baton.md §3).
 
-### The per-execution token budget (#1623)
+### The per-execution token budget (#1623, per-adapter default #1745)
 
 `implement`/`review`/`advise` carry default budgets; every other role runs unwatched unless `--token-budget` is passed.
-Usage is read incrementally from the vendor's own `stream-json` output as it arrives, not just the
-terminal line, so a poll loop or a runaway tool-call sequence is caught mid-flight rather than after
-the fact. Crossing the budget arrests the execution (cancels it, never lets it keep running) and
-settles the step `Indeterminate` — `executionArrested` in `flow.jsonl` carries the measured usage and
-the last few tool names observed.
+A role's catalog entry is either one figure that applies no matter which adapter runs it (today's
+shape, and still what `implement`/`advise` use) or a map keyed by adapter name (`review`'s shape, both
+values presently equal — spec/baton.md §3 has why and states the resolution rule for an
+unconfigured adapter). Usage is read incrementally from the vendor's own `stream-json` output
+as it arrives, not just the terminal line, so a poll loop or a runaway tool-call sequence is caught
+mid-flight rather than after the fact. Crossing the budget arrests the execution (cancels it, never
+lets it keep running) and settles the step `Indeterminate` — `executionArrested` in `flow.jsonl`
+carries the measured usage, the last few tool names observed, and (#1745) the adapter the applied
+budget was resolved for.
 
 ### The auto-provisioned worktree, and what it costs
 

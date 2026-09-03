@@ -940,6 +940,9 @@ public class MutationInterfaceTests
             Assert.Equal(700000, arrested.Usage?.BilledTokens);
             Assert.True(arrested.Usage?.BilledIsFloor);
             Assert.Equal(ArrestReason.TokenBudget, arrested.Reason);
+            // #1745: the live adapter this execution actually ran on, so StateProjector's arrest text
+            // can name which vendor's (possibly per-adapter) budget figure fired.
+            Assert.Equal("claude", arrested.Adapter);
         }
         finally
         {

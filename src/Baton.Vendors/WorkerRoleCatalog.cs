@@ -34,7 +34,8 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// (measured from the same usage the vendor's stream-json reports mid-execution, not just the
 /// terminal line) -- crossing it arrests the execution. Null means no budget is enforced for a role
 /// that declares none; <c>--token-budget</c> overrides this per dispatch
-/// (<see cref="RoleDispatch.ToBinding"/>'s own parameter).
+/// (<see cref="RoleDispatch.ToBinding"/>'s own parameter). #1745: see <see cref="TokenBudgetSpec"/> for
+/// the two shapes this field can now take and how each resolves.
 /// </param>
 /// <param name="MaxToolSteps">
 /// #1682 (contract: <c>spec/baton.md</c> §3): the default per-execution tool-step ceiling -- a second
@@ -64,7 +65,7 @@ public sealed record WorkerRole(
     string Purpose,
     IReadOnlyList<WorkerRoleOutput> Outputs,
     string? VerifyPixiTask = null,
-    long? TokenBudget = null,
+    TokenBudgetSpec? TokenBudget = null,
     int? MaxToolSteps = null,
     long? BilledRateLimit = null);
 
@@ -106,6 +107,15 @@ public static class WorkerRoleCatalog
 {
     public const string TiersPathEnvironmentVariable = "BATON_WORKER_TIERS_PATH";
     public const string RolesPathEnvironmentVariable = "BATON_WORKER_ROLES_PATH";
+
+    /// <summary>
+    /// #1745: the only adapter names a role's per-adapter <c>token_budget</c> map may key on. Not
+    /// <see cref="WorkerAdapterRegistry.Default"/>'s full key set -- that also carries the no-op,
+    /// capture, and command test/composition adapters, none of which bill tokens or ever run a role
+    /// dispatched through this catalog, so admitting them here would let a typo in a real vendor's name
+    /// (e.g. "cluade") pass as a config for a fake one instead of failing loudly at load.
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> KnownTokenBudgetAdapters = ["claude", "agy"];
 
     private const string TiersDefaultFileName = "WorkerTiers.json";
     private const string RolesDefaultFileName = "WorkerRoles.json";
@@ -193,7 +203,7 @@ public static class WorkerRoleCatalog
                 Purpose: raw.Purpose,
                 Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList(),
                 VerifyPixiTask: raw.VerifyPixiTask,
-                TokenBudget: raw.TokenBudget,
+                TokenBudget: ParseTokenBudget(raw.Id, raw.TokenBudget),
                 MaxToolSteps: raw.MaxToolSteps,
                 BilledRateLimit: raw.BilledRateLimit));
         }
@@ -234,6 +244,58 @@ public static class WorkerRoleCatalog
         };
 
         return new WorkerRoleOutput(raw.Name, schema, raw.Instruction);
+    }
+
+    // #1745: parsed separately from RawRole's plain deserialization, the same way ResolveOutput below
+    // hand-validates a role's outputs, because the shape check ("int or adapter map?") AND the
+    // per-key validation ("is this adapter name real, is this value a whole number?") both need to
+    // name the OFFENDING role -- a JsonConverter attached to the type has no such context, only the
+    // bare property value.
+    private static TokenBudgetSpec? ParseTokenBudget(string roleId, JsonElement? raw)
+    {
+        if (raw is not { } element || element.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number)
+        {
+            if (!element.TryGetInt64(out var fixedValue))
+            {
+                throw new InvalidOperationException(
+                    $"Worker role '{roleId}' declares 'token_budget' {element.GetRawText()}, which is not a whole number of tokens.");
+            }
+
+            return new TokenBudgetSpec.Fixed(fixedValue);
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var byAdapter = new Dictionary<string, long>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!KnownTokenBudgetAdapters.Contains(property.Name))
+                {
+                    throw new InvalidOperationException(
+                        $"Worker role '{roleId}' 'token_budget' names unknown adapter '{property.Name}'. " +
+                        $"Known adapters: {string.Join(", ", KnownTokenBudgetAdapters)}.");
+                }
+
+                if (property.Value.ValueKind != JsonValueKind.Number || !property.Value.TryGetInt64(out var perAdapterValue))
+                {
+                    throw new InvalidOperationException(
+                        $"Worker role '{roleId}' 'token_budget.{property.Name}' is not a whole number of tokens.");
+                }
+
+                byAdapter[property.Name] = perAdapterValue;
+            }
+
+            return new TokenBudgetSpec.PerAdapter(byAdapter);
+        }
+
+        throw new InvalidOperationException(
+            $"Worker role '{roleId}' declares 'token_budget' as {element.ValueKind}, which is neither a " +
+            "whole number nor an object mapping adapter name to a whole number of tokens.");
     }
 
     // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
@@ -296,7 +358,10 @@ public static class WorkerRoleCatalog
         // #1623: optional like the three above, for the same reason -- most roles declare neither and
         // omitting them is exactly "no engine-run verify, no token budget", the WorkerRole defaults.
         string? VerifyPixiTask = null,
-        long? TokenBudget = null,
+        // #1745: raw JsonElement, not long? -- the wire shape is now `int | {adapter: int}`, and
+        // ParseTokenBudget above is what turns this into a TokenBudgetSpec, naming the offending role
+        // if the shape or a map entry is invalid.
+        JsonElement? TokenBudget = null,
         // #1682: optional for the same reason -- most roles declare no tool-step cap.
         int? MaxToolSteps = null,
         // #1691: optional for the same reason, and here NO role declares one -- the key is readable

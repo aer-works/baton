@@ -1,5 +1,6 @@
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Status;
 using Baton.Templates;
 
 namespace Baton.Vendors.Tests;
@@ -114,6 +115,31 @@ public class WorkerAdapterRegistryTests
         Assert.True(WorkerAdapterRegistry.Default.TryGetValue(
             WorkflowTemplateComposer.CaptureAdapter, out var adapter));
         Assert.IsType<CaptureWorkerAdapter>(adapter);
+    }
+
+    /// <summary>
+    /// #1745 review: <see cref="TokenBudgetSpec.Resolve"/> sends an adapter outside
+    /// <see cref="WorkerRoleCatalog.KnownTokenBudgetAdapters"/> to the no-budget arm instead of refusing.
+    /// That arm is only safe while every adapter reaching it is one whose tokens the engine could not
+    /// count anyway. The set of adapters whose tokens ARE countable is exactly
+    /// <see cref="StandardWorkerUsageParsers.Default"/>'s key set, so the two must move in lockstep: a
+    /// third billed vendor registered with a parser but no budget policy would otherwise run every role
+    /// unwatched, and nothing else in the suite would notice.
+    /// </summary>
+    [Fact]
+    public void Every_adapter_with_a_usage_parser_has_a_token_budget_policy_and_no_other_does()
+    {
+        var countable = StandardWorkerUsageParsers.Default.Keys.OrderBy(k => k, StringComparer.Ordinal);
+        var budgeted = WorkerRoleCatalog.KnownTokenBudgetAdapters.OrderBy(k => k, StringComparer.Ordinal);
+
+        Assert.Equal(countable, budgeted);
+
+        foreach (var name in WorkerAdapterRegistry.Default.Keys)
+        {
+            Assert.Equal(
+                StandardWorkerUsageParsers.Default.ContainsKey(name),
+                WorkerRoleCatalog.KnownTokenBudgetAdapters.Contains(name));
+        }
     }
 
     [Fact]

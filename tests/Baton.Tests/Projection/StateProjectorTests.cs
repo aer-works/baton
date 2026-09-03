@@ -1695,6 +1695,55 @@ public class StateProjectorTests
             architect.IndeterminateReason);
     }
 
+    /// <summary>
+    /// #1745: a role's token budget can now default per adapter, so the arrest text names WHICH
+    /// adapter's figure applied -- without it, "token budget exceeded" no longer says enough to tell a
+    /// conductor whether the claude or the agy figure fired.
+    /// </summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_names_the_adapter_the_budget_applied_to()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget,
+                Adapter: "agy"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) on adapter 'agy' — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>A ledger line written before #1745 carries no Adapter and reads exactly as it did before.</summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_omits_the_adapter_clause_when_none_was_recorded()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
     [Fact]
     public void ExecutionArrested_DescribeArrest_pins_the_tool_step_cap_text()
     {

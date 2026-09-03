@@ -324,6 +324,12 @@ public abstract record FlowEvent
     /// #1691: the limit <paramref name="PeakBilledInWindow"/> was compared against, or null when no
     /// rate trigger was armed (every role's default — spec/baton.md §3).
     /// </param>
+    /// <param name="Adapter">
+    /// #1745: the adapter this execution actually ran on, so <c>StateProjector.DescribeArrest</c> can
+    /// name it in a <see cref="ArrestReason.TokenBudget"/> arrest's text — the budget that applied is
+    /// now per-adapter, so the reason it fired is incomplete without naming which vendor's figure it
+    /// was. Null on a ledger line written before this field existed.
+    /// </param>
     public sealed record ExecutionArrested(
         ExecutionId ExecutionId,
         WorkerUsage? Usage = null,
@@ -331,7 +337,8 @@ public abstract record FlowEvent
         ArrestReason? Reason = null,
         int? ToolStepCount = null,
         long? PeakBilledInWindow = null,
-        long? BilledRateLimit = null) : FlowEvent;
+        long? BilledRateLimit = null,
+        string? Adapter = null) : FlowEvent;
 
     /// <summary>
     /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different

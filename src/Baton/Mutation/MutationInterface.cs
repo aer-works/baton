@@ -1776,7 +1776,12 @@ public static class MutationInterface
                         // #1691: recorded on EVERY arrest, not only a BilledRate one -- see
                         // TokenBudgetMonitor.SnapshotPeakBilledInWindow for why.
                         budgetMonitor.SnapshotPeakBilledInWindow(),
-                        binding.BilledRateLimit),
+                        binding.BilledRateLimit,
+                        // #1745: same recorded-adapter preference as usageParser above -- the LIVE
+                        // adapter this execution actually ran on, not binding.Adapter (the CATALOG's
+                        // pre-crash-recovery value), so a rebound execution's arrest text names the
+                        // vendor whose figure actually fired.
+                        prepared.Request.Adapter),
                     CancellationToken.None).ConfigureAwait(false);
                 return;
             }

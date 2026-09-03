@@ -74,7 +74,11 @@ public static class RoleDispatch
     /// <param name="attachmentsDirectory">The directory inside the room artifacts where attached files live.</param>
     /// <param name="tokenBudgetOverride">
     /// The <c>--token-budget</c> escape hatch (#1623), independent of the role like <paramref
-    /// name="timeoutOverride"/>. Null keeps <see cref="WorkerRole.TokenBudget"/>.
+    /// name="timeoutOverride"/>. Null keeps <see cref="WorkerRole.TokenBudget"/>, resolved against the
+    /// winning <paramref name="adapterOverride"/> (or the role's own tier adapter) via
+    /// <see cref="TokenBudgetSpec.Resolve"/> -- #1745: a role's map with no entry for that adapter
+    /// throws <see cref="TokenBudgetAdapterNotConfiguredException"/> rather than silently running
+    /// unwatched.
     /// </param>
     /// <param name="maxToolStepsOverride">
     /// The <c>--max-tool-steps</c> escape hatch (#1686 review F11), mirroring <paramref
@@ -190,7 +194,10 @@ public static class RoleDispatch
             // own remarks on WorkerBindingConfigEntry.
             VerifyPixiTask: role.VerifyPixiTask,
             VerifyCommandOverride: verifyCommandOverride,
-            TokenBudget: tokenBudgetOverride ?? role.TokenBudget,
+            // #1745: --token-budget wins outright; otherwise the role's own spec is resolved against
+            // THIS binding's winning adapter (the local `adapter` above, already normalized/overridden),
+            // never role.Adapter -- a per-adapter map must answer for the vendor actually dispatched to.
+            TokenBudget: tokenBudgetOverride ?? role.TokenBudget?.Resolve(role.Id, adapter),
             // #1686 review F11: the --max-tool-steps escape hatch, mirroring --token-budget.
             MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps,
             // #1691: the --billed-rate-limit escape hatch, mirroring both of the above.
