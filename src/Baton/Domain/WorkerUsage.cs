@@ -52,6 +52,13 @@ namespace Baton.Domain;
 /// crossing; what it cannot do is prove a budget was NOT crossed, which is exactly what the arrest
 /// text and the glass now say rather than leaving to inference.
 /// </param>
+/// <param name="IsSubAgentTurn">
+/// #1666: <see langword="true"/> when this reading's raw line was a sub-agent's own turn rather than
+/// the parent conversation's — spec/baton.md §3 has the measured shape that marks one and why
+/// <see cref="Mutation.TokenBudgetMonitor"/> tracks this bucket's level separately rather than letting
+/// it replace the parent's larger one. False for every agy reading (that vendor's shape has no
+/// analogous field) and for claude's own non-sub-agent turns.
+/// </param>
 public sealed record WorkerUsage(
     long? TokensIn = null,
     long? TokensOut = null,
@@ -62,4 +69,5 @@ public sealed record WorkerUsage(
     long? ContextLevelTokens = null,
     long? BilledTokens = null,
     string? MessageId = null,
-    bool BilledIsFloor = false);
+    bool BilledIsFloor = false,
+    bool IsSubAgentTurn = false);

@@ -1006,6 +1006,23 @@ includes the placeholder) subtly different quantities rather than the same one.
 `CacheReadTokens` on the monitor's own snapshot changes from a level to a running Σ (display-only, same
 convention).
 
+**Fixed (#1666): the level no longer dips on a fan-out parent's sub-agent turns.** docs/vendor-doc-audit.md's
+#1623 re-review N5 measured that a sub-agent's own turns appear as ordinary top-level
+`"type":"assistant"` lines in the SAME stream, marked only by a non-null `parent_tool_use_id` at the
+root of the line — and that `TokenBudgetMonitor.OnStdoutLine` replaced `_inputLevel` unconditionally
+on every matching line regardless of which bucket produced it, so a sub-agent's typically much smaller
+context could lower the tracked level on exactly the turns where a fan-out parent was doing the most
+work — a systematic under-count in the runaway-fan-out shape the budget exists to catch. `WorkerUsage`
+now carries `IsSubAgentTurn` (set by `ClaudeUsageParser.TryParseIncrementalUsage` off that same root
+field); `TokenBudgetMonitor` tracks the parent's and the sub-agent bucket's levels SEPARATELY and
+reports their max, so a smaller sub-agent reading can never overwrite a larger parent one (or the
+reverse) — only a genuine same-bucket change still moves the reported level. `BilledTokens` itself was
+never affected: it already sums every line's delta, parent or sub-agent, deduped only by `message.id`
+(above) — this fix is scoped to the DISPLAY-only level, not the arrest predicate. `tools/fleet-glass/pusher.py`'s
+`extract_live_counts` builds its own `contextTokens`/`cacheReadTokens` the same "latest line, no
+`parent_tool_use_id` filter" way, independently of this engine-side fix — mirrors the same defect,
+left unchanged here pending a follow-up decision on whether the pusher needs the identical fix.
+
 **Cache-read tokens are excluded from `BilledTokens` (#1686 review F5, stated here for the first time —
 the exclusion was previously implicit in the formula, never justified).** `cache_read_input_tokens`
 (claude) / `cache_read_tokens` (agy) are read onto `WorkerUsage.CacheReadTokens` but never added into

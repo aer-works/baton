@@ -66,6 +66,14 @@ public sealed class TokenBudgetMonitor
     // #1686 review F5: nullable, never a fabricated 0 -- set only once a usage line actually parses,
     // same convention as _billedTokens/_cacheReadSum right below.
     private long? _inputLevel;
+    // #1666: the parent conversation's and the sub-agent bucket's own levels, tracked SEPARATELY so a
+    // sub-agent's smaller context (WorkerUsage.IsSubAgentTurn) can never replace a larger parent
+    // reading -- _inputLevel above is reported as the max of these two, never either one alone. Each
+    // stays a replacing level within its own bucket (a real drop in the PARENT's own context, e.g.
+    // after compaction, still shows), which is the whole point: only cross-bucket contamination from
+    // fan-out is what this guards against, not a genuine same-agent level change.
+    private long? _parentInputLevel;
+    private long? _subAgentInputLevel;
     private long? _latestTokensIn;
     private long? _latestCacheRead;
     private long? _latestCacheCreation;
@@ -177,7 +185,22 @@ public sealed class TokenBudgetMonitor
                     _latestTokensIn = usage.TokensIn;
                     _latestCacheRead = usage.CacheReadTokens;
                     _latestCacheCreation = usage.CacheCreationTokens;
-                    _inputLevel = (usage.TokensIn ?? 0) + (usage.CacheReadTokens ?? 0) + (usage.CacheCreationTokens ?? 0);
+                    var level = (usage.TokensIn ?? 0) + (usage.CacheReadTokens ?? 0) + (usage.CacheCreationTokens ?? 0);
+                    // #1666: replace only the bucket this line belongs to -- a sub-agent turn's own
+                    // (typically much smaller) context never overwrites the parent's tracked level, and
+                    // a parent turn never overwrites a sub-agent's. The reported level is the max of the
+                    // two, so it can only rise or hold on a fan-out turn, never dip below what the
+                    // parent already showed.
+                    if (usage.IsSubAgentTurn)
+                    {
+                        _subAgentInputLevel = level;
+                    }
+                    else
+                    {
+                        _parentInputLevel = level;
+                    }
+
+                    _inputLevel = Math.Max(_parentInputLevel ?? 0, _subAgentInputLevel ?? 0);
                 }
 
                 // #1686 review F6: claude can split one API response's usage across several
