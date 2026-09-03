@@ -529,9 +529,10 @@ public class StatusCommandEndToEndTests
     /// loop's first poll must share offsets/assemblers, not each start from a fresh dictionary --
     /// otherwise the loop's first poll re-tails the whole stream from byte 0 and reprints exactly
     /// what the initial tail just printed. Asserts the initial content appears exactly ONCE across
-    /// the run, that content appended between polls appears exactly once too, and that a stream-json
-    /// line split across the initial tail and the first poll is rendered once as prose (the
-    /// assembler carried its buffered partial line over, per #1719).
+    /// the run and that content appended between polls appears exactly once too. Every line here
+    /// is complete and newline-terminated, so this exercises the shared OFFSETS only; the shared
+    /// StreamLineAssembler's stitching of a line split across two TailStreams calls is pinned by
+    /// WorkerStreamJsonRenderingTests, not by this test.
     /// </summary>
     [Fact]
     public async Task Following_a_still_running_workflow_does_not_reprint_the_initial_tail_on_the_first_poll()
