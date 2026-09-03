@@ -115,7 +115,7 @@ public sealed class FleetProjectionWriterTests : IDisposable
                     throw;
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(5); // wait-ok: a short backoff between retry attempts within the 2s deadline above, not a wait for external state
             }
         }
     }
