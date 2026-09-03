@@ -1,6 +1,7 @@
 using Baton.Domain;
 using Baton.Mutation;
 using Baton.Tests.Shared;
+using Baton.Vendors.Tests.TestSupport;
 using Xunit;
 
 namespace Baton.Vendors.Tests;
@@ -52,6 +53,17 @@ public sealed class TemplateDispatchabilityTests : IDisposable
 
     private readonly string _room =
         Path.Combine(Path.GetTempPath(), "baton-tdt-room-" + Guid.NewGuid().ToString("N"));
+
+    // #1166 review finding H1: this class's own [Collection(WorkerRoleCatalogCollection.Name)]
+    // serialises it only against the other two, non-mutating catalog readers in that collection --
+    // LaunchConfigCollection is a DIFFERENT collection, so a class in that one (e.g.
+    // ClaudeWorkerAdapterTests) still runs concurrently against this one, and both write through
+    // AtomicLaunchConfigWriter to project-ceilings.json. xUnit collections are one-per-class, so
+    // joining LaunchConfigCollection instead was not available without leaving this one -- an
+    // isolated BATON_HOME sidesteps the conflict entirely: this class keeps the catalog collection
+    // (its own doc comment explains why it needs that one) and gets its own store file instead of
+    // racing anyone on the shared one.
+    private readonly IsolatedBatonHome _home = new();
 
     public TemplateDispatchabilityTests()
     {
@@ -169,5 +181,6 @@ public sealed class TemplateDispatchabilityTests : IDisposable
         {
             DirectoryCleanup.DeleteRecursively(_sourceRepo);
         }
+        _home.Dispose();
     }
 }

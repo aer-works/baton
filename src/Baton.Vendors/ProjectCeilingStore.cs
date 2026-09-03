@@ -28,6 +28,20 @@ namespace Baton.Vendors;
 public static class ProjectCeilingStore
 {
     /// <summary>
+    /// #1166 review finding H1: <see cref="Set"/>/<see cref="Revoke"/> are load-then-modify-then-save
+    /// with no lock of their own, so two in-process callers racing the same <paramref name="path"/>
+    /// can lose an update (last writer wins) even though <see cref="Save"/>'s own write is atomic. A
+    /// plain in-process lock is what the callers this store actually has need: every caller today —
+    /// <c>baton trust</c> (one process, one call) and this assembly's own tests — is a single
+    /// .NET process, never two OS processes writing the same file at once, so a cross-process primitive
+    /// (a <c>MutexGuardedFileLock</c>-shaped wrapper around <see cref="System.Threading.Mutex"/>) was
+    /// checked for and does not exist anywhere in this tree yet — grepping the repo for
+    /// "MutexGuardedFileLock" finds nothing. If a cross-process caller is ever added, that gap is what
+    /// closes it; it is out of scope for this fix round.
+    /// </summary>
+    private static readonly object SyncRoot = new();
+
+    /// <summary>
     /// The production location: <c>project-ceilings.json</c> under <see cref="BatonPaths.Root"/>. A
     /// re-resolving property, not a captured value, so it honours the root seam (<c>BATON_HOME</c>);
     /// tests construct against a temp file directly instead of this.
@@ -91,11 +105,14 @@ public static class ProjectCeilingStore
         ArgumentException.ThrowIfNullOrEmpty(projectPath);
         ArgumentNullException.ThrowIfNull(ceiling);
 
-        var ceilings = new Dictionary<string, ProjectCeiling>(Load(path), BatonPaths.RecordKeyComparer)
+        lock (SyncRoot)
         {
-            [CanonicalKey(projectPath)] = ceiling,
-        };
-        Save(ceilings, path);
+            var ceilings = new Dictionary<string, ProjectCeiling>(Load(path), BatonPaths.RecordKeyComparer)
+            {
+                [CanonicalKey(projectPath)] = ceiling,
+            };
+            Save(ceilings, path);
+        }
     }
 
     /// <summary>Removes <paramref name="projectPath"/>'s ceiling. Returns false when none was recorded.</summary>
@@ -103,13 +120,16 @@ public static class ProjectCeilingStore
     {
         ArgumentException.ThrowIfNullOrEmpty(projectPath);
 
-        var ceilings = new Dictionary<string, ProjectCeiling>(Load(path), BatonPaths.RecordKeyComparer);
-        if (!ceilings.Remove(CanonicalKey(projectPath)))
+        lock (SyncRoot)
         {
-            return false;
-        }
+            var ceilings = new Dictionary<string, ProjectCeiling>(Load(path), BatonPaths.RecordKeyComparer);
+            if (!ceilings.Remove(CanonicalKey(projectPath)))
+            {
+                return false;
+            }
 
-        Save(ceilings, path);
-        return true;
+            Save(ceilings, path);
+            return true;
+        }
     }
 }
