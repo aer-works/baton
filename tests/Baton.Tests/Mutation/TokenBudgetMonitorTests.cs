@@ -92,11 +92,11 @@ public sealed class TokenBudgetMonitorTests
     [Fact]
     public void A_parent_line_clears_the_sub_agent_bucket_so_a_genuine_same_bucket_drop_still_shows()
     {
-        // Review F3: parent line (level 300) -> sub-agent line (level 40) -> parent line (level 100,
-        // a genuine drop, e.g. after compaction) asserts 100. Pins that the sub-agent bucket is
-        // CLEARED on the third line's parent read, not merely outweighed -- without the clear, a
-        // later sub-agent reading anywhere between 100 and 300 would wrongly keep pinning the
-        // reported level above the parent's true current context.
+        // Review F3: parent line (level 300) -> sub-agent line (level 150) -> parent line (level 100,
+        // a genuine drop, e.g. after compaction) asserts 100. The sub-agent reading sits BETWEEN the
+        // two parent readings on purpose: without the clear, Math.Max(100, 150) reports 150, so this
+        // arm is red on the uncleared-bucket code -- a sub-agent reading below 100 would pass either
+        // way and pin nothing.
         var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
 
         monitor.OnStdoutLine(
@@ -104,7 +104,7 @@ public sealed class TokenBudgetMonitorTests
         Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
 
         monitor.OnStdoutLine(
-            """{"type":"assistant","parent_tool_use_id":"toolu_01subagent","message":{"usage":{"cache_creation_input_tokens":5,"cache_read_input_tokens":35}}}""");
+            """{"type":"assistant","parent_tool_use_id":"toolu_01subagent","message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":140}}}""");
         Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
 
         monitor.OnStdoutLine(
