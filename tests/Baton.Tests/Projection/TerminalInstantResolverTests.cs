@@ -149,9 +149,8 @@ public class TerminalInstantResolverTests
     }
 
     /// <summary>
-    /// A pre-#745 journal carries no writer stamps at all. Absent, never fabricated — and the ONLY
-    /// absence that says anything about a room's journal being old, which is what makes the retention
-    /// sweep's operator-facing warning honest.
+    /// A pre-#745 journal carries no writer stamps at all. Absent, never fabricated, and reported as
+    /// the one absence spec/baton.md §3 lets the retention sweep name to an operator.
     /// </summary>
     [Fact]
     public void Resolve_TerminalRunOnAJournalWithNoWriterStamps_IsAbsentAsUnstamped()
