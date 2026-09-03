@@ -107,10 +107,11 @@ not restated:
   remarks are the canonical description of its cadence, its `.stdout.log`-mtime gate, and why silence
   under a wedge is the intended behaviour rather than a gap. Cadence is env-configurable
   (`BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS` through `BatonEnvironmentSnapshot`, default 5 minutes)
-  the same way `RoomRetentionSweep`'s interval knobs already are. Write-budget arithmetic: §7's #1690
-  entry already establishes that the pusher's 90s coalescing floor, not a 1:1 journal-event count, is
-  what the 1,000/day KV cap is measured against — a heartbeat changes a coalesced push's *contents*,
-  never its *count*, so it spends nothing extra against that cap.
+  the same way `RoomRetentionSweep`'s interval knobs already are. Write-budget arithmetic: KV writes
+  are governed by the pusher's per-producer daily ledger (§7's #1690 entry — snapshot pushes draw on
+  their own fixed daily sub-budget with adaptive pacing, never one write per journal event), so a
+  heartbeat changes a coalesced push's *contents*, never its *count*, and spends nothing extra against
+  the 1,000/day cap.
 - **`CancellationDelivered`** and **`CancellationRejected`**, both scoped to the operator
   `cancel.request` path only (the host-stop wind-down stays as it was — deliberately, to keep an
   ordinary shutdown quiet). `FlowEvent.cs`'s own doc comments on each case are the canonical statement
