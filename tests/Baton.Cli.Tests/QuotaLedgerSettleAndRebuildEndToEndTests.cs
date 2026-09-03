@@ -44,6 +44,31 @@ public sealed class QuotaLedgerSettleAndRebuildEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Settling_the_same_room_twice_never_duplicates_its_executions_ledger_line()
+    {
+        // A re-run against an already-terminal room re-enters Program.cs's settle block a second time
+        // (RunCommand.ExecuteAsync itself is idempotent against an already-Terminal room -- see its
+        // own early-return -- but the outer settle block still re-derives and re-appends via
+        // BuildEntries over the WHOLE room). Without QuotaLedgerStore.AppendAsync's own dedupe, this
+        // would double the ledger line for the one execution that ran.
+        var roomDirectory = Path.Combine(BatonPaths.Rooms, "room");
+        var first = await RunSingleShellStepAsync(roomDirectory, "exit 0");
+        Assert.Equal(WorkflowStatus.Terminal, first.State.Status);
+        await AppendLedgerLikeProgramDoesAsync(first, roomDirectory);
+
+        var second = await RunCommand.ExecuteAsync(
+            new RunOptions(
+                Path.Combine(roomDirectory, "workflow.json"), Path.Combine(roomDirectory, "bindings.json"), roomDirectory),
+            Adapters,
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(WorkflowStatus.Terminal, second.State.Status);
+        await AppendLedgerLikeProgramDoesAsync(second, roomDirectory);
+
+        var ledgerEntries = await QuotaLedgerStore.ReadAllAsync(BatonPaths.QuotaLedgerFile, TestContext.Current.CancellationToken);
+        Assert.Single(ledgerEntries);
+    }
+
+    [Fact]
     public async Task A_failing_shell_step_records_its_FailureClassification_as_the_ledger_outcome()
     {
         var roomDirectory = Path.Combine(BatonPaths.Rooms, "room");

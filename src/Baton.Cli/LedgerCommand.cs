@@ -5,21 +5,15 @@ using Baton.Vendors;
 namespace Baton.Cli;
 
 /// <summary>
-/// <c>baton ledger --rebuild</c> (#1570, quota-design S4b): re-walks every still-live room's own
-/// <c>flow.jsonl</c> and re-derives the burn <c>quota-ledger.jsonl</c> would have recorded for it,
-/// merging the result into whatever the ledger already holds by execution id — never summing. Not a
-/// <see cref="CommandResult"/>/<see cref="FlowStateReporter"/> command — same carve-out as
-/// <see cref="RoomDeleteCommand"/>/<see cref="RoomsPruneCommand"/>: there is no workflow pump here, so
-/// there is nothing for that shape to report.
+/// <c>baton ledger --rebuild</c> (#1570, quota-design S4b): walks every room this process can find
+/// (<see cref="FindLiveRoomDirectoriesAsync"/>), re-derives each one's own executions via
+/// <see cref="QuotaLedgerStore.BuildEntries"/>, and hands the flat result to
+/// <see cref="QuotaLedgerStore.RebuildAsync"/> — that method's own remarks state the merge rule and why
+/// it recovers less than the ledger can hold; spec/baton.md §7 states it again for an operator, not
+/// restated a third time here. Not a <see cref="CommandResult"/>/<see cref="FlowStateReporter"/>
+/// command — same carve-out as <see cref="RoomDeleteCommand"/>/<see cref="RoomsPruneCommand"/>: there
+/// is no workflow pump here, so there is nothing for that shape to report.
 /// </summary>
-/// <remarks>
-/// <b>A rebuild recovers less than the ledger holds, on purpose.</b> It only re-derives from rooms
-/// still on disk; a room <c>RoomRetentionSweep</c> has already pruned is invisible to the walk, and a
-/// lane that was killed before it ever settled (the accepted loss spec/baton.md §7 documents for the
-/// settle-time appender itself) never wrote anything here to re-derive. An execution the ledger already
-/// recorded, whose room has since been pruned or deleted, still survives a rebuild — <see cref="QuotaLedgerStore.RebuildAsync"/>
-/// starts from the ledger's own content, not from the walk alone, for exactly that reason.
-/// </remarks>
 public static class LedgerCommand
 {
     public const string Usage = "Usage: baton ledger --rebuild";

@@ -122,15 +122,18 @@ public sealed class QuotaLedgerStoreTests
     }
 
     [Fact]
-    public async Task AppendAsync_then_ReadDistinctByExecutionAsync_folds_repeats_to_the_last_write()
+    public async Task ReadDistinctByExecutionAsync_folds_a_pre_existing_duplicate_line_to_the_last_write()
     {
+        // AppendAsync's own dedupe (see its doc comment) means a duplicate line can no longer be
+        // created through the store's own API -- this test writes the file directly to prove the
+        // read-time fold still recovers gracefully from one anyway (a hand-edited file, or a line
+        // written before that dedupe existed).
         var path = TempLedgerPath();
         try
         {
-            await QuotaLedgerStore.AppendAsync(
-                [new QuotaLedgerEntry(Execution: "exec-1", TokensIn: 100)], path, TestContext.Current.CancellationToken);
-            await QuotaLedgerStore.AppendAsync(
-                [new QuotaLedgerEntry(Execution: "exec-1", TokensIn: 250)], path, TestContext.Current.CancellationToken);
+            var first = System.Text.Json.JsonSerializer.Serialize(new QuotaLedgerEntry(Execution: "exec-1", TokensIn: 100));
+            var second = System.Text.Json.JsonSerializer.Serialize(new QuotaLedgerEntry(Execution: "exec-1", TokensIn: 250));
+            await File.WriteAllTextAsync(path, first + "\n" + second + "\n", TestContext.Current.CancellationToken);
 
             var distinct = await QuotaLedgerStore.ReadDistinctByExecutionAsync(path, TestContext.Current.CancellationToken);
 
@@ -247,6 +250,87 @@ public sealed class QuotaLedgerStoreTests
 
             Assert.Equal(350, firstTotal);
             Assert.Equal(firstTotal, secondTotal);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RebuildAsync_a_fresh_entry_overwrites_the_ledgers_existing_entry_for_the_same_execution()
+    {
+        // The documented merge rule (QuotaLedgerStore.RebuildAsync's own remarks): a freshly-walked
+        // entry for an execution the ledger already had OVERWRITES it, not the reverse. Pinned
+        // directly, not just inferred from the "identical totals across two runs" test above.
+        var path = TempLedgerPath();
+        try
+        {
+            await QuotaLedgerStore.AppendAsync(
+                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
+
+            var freshEntries = new List<QuotaLedgerEntry> { new(Execution: "exec-a", TokensIn: 999) };
+            await QuotaLedgerStore.RebuildAsync(freshEntries, path, TestContext.Current.CancellationToken);
+
+            var distinct = await QuotaLedgerStore.ReadDistinctByExecutionAsync(path, TestContext.Current.CancellationToken);
+            var entry = Assert.Single(distinct);
+            Assert.Equal(999, entry.TokensIn);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task AppendAsync_never_duplicates_a_line_for_an_execution_id_already_in_the_ledger()
+    {
+        // #1570 review (advisor pass): Program.cs's settle-time call site fires on every command that
+        // carries a room to Terminal -- a re-run, `supply`, or `resolve --reject` re-reaching Terminal
+        // all re-derive the WHOLE room's executions via BuildEntries, not just what is new. Without
+        // this dedupe, a room settling twice would double the line for an execution that never
+        // changed.
+        var path = TempLedgerPath();
+        try
+        {
+            await QuotaLedgerStore.AppendAsync(
+                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
+            // Simulates BuildEntries re-deriving the same, already-settled execution on a second
+            // Terminal-reaching command against the same room.
+            await QuotaLedgerStore.AppendAsync(
+                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
+
+            var all = await QuotaLedgerStore.ReadAllAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Single(all);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task AppendAsync_still_appends_an_unrelated_execution_alongside_an_already_recorded_one()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            await QuotaLedgerStore.AppendAsync(
+                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
+            await QuotaLedgerStore.AppendAsync(
+                [
+                    new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10),
+                    new QuotaLedgerEntry(Execution: "exec-b", TokensIn: 20),
+                ],
+                path,
+                TestContext.Current.CancellationToken);
+
+            var all = await QuotaLedgerStore.ReadAllAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, all.Count);
+            Assert.Contains(all, e => e.Execution == "exec-a");
+            Assert.Contains(all, e => e.Execution == "exec-b");
         }
         finally
         {

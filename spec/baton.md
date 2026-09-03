@@ -2689,9 +2689,15 @@ for `room-registry.jsonl`. That mechanism was extracted to `MutexGuardedFileLock
 so an older and a newer `baton` build still contend on the one lock. `QuotaLedgerStore.BuildEntries`
 harvests engine-side, at settle — `Program.cs`'s own terminal-sentinel write site — from the terminal
 usage `ExecutionUsageProjector` already has in hand for every execution with a recorded start and exit:
-one ledger line per execution, `Adapter`/`Model` read off the frozen `ExecutionRequest` fields (#1567)
-rather than a later `bindings.json` read, so a failover rebind can never retroactively re-attribute a
-line already written. Fails open exactly like the registry: `IOException`/`UnauthorizedAccessException`/
+one ledger line per execution — `AppendAsync` skips an execution id the file already holds, since
+`Program.cs`'s settle-time call site fires (and re-derives every execution in the room) on every
+command that carries a room to Terminal, not only the first, including a re-run, `supply`, and the
+`resolve --reject` → re-Terminal path `Program.cs`'s own remarks name. `Adapter`/`Model` are read off
+the frozen `ExecutionRequest` fields (#1567), with the identical `StepRebound` override
+`ExecutionUsageProjector` applies for the crash-recovery resubmit divergence (#1583) — never
+re-derived from *today's* `bindings.json` at read time, which is the read-time re-attribution #802's
+proposal (§0.5) warns a failover rebind would otherwise cause on an unfrozen record. Fails open exactly
+like the registry: `IOException`/`UnauthorizedAccessException`/
 `WaitHandleCannotBeOpenedException` are reported on stderr and swallowed by the caller, never surfacing
 as a run failure — the registry's own sanctioned exception to the no-silent-swallow rule, applied to a
 second store sharing its mechanism.
@@ -2702,8 +2708,9 @@ still-live room's own `flow.jsonl` and merges the result into whatever the ledge
 execution id — never summing, so running it twice against an unchanged fleet is idempotent. It
 recovers strictly LESS than the ledger can hold: `RoomRetentionSweep` (above) moves execution
 directories out of a live room's reach on its own schedule, so a room already pruned is invisible to
-the walk — but an execution the ledger already recorded for that room survives a rebuild regardless,
-since the merge starts from the ledger's own content, not from the walk alone. A lane that died before
+the walk — but an execution the ledger already recorded for that room survives a rebuild regardless:
+`QuotaLedgerStore.RebuildAsync`'s own remarks state the merge rule this rests on, not restated here. A
+lane that died before
 settling was never recorded to begin with, on either path. Cite the ruling above — "accumulation from
 lane logs is attribution only, never the reset-time source of truth" — rather than restating it: this
 is that doctrine's burn half, not a second one.
@@ -3531,9 +3538,10 @@ reach:
 - **The exact shape of the outbound push mailbox (§6).** Unbuilt; I could not verify anything about
   its intended transport beyond "quota data rides it" and "gate-pending visibility rides it," both
   stated as rulings rather than measured facts.
-- **The room registry's (§8) registration mechanism**, and whether it shares an implementation with
-  the quota ledger (§7) or is fully separate. Both are named as parallel new-build items with no
-  stated relationship; I treated them as independent.
+- **Resolved by #1570.** The room registry's (§8) registration mechanism and the quota burn ledger's
+  (§7) do share an implementation — `MutexGuardedFileLock`, §7's own burn-ledger subsection names it.
+  Left here rather than deleted so this appendix stays an honest record of what this document's
+  original author could not verify at the time, not a claim about the tree today.
 - **Whether `Baton`/`Baton.Vendors` have silently accreted a human-watching assumption anywhere
   outside the paths this document cites directly** (terminal sentinel, status projection, hook
   enforcement, `FailureClassification`, `PermissionGrant`). I did not do a full pass of scheduling

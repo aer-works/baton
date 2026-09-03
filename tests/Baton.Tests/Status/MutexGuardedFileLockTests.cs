@@ -7,10 +7,8 @@ namespace Baton.Tests.Status;
 /// <summary>
 /// <see cref="MutexGuardedFileLock"/> is <c>RoomRegistryStore</c>'s own mutex primitive, extracted so
 /// <see cref="QuotaLedgerStore"/> (#1570) can share it. The name-format pin below is the regression
-/// guard for that extraction: an older <c>baton</c> build and a newer one (side-by-side per-commit
-/// installs, #1668) must still take out the identical named <see cref="Mutex"/> against
-/// <c>room-registry.jsonl</c>, or the concurrency loss the mutex exists to prevent comes right back —
-/// silently, since every in-process test would still pass against a renamed lock.
+/// guard for that extraction — see the type's own remarks for why a renamed lock is a silent hazard,
+/// not just a cosmetic diff: every in-process test would still pass against it.
 /// </summary>
 public sealed class MutexGuardedFileLockTests
 {

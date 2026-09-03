@@ -481,9 +481,8 @@ public static class RoomRegistryStore
     /// <summary>
     /// The lock name prefix <see cref="MutexGuardedFileLock"/> combines with a digest of the registry
     /// file path — kept as the exact literal this store always used before the extraction to
-    /// <see cref="MutexGuardedFileLock"/> (#1570), so an older <c>baton</c> build and a newer one
-    /// (side-by-side per-commit installs, #1668) still take out the same mutex against the same
-    /// <c>room-registry.jsonl</c>.
+    /// <see cref="MutexGuardedFileLock"/> (#1570). That type's own remarks state why the literal must
+    /// not move.
     /// </summary>
     private const string LockNamePrefix = "baton-room-registry";
 

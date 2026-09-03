@@ -215,10 +215,20 @@ public static class QuotaLedgerStore
     }
 
     /// <summary>
-    /// Appends one line per <paramref name="entries"/> to <paramref name="ledgerFilePath"/>, creating
-    /// the file and its parent directory if neither exists yet, under one acquisition of the
-    /// <see cref="MutexGuardedFileLock"/> keyed on this file. A no-op for an empty list — never opens
-    /// or creates the file for nothing to write. Throws exactly as
+    /// Appends the subset of <paramref name="entries"/> whose <see cref="QuotaLedgerEntry.Execution"/>
+    /// is not already present in <paramref name="ledgerFilePath"/> — a single read-check-then-append
+    /// critical section, the same shape <see cref="RoomRegistryStore.AppendAsync"/>'s own
+    /// <c>IsAlreadyRegistered</c> skip uses (#1657) and for the identical reason: <c>Program.cs</c>'s
+    /// settle-time call site fires on every command that carries a room to Terminal, including a
+    /// re-run of an already-terminal room, <c>supply</c>, and the <c>resolve --reject</c> → re-Terminal
+    /// path <c>Program.cs</c>'s own remarks document — every one of which re-derives
+    /// <see cref="QuotaLedgerStore.BuildEntries"/> over the WHOLE room, not just what changed since the
+    /// last append. Without this check, a room settling twice writes the same execution twice, silently
+    /// breaking the "one line per execution" shape every reader (<see cref="ReadDistinctByExecutionAsync"/>,
+    /// <see cref="RebuildAsync"/>) otherwise relies on the read-time fold alone to restore. An entry
+    /// with no <see cref="QuotaLedgerEntry.Execution"/> at all cannot be deduplicated against anything
+    /// and is always appended. Creates the file and its parent directory if neither exists yet. A no-op
+    /// when nothing survives the filter — never opens the file to write zero bytes. Throws exactly as
     /// <see cref="RoomRegistryStore.AppendAsync"/> documents: the caller's job to log and swallow, not
     /// this method's.
     /// </summary>
@@ -239,17 +249,29 @@ public static class QuotaLedgerStore
             Directory.CreateDirectory(directory);
         }
 
-        var builder = new StringBuilder();
-        foreach (var entry in entries)
-        {
-            builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
-        }
-
-        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
-
         return Task.Run(
             () => MutexGuardedFileLock.RunUnderLock(ledgerFilePath, LockNamePrefix, LockTimeout, () =>
             {
+                var alreadyRecorded = ReadAllUnlocked(ledgerFilePath)
+                    .Where(e => e.Execution is { Length: > 0 })
+                    .Select(e => e.Execution!)
+                    .ToHashSet(StringComparer.Ordinal);
+
+                var toAppend = entries
+                    .Where(e => e.Execution is not { Length: > 0 } id || !alreadyRecorded.Contains(id))
+                    .ToList();
+                if (toAppend.Count == 0)
+                {
+                    return;
+                }
+
+                var builder = new StringBuilder();
+                foreach (var entry in toAppend)
+                {
+                    builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
+                }
+
+                var bytes = Encoding.UTF8.GetBytes(builder.ToString());
                 using var stream = new FileStream(
                     ledgerFilePath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 4096, useAsync: false);
                 stream.Write(bytes);
@@ -260,62 +282,75 @@ public static class QuotaLedgerStore
 
     /// <summary>
     /// Reads every parseable, well-formed line in <paramref name="ledgerFilePath"/>, in file (= write)
-    /// order. A missing file resolves to an empty list; a malformed line is skipped rather than failing
-    /// the whole read, same tolerance <see cref="RoomRegistryStore.ReadDistinctByRoomAsync"/> already
-    /// documents. Never throws — a lock-acquire timeout or an I/O failure resolves to an empty list,
-    /// same as a missing file.
+    /// order, under the <see cref="MutexGuardedFileLock"/> keyed on this file. A missing file resolves
+    /// to an empty list; a malformed line is skipped rather than failing the whole read, same tolerance
+    /// <see cref="RoomRegistryStore.ReadDistinctByRoomAsync"/> already documents. Never throws — a
+    /// lock-acquire timeout or an I/O failure resolves to an empty list, same as a missing file.
     /// </summary>
     public static Task<IReadOnlyList<QuotaLedgerEntry>> ReadAllAsync(
         string ledgerFilePath, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
 
-        if (!File.Exists(ledgerFilePath))
-        {
-            return Task.FromResult<IReadOnlyList<QuotaLedgerEntry>>([]);
-        }
-
         return Task.Run(
             () =>
             {
-                string text;
                 try
                 {
-                    text = MutexGuardedFileLock.RunUnderLock(ledgerFilePath, LockNamePrefix, LockTimeout, () =>
-                    {
-                        using var stream = new FileStream(ledgerFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                        using var reader = new StreamReader(stream, Encoding.UTF8);
-                        return reader.ReadToEnd();
-                    });
+                    return MutexGuardedFileLock.RunUnderLock(
+                        ledgerFilePath, LockNamePrefix, LockTimeout, () => ReadAllUnlocked(ledgerFilePath));
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
                 {
                     Console.Error.WriteLine($"Could not read the quota ledger at '{ledgerFilePath}': {ex.Message}.");
                     return (IReadOnlyList<QuotaLedgerEntry>)[];
                 }
-
-                var result = new List<QuotaLedgerEntry>();
-                foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                {
-                    QuotaLedgerEntry? entry;
-                    try
-                    {
-                        entry = JsonSerializer.Deserialize<QuotaLedgerEntry>(line, SerializerOptions);
-                    }
-                    catch (JsonException)
-                    {
-                        continue;
-                    }
-
-                    if (entry is not null)
-                    {
-                        result.Add(entry);
-                    }
-                }
-
-                return (IReadOnlyList<QuotaLedgerEntry>)result;
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// The read half of every operation above, factored out so <see cref="AppendAsync"/> and
+    /// <see cref="RebuildAsync"/> can read-then-write inside ONE lock acquisition rather than two —
+    /// two separate acquisitions would let a concurrent writer land in the gap between them, silently
+    /// truncated away by whichever of the two finishes its own read-then-write second. Callers must
+    /// already hold the <see cref="MutexGuardedFileLock"/> on <paramref name="ledgerFilePath"/>; this
+    /// method takes no lock of its own.
+    /// </summary>
+    private static IReadOnlyList<QuotaLedgerEntry> ReadAllUnlocked(string ledgerFilePath)
+    {
+        if (!File.Exists(ledgerFilePath))
+        {
+            return [];
+        }
+
+        string text;
+        using (var stream = new FileStream(ledgerFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+        {
+            text = reader.ReadToEnd();
+        }
+
+        var result = new List<QuotaLedgerEntry>();
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            QuotaLedgerEntry? entry;
+            try
+            {
+                entry = JsonSerializer.Deserialize<QuotaLedgerEntry>(line, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (entry is not null)
+            {
+                result.Add(entry);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -350,77 +385,87 @@ public static class QuotaLedgerStore
     /// Merges <paramref name="freshlyWalkedEntries"/> (a caller's fresh re-derivation from every still-
     /// live room's own <c>flow.jsonl</c>/<c>.stdout.log</c>) into whatever <paramref name="ledgerFilePath"/>
     /// already holds, by <see cref="QuotaLedgerEntry.Execution"/> id — <b>never sums</b>. Starts from
-    /// the ledger's own <see cref="ReadDistinctByExecutionAsync"/> content, not from the walk alone: an
-    /// execution the ledger already recorded but whose room <c>RoomRetentionSweep</c> has
-    /// since pruned is not in the walk, and dropping it would make a rebuild destroy exactly the
-    /// past-retention coverage the ledger exists to hold (spec/baton.md §7). A freshly-walked entry for
-    /// an execution the ledger already had overwrites that entry — freshly re-derived data from the
-    /// still-live source beats whatever was durable before. Rewrites the whole file once, under the
-    /// same <see cref="MutexGuardedFileLock"/> every other access takes, so running this twice against
-    /// an unchanged fleet produces byte-identical totals both times.
+    /// the ledger's own content, not from the walk alone: an execution the ledger already recorded but
+    /// whose room <c>RoomRetentionSweep</c> has since pruned is not in the walk, and dropping it would
+    /// make a rebuild destroy exactly the past-retention coverage the ledger exists to hold
+    /// (spec/baton.md §7). A freshly-walked entry for an execution the ledger already had overwrites
+    /// that entry — freshly re-derived data from the still-live source beats whatever was durable
+    /// before. Reads the existing ledger, merges, and rewrites the whole file in ONE acquisition of the
+    /// <see cref="MutexGuardedFileLock"/> keyed on this file — read-then-write across two separate
+    /// acquisitions would let a settle-time <see cref="AppendAsync"/> land in the gap between them and
+    /// be silently truncated away by this method's own rewrite, which is exactly the loss a rebuild
+    /// must never cause. Running this twice against an unchanged fleet produces byte-identical totals
+    /// both times.
     /// </summary>
-    public static async Task<RebuildResult> RebuildAsync(
+    public static Task<RebuildResult> RebuildAsync(
         IReadOnlyList<QuotaLedgerEntry> freshlyWalkedEntries, string ledgerFilePath, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(freshlyWalkedEntries);
         ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
 
-        var existing = await ReadDistinctByExecutionAsync(ledgerFilePath, cancellationToken).ConfigureAwait(false);
-        var merged = new Dictionary<string, QuotaLedgerEntry>(StringComparer.Ordinal);
-        foreach (var entry in existing)
+        var directory = Path.GetDirectoryName(ledgerFilePath);
+        if (!string.IsNullOrEmpty(directory))
         {
-            if (entry.Execution is { Length: > 0 } executionId)
-            {
-                merged[executionId] = entry;
-            }
+            Directory.CreateDirectory(directory);
         }
 
-        var recoveredCount = 0;
-        foreach (var entry in freshlyWalkedEntries)
-        {
-            if (entry.Execution is not { Length: > 0 } executionId)
+        return Task.Run(
+            () => MutexGuardedFileLock.RunUnderLock(ledgerFilePath, LockNamePrefix, LockTimeout, () =>
             {
-                continue;
-            }
+                var merged = new Dictionary<string, QuotaLedgerEntry>(StringComparer.Ordinal);
+                var previousCount = 0;
+                foreach (var entry in ReadAllUnlocked(ledgerFilePath))
+                {
+                    if (entry.Execution is { Length: > 0 } executionId)
+                    {
+                        merged[executionId] = entry;
+                        previousCount++;
+                    }
+                }
 
-            if (!merged.ContainsKey(executionId))
-            {
-                recoveredCount++;
-            }
+                var recoveredCount = 0;
+                foreach (var entry in freshlyWalkedEntries)
+                {
+                    if (entry.Execution is not { Length: > 0 } executionId)
+                    {
+                        continue;
+                    }
 
-            merged[executionId] = entry;
-        }
+                    if (!merged.ContainsKey(executionId))
+                    {
+                        recoveredCount++;
+                    }
 
-        await WriteAllAsync(merged.Values.ToList(), ledgerFilePath, cancellationToken).ConfigureAwait(false);
-        return new RebuildResult(existing.Count, merged.Count, recoveredCount);
+                    merged[executionId] = entry;
+                }
+
+                WriteAllUnlocked(ledgerFilePath, merged.Values.ToList());
+                return new RebuildResult(previousCount, merged.Count, recoveredCount);
+            }),
+            cancellationToken);
     }
 
     /// <summary>
     /// Replaces <paramref name="ledgerFilePath"/>'s entire contents with one JSON line per
     /// <paramref name="entries"/>, via a temp-file-then-move so a concurrent reader under the same
     /// <see cref="MutexGuardedFileLock"/> never observes a truncated file — the same atomic-replace
-    /// discipline <see cref="RoomRegistryStore"/>'s own compaction uses.
+    /// discipline <see cref="RoomRegistryStore"/>'s own compaction uses. UTF-8 without a byte-order
+    /// mark, matching <see cref="AppendAsync"/>'s own <see cref="Encoding.UTF8"/>-via-<see cref="FileStream"/>
+    /// bytes: <see cref="File.WriteAllText(string,string,Encoding)"/> would otherwise stamp a BOM onto
+    /// a rebuilt file's first line that an appended-only one never carries, which a strict external
+    /// JSONL reader can choke on. Callers must already hold the <see cref="MutexGuardedFileLock"/> on
+    /// <paramref name="ledgerFilePath"/>; this method takes no lock of its own.
     /// </summary>
-    private static Task WriteAllAsync(
-        IReadOnlyList<QuotaLedgerEntry> entries, string ledgerFilePath, CancellationToken cancellationToken) =>
-        Task.Run(
-            () => MutexGuardedFileLock.RunUnderLock(ledgerFilePath, LockNamePrefix, LockTimeout, () =>
-            {
-                var directory = Path.GetDirectoryName(ledgerFilePath);
-                if (!string.IsNullOrEmpty(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
+    private static void WriteAllUnlocked(string ledgerFilePath, IReadOnlyList<QuotaLedgerEntry> entries)
+    {
+        var tempPath = $"{ledgerFilePath}.{Guid.NewGuid():N}.tmp";
+        var builder = new StringBuilder();
+        foreach (var entry in entries)
+        {
+            builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
+        }
 
-                var tempPath = $"{ledgerFilePath}.{Guid.NewGuid():N}.tmp";
-                var builder = new StringBuilder();
-                foreach (var entry in entries)
-                {
-                    builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
-                }
-
-                File.WriteAllText(tempPath, builder.ToString(), Encoding.UTF8);
-                File.Move(tempPath, ledgerFilePath, overwrite: true);
-            }),
-            cancellationToken);
+        File.WriteAllBytes(tempPath, Encoding.UTF8.GetBytes(builder.ToString()));
+        File.Move(tempPath, ledgerFilePath, overwrite: true);
+    }
 }

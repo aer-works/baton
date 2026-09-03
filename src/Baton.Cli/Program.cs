@@ -336,11 +336,9 @@ try
         // #1570: the fleet-level burn ledger, appended right after the sentinel -- terminalEntries is
         // already in hand from the read above, so this costs one more in-memory pass, not a second
         // flow.jsonl read (spec/baton.md §7's harvest-at-settle ruling). Fire-and-forget with respect
-        // to the run: this is the room-registry's own sanctioned exception to the no-silent-swallow
-        // rule (spec/baton.md §8) applied to a second store sharing its mechanism -- a ledger write
-        // must never be the reason a run that already reached Terminal reports as failed, so the three
-        // exceptions RoomRegistryStore.AppendAsync's own contract names are logged on stderr and
-        // swallowed here rather than left to propagate.
+        // to the run, same posture as the sentinel write's own fail-open contract
+        // (QuotaLedgerStore.AppendAsync's doc comment states the exact rule this leans on): a ledger
+        // write must never be the reason a run that already reached Terminal reports as failed.
         try
         {
             var ledgerEntries = QuotaLedgerStore.BuildEntries(terminalEntries, terminalRoomDirectoryPath);
