@@ -3,6 +3,7 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Status;
+using Baton.Tests.Shared;
 
 namespace Baton.Vendors.Tests;
 
@@ -1121,8 +1122,14 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void Claude_config_root_unset_injects_no_CLAUDE_CONFIG_DIR()
     {
+        // Scope from Current, not Blank: Resolve() also writes claude-settings.json/claude-mcp.json
+        // under BatonPaths.WorkerLaunchConfig (BatonPaths.Root -> HomeOverride), so the scope must
+        // carry forward whatever redirected home is already ambient (BatonHomeRedirect's module
+        // initializer, in this assembly) rather than blanking it back to the real ~/.baton. See
+        // BatonEnvironmentSnapshot's remarks for why Blank is the wrong base for a partial override
+        // here.
         using var scope = BatonEnvironmentSnapshot.BeginScope(
-            BatonEnvironmentSnapshot.Blank with { ClaudeConfigRootOverride = null });
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
         var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
@@ -1133,13 +1140,42 @@ public class ClaudeWorkerAdapterTests
     public void Claude_config_root_set_injects_CLAUDE_CONFIG_DIR_for_batch_and_gate()
     {
         var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        // See the sibling test above: scope from Current so the redirected BATON_HOME survives.
         using var scope = BatonEnvironmentSnapshot.BeginScope(
-            BatonEnvironmentSnapshot.Blank with { ClaudeConfigRootOverride = testPath });
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
 
         var target = new ClaudeWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
 
         Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
+    }
+
+    /// <summary>
+    /// Tripwire for the leak the CI post-test pollution check caught (see
+    /// <see cref="BatonEnvironmentSnapshot.Blank"/>'s remarks): under a <c>BeginScope</c> home
+    /// override, the launch config <see cref="ClaudeWorkerAdapter.Resolve"/> writes on every call must
+    /// land under that override — never under the real <c>~/.baton</c> — regardless of which other
+    /// fields the same scope also overrides.
+    /// </summary>
+    [Fact]
+    public void Resolve_writes_launch_config_under_a_scoped_home_override_never_the_real_home()
+    {
+        var overrideHome = Path.Combine(Path.GetTempPath(), $"claude-launch-config-tripwire-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(overrideHome);
+        try
+        {
+            using var scope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { HomeOverride = overrideHome, ClaudeConfigRootOverride = null });
+
+            new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-settings.json")));
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-mcp.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(overrideHome);
+        }
     }
 
     [Fact]

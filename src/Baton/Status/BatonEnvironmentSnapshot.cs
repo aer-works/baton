@@ -80,6 +80,20 @@ public sealed record BatonEnvironmentSnapshot(
     /// cares about one or two fields and wants to be explicit about the rest, rather than inheriting
     /// whatever <see cref="Current"/> happens to hold on the machine running it.
     /// </summary>
+    /// <remarks>
+    /// <b>Wrong base for a partial override whose code path also touches an unrelated field this
+    /// snapshot carries</b> (#1524's own hazard: <c>ClaudeWorkerAdapterTests</c>'s two config-root
+    /// tests built their scope from <c>Blank with { ClaudeConfigRootOverride = … }</c>, which — because
+    /// <see cref="BeginScope"/> replaces the whole ambient snapshot, not just the named field — also
+    /// blanked <see cref="HomeOverride"/> back to null for the scope's lifetime. <c>BatonPaths.Root</c>
+    /// reads <c>HomeOverride</c> too, so inside that scope it fell through to the real
+    /// <c>{UserProfile}/.baton</c> instead of the test assembly's redirected home
+    /// (<c>tests/Shared/BatonHomeRedirect.cs</c>), and <c>ClaudeWorkerAdapter.Resolve</c> writes its
+    /// launch config there on every call — leaking into the real <c>~/.baton</c>). A scope that only
+    /// means to override one field must build from <see cref="Current"/>, carrying every other ambient
+    /// field — including any redirect already in force — forward unchanged; reach for <see cref="Blank"/>
+    /// only when the code path under test provably never resolves a field left unset.
+    /// </remarks>
     public static readonly BatonEnvironmentSnapshot Blank = new(
         HomeOverride: null,
         McpOutputDirectory: null,
