@@ -230,6 +230,81 @@ public sealed class VerifyCommandResolverTests
         }
     }
 
+    // ---- #1718: a stderr `warning:` from a git that still exits 0 must never be read as the declaration ----
+
+    /// <summary>
+    /// #1718, production path: real git can exit 0 while writing a <c>warning:</c> line to stderr — this
+    /// fixture manufactures that deterministically (<see cref="TempGitRepository.TagHeadWithItsOwnSha"/>:
+    /// tagging <c>HEAD</c> with its own full-sha makes the exact <c>git show &lt;rev&gt;:&lt;path&gt;</c>
+    /// shape <see cref="VerifyCommandResolver.ReadCommittedRepoDeclarationAsync"/> runs print
+    /// <c>advice.objectNameWarning</c>'s ambiguous-refname warning). Pins the #1708 L3 stdout-only
+    /// hardening (spec/baton.md §3, "Verify command resolution": "stdout only, so a warning git writes
+    /// to stderr can never be taken for the declaration's own first non-comment line") — the declaration
+    /// returned must still be the blob's real first non-comment line, not the warning text.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommittedRepoDeclarationAsync_ignores_a_stderr_warning_from_a_git_that_exits_zero()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(1)\"");
+            TempGitRepository.CommitAll(workspace, "declare verify");
+            TempGitRepository.SetReviewedBaselineAtHead(workspace);
+
+            // The reviewed baseline is HEAD, so ReadCommittedRepoDeclarationAsync's own merge-base read
+            // resolves to this same sha, and its `git show` runs against exactly the ref this tags.
+            TempGitRepository.TagHeadWithItsOwnSha(workspace);
+
+            var committed = await VerifyCommandResolver.ReadCommittedRepoDeclarationAsync(
+                workspace, TestContext.Current.CancellationToken);
+
+            Assert.Equal("python -c \"import sys; sys.exit(1)\"", committed.CommandLine);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
+    /// <summary>
+    /// #1718, RED-FIRST control arm: proves the fixture above really does produce stderr noise on the
+    /// exact <c>git show</c> shape the resolver runs, so the assertion in the test above is not vacuous.
+    /// Calls <see cref="VerifyRunner.CaptureAsync"/> directly with <c>stdoutOnly: false</c> — the
+    /// combined stream must contain the warning text. (Confirmed separately, not re-asserted here: with
+    /// <c>stdoutOnly</c> forced to <see langword="false"/> on the production path too, the test above
+    /// fails because the declaration comes back polluted with the warning line instead of the command —
+    /// see changes.md.)
+    /// </summary>
+    [Fact]
+    public async Task CaptureAsync_without_stdoutOnly_interleaves_the_same_fixtures_stderr_warning()
+    {
+        var workspace = CreateTempWorkspace();
+        try
+        {
+            TempGitRepository.InitWithEverythingCommitted(workspace);
+            WriteRepoDeclaration(workspace, "python -c \"import sys; sys.exit(1)\"");
+            TempGitRepository.CommitAll(workspace, "declare verify");
+            var sha = TempGitRepository.TagHeadWithItsOwnSha(workspace);
+
+            var (exitCode, combined) = await VerifyRunner.CaptureAsync(
+                "git",
+                ["--no-pager", "-c", "core.hooksPath=", "show", "--no-textconv", $"{sha}:./.baton/verify"],
+                workspace,
+                TestContext.Current.CancellationToken,
+                stdoutOnly: false);
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("warning:", combined, StringComparison.Ordinal);
+            Assert.Contains("ambiguous", combined, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(workspace);
+        }
+    }
+
     // ---- #1708 M1: the baseline is the merge-base with origin/main, not HEAD ----
 
     /// <summary>
