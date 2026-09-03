@@ -132,6 +132,16 @@ directory explicitly, and a wrong value produces a confident review of the wrong
 error. On Windows, double every backslash — it is a JSON string, and a lone `C:\Users\…` is rejected
 as an invalid escape before anything else is checked.
 
+**A `WorkingDirectory` also needs a recorded project ceiling, or `baton run` above refuses before
+anything spawns** (#1166, spec/baton.md §9's project scope: `ProjectNotTrustedException`,
+`ValidationRefused`). Run `baton trust /absolute/path/to/the/repo/under/review --ceiling
+ReadFiles,WriteFiles` once per machine per project before dispatching against it — the categories
+must be a superset of whatever the binding's own `PermissionGrant` asks for, since the effective
+grant is the intersection of the two, never wider than either. `baton trust <path> --ceiling all`
+trusts a project without narrowing anything; `baton trust --list` shows every project this machine
+has a recorded ceiling for, and `baton trust <path> --revoke` undoes one. A binding with no
+`WorkingDirectory` at all is unaffected — there is no project scope to enforce.
+
 ### Why this is the read-lane profile
 
 `NetworkAccess: false` is not a hardening choice you could relax — on `agy` it is the only
@@ -375,7 +385,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 |---|---|
 | 0 | `Succeeded` — every step Succeeded. **Not the same as "the gates passed" (#1702).** A step can succeed with the engine's own verify command never having run — see `steps[].verify` below |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
-| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
+| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed, a project directory with no recorded `baton trust` ceiling — #1166, spec/baton.md §9), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
 | 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `baton status`/the sentinel for what the room actually is |

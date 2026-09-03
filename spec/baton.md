@@ -2906,12 +2906,27 @@ last-used-file fallback the CLI path is ever subject to.
 `bindings.json` is only the **room ∩ step** half of that intersection. The **project ceiling** — the
 owner's own control on what any harness-authored `bindings.json` can grant in the first place — lives
 in Baton's own app-level config, never inside the project tree, so a compromised or over-permissive
-project cannot author its own way past it. `BatonPaths.SettingsFile` (`{Root}/settings.json`,
-`BatonPaths.cs`) is the one app-level, per-machine config file this tree has today, and at HEAD
-it holds only the daemon concurrency caps (`DaemonSettingsStore.cs`) — **no project-ceiling
-implementation exists there or anywhere else in `src/` that I could find.** This is
-`UNVERIFIED — fill from code`: the ceiling's register is settled direction, not a shipped contract,
-and a build against this section should not assume `BatonPaths.SettingsFile` is already shaped for it.
+project cannot author its own way past it. Built (#1166): `ProjectCeilingStore` (`src/Baton.Vendors/`),
+a flat JSON map at `{BatonPaths.Root}/project-ceilings.json`, canonical project path →
+`ProjectCeiling` (`ReadFiles`/`WriteFiles`/`RunShellCommands`/`NetworkAccess` — decision 0004 names no
+closed set of ceiling levels, so this reuses the category vocabulary `ClaudeWorkerAdapter.TryTranslatePermissionGrant`
+already maps rather than inventing a second one). Decision 0004's "first presented as a trust prompt"
+has no interactive shape in a headless dispatch, so `baton trust <project-path> --ceiling
+all|none|<categories>` (list/revoke: `baton trust --list`, `baton trust <path> --revoke`) is the
+explicit operator verb instead — the PR that built this states that reading as the assumption, not a
+correction to 0004's text. `ProjectCeilingGate` (`src/Baton.Vendors/`) is the one choke point both
+`ClaudeWorkerAdapter.Resolve` and `AgyWorkerAdapter.Resolve` call at the top of `Resolve`, before
+either reads `WorkerInvocation.PermissionGrant`: a `WorkingDirectory` with no recorded ceiling refuses
+before any worker spawns (`ProjectNotTrustedException`, naming the `baton trust` verb and the path);
+otherwise the effective grant is `ceiling.Cap(roleGrant)` — each category survives only when both the
+role's own grant and the ceiling carry it, re-checked against
+`PermissionGrant.CategoriesDefeatedByTheShell` so a coherent role grant that becomes incoherent once
+narrowed (writes capped away while an unscoped shell stays granted) still refuses rather than shipping
+the #529 shape silently. Read fresh on every `Resolve` call, never cached across a process's own
+lifetime — `baton trust` may revise the store mid-fleet, and each `baton run`/`dispatch` is its own
+process. `CommandWorkerAdapter`/`CaptureWorkerAdapter`/`NoOpWorkerAdapter` are engine-deterministic,
+not vendor workers with a grant to cap, so the gate does not apply to them (each says so on its own
+type).
 
 **Grants fail closed — as a dispatch-time obligation, not a measured runtime property.** The rule:
 if a denial cannot be enforced for the chosen vendor, the run must not start. Read it together with
@@ -3597,10 +3612,6 @@ git history is the archive; "ARCHIVE" as a distinct ruling applied to nothing an
 Claims I could not verify by reading the tree, or that rest on something outside this session's
 reach:
 
-- **`BatonPaths.SettingsFile` has no project-ceiling implementation at HEAD.** I read
-  `DaemonSettingsStore.cs` in full — it holds only `GlobalConcurrencyCap`/`PerVendorConcurrencyCap`.
-  The three-scope model's ceiling half (§9) is settled direction, not a shipped contract; a build
-  against §9 should not assume any existing file is already shaped to hold it.
 - **The exact shape of the outbound push mailbox (§6).** Unbuilt; I could not verify anything about
   its intended transport beyond "quota data rides it" and "gate-pending visibility rides it," both
   stated as rulings rather than measured facts.

@@ -440,6 +440,12 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
+        // #1166: decision 0004's project ceiling, capped before anything below reads
+        // invocation.PermissionGrant -- see ClaudeWorkerAdapter.Resolve's identical seam for why this
+        // has to run first (ResolvePermissionScope, the hook-liveness probe below, and every denied-tool
+        // env var all derive from the grant).
+        invocation = ProjectCeilingGate.Apply(invocation, contract.WorkerName);
+
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
         var permissionScope = ResolvePermissionScope(invocation);

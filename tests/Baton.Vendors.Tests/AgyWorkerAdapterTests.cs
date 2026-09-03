@@ -43,6 +43,10 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
+        // #1166: a WorkingDirectory now has to carry a recorded ceiling or Resolve refuses -- this
+        // test is about forwarding, not the ceiling gate, so it trusts the fixture path unrestricted.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -158,6 +162,11 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {
+        // #1166: see A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target above -- Set
+        // is idempotent, so re-trusting the same fixture path here does not depend on that test's
+        // ordering relative to this one.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -2259,5 +2268,52 @@ public class AgyWorkerAdapterTests
         var result = ProcessAgyHookLivenessProbe.Evaluate(stdout);
 
         Assert.Equal(expectedLive, result.IsLive);
+    }
+
+    /// <summary>
+    /// #1166: decision 0004's project ceiling fails closed against a project directory
+    /// <see cref="ProjectCeilingStore"/> has never seen -- red-first against the pre-#1166 behaviour,
+    /// which spawned unconditionally whenever WorkingDirectory was set.
+    /// </summary>
+    [Fact]
+    public void An_unseen_project_directory_is_refused_before_any_worker_spawns()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unseen-agy-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: unseenProject), ArchitectContract));
+
+        Assert.Equal(unseenProject, ex.ProjectPath);
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("baton trust", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1166: effective grant = role grant ∩ project ceiling. Kept out of the
+    /// <c>--dangerously-skip-permissions</c> shape deliberately (RunShellCommands/NetworkAccess both
+    /// stay false on the role grant) -- that shape also arms the hook-liveness probe
+    /// (<see cref="AgyWorkerAdapter.RequiresHookAsSoleNarrowing"/>), which is a different concern this
+    /// test does not need to pay for.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_the_role_grant_caps_the_effective_grant_to_the_intersection()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-cap-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        // The capped grant no longer grants writes, so the mode flag must reflect "plan", not
+        // "accept-edits" -- the translation path a still-WriteFiles:true grant would have taken.
+        Assert.Equal("plan", ArgValue(target, "--mode"));
+
+        var denied = target.Environment!.Single(v => v.Name == AgyWorkerAdapter.DeniedToolsVariable).Value;
+        Assert.Contains("write_to_file", denied);
     }
 }

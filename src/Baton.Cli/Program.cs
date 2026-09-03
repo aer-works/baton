@@ -87,7 +87,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "trust", "room", "rooms", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -111,6 +111,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine("       baton templates [--json]");
     Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {TrustOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RoomDeleteOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RoomsPruneOptionsParser.Usage[7..]}");
     Console.Error.WriteLine(
@@ -189,6 +190,16 @@ try
         var unkeepOptions = UnkeepOptionsParser.Parse(args[1..]);
         await KeepCommand.UnmarkAsync(unkeepOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
         return 0;
+    }
+
+    // #1166: decision 0004's project ceiling has no interactive first-use trust prompt in a headless
+    // dispatch -- list/register/revoke against ProjectCeilingStore produces no CommandResult (no
+    // workflow pump), so this joins keep/unkeep/watch above rather than the CommandResult/
+    // FlowStateReporter switch below.
+    if (args[0] == "trust")
+    {
+        var trustOptions = TrustOptionsParser.Parse(args[1..]);
+        return await TrustCommand.ExecuteAsync(trustOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
     }
 
     // #1659: `room`/`rooms` are noun-first verb groups (only one sub-verb each today —

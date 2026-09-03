@@ -58,6 +58,10 @@ public sealed class TemplateDispatchabilityTests : IDisposable
         Directory.CreateDirectory(_sourceRepo);
         InitGitRepository(_sourceRepo);
         Directory.CreateDirectory(_room);
+
+        // #1166: this class dispatches real claude/agy adapters against _sourceRepo -- trust it
+        // unrestricted so the ceiling gate is not what this class's own refusal assertions measure.
+        ProjectCeilingStore.Set(_sourceRepo, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
     }
 
     /// <summary>
@@ -82,6 +86,15 @@ public sealed class TemplateDispatchabilityTests : IDisposable
 
                 var config = new Dictionary<string, WorkerBindingConfigEntry> { [workerName] = binding };
                 var (provisioned, _) = WorktreeWorkspaces.Provision(config, _room);
+
+                // #1166: a worktree-isolated role provisions a fresh directory under _room per
+                // worker, distinct from _sourceRepo -- trust whatever WorkingDirectory this entry
+                // actually resolved to, not just the constructor's source repo.
+                if (provisioned[workerName].WorkingDirectory is { } resolvedWorkingDirectory)
+                {
+                    ProjectCeilingStore.Set(
+                        resolvedWorkingDirectory, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+                }
 
                 var resolved = WorkerBindingResolver.Resolve(provisioned, WorkerAdapterRegistry.Default);
                 Assert.IsType<WorkerBinding.Process>(resolved[workerName]);

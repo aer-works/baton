@@ -137,6 +137,9 @@ public class WriteFamilyContractTests
         string vendor)
     {
         var workspace = Path.Combine(Path.GetTempPath(), "baton-workspace");
+        // #1166: the ceiling gate now runs before this test's own concern (the workspace env var), so
+        // trust the fixture path unrestricted first.
+        ProjectCeilingStore.Set(workspace, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
         IWorkerAdapter adapter = vendor == "claude"
             ? new ClaudeWorkerAdapter()
             : new AgyWorkerAdapter();
