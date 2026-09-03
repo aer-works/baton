@@ -776,6 +776,23 @@ def _prose_first_line(text: str, limit: int = STDOUT_TAIL_PROSE_FIELD_LIMIT) -> 
     return first if len(first) <= limit else first[:limit] + STDOUT_TAIL_TRUNCATION_MARK
 
 
+def _cap_plain_line(line: str, limit: int = STDOUT_TAIL_PROSE_FIELD_LIMIT) -> str:
+    """Caps `line` to `limit` chars (review rev1738 F3). `stdout_tail_for_room` applies this, after
+    blob elision, to EVERY surviving tail line -- both `_render_tail_line`'s raw passthrough
+    (malformed/non-dict JSON, or a dict whose `type`/`event` this module's dispatch has no arm for)
+    and its rendered prose lines, most of which are already comfortably under `limit` via
+    `_prose_first_line`'s own cap and so pass through this unchanged. Applied BEFORE the `max_bytes`
+    cut: without this, a long plain-text line (a stack trace, a verbose crash message) with ordinary
+    spacing was capped by neither this nor `_elide_blob_tokens` (whitespace-free runs only), so when
+    it was the newest, still-open line and alone exceeded the remaining byte budget, the forward
+    boundary search found nothing ahead of it and the whole line -- possibly the only content a
+    Running room has to show -- was dropped, leaving just the truncation mark. Caveat: a rendered
+    line that runs past `limit` (e.g. a `[tool_result: ...]` line whose body is near
+    `STDOUT_TAIL_PROSE_FIELD_LIMIT` chars, plus the wrapping brackets) can lose its closing bracket
+    to the cut -- cosmetic, and strictly better than the pre-fix whole-line drop it replaces."""
+    return line if len(line) <= limit else line[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
 def _prose_summarize_tool_input(tool_input: object, limit: int = 120) -> str:
     """`key=value, ...` one-liner off a `tool_use` block's `input` object, truncated -- the "one-line
     summary of its input" #1723 asks for. Not a general JSON pretty-printer: values are stringified
@@ -791,89 +808,176 @@ def _prose_summarize_tool_input(tool_input: object, limit: int = 120) -> str:
     return summary if len(summary) <= limit else summary[:limit] + STDOUT_TAIL_TRUNCATION_MARK
 
 
-def _render_stream_json_prose(evt: dict) -> str | None:
-    """One prose line for a parsed stream-json object, or `None` if the line carries nothing a reader
-    needs (a hook lifecycle marker, a thinking-only block, a rate-limit ping) -- #1723. This is a
-    Python sibling of `Baton.Cli`'s `RunCommand.EchoStreamJsonLine`/`WorkerStreamLineRenderer`
-    (`src/Baton.Cli/RunCommand.cs`, `src/Baton.Cli/WorkerStreamRendering.cs`) by necessity, not by
-    choice: the pusher is Python until #1557 moves projection into the daemon, so the same envelope
-    shapes (claude's `assistant`/`user`/`result`/`system`) are recognized a second time here rather
-    than shared. See those files for the authoritative shape-by-shape rules; this function mirrors
-    their OUTPUT for the common events (assistant text, a tool_use name plus a one-line input summary,
-    a tool_result's first line, the turn-completion result line) and is NOT restated a second time in
-    this comment. Unlike the C# renderer's --follow-oriented "never swallow an unrecognized envelope"
-    posture, an envelope this function does not recognize at all is dropped rather than echoed raw:
-    this tail is a bounded glance surface, not a live monitor, and the operator's own framing --
-    "the user probably doesn't need to see every field" -- is exactly the case for every field this
-    function has no arm for."""
-    evt_type = evt.get("type")
+class _Unrecognized:
+    """Sentinel `_render_stream_json_prose` returns when the envelope's OWN dispatch key (claude's
+    `type`, agy's `event`) carries a value this function has no arm for at all -- e.g. a vendor field
+    added tomorrow, or a shape neither vendor's adapter documents. Distinct from `None`, which means
+    the shape WAS recognized and #1723 deliberately judged it noise (see the list in this module's
+    docstring below). `_render_tail_line` echoes this sentinel's line raw, mirroring the C# renderer's
+    `EchoStreamJsonLine` fail-visible posture (`src/Baton.Cli/RunCommand.cs:589-593`) -- never
+    swallow a valid-JSON envelope this function does not recognize (review rev1738 F1/F4)."""
 
-    if evt_type == "assistant":
-        message = evt.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
+
+_UNRECOGNIZED = _Unrecognized()
+
+
+def _render_stream_json_prose(evt: dict) -> str | None | _Unrecognized:
+    """One prose line for a parsed stream-json object; `None` if the line's shape IS recognized but
+    #1723 judged it deliberately silent -- a hook lifecycle marker, a thinking-only block, a
+    rate-limit ping, an agy heartbeat that isn't a DONE/ERROR step, each named at its own `return
+    None` below; or `_UNRECOGNIZED` if the envelope's own top-level `type`/`event` VALUE has no arm
+    here at all, in which case `_render_tail_line` echoes the raw line rather than dropping it
+    (review rev1738 F1/F4 -- see `_Unrecognized`'s own doc comment). This only covers the TOP-LEVEL
+    dispatch: a recognized `type`/`event` whose nested sub-shape doesn't match any arm (e.g. an
+    `assistant` message with a non-dict `message`) still falls through to that branch's own `return
+    None`, not `_UNRECOGNIZED` -- a narrower, pre-existing fail-silent gap this rev1738 round does not
+    close, left for a future pass rather than expanding this one's scope.
+
+    This is a Python sibling of `Baton.Cli`'s `RunCommand.EchoStreamJsonLine`/`WorkerStreamRendering`
+    (`src/Baton.Cli/RunCommand.cs`, `src/Baton.Cli/WorkerStreamRendering.cs`) and of
+    `AgyWorkerAdapter.TryParseProgressEvent` (`src/Baton.Vendors/AgyWorkerAdapter.cs:1257-1358`) by
+    necessity, not by choice: the pusher is Python until #1557 moves projection into the daemon, so
+    the same envelope shapes are recognized a second time here rather than shared. See those files
+    for the authoritative shape-by-shape rules; this function mirrors their overall SHAPE (which
+    events exist, which are noise) but NOT their exact output in every case. Three deliberate
+    divergences, disclosed rather than restated (review rev1738 F2):
+    - the claude `tool_use` arm below appends a `key=value` summary of the tool's `input` object that
+      the C# side never produces (`RunCommand.EchoStreamJsonLine`'s `tool` Kind carries only the tool
+      NAME, `src/Baton.Cli/RunCommand.cs:571`; the Kind itself is assigned by
+      `ClaudeWorkerAdapter.TryParseProgressEvent`, not `WorkerStreamRendering.cs`, which only
+      delegates rendering to `EchoStreamJsonLine`). Kept because it is materially more useful on a
+      bounded glance surface than a bare name -- and it is why raw tool-input values (paths, command
+      strings, arbitrary key/value pairs) reach this tail where the C# renderer never puts them;
+      `stdout_tail_for_room`'s secret gate (`_gate_tail_lines`) still runs AFTER this function, on the
+      rendered string, so a known-secret-shaped input value is still withheld, but anything else is
+      not
+    - the claude `user`/`tool_result` arm below has NO C# counterpart at all --
+      `ClaudeWorkerAdapter.TryParseProgressEvent` returns `false` for a `type: "user"` line
+      (`src/Baton.Vendors/ClaudeWorkerAdapter.cs:1299-1305`), so `EchoStreamJsonLine` echoes it raw;
+      this function instead renders it, a Python-only addition
+    - the agy `step_update` arm below renders `[tool: {step_type} — done|error]`, and also fires on
+      the ERROR state, where `AgyWorkerAdapter.TryParseProgressEvent` renders Kind `"status"` (→
+      `[status: {step_type}]`) and is DONE-only (`src/Baton.Vendors/AgyWorkerAdapter.cs:1292-1306`)
+    """
+    if "type" in evt:
+        evt_type = evt.get("type")
+
+        if evt_type == "assistant":
+            message = evt.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return _prose_first_line(text)
+                elif block_type == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and name:
+                        summary = _prose_summarize_tool_input(block.get("input"))
+                        return f"[tool: {name}({summary})]" if summary else f"[tool: {name}]"
+            return None  # a thinking-only block, or an empty content array -- nothing to show.
+
+        if evt_type == "user":
+            message = evt.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = next(
+                        (c.get("text") for c in body if isinstance(c, dict) and isinstance(c.get("text"), str)),
+                        None)
+                if isinstance(body, str) and body.strip():
+                    prefix = "[tool_result error: " if block.get("is_error") else "[tool_result: "
+                    return prefix + _prose_first_line(body) + "]"
             return None
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type == "text":
-                text = block.get("text")
-                if isinstance(text, str) and text.strip():
-                    return _prose_first_line(text)
-            elif block_type == "tool_use":
-                name = block.get("name")
-                if isinstance(name, str) and name:
-                    summary = _prose_summarize_tool_input(block.get("input"))
-                    return f"[tool: {name}({summary})]" if summary else f"[tool: {name}]"
-        return None  # a thinking-only block, or an empty content array -- nothing to show.
 
-    if evt_type == "user":
-        message = evt.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
-            return None
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            body = block.get("content")
-            if isinstance(body, list):
-                body = next(
-                    (c.get("text") for c in body if isinstance(c, dict) and isinstance(c.get("text"), str)),
-                    None)
-            if isinstance(body, str) and body.strip():
-                prefix = "[tool_result error: " if block.get("is_error") else "[tool_result: "
-                return prefix + _prose_first_line(body) + "]"
-        return None
+        if evt_type == "result":
+            is_error = evt.get("is_error")
+            if not isinstance(is_error, bool):
+                return None
+            if is_error:
+                summary = evt.get("result")
+                text = summary if isinstance(summary, str) and summary else "no error detail in the result envelope"
+                return f"[result: error — {_prose_first_line(text)}]"
+            return "[result: success]"
 
-    if evt_type == "result":
-        is_error = evt.get("is_error")
-        if not isinstance(is_error, bool):
-            return None
-        if is_error:
-            summary = evt.get("result")
-            text = summary if isinstance(summary, str) and summary else "no error detail in the result envelope"
-            return f"[result: error — {_prose_first_line(text)}]"
-        return "[result: success]"
+        if evt_type == "system":
+            subtype = evt.get("subtype")
+            if subtype == "init":
+                return "[status: Session started]"
+            if subtype == "status":
+                status = evt.get("status")
+                if isinstance(status, str) and status:
+                    return f"[status: {status}]"
+            return None  # every other subtype (hook lifecycle, thinking-token estimates, ...) is noise.
 
-    if evt_type == "system":
-        subtype = evt.get("subtype")
-        if subtype == "init":
+        return _UNRECOGNIZED  # a claude "type" value this renderer has no arm for (e.g. rate_limit_event).
+
+    if "event" in evt:
+        # agy's envelope is keyed on "event" (init/step_update/result), NOT claude's "type" -- a
+        # genuinely different parse, mirroring AgyWorkerAdapter.TryParseProgressEvent's own shapes
+        # (src/Baton.Vendors/AgyWorkerAdapter.cs:1257-1358), same discipline as extract_live_counts'
+        # existing `evt.get("event") == "step_update"` branch a few hundred lines above (review
+        # rev1738 F1).
+        event = evt.get("event")
+
+        if event == "init":
             return "[status: Session started]"
-        if subtype == "status":
-            status = evt.get("status")
-            if isinstance(status, str) and status:
-                return f"[status: {status}]"
-        return None  # every other subtype (hook lifecycle, thinking-token estimates, ...) is noise.
 
-    return None  # an envelope type this renderer has no arm for (e.g. rate_limit_event).
+        if event == "step_update":
+            step = evt.get("step_update")
+            if not isinstance(step, dict):
+                return None
+            state = step.get("state")
+            step_type = step.get("step_type")
+            if state in ("DONE", "ERROR") and isinstance(step_type, str) \
+                    and step_type not in ("unknown", "checkpoint", "user_input"):
+                marker = "done" if state == "DONE" else "error"
+                return f"[tool: {step_type} — {marker}]"
+            return None  # the ACTIVE edge, or a DONE/ERROR unknown/checkpoint/user_input step -- noise.
+
+        if event == "result":
+            # Mirrors AgyWorkerAdapter.TryParseProgressEvent's own priority (AgyWorkerAdapter.cs:1308-1347):
+            # a non-empty `response` wins regardless of status; only then does a non-SUCCESS `status`
+            # render as an error; a SUCCESS result with an empty response, or no status at all, is the
+            # bare `case "result":` -- ignore, no signal.
+            result = evt.get("result")
+            if not isinstance(result, dict):
+                return None
+            response = result.get("response")
+            if isinstance(response, str) and response.strip():
+                return _prose_first_line(response)
+            status = result.get("status")
+            if isinstance(status, str) and status and status != "SUCCESS":
+                error = result.get("error")
+                text = error if isinstance(error, str) and error else "no error detail in the result envelope"
+                return f"[result: error — {_prose_first_line(text)}]"
+            return None
+
+        return _UNRECOGNIZED  # an agy "event" value this renderer has no arm for.
+
+    return _UNRECOGNIZED  # neither claude's "type" key nor agy's "event" key present at all.
 
 
 def _render_tail_line(raw_line: str) -> str | None:
     """One rendered tail line for `raw_line`, or `None` if it should be dropped entirely (#1723). A
     line that parses as a JSON OBJECT routes through `_render_stream_json_prose`; anything else --
-    malformed JSON, or valid JSON that is not an object (an array, a bare number) -- passes through
-    unchanged, mirroring `WorkerStreamLineRenderer`'s non-JSON fallback."""
+    malformed JSON, valid JSON that is not an object (an array, a bare number), or an object whose
+    `type`/`event` this module doesn't recognize at all -- passes through UNCHANGED here, mirroring
+    `WorkerStreamLineRenderer`'s non-JSON and unrecognized-envelope fallbacks, both of which echo raw
+    rather than drop. The caller (`stdout_tail_for_room`) is responsible for capping this raw
+    passthrough to `STDOUT_TAIL_PROSE_FIELD_LIMIT` chars (`_cap_plain_line`, review rev1738 F3) AFTER
+    blob elision -- capping here first would feed `_elide_blob_tokens` an already-truncated line and
+    report the wrong elided byte count for a long whitespace-free blob."""
     stripped = raw_line.strip()
     if not stripped:
         return raw_line
@@ -883,7 +987,10 @@ def _render_tail_line(raw_line: str) -> str | None:
         return raw_line
     if not isinstance(evt, dict):
         return raw_line
-    return _render_stream_json_prose(evt)
+    rendered = _render_stream_json_prose(evt)
+    if rendered is _UNRECOGNIZED:
+        return raw_line
+    return rendered
 
 
 def _gate_tail_lines(lines: list[str], patterns: list[re.Pattern] | None) -> list[str]:
@@ -912,7 +1019,9 @@ def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pa
     line, so a cut landing inside a line with no earlier newline within the truncated budget left a
     genuine U+FFFD at the front; this version finds the boundary on the raw bytes FIRST, so a strict
     decode of what's kept never straddles a character, at the cost of possibly emitting less than
-    `max_bytes` when no boundary exists inside the budget at all). None when there is no captured
+    `max_bytes` when no boundary exists inside the budget at all -- in that case the newest surviving
+    line is kept alone rather than the tail collapsing to just the truncation mark, review rev1738
+    F3). None when there is no captured
     stdout yet for this execution -- absent, never a fabricated empty string, matching
     `live_telemetry_for_room`'s own never-fabricated convention."""
     stdout_path, _rollover_path = _find_stdout_paths(room_path, execution_id)
@@ -926,7 +1035,11 @@ def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pa
     for raw in raw_lines:
         line = _render_tail_line(raw)
         if line is not None:
-            rendered.append(_elide_blob_tokens(line))
+            # #1723: elide FIRST, off the full (possibly long) rendered/raw line, so a blob's
+            # reported byte count is the real one; THEN cap (review rev1738 F3) so no single
+            # surviving line -- rendered or raw passthrough -- can alone exceed the max_bytes budget
+            # below and get dropped whole by the forward boundary search.
+            rendered.append(_cap_plain_line(_elide_blob_tokens(line)))
     gated = _gate_tail_lines(rendered, patterns)
     tail = "\n".join(gated)
     if not tail:
@@ -944,7 +1057,23 @@ def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pa
         # -- `\n` cannot appear as a UTF-8 continuation or lead byte) and the subsequent decode is
         # strict rather than papering over a straddle with `errors="replace"`.
         nl_index = encoded.find(b"\n", max(0, cut_start))
-        body_bytes = encoded[nl_index + 1:] if nl_index != -1 else b""
+        if nl_index != -1:
+            body_bytes = encoded[nl_index + 1:]
+        else:
+            # No line boundary inside the budget at all -- rather than drop every surviving line
+            # (review rev1738 F3: the newest, still-open line may be the ONLY content a Running room
+            # has to show), keep the newest line alone. It is already capped to
+            # STDOUT_TAIL_PROSE_FIELD_LIMIT chars by the render loop above, so this only trims
+            # further on a genuinely tiny `max_bytes` (e.g. a selftest budget); trimmed from the end,
+            # on a UTF-8 lead-byte boundary, to keep the hard `max_bytes` contract.
+            body_bytes = gated[-1].encode("utf-8") if gated else b""
+            if len(body_bytes) > content_budget:
+                # `body_bytes[-content_budget:]` would slice to the WHOLE line if content_budget is
+                # ever 0 (max_bytes <= len(marker_bytes)) -- `-0` means "from index 0", not "keep
+                # nothing" -- so slice by the explicit start index instead.
+                body_bytes = body_bytes[len(body_bytes) - content_budget:]
+                while body_bytes and (body_bytes[0] & 0xC0) == 0x80:
+                    body_bytes = body_bytes[1:]
         tail = STDOUT_TAIL_TRUNCATION_MARK + _decode_utf8_boundary_safe(body_bytes)
     return tail
 
@@ -3627,9 +3756,11 @@ def _selftest() -> int:
         straddle_tail = stdout_tail_for_room(str(straddle_room_dir), "exec-straddle-1", [], max_bytes=106)
         check("#1723: a multi-byte character straddling the byte-cap cut never yields a U+FFFD",
               straddle_tail is not None and "�" not in straddle_tail)
-        check("#1723: with no line boundary anywhere ahead of the cut, the tail degrades to just the "
-              "truncation mark (no partial character survives) rather than a fragment",
-              straddle_tail == STDOUT_TAIL_TRUNCATION_MARK)
+        check("rev1738 F3: with no line boundary anywhere ahead of the cut, the newest (already "
+              "capped) line is kept, trimmed to fit -- not dropped to just the truncation mark",
+              straddle_tail is not None and straddle_tail.startswith(STDOUT_TAIL_TRUNCATION_MARK)
+              and straddle_tail != STDOUT_TAIL_TRUNCATION_MARK
+              and len(straddle_tail.encode("utf-8")) <= 106)
 
         # -- #1723: a stream-json assistant/tool_use/tool_result triple renders to three prose lines
         # with no braces, mirroring Baton.Cli's WorkerStreamLineRenderer output shapes. --
@@ -3679,6 +3810,42 @@ def _selftest() -> int:
         (plain_exec_dir / ".stdout.log").write_text(plain_line + "\n", encoding="utf-8")
         plain_tail = stdout_tail_for_room(str(plain_room_dir), "exec-plain-1", [])
         check("#1723: a plain non-JSON line passes through unchanged", plain_tail == plain_line)
+
+        # -- review rev1738 F1: an agy step_update line renders to prose, not an absent tail. --
+        agy_room_dir = Path(tmp) / "agy-room"
+        agy_exec_dir = agy_room_dir / "artifacts" / "execution_exec-agy-1"
+        agy_exec_dir.mkdir(parents=True)
+        agy_line = json.dumps({"event": "step_update",
+                                "step_update": {"state": "DONE", "step_type": "tool"}})
+        (agy_exec_dir / ".stdout.log").write_text(agy_line + "\n", encoding="utf-8")
+        agy_tail = stdout_tail_for_room(str(agy_room_dir), "exec-agy-1", [])
+        check("rev1738 F1: an agy DONE/tool step_update line renders to a prose line, not None",
+              agy_tail == "[tool: tool — done]")
+
+        # -- review rev1738 F1/F4: an unknown-but-valid JSON dict (neither claude's `type` nor agy's
+        # `event` key) passes through raw rather than being dropped. --
+        unknown_room_dir = Path(tmp) / "unknown-room"
+        unknown_exec_dir = unknown_room_dir / "artifacts" / "execution_exec-unknown-1"
+        unknown_exec_dir.mkdir(parents=True)
+        unknown_line = json.dumps({"kind": "some_future_vendor_shape", "value": 1})
+        (unknown_exec_dir / ".stdout.log").write_text(unknown_line + "\n", encoding="utf-8")
+        unknown_tail = stdout_tail_for_room(str(unknown_room_dir), "exec-unknown-1", [])
+        check("rev1738 F1/F4: a valid JSON dict this renderer has no `type`/`event` arm for passes "
+              "through raw rather than being dropped from the tail",
+              unknown_tail == unknown_line)
+
+        # -- review rev1738 F3: a long plain-text open line at the newest position still yields a
+        # tail containing its (capped) head, not just the truncation mark. --
+        long_plain_room_dir = Path(tmp) / "long-plain-room"
+        long_plain_exec_dir = long_plain_room_dir / "artifacts" / "execution_exec-long-plain-1"
+        long_plain_exec_dir.mkdir(parents=True)
+        long_plain_line = "x " * 3000  # ~6 KB of ordinary spaced text, no trailing newline (still open).
+        (long_plain_exec_dir / ".stdout.log").write_text(long_plain_line, encoding="utf-8")
+        long_plain_tail = stdout_tail_for_room(str(long_plain_room_dir), "exec-long-plain-1", [])
+        check("rev1738 F3: a 6 KB plain-text open line is capped rather than dropped whole, so the "
+              "tail still carries its (capped) head instead of collapsing to just the truncation mark",
+              long_plain_tail is not None and long_plain_tail != STDOUT_TAIL_TRUNCATION_MARK
+              and long_plain_tail.startswith("x x x"))
 
     # Absence on a terminal room: attach_live_telemetry never runs live_telemetry_for_room (and so
     # never the stdout tail) for anything other than a Running room -- covered structurally by the
