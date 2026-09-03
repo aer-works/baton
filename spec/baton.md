@@ -301,18 +301,45 @@ which a poller-less pump never runs) was ever reached — the same outcome expli
 targeting an overdue park already had; #1607 did not introduce it. **Fixed by #1634**: before
 `GetRetryObligations` can schedule, or `DependencyResolver.GetReadySteps` can redispatch, a parked
 step's retry, `MutationInterface`'s pump loop now checks the raw ledger — every `ExecutionId` a
-`CancellationRequested` has named in a round *this pump call has itself read*, accumulated across the
-call's own rounds — not `FlowState.CancellationRequestedExecutionIds`, which excludes a target with a
+`CancellationRequested` has named in a round this pump call has read, accumulated across the call's
+own rounds — not `FlowState.CancellationRequestedExecutionIds`, which excludes a target with a
 terminal event, and a parked target's `Failed` outcome is exactly that — for the step's
 `LatestExecutionId` and, if found, appends `ExecutionCancelled` instead of letting either mechanism
-redispatch: the ledger-read rule. Gated on the pump's own `!hostStopRequested`, matching ordinary
-dispatch's own gating: a host stop (Ctrl-C) journals `CancellationRequested` for every still-registered
-execution as part of winding the pump down, not as an operator naming that step, so it must not read
-as one. Scoped to what this call itself observed, not a claim over the full durable ledger — a
-`CancellationRequested` from a run this pump did not itself read (e.g. one journalled before a saved
-checkpoint a later, resumed pump loads) is a known gap, left for a follow-up alongside the host-stop
-question above once resolved (`MutationInterface.cs`'s own `cancellationRequestedExecutionIds` remarks
-have the detail).
+redispatch: the ledger-read rule.
+
+**The scope of "a round this pump call has read" is the checkpoint window, not this call's own
+writes.** `ReadSnapshotFromOffsetAsync` reads from the loaded `ProjectionCheckpoint`'s byte offset
+forward; with no checkpoint — a fresh pump, a corrupt or pre-v4 checkpoint file, or a full replay —
+that window is the *entire ledger from byte 0*, including every `CancellationRequested` any prior
+process ever journalled to this room. A `CancellationRequested` a *previous* process wrote is
+therefore just as visible to this rule as one this call wrote itself.
+
+That mattered because `InFlightExecutionRegistry.RequestStopAsync` (a Ctrl-C wind-down) journals
+`CancellationRequested` for *every* still-registered execution, unconditionally — not an operator
+naming that step. Gating the ledger-read rule on the pump's own `!hostStopRequested` flag stops that
+misread only *within* the process that received the stop: the flag lives in memory, but the window
+the rule reads from spans process boundaries. A step that failed and re-parked in the same round a
+host stop landed, with no clean checkpoint saved past that point (a second Ctrl-C, a kill, a crash, a
+closed terminal), would replay `CancellationRequested` on the *next* `baton run` — in a process where
+`hostStopRequested` starts `false` — and read as an operator cancel, settling the step terminally
+`Cancelled` and out of `RetryWithRevision`'s reach.
+
+**Fixed by #1762, before #1634 ever shipped separately — the two land in one PR, never released
+apart.** The distinction is made durable, not a flag: `FlowEvent.CancellationRequested` carries
+`Origin` (`CancellationOrigin`: `Operator` or `HostStop`), nullable, defaulting to `null` on replay of
+any line written before this field existed. `RequestStopAsync` writes `HostStop`. Every other
+appender — `CancelCommand`'s direct path (`MutationInterface.RequestCancellationAsync`), the poller's
+in-process live delivery (`InFlightExecutionRegistry.RequestCancellationAsync`), and the poller's
+parked-intent settle (`SettleParkedCancelIntentsAsync`) — writes `Operator`. The ledger-read rule now
+accumulates only `Origin == Operator` lines, so a `HostStop` line is excluded regardless of which
+process, or how many rounds later, reads it. A `null` `Origin` (a line written before #1762 shipped)
+is likewise never accumulated. Because the `Origin` field and the ledger-read rule that consults it
+ship in the same PR, no released build ever ran the rule without `Origin` — there is no window in
+which a real, already-deployed ledger's `HostStop` line was ever read as an operator cancel by this
+mechanism, so this addition cannot make any existing ledger *worse*; it simply closes the leak (F1
+above) before the rule that has the leak ever reaches an operator. The `!hostStopRequested` gate
+stays too, alongside the `Origin` filter — cheap, and it stops the same-process case one round
+earlier than waiting for the accumulator to simply never contain a `HostStop` id.
 
 **The dead-holder gate applies to both targeting modes, deliberately, with a real cost on the
 explicit one.** The gate runs before `--execution` is even inspected, so `cancel <room> --execution

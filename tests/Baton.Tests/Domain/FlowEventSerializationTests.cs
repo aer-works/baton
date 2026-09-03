@@ -75,6 +75,9 @@ public class FlowEventSerializationTests
         ];
         yield return [new FlowEvent.ExecutionCancelled(ExecutionId)];
         yield return [new FlowEvent.CancellationRequested(ExecutionId)];
+        // #1762: the two Origin values, so a shape drift on either is caught here too.
+        yield return [new FlowEvent.CancellationRequested(ExecutionId, CancellationOrigin.Operator)];
+        yield return [new FlowEvent.CancellationRequested(ExecutionId, CancellationOrigin.HostStop)];
         yield return [new FlowEvent.WorkflowPaused(ExecutionId, StepId)];
         yield return
         [
@@ -249,6 +252,53 @@ public class FlowEventSerializationTests
 
         var failed = Assert.IsType<FlowEvent.ExecutionFailed>(deserialized);
         Assert.Equal(reason, failed.Reason);
+    }
+
+    private static string LegacyCancellationRequestedJson()
+    {
+        // #1762: Origin is the newest additive member on CancellationRequested -- the same
+        // durability claim ExecutionFailed.Reason's own legacy fixture above pins, mirrored for this
+        // field. A line written before #1762 landed has no Origin property at all.
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.CancellationRequested(ExecutionId, CancellationOrigin.Operator),
+            typeof(FlowEvent));
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.CancellationRequested.Origin)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_CancellationRequested_without_Origin_property_deserializes_with_null_Origin()
+    {
+        // A journal that stopped deserializing after this upgrade is unrecoverable state, which is
+        // why this is asserted rather than assumed -- MutationInterface's ledger-read rule
+        // (spec/baton.md §2) depends on a legacy line replaying with a null Origin, not throwing.
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyCancellationRequestedJson(), FlowEventLogJson.Options);
+
+        var cancellationRequested = Assert.IsType<FlowEvent.CancellationRequested>(deserialized);
+        Assert.Equal(ExecutionId, cancellationRequested.ExecutionId);
+        Assert.Null(cancellationRequested.Origin);
+    }
+
+    [Fact]
+    public void Deserializing_current_CancellationRequested_with_Origin_property_sets_Origin()
+    {
+        // The polarity control for the test above: same event shape, Origin present rather than
+        // stripped. Without this arm, an implementation that never read Origin at all would pass the
+        // legacy test -- null is what it asserts.
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.CancellationRequested(ExecutionId, CancellationOrigin.HostStop),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var cancellationRequested = Assert.IsType<FlowEvent.CancellationRequested>(deserialized);
+        Assert.Equal(CancellationOrigin.HostStop, cancellationRequested.Origin);
     }
 
     private static string LegacyExecutionRequestAcceptedJson()

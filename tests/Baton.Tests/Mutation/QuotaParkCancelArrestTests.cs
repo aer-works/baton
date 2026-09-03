@@ -652,4 +652,266 @@ public class QuotaParkCancelArrestTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    // #1762 F1/F4: the failure the second-reader review found in the fix at #1634 (31cf3bf0) --
+    // the block's INPUT set (cancellationRequestedExecutionIds) is not per-call the way its
+    // !hostStopRequested GATE is. With no checkpoint (a fresh pump: the shape a second Ctrl-C, a
+    // kill, a crash, or a closed terminal leaves behind, since
+    // InFlightExecutionRegistry.RequestStopAsync's wind-down only gets a checkpoint saved past it on
+    // a CLEAN return), a HostStop-origin CancellationRequested a PRIOR process journalled reads
+    // exactly like an operator's on this fresh process, where hostStopRequested starts false.
+    // Red-first: with the accumulation filter reverted to accumulate every CancellationRequested
+    // unconditionally (31cf3bf0's shape, Origin ignored), this test fails --
+    // `Assert.Equal() Failure: Values differ / Expected: Succeeded / Actual: Cancelled` -- confirmed
+    // by actually running it against that reverted code before restoring the filter.
+    // Also #1762 F5: ExhaustedUntil with a real RetryNotBefore on the failure, not the Retryable
+    // shape the rest of this file's arms use, so this file's own name is honest for at least one arm.
+    [Fact]
+    public async Task Overdue_ExhaustedUntil_park_with_a_HostStop_origin_cancel_request_still_redispatches_on_a_fresh_pump()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1762a"),
+                new WorkflowTemplateId("template-1762a"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            // The ledger a killed/crashed host-stop wind-down leaves behind: an ExhaustedUntil quota
+            // park, already overdue, plus the HostStop-origin CancellationRequested
+            // InFlightExecutionRegistry.RequestStopAsync journalled for it before the process died --
+            // written directly, with NO checkpoint file at all, so the pump about to run reads this
+            // from byte 0, exactly the fresh/full-replay shape F1 is about.
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1762a"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(
+                    firstAttempt, FailureClassification.ExhaustedUntil, "quota exhausted", overdueRetryNotBefore), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+                await writerInit.AppendAsync(new FlowEvent.CancellationRequested(firstAttempt, CancellationOrigin.HostStop), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            // A brand-new pump call over this exact ledger -- no InFlightExecutionRegistry carrying
+            // hostStopRequested state from whatever process wrote the HostStop line, and no
+            // checkpoint file in roomDirectory, so this reads the entire ledger from byte 0.
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                    new WorkflowId("wf-1762a"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            // Redispatched, not cancelled: a HostStop-authored cancel from a process that no longer
+            // exists must not terminally settle a step RetryWithRevision could otherwise still reach.
+            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Contains(events, e => e is FlowEvent.CancellationRequested c && c.ExecutionId == firstAttempt);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == firstAttempt);
+            Assert.Equal(2, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1762 F4, the positive control for the test above: an Operator-origin cancel, same fresh-pump/
+    // no-checkpoint shape, DOES still settle Cancelled -- proving the fix discriminates on Origin
+    // rather than simply never honouring a replayed CancellationRequested at all.
+    [Fact]
+    public async Task Overdue_park_with_an_Operator_origin_cancel_request_settles_Cancelled_on_a_fresh_pump()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1762b"),
+                new WorkflowTemplateId("template-1762b"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1762b"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+                await writerInit.AppendAsync(new FlowEvent.CancellationRequested(firstAttempt, CancellationOrigin.Operator), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                    new WorkflowId("wf-1762b"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Cancelled, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Contains(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == firstAttempt);
+            // No new dispatch: the journalled Operator cancel won the race, exactly once.
+            Assert.Single(events.OfType<FlowEvent.ExecutionRequestAccepted>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1762 F1: a line written before this field existed carries no Origin at all and replays as
+    // null (FlowEventSerializationTests pins the wire shape) -- the new block must not honour it
+    // either, which is exactly the pre-#1762 behaviour for those lines (the ledger-read rule did not
+    // exist yet), so an existing ledger can never be made worse by the field's addition.
+    [Fact]
+    public async Task Overdue_park_with_a_legacy_null_origin_cancel_request_still_redispatches_on_a_fresh_pump()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1762c"),
+                new WorkflowTemplateId("template-1762c"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1762c"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+                // Origin omitted -- the pre-#1762 wire shape, not CancellationOrigin.Operator/HostStop.
+                await writerInit.AppendAsync(new FlowEvent.CancellationRequested(firstAttempt), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                    new WorkflowId("wf-1762c"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == firstAttempt);
+            Assert.Equal(2, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }

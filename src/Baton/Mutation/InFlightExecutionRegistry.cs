@@ -31,7 +31,9 @@ public sealed class InFlightExecutionRegistry
     /// in-process to a dispatch this same call already has in flight, instead of waiting on the
     /// concurrency guard. Returns <c>true</c> if <paramref name="targetExecutionId"/> was registered in-flight and
     /// cancellation was recorded and signalled; <c>false</c> if it was not registered (already
-    /// settled, not yet registered by <c>MutationInterface</c>, or a non-process target).
+    /// settled, not yet registered by <c>MutationInterface</c>, or a non-process target). Records
+    /// <see cref="CancellationOrigin.Operator"/> (#1762) — this is always an operator naming a
+    /// specific execution, never a wind-down.
     /// </summary>
     public async Task<bool> RequestCancellationAsync(ExecutionId targetExecutionId, CancellationToken cancellationToken = default)
     {
@@ -48,7 +50,8 @@ public sealed class InFlightExecutionRegistry
             return false;
         }
 
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
         TryCancel(cancellationTokenSource);
         return true;
@@ -59,7 +62,10 @@ public sealed class InFlightExecutionRegistry
     /// minted for every currently in-flight <see cref="ExecutionId"/>): records
     /// <see cref="FlowEvent.CancellationRequested"/> for every entry still registered — fsync'd,
     /// sequentially, in registration order, all before any is signalled — then cancels every one of
-    /// them. Called once the pump's own host <see cref="CancellationToken"/> fires.
+    /// them. Called once the pump's own host <see cref="CancellationToken"/> fires. Records
+    /// <see cref="CancellationOrigin.HostStop"/> (#1762): this mints one per still-registered
+    /// execution regardless of whether any of them is the one an operator actually meant to stop, so
+    /// it must never be read as an operator naming that step (spec/baton.md §2).
     /// </summary>
     internal async Task RequestStopAsync(CancellationToken cancellationToken)
     {
@@ -78,7 +84,8 @@ public sealed class InFlightExecutionRegistry
 
         foreach (var (executionId, _) in snapshot)
         {
-            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), cancellationToken)
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CancellationRequested(executionId, CancellationOrigin.HostStop), cancellationToken)
                 .ConfigureAwait(false);
         }
 
