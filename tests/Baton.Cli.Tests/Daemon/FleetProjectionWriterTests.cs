@@ -83,13 +83,11 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
         for (var i = 0; i < 200; i++)
         {
-            // Production WriteAtomic carries no retry (single writer, ~30s cadence -- a skipped tick
-            // self-heals on the next one). This tight back-to-back loop is a synthetic stress condition
-            // no production cadence produces; the retry here is test-only, standing in for "the next
-            // tick", so the property under test (a landed read is never torn) still gets exercised
-            // hundreds of times against a genuinely concurrent reader rather than the test itself
-            // flaking on an AV/indexer-timed sharing violation unrelated to the atomicity claim.
-            WriteAtomicRetryingTransientSharingViolations(path, i % 2 == 0 ? contentB : contentA);
+            // #1782: WriteAtomic now owns its own retry against a transient sharing violation, so this
+            // tight back-to-back loop calls it directly rather than through a test-side wrapper -- the
+            // property under test (a landed read is never torn) still gets exercised hundreds of times
+            // against a genuinely concurrent reader.
+            FleetProjectionWriter.WriteAtomic(path, i % 2 == 0 ? contentB : contentA);
         }
 
         Volatile.Write(ref stop, true);
@@ -98,26 +96,60 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Assert.Null(readerException);
     }
 
-    private static void WriteAtomicRetryingTransientSharingViolations(string path, string content)
+    /// <summary>#1782: a reader that opens the file with <see cref="FileShare.Read"/> only (the
+    /// hostile case -- e.g. a naive poller that did not opt into <see cref="FileShare.Delete"/>) holds
+    /// the target open across a write. The writer's retry must either land once the reader closes, or
+    /// log-and-skip without throwing if the reader never does -- WriteAtomic must never throw out of
+    /// the hosted service's tick for a transient sharing violation.</summary>
+    [Fact]
+    public async Task WriteAtomic_RetriesPastAHostileReader_ThatEventuallyCloses()
     {
-        var deadline = Environment.TickCount64 + 2000;
-        while (true)
-        {
-            try
-            {
-                FleetProjectionWriter.WriteAtomic(path, content);
-                return;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                if (Environment.TickCount64 >= deadline)
-                {
-                    throw;
-                }
+        var path = Path.Combine(_tempHome, "projection.json");
+        var original = "original-content";
+        FleetProjectionWriter.WriteAtomic(path, original);
 
-                Thread.Sleep(5); // wait-ok: a short backoff between retry attempts within the 2s deadline above, not a wait for external state
-            }
-        }
+        using var blockingStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        var updated = "updated-content-after-reader-closes";
+        var writerTask = Task.Run(() => FleetProjectionWriter.WriteAtomic(path, updated), TestContext.Current.CancellationToken);
+
+        // Give the writer a chance to hit -- and retry past -- the sharing violation before the
+        // reader releases its handle, so the assertion actually exercises the retry path rather than
+        // racing a writer that never contended in the first place.
+        // wait-ok: fixed local delay bounding an in-process race window, not a wait for external state.
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        blockingStream.Dispose();
+
+        // wait-ok: upper bound on WriteAtomic's own bounded retry budget (5 attempts, backoff capped at 200ms) -- not a wait for external state.
+        var completed = await Task.WhenAny(writerTask, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Same(writerTask, completed);
+        Assert.True(writerTask.IsCompletedSuccessfully);
+
+        // Confirms the write actually landed post-close rather than the test passing vacuously on a
+        // writer that silently gave up: the file must hold the NEW content, not the original.
+        Assert.Equal(updated, File.ReadAllText(path));
+    }
+
+    /// <summary>Polarity arm: a reader that never releases its handle within the retry budget must not
+    /// crash the writer -- WriteAtomic logs and skips, leaving the prior content in place, and the
+    /// original file must still be intact and readable afterward.</summary>
+    [Fact]
+    public void WriteAtomic_LogsAndSkips_WhenAHostileReaderNeverCloses()
+    {
+        var path = Path.Combine(_tempHome, "projection.json");
+        var original = "original-content";
+        FleetProjectionWriter.WriteAtomic(path, original);
+
+        using var blockingStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        var exception = Record.Exception(() => FleetProjectionWriter.WriteAtomic(path, "content-that-never-lands"));
+
+        Assert.Null(exception);
+        blockingStream.Dispose();
+
+        // The skipped write must not have corrupted the target: the reader's own view (still open
+        // above) and a fresh read afterward both see the untouched original content.
+        Assert.Equal(original, File.ReadAllText(path));
     }
 
     [Fact]
