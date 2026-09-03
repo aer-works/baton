@@ -739,6 +739,114 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_settles_a_replayed_natural_exit0_with_tool_calls_and_an_empty_ledger_Indeterminate()
+    {
+        // #1732 review N3 acceptance test -- see MutationInterface.cs's own comment at the
+        // crash-recovery classify call for the ruling this pins. A natural exit 0, contract satisfied
+        // (ProcessContract declares no outputs), at least one tool call recorded in the rolled-forward
+        // stdout log, and a hook verdict ledger reporting zero must settle Indeterminate across an
+        // engine restart exactly as it would live.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var target = new CoreDispatchTarget("stub", [], CountHookVerdicts: _ => 0);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(ProcessContract, target, Timeout),
+            };
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy");
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            // ContractFailure is the producer whose diagnostic lives on LatestFailureReason, not
+            // IndeterminateReason (FlowState.cs's own doc on IndeterminateReason: only the
+            // VerifyFailed/Arrested producers populate that field).
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts", stepState.LatestFailureReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_counts_a_tool_step_that_only_survives_in_the_rolled_over_stdout_segment()
+    {
+        // #1732 review N4: ExecutionStreamLogger performs a single 8 MiB rollover into
+        // .stdout.log.1 -- a long run's earliest tool steps live there, not in the current
+        // .stdout.log tail. This writes the one tool-step line ONLY into the rollover file (an
+        // empty current .stdout.log, as a real post-roll run would have between rolls) and asserts
+        // the canary still counts it and fires -- proving CountToolCallsFromStdoutLog does not miss
+        // the rolled segment, on the same crash-recovery path N3 wires it into.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var target = new CoreDispatchTarget("stub", [], CountHookVerdicts: _ => 0);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(ProcessContract, target, Timeout),
+            };
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy");
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), string.Empty);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutRolloverFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The canary firing at all is the discriminating signal: it only fires when toolCallCount
+            // > 0, so if the rolled-over segment were skipped this would settle Succeeded instead.
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts across 1 tool call", stepState.LatestFailureReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static async Task<ExecutionId> AcceptRequestAsync(
         FlowEventLogWriter writer,
         WorkflowId workflowId,

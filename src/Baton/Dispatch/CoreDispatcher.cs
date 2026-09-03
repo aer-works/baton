@@ -62,7 +62,16 @@ public sealed record CoreDispatchTarget(
     // F6 (#1593 review): same shape as DetectsTerminalSuccess above, but matches ANY status, not
     // just success — see CoreDispatchResult.TerminalResultObserved's own remarks for why that
     // distinction matters. Latched there.
-    Func<string, bool>? DetectsTerminalResult = null);
+    Func<string, bool>? DetectsTerminalResult = null,
+    // #1680/#1732 review WIRING: given this execution's own output directory, how many PreToolUse
+    // hook verdicts that execution's hook recorded — Outcomes.OutcomeClassifier.Classify's
+    // hookVerdictCount, deferred to dispatch time because the directory is execution-specific
+    // (Adapter Isolation: Baton itself must not know the ledger's file name or format, only that a
+    // count can be asked for). Non-null ONLY for a dispatch whose adapter determined its PreToolUse
+    // hook is the sole thing narrowing the grant (AgyWorkerAdapter.RequiresHookAsSoleNarrowing) —
+    // null everywhere else (claude, or an agy grant the hook does not solely narrow) keeps the
+    // canary's parameters null and every other dispatch's classification unchanged.
+    Func<string, int>? CountHookVerdicts = null);
 
 /// <summary>
 /// A launch-configuration file an adapter needs written into place before its worker spawns, where the

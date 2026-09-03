@@ -653,6 +653,76 @@ public class AgyHookCheckCommandTests
             AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
     }
 
+    // ---- #1680: the first-verdict canary's write side ----
+
+    [Fact]
+    public void Execute_appends_one_ledger_line_per_verdict_whether_allowed_or_denied()
+    {
+        var ledgerPath = Path.Combine(Path.GetTempPath(), $"agy-hook-verdicts-{Guid.NewGuid():N}.ndjson");
+        try
+        {
+            using (var stdin = new StringReader(Payload("view_file")))
+            using (var stdout = new StringWriter())
+            {
+                AgyHookCheckCommand.Execute(
+                    stdin, stdout, deniedToolsRaw: "agy:", verdictLedgerPath: ledgerPath);
+            }
+
+            using (var stdin = new StringReader(Payload("view_file")))
+            using (var stdout = new StringWriter())
+            {
+                AgyHookCheckCommand.Execute(
+                    stdin, stdout, deniedToolsRaw: "agy:view_file", verdictLedgerPath: ledgerPath);
+            }
+
+            var lines = File.ReadAllLines(ledgerPath);
+            Assert.Equal(2, lines.Length);
+        }
+        finally
+        {
+            FileCleanup.Delete(ledgerPath);
+        }
+    }
+
+    [Fact]
+    public void Execute_never_throws_when_the_ledger_path_is_unwritable()
+    {
+        // A directory that does not exist -- File.AppendAllText would throw DirectoryNotFoundException
+        // (an IOException) if this were not swallowed. The verdict on stdout must still be correct;
+        // only the ledger write is best-effort.
+        var unwritablePath = Path.Combine(
+            Path.GetTempPath(), $"agy-hook-ledger-missing-dir-{Guid.NewGuid():N}", "verdicts.ndjson");
+
+        using var stdin = new StringReader(Payload("view_file"));
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedToolsRaw: "agy:view_file", verdictLedgerPath: unwritablePath);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+        Assert.False(Directory.Exists(Path.GetDirectoryName(unwritablePath)));
+    }
+
+    [Fact]
+    public void A_null_ledger_path_writes_no_ledger_and_does_not_throw()
+    {
+        using var stdin = new StringReader(Payload("view_file"));
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedToolsRaw: "agy:", verdictLedgerPath: null);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+    }
+
+    [Fact]
+    public void The_verdict_ledger_variable_matches_the_adapter_side_contract()
+    {
+        Assert.Equal("BATON_HOOK_VERDICT_LEDGER", AgyHookCheckCommand.VerdictLedgerEnvironmentVariable);
+    }
+
     private sealed class ThrowingReader : TextReader
     {
         public override string ReadToEnd() => throw new IOException("simulated pipe failure");

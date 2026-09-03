@@ -527,7 +527,7 @@ wrote `Indeterminate` from that slice alone. What writes it now:
 | Producer | Event | `Domain.IndeterminateProducer` | Landed |
 |---|---|---|---|
 | `OutcomeClassifier.Classify`'s #1594 captured-response arm — declared output(s) missing, but a terminal response was recoverable | `FlowEvent.ExecutionIndeterminate` (non-null `CapturedResponseFile`) | `CapturedResponse` | #1608 |
-| `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593 |
+| `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture; also #1680's first-verdict canary (a natural, contract-satisfied exit whose caller reports ≥1 tool call and zero agy `PreToolUse` hook verdicts — the hook may never have run, and this vendor reads that silence as an ALLOW rather than an error) | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593, #1680 |
 | The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | `VerifyFailed` | #1623 |
 | A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | `Arrested` | #1623 |
 
@@ -2656,6 +2656,45 @@ open loudly" (detectable at startup) from "fails open silently" (not). Its `agy`
 plainly: *"whether agy REPORTS the failure is not claimed."* A harness author dispatching into a
 fresh config directory or a containerized environment must not assume a hook that failed to load will
 announce itself on `agy` — that half is genuinely unmeasured, not merely undocumented.
+
+**#1680: for the one shape where that silent fail-open is a total ungating rather than a partial one** —
+an agy grant whose only narrowing IS the hook (`AgyWorkerAdapter.RequiresHookAsSoleNarrowing`, widened
+by the #1732 review's F5 to also cover a fully-granted role carrying a shell allow/deny pattern list,
+since the hook is the sole enforcer of those too) — two live guards: a resolve-time probe in
+`AgyWorkerAdapter.Resolve`, and a first-verdict canary wired into `OutcomeClassifier.Classify` at both
+of `MutationInterface.cs`'s production call sites — live dispatch and the crash-recovery replay
+(#1732 review N3 closed the gap the first review round left there). **First**, the resolve-time
+liveness probe (`ProcessAgyHookLivenessProbe`): a synthetic denied call, sent through the SAME shell
+hop (`cmd /c`/`sh -c`) and the identical command string `AgyWorkerAdapter.BuildHookCommand` builds for
+both agy's own `hooks.json` and the probe itself (#1732 review N1: one shared function, not two
+independent interpolations of the same string) — not a structural respawn of the assembly, which could
+not have caught #710's actual failure mode — must come back `deny`, or dispatch is refused outright
+before the worker ever starts; the same resolve refuses outright, before probing, an agy grant under
+this narrowing whose binding is `StreamJson: false` (#1732 review N5), since the canary below cannot
+be reached for it. **Second**, the first-verdict canary settles a run `Indeterminate` rather than
+`Succeeded` when a naturally-exited, contract-satisfied, non-quota-vetoed execution reports at least
+one tool call but the hook's own **per-execution** verdict ledger recorded none for it (the
+`ContractFailure` producer row in §3) — per-execution, not per-room: the ledger's path is an unresolved
+`BATON_OUTPUT_DIR` environment reference `AgyWorkerAdapter.Resolve` emits (the same per-dispatch-expansion
+mechanism `BATON_ARTIFACTS_ROOT` already uses), only resolving to a real file inside
+`CoreDispatcher.AssembleChildEnvironment` at actual dispatch time, so no two executions — same room,
+same role or not — ever share one; an earlier design that derived the path once per binding entry
+(room-scoped, effectively write-once) would have let a single healthy execution anywhere in a room
+permanently disarm the canary for every later one, which is why this is per-execution rather than
+per-room or per-role. The tool-call count is summed over BOTH the execution's rolled `.stdout.log.1`
+segment (read first, when `ExecutionStreamLogger`'s single 8 MiB rollover has produced one) and its
+current `.stdout.log` tail (#1732 review N4), so a long run's earliest tool steps are not missed by
+reading only the tail. Wired at both call sites, with one scope limit on the second:
+the crash-recovery replay counts from recorded facts (the recorded adapter's stream parser, the
+ledger the recorded execution wrote into the artifacts output directory that branch already resolves
+for itself), but whether the replay ARMS the canary at all comes from resolving today's
+`bindings.json` — the `CoreDispatchTarget` it yields carries `CountHookVerdicts` only when the
+binding still resolves and still qualifies as sole narrowing. A binding that refuses to resolve on
+restart (the probe finds the hook dead now — which is the persistent #710 shape, not a transient one
+— or the entry was widened or moved off agy since the crash) leaves the replay canary disarmed and
+the recorded exit settles on its own: fail-open for exactly that window. Closing it needs the arming
+fact journaled at dispatch time rather than re-derived; until then this sentence is the register of
+that residual. agy's own fail-open behaviour is otherwise unchanged.
 
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),

@@ -1046,6 +1046,7 @@ public static class MutationInterface
                         IWorkerResponseParser? responseParser = null;
                         var changesTree = false;
                         string? changesTreeWorkingDirectory = null;
+                        Func<string, int>? countHookVerdicts = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
@@ -1074,6 +1075,12 @@ public static class MutationInterface
                                 // tree-changing role never gets an auto-provisioned worktree, so that gate
                                 // would leave this permanently null for every real run.
                                 changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
+                                // #1732 review N3 (ruled: close the gap): the same CoreDispatchTarget
+                                // already resolved above for worktreePath/changesTree carries
+                                // CountHookVerdicts when this binding is an agy grant under sole-hook
+                                // narrowing (AgyWorkerAdapter.Resolve) -- captured here so the canary
+                                // also covers the crash-recovery replay, not only live dispatch.
+                                countHookVerdicts = p.Target.CountHookVerdicts;
                             }
                         }
                         catch (BatonFlowException)
@@ -1083,7 +1090,10 @@ public static class MutationInterface
                             // pinning this: StartWorkflowAsync_classifies_crash_recovery_candidate_
                             // when_its_worker_binding_refuses_to_resolve). The consequence is not a
                             // skip: if the journal promised an audit, Classify fails closed on the
-                            // null worktree path.
+                            // null worktree path. countHookVerdicts also stays null on this path
+                            // (#1732 review round 3, Finding B), which un-arms the replay's hook
+                            // canary whenever today's binding will not resolve — the residual is
+                            // registered in spec/baton.md §9, not here.
                         }
 
                         // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
@@ -1094,11 +1104,27 @@ public static class MutationInterface
                             ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
                             : null;
 
+                        // #1732 review N3 (ruled: close the gap, option a): mirrors the live-dispatch
+                        // site's counting rather than passing null/null. The ledger lives in the
+                        // artifacts output directory resolved above at :1038 -- not the workspace,
+                        // which is the only thing this branch's "may be defunct" reasoning ever
+                        // applied to -- and usageParser is already resolved above; countHookVerdicts
+                        // is the already-resolved CoreDispatchTarget's own delegate, captured in the
+                        // try block above, so this spawns no extra probe.
+                        int? toolCallCount = null;
+                        int? hookVerdictCount = null;
+                        if (countHookVerdicts is not null)
+                        {
+                            toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
+                            hookVerdictCount = countHookVerdicts(outputDirectory);
+                        }
+
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
                             usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
-                            changesTreeWorkingDirectory: changesTreeWorkingDirectory);
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
+                            hookVerdictCount: hookVerdictCount);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1764,10 +1790,26 @@ public static class MutationInterface
             // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
             // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
             var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
+
+            // #1680/#1732 review WIRING: the first-verdict canary's two counts. Both stay null unless
+            // this dispatch's own CoreDispatchTarget carries a live CountHookVerdicts delegate --
+            // AgyWorkerAdapter.Resolve only wires that up for an agy grant whose PreToolUse hook is the
+            // sole narrowing (RequiresHookAsSoleNarrowing), so a claude binding or a fully-granted agy
+            // one keeps passing null/null here exactly like every call site before this PR (Adapter
+            // Isolation: this file never names "agy" -- the vendor decided applicability at resolve
+            // time, this file only asks the target it was handed).
+            int? toolCallCount = null;
+            int? hookVerdictCount = null;
+            if (target.CountHookVerdicts is { } countHookVerdicts)
+            {
+                toolCallCount = CountToolCallsFromStdoutLog(usageParser, prepared.OutputDirectory);
+                hookVerdictCount = countHookVerdicts(prepared.OutputDirectory);
+            }
+
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
                 grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
-                changesTreeWorkingDirectory);
+                changesTreeWorkingDirectory, toolCallCount, hookVerdictCount);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append
@@ -2198,5 +2240,40 @@ public static class MutationInterface
             RequiredInputs: [],
             ProducedOutputs: [.. request.Outputs.Select(o => new ProducedOutput(o))],
             OptionalMetadata: []);
+    }
+
+    /// <summary>
+    /// The first-verdict canary's tool-call count, shared by the live-dispatch and crash-recovery
+    /// replay call sites (#1732 review N4). Reads <see cref="ExecutionStreamLogger.StdoutRolloverFileName"/>
+    /// first, when it exists, before <see cref="ExecutionStreamLogger.StdoutLogFileName"/> --
+    /// <c>ExecutionStreamLogger</c> performs a single 8 MiB rollover per stream, so a long run's
+    /// earliest segment (the rolled-out <c>.stdout.log.1</c>) and its current tail (<c>.stdout.log</c>)
+    /// are two separate files, and skipping the first would undercount a run whose terminal tool
+    /// steps happened to land before the roll. The canary only needs "&gt; 0", so summing both
+    /// segments in file order is sufficient without reconstructing one contiguous stream.
+    /// </summary>
+    private static int CountToolCallsFromStdoutLog(IWorkerUsageParser? usageParser, string outputDirectory)
+    {
+        var toolCallCount = 0;
+        if (usageParser is null)
+        {
+            return toolCallCount;
+        }
+
+        foreach (var fileName in new[] { ExecutionStreamLogger.StdoutRolloverFileName, ExecutionStreamLogger.StdoutLogFileName })
+        {
+            var path = Path.Combine(outputDirectory, fileName);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (var line in File.ReadLines(path))
+            {
+                toolCallCount += usageParser.CountToolSteps(line);
+            }
+        }
+
+        return toolCallCount;
     }
 }
