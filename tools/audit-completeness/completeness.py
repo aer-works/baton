@@ -357,10 +357,11 @@ def step9_pinned_models_exist():
     """Every `agy` model name pinned in the worker-role catalog or a tool is one `agy models` lists.
 
     Population, precisely: the shared tier pins in `src/Baton.Vendors/WorkerTiers.json` (#888, the
-    canonical source both the engine and `dispatch.py` read), `verify.py`'s `CHEAP['agy']`, and any
-    `agy` model name in a pin POSITION under `tools/`. The catalog moved out of `tools/` when the pins
-    left the `dispatch.py` literal, so "in a tool" alone no longer bounds it -- the src/ file is read
-    directly (see the tier-pin arm below), and the `tools/` textual walk covers the rest.
+    canonical source the engine reads -- `tools/baton-agy-loop/dispatch.py` read the same file until
+    #1759 retired it), `verify.py`'s `CHEAP['agy']`, and any `agy` model name in a pin POSITION under
+    `tools/`. The catalog moved out of `tools/` when the pins left the `dispatch.py` literal, so "in a
+    tool" alone no longer bounds it -- the src/ file is read directly (see the tier-pin arm below),
+    and the `tools/` textual walk covers the rest.
 
     Paid for the same day this step was written. `dispatch.py`'s new template set -- written partly
     to STOP stale pins -- shipped its first draft pinning `gemini-3.1-pro`. `agy models` lists
@@ -398,8 +399,9 @@ def step9_pinned_models_exist():
         a `"model":` value -- which is what keeps prose about model names out of the population. A
         pin built at runtime, or written in a shape this pattern does not match, is invisible to it.
         `WorkerTiers.json` (the shared worker-role catalog, #888) is additionally read directly, so
-        the tier model pins do not rest on the regex -- and, unlike importing `dispatch.py`, that read
-        survives dispatch.py's retirement when the front door replaces it (#887).
+        the tier model pins do not rest on the regex -- and, unlike the pre-#1759 `dispatch.py`
+        import this step used to make, that direct read survived dispatch.py's retirement (#887's
+        front door was always the intended replacement).
     """
     rule("STEP 9 -- every pinned agy model name is one `agy models` lists")
     accepted, why = register_models()
@@ -416,10 +418,11 @@ def step9_pinned_models_exist():
     pins = []  # (where, model)
 
     # The tier model pins live in the shared worker-role catalog now (#888), not a dispatch.py literal:
-    # WorkerTiers.json maps each tier to {adapter, model, effort}, and both dispatch.py and the engine
-    # read it. Check that source DIRECTLY rather than importing dispatch.py -- the check then reads the
-    # truth instead of a Python view rebuilt from the same file, and it survives dispatch.py's
-    # retirement (the front door replaces it, #887) instead of breaking with it.
+    # WorkerTiers.json maps each tier to {adapter, model, effort}, and the engine reads it directly
+    # (until #1759 retired it, `tools/baton-agy-loop/dispatch.py` read the same file). Check that
+    # source DIRECTLY rather than importing dispatch.py -- the check then reads the truth instead of a
+    # Python view rebuilt from the same file, and it survived dispatch.py's retirement (the front door
+    # replaces it, #887) instead of breaking with it.
     tiers_path = os.path.join(ROOT, "src", "Baton.Vendors", "WorkerTiers.json")
     if not os.path.exists(tiers_path):
         # A missing source is a HARD failure, not a quiet skip. Skipping would let a rename drop the
