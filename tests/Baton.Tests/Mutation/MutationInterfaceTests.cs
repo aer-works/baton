@@ -1004,6 +1004,57 @@ public class MutationInterfaceTests
     }
 
     [Fact]
+    public async Task StartWorkflowAsync_stamps_a_null_PeakBilledInWindow_on_ExecutionSucceeded_when_the_run_never_admitted_a_usage_sample()
+    {
+        // #1709 review: the monitor is IN SCOPE (binding.TokenBudget is set, so budgetMonitor is
+        // constructed and watching) but the worker's stdout never carries a single usage-bearing
+        // line before it exits 0 -- exactly the population the HIGH finding named as reachable on
+        // both vendors. Proves SnapshotPeakBilledInWindow() reports null, not a fabricated 0, when
+        // that happens.
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-peak-no-sample"),
+                new WorkflowTemplateId("peak-no-sample"),
+                WorkflowTemplateVersion: 1,
+                Steps: [new WorkflowStepDefinition(Architect, "architect", [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["architect"] = new WorkerBinding.Process(
+                    new WorkerContract("architect", [], [new ProducedOutput("plan")], []),
+                    WriteFile("plan", "no usage line ever written"),
+                    TimeSpan.FromSeconds(30),
+                    Adapter: "claude",
+                    // A monitor is constructed and watching solely because this is set -- the script
+                    // above never crosses it, and never emits anything the usage parser reads at all.
+                    TokenBudget: 1_000_000),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-peak-no-sample"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.All(finalState.Steps, step => Assert.Equal(StepStatus.Succeeded, step.Status));
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionArrested>());
+            var succeeded = Assert.Single(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Null(succeeded.PeakBilledInWindow);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task StartWorkflowAsync_arrests_an_execution_that_crosses_its_tool_step_cap_with_zero_usage_lines()
     {
         // #1682: the SECOND, independent producer -- exercises the real MutationInterface wiring the

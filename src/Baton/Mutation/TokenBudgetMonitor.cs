@@ -85,7 +85,10 @@ public sealed class TokenBudgetMonitor
     // matter how many complete readings follow it.
     private bool _billedIsFloor;
     private long _rateWindowSum;
-    private long _peakBilledInWindow;
+    // #1709 review: nullable, following _billedTokens' own convention right above -- null until
+    // AdmitRateSample runs at least once, so "the monitor watched and saw nothing" is distinguishable
+    // from "the monitor watched and genuinely measured a zero peak."
+    private long? _peakBilledInWindow;
     private int _toolStepCount;
     private bool _arrested;
     private ArrestReason? _arrestReason;
@@ -295,7 +298,7 @@ public sealed class TokenBudgetMonitor
             _rateWindowSum -= _rateWindow.Dequeue().Billed;
         }
 
-        if (_rateWindowSum > _peakBilledInWindow)
+        if (_peakBilledInWindow is not { } peakSoFar || _rateWindowSum > peakSoFar)
         {
             _peakBilledInWindow = _rateWindowSum;
         }
@@ -305,10 +308,11 @@ public sealed class TokenBudgetMonitor
     /// #1691: the largest Σ billed tokens this execution ever held inside one trailing
     /// <see cref="BilledRateWindow"/> — the quantity <c>--billed-rate-limit</c> is compared against,
     /// exposed so it is READABLE whether or not a limit was ever set — spec/baton.md §3 states what
-    /// that measurement is for. 0 until a usage line actually parses — a genuine measured zero here (no billed tokens were seen),
-    /// not the fabricated kind <c>SnapshotUsage</c>'s nullable fields avoid.
+    /// that measurement is for. #1709 review: null until <see cref="AdmitRateSample"/> has run at
+    /// least once (never a fabricated zero, spec/baton.md §3's never-fabricate-a-zero convention);
+    /// once a sample has been admitted, a genuine measured 0 stays 0.
     /// </summary>
-    public long SnapshotPeakBilledInWindow()
+    public long? SnapshotPeakBilledInWindow()
     {
         lock (_lock) { return _peakBilledInWindow; }
     }
