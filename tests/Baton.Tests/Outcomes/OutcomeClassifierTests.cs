@@ -1252,22 +1252,21 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_does_not_veto_a_satisfied_run_for_a_non_ToolDenied_classification()
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_stream_carries_a_quota_exhaustion_signal()
     {
-        // #914 scope gate: ONLY an auto-denied tool vetoes an otherwise-satisfied exit-0 run. A
-        // classifier reporting ExhaustedUntil (quota) on a satisfied contract must leave the run
-        // Succeeded — quota exhaustion never produces a satisfied contract, and before the gate this
-        // path stamped such a run Failed AND mislabeled it with the auto-denied message. This arm reds
-        // against the ungated condition and passes against the ToolDenied gate.
+        // #1622: a worker hitting quota mid-lane can still exit 0 against a trivially-satisfied
+        // (zero-output) contract; this must not read Succeeded. See OutcomeClassifier.Classify's own
+        // remarks for why -- pinned here as the gating unit test, mock classifier and all.
         var directory = CreateTempDirectory();
         try
         {
             var contract = new WorkerContract("worker", [], [], []);
             var quotaStderr = "Individual quota reached. Resets in 1h";
+            var resetAt = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
             var mockClassifier = new TestQuotaClassifier(
                 quotaStderr,
                 FailureClassification.ExhaustedUntil,
-                new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+                resetAt);
 
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural, quotaStderr),
@@ -1275,8 +1274,49 @@ public class OutcomeClassifierTests
                 directory,
                 mockClassifier);
 
-            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
-            Assert.Null(classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(resetAt, classification.RetryNotBefore);
+            Assert.Contains("vendor's quota-exhaustion signal was present in the stream", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    // #1622's real captured-stream fixture (a genuine parse, not pass-through against a canned
+    // classifier double) lives in Baton.Vendors.Tests.ClaudeWorkerAdapterTests
+    // (Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required):
+    // OutcomeClassifier lives in Baton, which cannot reference Baton.Vendors (Architecture Rule 2), so
+    // the arm exercising a real IFailureClassifier implementation against OutcomeClassifier.Classify has
+    // to live in the project that can see both.
+
+    [Theory]
+    [InlineData(FailureClassification.Retryable)]
+    [InlineData(FailureClassification.Permanent)]
+    public void Classify_does_not_veto_a_satisfied_exit_0_run_for_a_non_ToolDenied_non_ExhaustedUntil_classification(
+        FailureClassification classification)
+    {
+        // #914 scope gate, widened by #1622 (a): ONLY ToolDenied/ExhaustedUntil veto an otherwise-
+        // satisfied exit-0 run. This is the polarity control for both vetoing tests above -- reds if a
+        // future change widens the veto to every non-null FailureClassification instead of exactly
+        // these two.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var stderr = "some other failure signature";
+            var mockClassifier = new TestQuotaClassifier(stderr, classification, null);
+
+            var result = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, stderr),
+                contract,
+                directory,
+                mockClassifier);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, result.Verdict);
+            Assert.Null(result.FailureClassification);
         }
         finally
         {

@@ -1459,6 +1459,79 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore);
     }
 
+    /// <summary>
+    /// #1720 review F1: agy's answer to the satisfied exit-0 veto — see
+    /// <see cref="Outcomes.IFailureClassifier.TryClassifySatisfiedRunFailure"/>'s own doc for why
+    /// this question differs from the exit-1 one at all. Stderr keeps the full matcher above (agy's
+    /// CLI diagnostics); stdout goes only through
+    /// <see cref="TryClassifyQuotaExhaustionFromResultEnvelope"/>.
+    /// </summary>
+    public bool TryClassifySatisfiedRunFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyQuotaExhaustionFromResultEnvelope(stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
+
+    /// <summary>
+    /// agy's own stream-json terminal envelope — <c>event == "result"</c> with a
+    /// <c>result.status</c> other than <c>"SUCCESS"</c>, the same shape
+    /// <see cref="TryParseProgressEvent"/> and <see cref="IsTerminalSuccessLine"/> already key on —
+    /// and only then the quota sentence, matched against that envelope's own <c>error</c> field.
+    /// A worker cannot emit this envelope: the CLI writes it, which is the whole point.
+    /// </summary>
+    public static bool TryClassifyQuotaExhaustionFromResultEnvelope(
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        classification = null;
+        retryNotBefore = null;
+
+        FailureClassification? matchedClassification = null;
+        DateTimeOffset? matchedRetryNotBefore = null;
+
+        var matched = StreamJsonTailScanner.AnyObject(stdoutTail, root =>
+        {
+            if (!root.TryGetProperty("event", out var eventProp)
+                || eventProp.ValueKind != JsonValueKind.String
+                || eventProp.GetString() != "result"
+                || !root.TryGetProperty("result", out var result)
+                || result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("status", out var statusProp)
+                || statusProp.ValueKind != JsonValueKind.String
+                || statusProp.GetString() is not { Length: > 0 } status
+                || status == "SUCCESS"
+                || !result.TryGetProperty("error", out var errorProp)
+                || errorProp.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            return TryClassifyQuotaExhaustion(
+                errorProp.GetString(), timeProvider, out matchedClassification, out matchedRetryNotBefore);
+        });
+
+        if (!matched)
+        {
+            return false;
+        }
+
+        classification = matchedClassification;
+        retryNotBefore = matchedRetryNotBefore;
+        return true;
+    }
+
     [GeneratedRegex(@"Resets in\s+(?:(?<hours>\d+)h)?(?:(?<minutes>\d+)m)?(?:(?<seconds>\d+)s)?", RegexOptions.IgnoreCase)]
     private static partial Regex QuotaResetDurationRegex();
 

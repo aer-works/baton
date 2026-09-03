@@ -482,6 +482,12 @@ function primaryStateChip(room){
   const st = room.state;
   return st === "Running" ? ["RUNNING","c-run"]
     : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
+    // #1622 (d): `rejected` narrowed to `baton resolve --reject` only, so a room a conductor
+    // settled with `--close` arrives Failed with `rejected` false and only `resolvedBy` set.
+    // Without this arm it would render as a bare FAILED -- an unexplained crash, when in fact a
+    // person looked at it and closed it. `resolvedBy` is the fleet view's field for exactly that
+    // (spec/baton.md §6's room schema).
+    : st === "Failed" && room.resolvedBy ? ["CLOSED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
     // #1582: Stalled means a scheduled retry with no scheduler left to fire it -- nothing moves

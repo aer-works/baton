@@ -1010,6 +1010,58 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.DoesNotContain("\"rejected\"", JsonSerializer.Serialize(crashed));
     }
 
+    /// <summary>
+    /// F10/F11 (#1720 review): a conductor `baton resolve --close` settles a room Failed with
+    /// `resolvedBy: "conductor"` and `rejected` unset (spec/baton.md §3), so without mirroring
+    /// `ResolvedBy` the glass could not tell that room from an ordinary crash at all. Three rooms one
+    /// field apart, which is what makes this discriminate rather than merely pass.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSentinel_ConductorClosedRoom_ReportsResolvedBy_WithoutRejected()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var closedRoom = Path.Combine(defaultRoomsDir, "closed-room");
+        var rejectedRoom = Path.Combine(defaultRoomsDir, "conductor-rejected-room");
+        var crashedRoom = Path.Combine(defaultRoomsDir, "plain-crashed-room");
+        Directory.CreateDirectory(closedRoom);
+        Directory.CreateDirectory(rejectedRoom);
+        Directory.CreateDirectory(crashedRoom);
+
+        await TerminalSentinelWriter.WriteAsync(
+            closedRoom,
+            new WorkflowStatusView("Failed", [], [], "Resolved by the conductor: overlap flake", null, Rejected: false, ResolvedBy: "conductor"),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            rejectedRoom,
+            new WorkflowStatusView("Failed", [], [], "Resolved by the conductor: not honest work", null, Rejected: true, ResolvedBy: "conductor"),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            crashedRoom,
+            new WorkflowStatusView("Failed", [], [], "the worker crashed", null),
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+
+        var closed = rooms!.First(r => r.Name == "closed-room");
+        Assert.Equal("conductor", closed.ResolvedBy);
+        Assert.False(closed.Rejected);
+
+        var rejected = rooms.First(r => r.Name == "conductor-rejected-room");
+        Assert.Equal("conductor", rejected.ResolvedBy);
+        Assert.True(rejected.Rejected);
+
+        var crashed = rooms.First(r => r.Name == "plain-crashed-room");
+        Assert.Null(crashed.ResolvedBy);
+        // Wire-level, same reasoning as the `rejected` omission above.
+        Assert.DoesNotContain("\"resolvedBy\"", JsonSerializer.Serialize(crashed));
+        Assert.Contains("\"resolvedBy\":\"conductor\"", JsonSerializer.Serialize(closed));
+    }
+
     [Fact]
     public async Task IncludeTerminalFalse_FiltersOutTerminalRooms()
     {
@@ -2017,12 +2069,19 @@ public sealed class FleetStatusToolTests : IDisposable
         // mirroring it would put a multi-kilobyte diagnostic blob into every room's entry of a
         // fleet-wide listing. The short verify/verifyReason tokens are mirrored; the blob is read from
         // `baton status --json` on the one room being diagnosed.
+        // ResolvedByConductor (#1622 (c)/(d)) is omitted for the same "fleet glance, not a resolution
+        // surface" reason: FleetRoomStatusView carries the room-level Rejected/ResolvedBy pair this
+        // mirrors coarsely (F10, #1720 review: `ResolvedBy` was added to that view in the same change
+        // this comment was corrected in -- it previously cited a field the fleet view did not have),
+        // and WHICH step was resolved is a `baton status --json` question on the one room a caller is
+        // already diagnosing, same as the other three above.
         var deliberatelyOmitted = new HashSet<string>(StringComparer.Ordinal)
         {
             nameof(WorkflowStatusStepView.CapturedResponseFile),
             nameof(WorkflowStatusStepView.UnsatisfiedOutputs),
             nameof(WorkflowStatusStepView.IndeterminateProducerKind),
             nameof(WorkflowStatusStepView.VerifyTail),
+            nameof(WorkflowStatusStepView.ResolvedByConductor),
         };
 
         var source = typeof(WorkflowStatusStepView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
