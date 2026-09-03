@@ -126,6 +126,19 @@ public static class StateProjector
                     state.IndeterminateProducerByStepId.Remove(acceptedStepId);
                     state.IndeterminateVerifyTailByStepId.Remove(acceptedStepId);
 
+                    // #1622 (c)/(d): a fresh dispatch is a new attempt, not a continuation of a
+                    // previously conductor-resolved one -- same reasoning as the clears above.
+                    state.ResolvedByConductorStepIds.Remove(acceptedStepId);
+                    state.ConductorRejectedStepIds.Remove(acceptedStepId);
+
+                    // #1622/#1390: a fresh dispatch's own eventual ExecutionSucceeded is what sets
+                    // these next, if it settles Succeeded at all -- a prior attempt's workspaceChanged/
+                    // hollow must not survive onto this one, same "whatever was true before is moot"
+                    // reasoning as every clear above.
+                    state.WorkspaceChangedByStepId.Remove(acceptedStepId);
+                    state.HollowByStepId.Remove(acceptedStepId);
+                    state.HollowReasonByStepId.Remove(acceptedStepId);
+
                     // #1702: a fresh dispatch's own verify step (if any) speaks for this attempt, not
                     // whatever the PRIOR attempt's pre-flight check found.
                     state.VerifyNotRunReasonByStepId.Remove(acceptedStepId);
@@ -149,6 +162,12 @@ public static class StateProjector
                     state.LatestExecutionFailedRetryNotBeforeByStepId[succeededStepId] = null;
                     state.LatestCapturedResponseFileByStepId[succeededStepId] = null;
                     state.LatestUnsatisfiedOutputNamesByStepId[succeededStepId] = null;
+                    // #1622/#1390: carried verbatim off the event -- see FlowEvent.ExecutionSucceeded's
+                    // own remarks for the null-means-not-tree-changing-or-history-predates-the-field
+                    // reading.
+                    state.WorkspaceChangedByStepId[succeededStepId] = succeeded.WorkspaceChanged;
+                    state.HollowByStepId[succeededStepId] = succeeded.Hollow;
+                    state.HollowReasonByStepId[succeededStepId] = succeeded.HollowReason;
                 }
 
                 break;
@@ -419,7 +438,7 @@ public static class StateProjector
                         state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
                         state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
                     }
-                    else if (resolvedProducer == IndeterminateProducer.ContractFailure)
+                    else if (resolvedProducer is IndeterminateProducer.ContractFailure or null)
                     {
                         // F8 (#1593 review): forecloses retry on a ContractFailure reject, the same way
                         // #1623's VerifyFailed/Arrested producers already foreclose unconditionally in
@@ -427,7 +446,33 @@ public static class StateProjector
                         // leave the step retry-eligible again on the very next pump. Deliberately NOT
                         // applied to a CapturedResponse reject, which #1608's own ruling keeps
                         // retry-eligible. spec/baton.md §3's producer table has the full reasoning.
+                        //
+                        // F8 (#1720 review): `or null` covers the legacy no-producer step -- unreachable
+                        // today (no writer of IndeterminateProducerByStepId leaves it null, and a v4
+                        // checkpoint always carries the map), which is exactly why an unforeclosed
+                        // arm here would be invisible if it ever became reachable: the engine would
+                        // re-dispatch a step a conductor had just closed.
                         state.RetryForeclosedStepIds.Add(resolvedStepId);
+                    }
+
+                    if (!resolved.Accepted)
+                    {
+                        // #1622 (c)/(d): see spec/baton.md §3 (the "Both --reject and --close clear..."
+                        // paragraph) for why this rewrite happens and for which producers it applies to.
+                        var priorReason = state.LatestFailureReasonByStepId.GetValueOrDefault(resolvedStepId);
+                        state.LatestFailureReasonByStepId[resolvedStepId] =
+                            BuildConductorResolvedReason(priorReason, resolved.Reason);
+                        state.ResolvedByConductorStepIds.Add(resolvedStepId);
+
+                        // F11 (#1720 review, conductor ruling): WHICH verb, discriminated here and
+                        // nowhere else -- the producer is cleared four lines above, so nothing
+                        // downstream can still tell the two apart. Read off the admission table
+                        // (Cli.ResolveCommand, Mutation.MutationInterface, and spec/baton.md §3's
+                        // settle-shape table, which is where the reasoning lives).
+                        if (resolvedProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure)
+                        {
+                            state.ConductorRejectedStepIds.Add(resolvedStepId);
+                        }
                     }
 
                     // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
@@ -488,6 +533,34 @@ public static class StateProjector
         state.RetryNotBeforeByStepId.Remove(stepId);
         state.RetryDelayMsByStepId.Remove(stepId);
         state.RetryScheduledForExecutionIdByStepId.Remove(stepId);
+    }
+
+    /// <summary>
+    /// #1622 (c)/(d): see spec/baton.md §3 for why this rewrite exists. Strips the trailing "awaiting
+    /// conductor resolution." clause every Indeterminate-producing reason above ends with (<see
+    /// cref="ApplyIndeterminate"/>'s <paramref name="priorReason"/> arm above, and the #1608
+    /// captured-response arm in <c>Outcomes.OutcomeClassifier</c>). A prior reason that does not end
+    /// with the marker (an older ledger line, or a future producer that phrases it differently) still
+    /// gets the resolution clause appended, never silently dropped.
+    /// </summary>
+    private static string BuildConductorResolvedReason(string? priorReason, string? conductorReason)
+    {
+        const string awaitingMarker = "awaiting conductor resolution.";
+        var resolutionClause = string.IsNullOrWhiteSpace(conductorReason)
+            ? "Resolved by the conductor."
+            : $"Resolved by the conductor: {conductorReason}";
+
+        if (string.IsNullOrWhiteSpace(priorReason))
+        {
+            return resolutionClause;
+        }
+
+        var trimmed = priorReason.TrimEnd();
+        var withoutMarker = trimmed.EndsWith(awaitingMarker, StringComparison.OrdinalIgnoreCase)
+            ? trimmed[..^awaitingMarker.Length].TrimEnd()
+            : trimmed;
+
+        return $"{withoutMarker} {resolutionClause}";
     }
 
     private static string DescribeVerifyFailure(FlowEvent.VerifyFailed verifyFailed)
@@ -625,7 +698,12 @@ public static class StateProjector
                 state.IndeterminateReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateProducerByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.IndeterminateVerifyTailByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.ResolvedByConductorStepIds.Contains(stepDefinition.StepId),
+                state.WorkspaceChangedByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.HollowByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.HollowReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.ConductorRejectedStepIds.Contains(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

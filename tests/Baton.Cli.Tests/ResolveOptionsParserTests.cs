@@ -105,4 +105,46 @@ public class ResolveOptionsParserTests
             ["task", "--accept-capture", "--execution"]));
         Assert.Contains("--execution", ex.TryInvocation, StringComparison.Ordinal);
     }
+
+    // #1622 (d)/#1700: --close.
+
+    [Fact]
+    public void A_close_with_reason_parses_and_leaves_accept_false()
+    {
+        var options = ResolveOptionsParser.Parse(
+            ["task", "--execution", "exec-1", "--close", "--reason", "overlap flake, work already landed"]);
+
+        Assert.Equal("exec-1", options.ExecutionId);
+        Assert.False(options.Accept);
+        Assert.True(options.Close);
+        Assert.Equal("overlap flake, work already landed", options.Reason);
+    }
+
+    [Fact]
+    public void A_close_without_reason_throws()
+    {
+        var ex = Assert.Throws<CliArgumentException>(() => ResolveOptionsParser.Parse(["task", "--close"]));
+        Assert.Contains("--reason", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Passing_close_and_accept_capture_throws()
+    {
+        Assert.Throws<CliArgumentException>(() => ResolveOptionsParser.Parse(
+            ["task", "--close", "--reason", "x", "--accept-capture"]));
+    }
+
+    [Fact]
+    public void Passing_close_and_reject_throws()
+    {
+        Assert.Throws<CliArgumentException>(() => ResolveOptionsParser.Parse(
+            ["task", "--close", "--reason", "x", "--reject"]));
+    }
+
+    [Fact]
+    public void Neither_accept_capture_nor_reject_nor_close_names_all_three_in_the_refusal()
+    {
+        var ex = Assert.Throws<CliArgumentException>(() => ResolveOptionsParser.Parse(["task"]));
+        Assert.Contains("--close", ex.Message, StringComparison.Ordinal);
+    }
 }

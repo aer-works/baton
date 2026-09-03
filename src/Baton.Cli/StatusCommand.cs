@@ -645,6 +645,14 @@ public static class StatusCommand
             }
         }
 
+        // #1622 (b)/#1390: the room word stays "Succeeded" (reclassifying a hollow success is the
+        // operator's own design call, not this fix's -- spec/baton.md §3) but the human rendering
+        // must not read identically to a real one when the engine has the evidence it wasn't.
+        if (step.Status == StepStatus.Succeeded && step.Hollow == true)
+        {
+            return $"Succeeded — hollow: {step.HollowReason}";
+        }
+
         // Probe ONLY steps claiming a live engine. Paused is a mask over an already-terminal
         // outcome (StateProjector) -- its engine has legitimately exited, and probing it stamped
         // every healthy paused step "crash recovery will classify" (the workflow review's high

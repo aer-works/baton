@@ -12,6 +12,8 @@ namespace Baton.Cli.Tests;
 /// means Failed. The fake adapter (<see cref="ContractOutputWorkerAdapter"/>) stands in for the worker
 /// so no live LLM is needed; the role, its outputs, and the contract are the real ones.
 /// </summary>
+// #1524: stays enrolled for its Console.Out mutation, not env vars anymore -- see
+// SerializedEnvironmentCollection's own remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchCommandEndToEndTests : IDisposable
 {
@@ -23,35 +25,29 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         };
 
     private readonly IsolatedBatonHome _batonHome = new();
-
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
+    private readonly IDisposable _catalogScope;
 
     // Pin the shipped catalog. Without this these tests resolve through ResolvePath's middle rung
     // ({BatonPaths.Root}/worker-roles.json) and would silently read an operator's local override on a
     // machine that has one -- the exact hazard WorkerRoleCatalogTests.ShippedDefault documents and
-    // guards. The env edit is process-global, and one test below sets a deliberately-broken roles path --
-    // so this class is not the only catalog reader that matters. It shares
-    // [Collection(SerializedEnvironmentCollection.Name)] with DispatchTemplateEndToEndTests (see that
-    // collection for the bleed it prevents); the ctor/Dispose set-and-restore keeps it clean within the
-    // serialized group. Templates are pinned too (#1380, finding 7's test): DispatchCommand.MaterializeAsync
-    // probes WorkflowTemplateCatalog.All to decide role-vs-template even for a role dispatch.
+    // guards. An isolated BatonEnvironmentSnapshot.BeginScope (#1524) replaces the process-global env
+    // edit this used to be -- built from BatonEnvironmentSnapshot.Current so it layers on top of
+    // _batonHome's own HomeOverride scope rather than clobbering it. Templates are pinned too (#1380,
+    // finding 7's test): DispatchCommand.MaterializeAsync probes WorkflowTemplateCatalog.All to decide
+    // role-vs-template even for a role dispatch.
     public DispatchCommandEndToEndTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _catalogScope.Dispose();
         _batonHome.Dispose();
     }
 
@@ -664,7 +660,8 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             Directory.CreateDirectory(testRoot);
             var badCatalog = Path.Combine(testRoot, "worker-roles.json");
             await File.WriteAllTextAsync(badCatalog, "{ not valid json", TestContext.Current.CancellationToken);
-            Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, badCatalog);
+            using var badCatalogScope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { WorkerRolesPathOverride = badCatalog });
 
             var specPath = await WriteSpecAsync(testRoot, "spec");
             var options = new DispatchOptions("advise", specPath, Path.Combine(testRoot, "task"));

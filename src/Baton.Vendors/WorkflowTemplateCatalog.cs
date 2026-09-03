@@ -28,8 +28,8 @@ public sealed record WorkflowTemplate(string Id, IReadOnlyList<WorkflowTemplateP
 /// <remarks>
 /// Same three-tier resolution order as <see cref="WorkerRoleCatalog"/> (env override, then
 /// <c>{BatonPaths.Root}/workflow-templates.json</c>, then the shipped default) — see that type's
-/// remarks for which of the three steps is still evaluated fresh on every access after #1496 and
-/// which now resolves against a frozen <see cref="BatonPaths.Root"/>. Substituting
+/// remarks; both the env override and <see cref="BatonPaths.Root"/> resolve against
+/// <see cref="BatonEnvironmentSnapshot"/> (#1496, #1524). Substituting
 /// <c>BATON_WORKFLOW_TEMPLATES_PATH</c> for the env var name throughout.
 /// </remarks>
 public static class WorkflowTemplateCatalog
@@ -69,7 +69,11 @@ public static class WorkflowTemplateCatalog
     private static IReadOnlyList<WorkflowTemplate> Load()
     {
         var rawTemplates = ReadJson<List<RawTemplate>>(
-            ResolvePath(TemplatesPathEnvironmentVariable, TemplatesOverrideFileName, TemplatesDefaultFileName), "template list");
+            ResolvePath(
+                BatonEnvironmentSnapshot.Current.WorkflowTemplatesPathOverride,
+                TemplatesOverrideFileName,
+                TemplatesDefaultFileName),
+            "template list");
 
         if (rawTemplates.Count == 0)
         {
@@ -142,15 +146,15 @@ public static class WorkflowTemplateCatalog
         return templates;
     }
 
-    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-    // BatonEnvironmentSnapshot's own remarks.
-    private static string ResolvePath(string envVar, string overrideFileName, string defaultFileName)
+    // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1524: folded into BatonEnvironmentSnapshot -- envOverride is
+    // BatonEnvironmentSnapshot.Current.WorkflowTemplatesPathOverride, resolved once by the caller
+    // rather than a per-access Environment.GetEnvironmentVariable here.
+    private static string ResolvePath(string? envOverride, string overrideFileName, string defaultFileName)
     {
-        var env = Environment.GetEnvironmentVariable(envVar);
-        if (!string.IsNullOrWhiteSpace(env))
+        if (!string.IsNullOrWhiteSpace(envOverride))
         {
-            return env;
+            return envOverride;
         }
 
         var configOverride = Path.Combine(BatonPaths.Root, overrideFileName);

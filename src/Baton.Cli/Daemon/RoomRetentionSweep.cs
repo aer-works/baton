@@ -59,25 +59,24 @@ public sealed class RoomRetentionSweep : BackgroundService
     public static readonly TimeSpan MinPruneGrace = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan MaxPruneGrace = TimeSpan.FromDays(365);
 
-    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot (this method and the four below --
-    // IsPruneEnabled, GetInterval, GetThresholdBytes, GetPruneGrace). See the canonical "why" on
-    // BatonEnvironmentSnapshot's own remarks.
+    // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1524: folded into BatonEnvironmentSnapshot (this method and the four below -- IsPruneEnabled,
+    // GetInterval, GetThresholdBytes, GetPruneGrace).
     public static bool IsEnabled()
     {
-        var val = Environment.GetEnvironmentVariable(EnabledEnvironmentVariable);
+        var val = BatonEnvironmentSnapshot.Current.RetentionSweepEnabledOverride;
         return string.Equals(val, "true", StringComparison.OrdinalIgnoreCase) || val == "1";
     }
 
     public static bool IsPruneEnabled()
     {
-        var val = Environment.GetEnvironmentVariable(PruneEnabledEnvironmentVariable);
+        var val = BatonEnvironmentSnapshot.Current.RetentionPruneEnabledOverride;
         return string.Equals(val, "true", StringComparison.OrdinalIgnoreCase) || val == "1";
     }
 
     public static TimeSpan GetInterval()
     {
-        var val = Environment.GetEnvironmentVariable(IntervalSecondsEnvironmentVariable);
+        var val = BatonEnvironmentSnapshot.Current.RetentionSweepIntervalSecondsOverride;
         if (!string.IsNullOrWhiteSpace(val) &&
             double.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var seconds) &&
             seconds > 0)
@@ -93,7 +92,7 @@ public sealed class RoomRetentionSweep : BackgroundService
 
     public static long GetThresholdBytes()
     {
-        var val = Environment.GetEnvironmentVariable(ThresholdBytesEnvironmentVariable);
+        var val = BatonEnvironmentSnapshot.Current.RetentionSweepThresholdBytesOverride;
         if (!string.IsNullOrWhiteSpace(val) &&
             long.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var bytes) &&
             bytes >= 0)
@@ -106,7 +105,7 @@ public sealed class RoomRetentionSweep : BackgroundService
 
     public static TimeSpan GetPruneGrace()
     {
-        var val = Environment.GetEnvironmentVariable(PruneGraceSecondsEnvironmentVariable);
+        var val = BatonEnvironmentSnapshot.Current.RetentionPruneGraceSecondsOverride;
         if (!string.IsNullOrWhiteSpace(val) &&
             double.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var seconds) &&
             seconds > 0)
@@ -125,6 +124,12 @@ public sealed class RoomRetentionSweep : BackgroundService
         bool? pruneEnabledOverride = null,
         CancellationToken cancellationToken = default)
     {
+        // #1524 review rider (from #1526): BatonPaths.Rooms resolves through BatonPaths.Root, which
+        // has read BatonEnvironmentSnapshot.Current since #1496 -- so this re-resolves every sweep
+        // iteration across the daemon's multi-hour life, but pins to the ONE process snapshot taken
+        // at first access, not to whatever BATON_HOME held at that iteration's start. Harmless today
+        // (nothing mutates BATON_HOME in-process, and the OS env block can't change under a running
+        // process); revisit this call if a daemon config-reload path is ever built.
         var roomsDir = roomsDirectoryOverride ?? BatonPaths.Rooms;
         if (!Directory.Exists(roomsDir))
         {

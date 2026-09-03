@@ -47,8 +47,19 @@ public abstract record FlowEvent
     public sealed record ExecutionRequestRejected(ExecutionId ExecutionId, string Reason) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
+    /// <param name="WorkspaceChanged">
+    /// #1622/#1390: carried into <see cref="Projection.ProjectionCheckpointState.WorkspaceChangedByStepId"/>.
+    /// Nullable because history predates the field: an older <c>flow.jsonl</c> line written before it
+    /// existed still replays, with this null, the same "history predates the field" shape <see
+    /// cref="ExecutionFailed.Reason"/> already documents.
+    /// </param>
+    /// <param name="Hollow">Companion to <paramref name="WorkspaceChanged"/>; see its own remarks.</param>
+    /// <param name="HollowReason">Non-null only when <paramref name="Hollow"/> is true.</param>
     public sealed record ExecutionSucceeded(
-        ExecutionId ExecutionId) : FlowEvent;
+        ExecutionId ExecutionId,
+        bool? WorkspaceChanged = null,
+        bool? Hollow = null,
+        string? HollowReason = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as failed.</summary>
     /// <param name="Reason">

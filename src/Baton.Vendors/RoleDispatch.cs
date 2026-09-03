@@ -194,7 +194,12 @@ public static class RoleDispatch
             // #1686 review F11: the --max-tool-steps escape hatch, mirroring --token-budget.
             MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps,
             // #1691: the --billed-rate-limit escape hatch, mirroring both of the above.
-            BilledRateLimit: billedRateLimitOverride ?? role.BilledRateLimit);
+            BilledRateLimit: billedRateLimitOverride ?? role.BilledRateLimit,
+            // #1622/#1390: read off the CATALOG role's own grant, before the write-widening above can
+            // touch it -- see WorkerBindingConfigEntry.ChangesTree's own remarks for why re-deriving
+            // this from the (possibly widened) `grant` local a few lines up would misclassify a
+            // read-only role under some adapters.
+            ChangesTree: role.Grant.WriteFiles && role.Grant.RunShellCommands);
     }
 
     /// <summary>

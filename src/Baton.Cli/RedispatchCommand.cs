@@ -132,12 +132,14 @@ public static class RedispatchCommand
                         + "resulting room, or, once resolved, redispatch this one — see spec/baton.md §3.",
                     _ =>
                         "this room settled Indeterminate without a captured response (a verify failure or a "
-                        + $"token-budget arrest), so neither `baton resolve` nor `baton redispatch` applies — "
-                        + "redispatch is permanently unavailable for this producer, since there is no parent "
-                        + $"terminal.json fact it could clear. Read `baton status {options.ParentRoomDirectoryPath} "
-                        + "--json` for the step's reason, fix the underlying cause, and run "
-                        + $"{DescribeFreshDispatchRemedy(workerName, parentEntry)} into a fresh room — "
-                        + "see spec/baton.md §3.",
+                        + "token-budget arrest), so there is nothing to accept or reject — "
+                        + $"`baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                        + "--close --reason <text>` (#1622 (d)) settles it resolved-but-Failed, which "
+                        + "rewrites this room's terminal.json and lifts this refusal; then redispatch this "
+                        + "room, or dispatch fresh. Read "
+                        + $"`baton status {options.ParentRoomDirectoryPath} --json` for the step's reason and "
+                        + "fix the underlying cause first — a fresh room is "
+                        + $"{DescribeFreshDispatchRemedy(workerName, parentEntry)}. See spec/baton.md §3.",
                 });
         }
 

@@ -91,10 +91,9 @@ public sealed record WorkerRoleOutput(string Name, OutputSchema Schema, string I
 /// Resolution order per file:
 /// <list type="number">
 /// <item>the <c>BATON_WORKER_*_PATH</c> environment override, when set — for a one-off experiment.
-///   This step alone is still evaluated fresh on every access, the "resolve, never capture"
-///   discipline <see cref="BatonPaths"/> used to keep before #1496 froze <em>its</em> read — this
-///   catalog's own env-override lookup is deliberately NOT folded into
-///   <see cref="BatonEnvironmentSnapshot"/>; see the exempt comment on <c>ResolvePath</c>;</item>
+///   Folded into <see cref="BatonEnvironmentSnapshot"/> (#1524): resolved once per process (or per
+///   active <see cref="BatonEnvironmentSnapshot.BeginScope"/> in a test), not re-read on every
+///   access;</item>
 /// <item><c>{BatonPaths.Root}/worker-tiers.json</c> (or <c>worker-roles.json</c>) when it exists — the
 ///   operator's durable, rebuild-free override. <see cref="BatonPaths.Root"/> itself is frozen per
 ///   process since #1496, so this step no longer observes a <c>BATON_HOME</c> change made after the
@@ -135,10 +134,11 @@ public static class WorkerRoleCatalog
 
     private static IReadOnlyList<WorkerRole> Load()
     {
+        var snapshot = BatonEnvironmentSnapshot.Current;
         var tiers = ReadJson<Dictionary<string, WorkerTier>>(
-            ResolvePath(TiersPathEnvironmentVariable, TiersOverrideFileName, TiersDefaultFileName), "tier map");
+            ResolvePath(snapshot.WorkerTiersPathOverride, TiersOverrideFileName, TiersDefaultFileName), "tier map");
         var rawRoles = ReadJson<List<RawRole>>(
-            ResolvePath(RolesPathEnvironmentVariable, RolesOverrideFileName, RolesDefaultFileName), "role list");
+            ResolvePath(snapshot.WorkerRolesPathOverride, RolesOverrideFileName, RolesDefaultFileName), "role list");
 
         if (rawRoles.Count == 0)
         {
@@ -236,15 +236,15 @@ public static class WorkerRoleCatalog
         return new WorkerRoleOutput(raw.Name, schema, raw.Instruction);
     }
 
-    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-    // BatonEnvironmentSnapshot's own remarks.
-    private static string ResolvePath(string envVar, string overrideFileName, string defaultFileName)
+    // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1524: folded into BatonEnvironmentSnapshot -- envOverride is BatonEnvironmentSnapshot.Current's
+    // WorkerTiersPathOverride/WorkerRolesPathOverride, resolved once by the caller rather than a
+    // per-access Environment.GetEnvironmentVariable here.
+    private static string ResolvePath(string? envOverride, string overrideFileName, string defaultFileName)
     {
-        var env = Environment.GetEnvironmentVariable(envVar);
-        if (!string.IsNullOrWhiteSpace(env))
+        if (!string.IsNullOrWhiteSpace(envOverride))
         {
-            return env;
+            return envOverride;
         }
 
         var configOverride = Path.Combine(BatonPaths.Root, overrideFileName);
