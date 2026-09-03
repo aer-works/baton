@@ -293,9 +293,8 @@ public class HookCheckCommandTests
     [InlineData("implement", "gh pr merge 1 --squash", HookCheckCommand.DeniedExitCode)]
     [InlineData("implement", "gh api repos/a/b", HookCheckCommand.DeniedExitCode)]
     [InlineData("implement", "true && gh label create x", HookCheckCommand.DeniedExitCode)]
-    // #1748 F1: a routine multi-line payload (heredoc, scripted step) with the incident command on a
-    // later line -- an unquoted top-level newline is now a segment boundary on this scope rather than
-    // folding the whole line together, so the second line is checked on its own head.
+    // #1748 F1: the incident command riding a routine multi-line payload (heredoc, scripted step),
+    // see spec/baton.md §9 for the mechanism.
     [InlineData("implement", "git status\ngh label create operator-merge", HookCheckCommand.DeniedExitCode)]
     // Operator ruling (spec/baton.md §9, this PR): on an UNSCOPED grant with a deny list, `$`/`<`/`>`/
     // `\` are ordinary characters, not fatal ones -- routine build-tooling syntax must not deny

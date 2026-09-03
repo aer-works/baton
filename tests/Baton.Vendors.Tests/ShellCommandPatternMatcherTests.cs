@@ -406,8 +406,7 @@ public class ShellCommandPatternMatcherTests
     {
         // #1748 F8: the second bypass §9 names as accepted (spec/baton.md §9) had no dedicated test --
         // only the leading-redirection bypass above did, despite both the PR body and the lane report
-        // claiming both were pinned. `${IFS}` never appears in the scanned source text even though
-        // real bash execution collapses it back to the denied command.
+        // claiming both were pinned. See §9 for why `${IFS}` still evades this scanner.
         var implement = WorkerRoleCatalog.For("implement");
 
         var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
