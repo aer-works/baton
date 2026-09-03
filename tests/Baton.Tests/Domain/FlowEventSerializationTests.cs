@@ -159,6 +159,11 @@ public class FlowEventSerializationTests
         // #1583
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover")];
         yield return [new FlowEvent.StepRebound(StepId, ExecutionId, "agy", null, "claude", null)];
+
+        // #1549
+        yield return [new FlowEvent.ExecutionProgress(ExecutionId)];
+        yield return [new FlowEvent.CancellationDelivered(ExecutionId)];
+        yield return [new FlowEvent.CancellationRejected(ExecutionId)];
     }
 
     [Theory]

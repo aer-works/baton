@@ -217,6 +217,16 @@ public static class RunCommand
                 options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions,
                 CancelRequestPoller.DefaultPollInterval, pollCancellation.Token);
 
+            // #1549: the content-free progress heartbeat — a sibling fire-and-forget poller sharing
+            // this call's own writer and cancellation lifetime, never the pollCancellation token above
+            // stopped and re-created; both stop together when the pump call below returns. Unlike
+            // CancelRequestPoller there is no correctness-bearing "final tick" to run after this task
+            // is awaited — a heartbeat missed in the last GetInterval() window before exit is exactly
+            // as harmless as one missed mid-run (advisory/observability only, no state consequence).
+            var heartbeatTask = ExecutionProgressHeartbeat.RunAsync(
+                options.RoomDirectoryPath, logPath, artifactsRootPath, snapshot, writer,
+                ExecutionProgressHeartbeat.GetInterval(), pollCancellation.Token);
+
             try
             {
                 state = await MutationInterface.StartWorkflowAsync(
@@ -282,6 +292,25 @@ public static class RunCommand
                     try
                     {
                         Console.Error.WriteLine($"cancel.request final tick failed: {ex.Message}");
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                try
+                {
+                    await heartbeatTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected: pollCancellation firing mid-tick surfaces here, same as pollTask above.
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        Console.Error.WriteLine($"execution progress heartbeat faulted during shutdown: {ex.Message}");
                     }
                     catch
                     {

@@ -31,6 +31,9 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
+[JsonDerivedType(typeof(ExecutionProgress), "executionProgress")]
+[JsonDerivedType(typeof(CancellationDelivered), "cancellationDelivered")]
+[JsonDerivedType(typeof(CancellationRejected), "cancellationRejected")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -462,4 +465,40 @@ public abstract record FlowEvent
         [JsonIgnore]
         public DeciderInfo EffectiveDecider => Decider ?? DeciderInfo.DefaultHuman;
     }
+
+    /// <summary>
+    /// #1549: a coarse, content-free progress heartbeat for a live execution. Carries nothing beyond
+    /// the id — the writer-stamped timestamp every journal line already carries
+    /// (<see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/>) is the "timestamp" half of "execution
+    /// id + timestamp only". <c>Baton.Cli.ExecutionProgressHeartbeat</c> is the sole producer and the
+    /// canonical explanation of when this fires (cadence, the mtime gate, the coverage limits); see
+    /// its own remarks rather than a second copy here. <c>spec/baton.md</c> §2 records why this event
+    /// exists at all.
+    /// </summary>
+    public sealed record ExecutionProgress(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1549: an operator's <c>cancel.request</c> actually reached a live, still-registered
+    /// <see cref="Mutation.InFlightExecutionRegistry"/> entry and its
+    /// <see cref="System.Threading.CancellationTokenSource"/> was signalled — distinct from
+    /// <see cref="CancellationRequested"/>, which only records that Flow forwarded the intent and is
+    /// appended immediately before the same signal is attempted
+    /// (<see cref="Mutation.InFlightExecutionRegistry.RequestCancellationAsync"/>). Recorded whether
+    /// or not the signal actually reaches the worker process before it exits on its own; it is the
+    /// delivery of the request into Core, not proof the worker observed it. Content-free by design,
+    /// matching <see cref="CancellationRequested"/>'s own shape.
+    /// </summary>
+    public sealed record CancellationDelivered(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1549: the pump-side <c>cancel.request</c> poller (<c>Baton.Cli.CancelRequestPoller</c>)
+    /// exhausted its bounded retry (5 ticks) against a target that still projects
+    /// <see cref="StepStatus.Running"/> but was never reachable through
+    /// <see cref="Mutation.InFlightExecutionRegistry"/> — the "likely non-process work" refusal
+    /// <c>CancelRequestFile.Reject</c> also records to the file channel. Recorded only when a
+    /// concrete <see cref="ExecutionId"/> was resolved; a malformed request or an ambiguous
+    /// <c>latest</c> (no execution ever named) has nothing to key an execution-scoped journal fact
+    /// on and stays a file-and-stderr-only rejection, same as before this event existed.
+    /// </summary>
+    public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
 }

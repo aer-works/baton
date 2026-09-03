@@ -92,6 +92,44 @@ infrastructure is a separate cleanup this document does not scope — but a harn
 `room.jsonl` as **inert**: nothing in the dispatch/decide/status/fleet_status surface this spec
 describes writes to it or reads from it.
 
+**The progress heartbeat and the coarse lifecycle events (#1549).** §7's "false Running ⚠" entry
+below records the symptom this closes: journal-event age was useless as a liveness signal because a
+healthy lane could go a long stretch without writing to `flow.jsonl` at all. Three additions to the
+`FlowEvent` vocabulary fix that at the source. Each is content-free (an `ExecutionId` and nothing
+else — the wire timestamp every journal line already carries covers "when"), and each carries its
+full producer-side contract as a doc comment on its own case in `FlowEvent.cs` — cited here by name,
+not restated:
+
+- **`ExecutionProgress`**. Producer: `Baton.Cli.ExecutionProgressHeartbeat`, a poller
+  `RunCommand.ExecuteAsync` starts alongside `CancelRequestPoller` for every `run`/`dispatch`/
+  `redispatch` invocation (all three funnel through that one method) but not `resume`/`supply` — the
+  same command split `CancelRequestPoller` itself already has. `ExecutionProgressHeartbeat`'s own
+  remarks are the canonical description of its cadence, its `.stdout.log`-mtime gate, and why silence
+  under a wedge is the intended behaviour rather than a gap. Cadence is env-configurable
+  (`BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS` through `BatonEnvironmentSnapshot`, default 5 minutes)
+  the same way `RoomRetentionSweep`'s interval knobs already are. Write-budget arithmetic: KV writes
+  are governed by the pusher's per-producer daily ledger (§7's #1690 entry — snapshot pushes draw on
+  their own fixed daily sub-budget with adaptive pacing, never one write per journal event), so a
+  heartbeat changes a coalesced push's *contents*, never its *count*, and spends nothing extra against
+  the 1,000/day cap.
+- **`CancellationDelivered`** and **`CancellationRejected`**, both scoped to the operator
+  `cancel.request` path only (the host-stop wind-down stays as it was — deliberately, to keep an
+  ordinary shutdown quiet). `FlowEvent.cs`'s own doc comments on each case are the canonical statement
+  of exactly which branch of `InFlightExecutionRegistry`/`CancelRequestPoller` produces them and why
+  each is a distinct fact from the pre-existing `CancellationRequested`.
+- **Retry scheduled and artifact collection, the other two of the four moments #1537's enumeration
+  (PR #1564's body) named, needed nothing new.** Checked against `FlowEvent.cs` directly rather than
+  assumed (`common-sense`): `StepRetryScheduled` already exists and is already emitted. An engine-side
+  "artifact collection" moment does not exist as a step distinct from the terminal outcome
+  classification itself, so a fourth event would fire at the same instant as an existing one — pure
+  duplication, the exact journal noise the issue's own per-gate-evaluation exclusion already guards
+  against. Deliberately not added; this sentence is that decision's durable record.
+
+All three new cases project as explicit no-ops in `StateProjector`, and — per PR #1564's own audit —
+reach every downstream mailbox surface unfiltered without any widening of their own, since nothing
+in that pipeline (`extract_timeline`, `RoomDetailTool`'s tag map, `room_detail`'s schema in §6)
+filters by event type in the first place.
+
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
 - **`baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>]
@@ -2473,7 +2511,9 @@ can have zero journal events between `executionStarted` and `executionExited` (#
 measurement: 6 false STALL-shaped flags out of 6 live rooms), so every long-running tool call read
 as stale. `ageLine` now keys the ⚠ on `room.live.lastActivityAt` (the `rooms[].live` field above,
 itself a real `.stdout.log` mtime) when the room carries a `live` section at all, and falls back to
-the journal-event age only for a Running room `live` was never attached to.
+the journal-event age only for a Running room `live` was never attached to. §2's `ExecutionProgress`
+entry is the engine half this glass-only stopgap was always waiting on: the journal-event age this
+paragraph falls back to is now honest too, not just `room.live.lastActivityAt`.
 
 **Fleet Glass write budget (#1690).** Cloudflare's free-tier KV namespace caps at 1,000 writes/day;
 the mailbox blew it TWICE (2026-09-02) because the pre-#1690 design budgeted one write per snapshot
