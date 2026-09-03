@@ -2517,7 +2517,10 @@ What the daemon narrows **to**: a **room-watcher serving the §8 registry** (`fl
 needs no daemon, §6 — the watcher serves the registry the tool will consult, never the tool's own
 file reads), the **snapshot push loop** feeding the mailbox (§6),
 and the **quota-runway ledger** (below). Two more live responsibilities need a stated home rather
-than silently dropping out with the rest of the deleted daemon surface:
+than silently dropping out with the rest of the deleted daemon surface. All of the above assumes
+`baton daemon` is actually running persistently; it is kept running by the `baton-daemon` scheduled
+task (`tools/tool-refresh/register-daemon-task.ps1`, #1557), cycled onto each newly refreshed tool
+head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`.
 
 - **`RoomRetentionSweep`** (`Program.cs`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
