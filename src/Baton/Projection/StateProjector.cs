@@ -609,8 +609,15 @@ public static class StateProjector
         // arm must not claim it is. A real TokenBudget arrest (post-#1682) always has BilledTokens set
         // and keeps the accurate wording.
         var figureLabel = arrested.Reason is null ? "tokens" : "billed tokens";
+        // #1706: on claude the live figure is a LOWER BOUND, not a measurement -- the vendor's
+        // mid-stream usage carries no real input or output count anywhere (ClaudeUsageParser
+        // .TryParseIncrementalUsage has the measurement). Saying "measured" there would assert
+        // something the stream cannot support, and the direction matters to whoever reads this: the
+        // real spend is at least this, never at most. A pre-#1682 ledger line carries the flag's
+        // default (false) and keeps the wording it always had.
+        var figureVerb = arrested.Usage?.BilledIsFloor == true ? "measured as a floor — the real spend is at least this" : "measured";
         return billed > 0
-            ? $"Execution arrested: token budget exceeded ({billed} {figureLabel} measured) — awaiting conductor resolution."
+            ? $"Execution arrested: token budget exceeded ({billed} {figureLabel} {figureVerb}) — awaiting conductor resolution."
             : "Execution arrested: token budget exceeded — awaiting conductor resolution.";
     }
 

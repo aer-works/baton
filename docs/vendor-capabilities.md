@@ -559,6 +559,80 @@ makes a live, not-yet-terminal usage figure possible at all (`tools/fleet-glass/
 `vendor-doc-audit.md` missed. Both registers were quiet on the per-message shape specifically, and
 that quiet got mistaken for a finished investigation instead of an open one.
 
+**But only two of those four keys are that message's real figures (#1706, measured 2026-09-02).** The
+paragraph above is true as a *shape* claim and was read as a *value* claim, which is the defect this
+correction exists to close rather than leave to inference — the keys are present; two of them are
+placeholders:
+
+| Key on a mid-stream `assistant` line | Real? | Measured over two whole rooms |
+|---|---|---|
+| `input_tokens` | **no** | the literal constant `2` on all 153 and all 94 distinct `message.id`s |
+| `output_tokens` | **no** | a 1–21 stub; Σ = 1,362 and 691 against real totals of 113,293 and 66,924 |
+| `cache_creation_input_tokens` | yes | Σ over deduped ids reproduces the terminal whole-tree figure to 98.0% / 100.0% |
+| `cache_read_input_tokens` | yes | same, 97.5% / 100.0% |
+
+These are the values emitted when a message begins, never revised: across 93 and 82 repeat lines,
+**zero** carry a `usage` object differing from that id's first sighting, so no "read the last one"
+strategy recovers anything. Nor is there a streaming-protocol event to read them from instead —
+**the shipped `stream-json --verbose` mode emits no `message_start`, `message_delta` or
+`message_stop` event at all.** Its full event-type set, enumerated over both captures, is `assistant`,
+`user`, `system` (subtypes `init`, `thinking_tokens`, `task_started`, `task_progress`,
+`task_notification`, `task_updated`, `hook_started`, `hook_response`, `code_change_published`,
+`vcs_state_changed`), `tool_progress`, `rate_limit_event`, and one terminal `result`.
+
+**Scoped: what was NOT searched.** The statement above is about the MAIN THREAD's own per-message
+figures. Other live lines in the same captures do carry real token counts, they were found but not
+pursued, and naming them is cheaper than letting a later reader conclude from this section's silence
+that the search was exhaustive:
+
+| Line | Field | Seen |
+|---|---|---|
+| `system`/`task_progress` | `usage.total_tokens` (plus `tool_uses`, `duration_ms`) | cumulative per subagent task |
+| `system`/`task_notification` | `usage.total_tokens` | 133,082 on one task |
+| `user` | `tool_use_result.usage` | a FULL real usage object for a completed Task, including `output_tokens` and `output_tokens_details.thinking_tokens`, plus a `usage.iterations[]` array |
+| terminal `result` | `usage.iterations[]`, `subagent_stats` | both unread by any parser here |
+
+None of these is the main thread's own per-message output, so the engineering conclusion
+(spec/baton.md §3: bill cache-creation, label the figure a floor) stands. But `tool_use_result.usage`
+and `usage.iterations[]` are where an attempt to narrow the gap should start, and `subagent_stats` is
+what a claim about subagent fan-out has to be checked against — §3 records a claim of exactly that
+kind being falsified by it.
+
+*Evidence: `dispatch-implement-3dc5e21a` and `dispatch-implement-5d9686dd`'s real `.stdout.log`
+captures, claude 2.1.257 era, enumerated event-by-event rather than sampled.*
+
+### `agy`'s terminal `result.usage` IS the cumulative Σ of its per-turn lines (#1706 review, measured 2026-09-02)
+
+The claude finding above only has a meaning because the other vendor's incremental usage is a
+*measurement* rather than a floor — spec/baton.md §3 leans on agy's under-read being **zero**. That was
+an assumption, asserted from a hand-built fixture; here it is measured, on real captures, with the
+discriminating alternative (terminal = the LAST turn, not the Σ) separated by three orders of magnitude.
+
+Σ over every `state == "DONE"`, `step_type == "agent_response"` `step_update`'s `usage`, against the
+same room's terminal `result.usage`, field for field:
+
+| Room | `agent_response` usage lines | Σ vs terminal | Last turn's `input_tokens`, for contrast |
+|---|---|---|---|
+| `dispatch-implement-38c24d11` | 70 | **identical on all five fields** (`input 595,684`, `output 199,256`, `thinking 19,715`, `cache_read 8,459,818`, `total 794,940`) | 5,164 |
+| `dispatch-implement-46d513e7` | 258 | **identical on all five fields** | — |
+| `dispatch-implement-55aa75ae` | 263 | **identical on all five fields** | — |
+
+So on agy the live Σ and the authoritative terminal figure are the SAME number, and
+`billedUnderReadTokens` is a true measured zero rather than a fixture artifact. `AgyTerminalUsageIsCumulativeTests`
+pins the relationship against a line set copied from `38c24d11`'s real capture, and
+`ExecutionUsageProjectorTests`' zero-under-read control reads the same copied lines rather than a set
+constructed to sum correctly.
+
+**A trap worth naming, because it defeated an earlier attempt to measure this.** agy's terminal
+`num_turns` is **1** on all three of these rooms — including the 263-`agent_response` one. It counts
+USER turns, not agent responses, so filtering a corpus for `num_turns > 1` to find a "multi-turn" agy
+room finds nothing and looks like evidence that no such capture exists. Count `agent_response`
+`step_update` lines instead.
+
+*Evidence: the three rooms' real `.stdout.log` captures under `~/.baton/rooms`, summed
+line-by-line rather than sampled. Scoped to `agent_response` steps — `tool` steps carry no `usage`
+object and are not part of either side of this equality.*
+
 ### `agy` — works headlessly too, as of a CLI update
 
 **Superseded 2026-08-28.** The prior measurement on this row — `agy -p "/usage"` **not a built-in
