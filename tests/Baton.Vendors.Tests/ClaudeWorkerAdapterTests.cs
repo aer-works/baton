@@ -1319,6 +1319,32 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(classification);
     }
 
+    /// <summary>
+    /// #1720 review Finding G: the arm above quotes only the ERROR CODE in prose ("errorCode
+    /// credits_required"), which the old check already rejected before this fix. The claim
+    /// <see cref="StreamJsonTailScanner.AnyObject"/> actually has to defeat is a worker's answer text
+    /// embedding a FULL verbatim JSON envelope — the escaped-quote shape a real vendor tail can never
+    /// produce unescaped, per <see cref="StreamJsonTailScanner"/>'s own doc. Written as a raw string
+    /// literal so the backslashes survive into the runtime bytes: a regular literal would collapse
+    /// <c>\"</c> to <c>"</c> at compile time and pin nothing.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"the failure line was {\"errorCode\":\"credits_required\"}"}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => utcNow;

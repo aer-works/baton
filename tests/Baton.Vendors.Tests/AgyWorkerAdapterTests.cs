@@ -1835,6 +1835,39 @@ public class AgyWorkerAdapterTests
         }
     }
 
+    /// <summary>
+    /// agy's Finding G twin (#1720 review): the red arm above quotes the quota SENTENCE, not the
+    /// vendor's own envelope, which the typed status/error shape already rejects. See
+    /// <c>ClaudeWorkerAdapterTests.A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify</c>
+    /// for what this fixture defends against and why it needs a C# raw string.
+    /// </summary>
+    [Fact]
+    public void Classify_does_not_veto_a_satisfied_exit_0_agy_run_whose_answer_text_embeds_a_full_verbatim_envelope()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"c-2","status":"SUCCESS","response":"agy printed {\"event\":\"result\",\"result\":{\"status\":\"ERROR\",\"error\":\"Individual quota reached. Resets in 1h39m10s.\"}}"}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
     // ---- #1387 review F8: the write-granted scoped-shell variant is also intentionally in scope ----
 
     [Fact]

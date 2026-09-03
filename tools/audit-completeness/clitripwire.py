@@ -184,8 +184,8 @@ def parse_spec_table(spec_text: str) -> list[GrammarStatement]:
     statements = []
     for m in SPEC_ROW_RE.finditer(spec_text):
         verb, usage_cell, source_cell = m.group(1), m.group(2), m.group(3)
-        if not source_cell.endswith("OptionsParser.cs"):
-            continue  # `cancel`/`templates` are spelled in Program.cs and own no parser
+        if not source_cell.lower().endswith("optionsparser.cs"):
+            continue  # `templates` is spelled in Program.cs and owns no parser
         line = spec_text.count("\n", 0, m.start()) + 1
         statements.append(GrammarStatement(
             "spec/baton.md", line, verb, set(FLAG_RE.findall(usage_cell)), usage_cell.strip(),
@@ -197,10 +197,11 @@ def find_grammar_drift(parsers: dict[str, ParserContract],
                         statements: list[GrammarStatement]) -> list[str]:
     """Direction 3/4: a reference restatement must carry a verb's FULL flag set, no more, no less."""
     problems = []
-    by_class = {p.cls_name: p for p in parsers.values()}
+    by_class = {p.cls_name.lower(): p for p in parsers.values()}
 
     for statement in statements:
-        parser = by_class.get(statement.parser_class) if statement.parser_class else parsers.get(statement.verb)
+        parser = (by_class.get(statement.parser_class.lower()) if statement.parser_class
+                  else parsers.get(statement.verb))
         if parser is None:
             if statement.parser_class is not None:
                 problems.append(
@@ -220,6 +221,21 @@ def find_grammar_drift(parsers: dict[str, ParserContract],
                 f"`{statement.raw}`")
 
     return problems
+
+
+def matched_statements(parsers: dict[str, ParserContract],
+                        statements: list[GrammarStatement]) -> list[GrammarStatement]:
+    """The subset of `statements` that actually resolved to a parser -- i.e. the ones
+    `find_grammar_drift` can check at all. Raw extraction count includes verbs with no
+    `*OptionsParser` (`templates`, `mcp`, `daemon` for help lines), which is checked but never
+    validated against anything; a sanity floor on the raw count can pass with zero real coverage
+    (#1720 review Finding E).
+    """
+    by_class = {p.cls_name.lower(): p for p in parsers.values()}
+    return [
+        s for s in statements
+        if (by_class.get(s.parser_class.lower()) if s.parser_class else parsers.get(s.verb)) is not None
+    ]
 
 
 def parse_known_subcommands(program_cs_text: str) -> set[str]:
@@ -351,10 +367,12 @@ def main(argv: list[str]) -> int:
               f"in {DOC.relative_to(ROOT)}, got {len(invocations)}")
         return 1
 
-    if len(help_lines) < MIN_HELP_LINES:
+    matched_help_lines = matched_statements(parsers, help_lines)
+    if len(matched_help_lines) < MIN_HELP_LINES:
         print(f" !! sanity floor tripped: expected >= {MIN_HELP_LINES} hand-written `baton <verb>` "
-              f"help lines in Program.cs, got {len(help_lines)} -- the WriteLine extraction anchor "
-              "likely no longer matches the source")
+              f"help lines in Program.cs that resolve to a parser, got {len(matched_help_lines)} of "
+              f"{len(help_lines)} extracted -- the WriteLine extraction anchor likely no longer "
+              "matches the source")
         return 1
     if len(spec_rows) < MIN_SPEC_ROWS:
         print(f" !! sanity floor tripped: expected >= {MIN_SPEC_ROWS} parser-backed rows in "
@@ -531,6 +549,43 @@ def _selftest() -> int:
         problems = find_grammar_drift(resolve_parsers, orphan_row)
         if not any("GhostOptionsParser" in p for p in problems):
             failures.append("arm 11 FAILED: a §2 row naming a nonexistent parser was not caught")
+
+        # Arm 11b (Finding D, #1720 review): a Source cell casing slip must still resolve, not fall
+        # through the endswith filter into a silent skip.
+        cased_row = parse_spec_table(
+            "| `resolve` | `baton resolve <room-dir>` | `resolveOPTIONSPARSER.cs` |\n")
+        if len(cased_row) != 1:
+            failures.append(f"arm 11b FAILED: a casing-sloppy Source suffix was dropped by parse_spec_table, "
+                             f"got {len(cased_row)} rows")
+        else:
+            problems = find_grammar_drift(resolve_parsers, cased_row)
+            if any("no such parser was extracted" in p for p in problems):
+                failures.append("arm 11b FAILED: a Source cell naming the real parser under different "
+                                 f"casing was not matched: {problems}")
+
+    # Arm 12 (Finding E, #1720 review): MIN_HELP_LINES must floor on statements that matched a
+    # parser, not raw extraction count -- losing all four checked lines (cancel/decide/resolve/
+    # supply) while the three unchecked ones (templates/mcp/daemon) survive must read as zero
+    # coverage, not three.
+    if resolve_contract is not None:
+        unmatched_help = parse_help_lines(
+            'Console.Error.WriteLine(\n'
+            '    "       baton templates [--json]");\n'
+            'Console.Error.WriteLine(\n'
+            '    "       baton mcp");\n'
+            'Console.Error.WriteLine(\n'
+            '    "       baton daemon");\n')
+        if len(unmatched_help) != 3:
+            failures.append(f"arm 12 FAILED: expected 3 help lines extracted, got {len(unmatched_help)}")
+        elif len(unmatched_help) < MIN_HELP_LINES:
+            failures.append("arm 12 FAILED: fixture no longer demonstrates raw count meeting the floor")
+        matched = matched_statements(resolve_parsers, unmatched_help)
+        if matched:
+            failures.append(f"arm 12 FAILED: statements naming verbs with no parser were counted as "
+                             f"matched: {[s.raw for s in matched]}")
+        if len(matched) >= MIN_HELP_LINES:
+            failures.append("arm 12 FAILED: matched count did not fall below MIN_HELP_LINES once the "
+                             "four checked lines were gone")
 
     if failures:
         print(" !! clitripwire selftest FAILED:")

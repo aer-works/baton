@@ -354,7 +354,10 @@ public static class WorktreeProvisioner
 
         try
         {
-            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain");
+            // --untracked-files=normal is explicit rather than left to the ambient default: a host or
+            // repo config carrying `status.showUntrackedFiles = no` would otherwise make an
+            // untracked-only work product invisible to this probe (#1720 review Finding B).
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain", "--untracked-files=normal");
             if (statusCode != 0 || !string.IsNullOrWhiteSpace(statusOut))
             {
                 return false;
@@ -445,7 +448,10 @@ public static class WorktreeProvisioner
 
         try
         {
-            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain");
+            // --untracked-files=normal, matching IsWorkspaceUntouched, so an ambient
+            // `status.showUntrackedFiles = no` cannot turn an untracked-only work product into a
+            // measured `changed: false` here (#1720 review Finding B).
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain", "--untracked-files=normal");
             if (statusCode != 0)
             {
                 // Not a git checkout, or git could not run here: unmeasurable, not "unchanged".
