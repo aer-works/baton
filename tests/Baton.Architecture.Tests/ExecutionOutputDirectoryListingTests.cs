@@ -51,6 +51,9 @@ public class ExecutionOutputDirectoryListingTests
         // Lists a slash-command definitions directory shipped alongside the adapter, never an
         // execution's own output directory.
         ["Baton.Vendors/ClaudeWorkerAdapter.cs"] = "lists commandsDir (bundled slash-command defs), not an execution output directory",
+        // #1488: lists {BATON_HOME}/watches -- the baton watch registry directory -- never an
+        // execution's own output directory.
+        ["Baton.Cli/WatchStore.cs"] = "lists watchesDirectoryPath (the baton watch registry), not an execution output directory",
     };
 
     [Fact]
