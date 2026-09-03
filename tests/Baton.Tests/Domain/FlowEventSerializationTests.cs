@@ -389,6 +389,84 @@ public class FlowEventSerializationTests
         Assert.Equal("agy", accepted.Request.Adapter);
         Assert.Equal("gemini-3-pro", accepted.Request.Model);
     }
+
+    private static string LegacyExecutionRequestAcceptedJsonWithNoRecordedHookCanary()
+    {
+        // #1741 (spec/baton.md §9): HookCanaryArmed/HookVerdictLedgerFileName are the newest
+        // additive members on ExecutionRequest -- the same durability claim GrantAuditMode's and
+        // Adapter/Model's own legacy fixtures above pin, mirrored for this pair. A line written
+        // before #1741 landed has neither property at all.
+        var request = new ExecutionRequest(
+            ExecutionId,
+            new WorkflowId("wf-1"),
+            StepId,
+            "agy",
+            Inputs: ["/artifacts/execution_1/goal.md"],
+            Outputs: ["/artifacts/execution_2/report.md"],
+            Timeout: TimeSpan.FromMinutes(10),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy",
+            HookCanaryArmed: true,
+            HookVerdictLedgerFileName: "verdicts.ndjson");
+
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionRequestAccepted(request),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+        var requestNode = node["Request"]!.AsObject();
+
+        Assert.True(requestNode.Remove(nameof(ExecutionRequest.HookCanaryArmed)));
+        Assert.True(requestNode.Remove(nameof(ExecutionRequest.HookVerdictLedgerFileName)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_ExecutionRequestAccepted_without_HookCanaryArmed_or_HookVerdictLedgerFileName_deserializes_with_both_null()
+    {
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyExecutionRequestAcceptedJsonWithNoRecordedHookCanary(), FlowEventLogJson.Options);
+
+        var accepted = Assert.IsType<FlowEvent.ExecutionRequestAccepted>(deserialized);
+        Assert.Equal(ExecutionId, accepted.Request.ExecutionId);
+        Assert.Null(accepted.Request.HookCanaryArmed);
+        Assert.Null(accepted.Request.HookVerdictLedgerFileName);
+    }
+
+    [Fact]
+    public void Deserializing_current_ExecutionRequestAccepted_with_HookCanaryArmed_and_HookVerdictLedgerFileName_sets_both()
+    {
+        // The polarity control for the test above: same event shape, both fields present rather
+        // than stripped. Without this arm, an implementation that never read either property at all
+        // would pass the legacy test -- null is what it asserts.
+        var request = new ExecutionRequest(
+            ExecutionId,
+            new WorkflowId("wf-1"),
+            StepId,
+            "agy",
+            Inputs: ["/artifacts/execution_1/goal.md"],
+            Outputs: ["/artifacts/execution_2/report.md"],
+            Timeout: TimeSpan.FromMinutes(10),
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy",
+            HookCanaryArmed: true,
+            HookVerdictLedgerFileName: "verdicts.ndjson");
+
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionRequestAccepted(request),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var accepted = Assert.IsType<FlowEvent.ExecutionRequestAccepted>(deserialized);
+        Assert.True(accepted.Request.HookCanaryArmed);
+        Assert.Equal("verdicts.ndjson", accepted.Request.HookVerdictLedgerFileName);
+    }
 }
 
 

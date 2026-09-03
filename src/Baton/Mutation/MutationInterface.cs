@@ -849,6 +849,7 @@ public static class MutationInterface
         var inputPaths = ArtifactManager.ResolveInputPaths(stepDefinition, snapshot, state, artifactsRootPath);
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
         var environment = ArtifactManager.BuildEnvironment(inputPaths, outputDirectory, artifactsRootPath);
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBinding);
 
         var request = new ExecutionRequest(
             executionId,
@@ -864,7 +865,9 @@ public static class MutationInterface
             LinkedFromExecutionId: previousExecutionId,
             SessionId: sessionId,
             Adapter: processBinding.Adapter,
-            Model: processBinding.Model);
+            Model: processBinding.Model,
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
@@ -1651,6 +1654,7 @@ public static class MutationInterface
         }
 
         var processBindingForRequest = binding as WorkerBinding.Process;
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBindingForRequest);
 
         var request = new ExecutionRequest(
             executionId,
@@ -1665,9 +1669,8 @@ public static class MutationInterface
             GrantAuditMode: binding.GrantAuditMode,
             Adapter: processBindingForRequest?.Adapter,
             Model: processBindingForRequest?.Model,
-            // #1741: see ExecutionRequest.HookCanaryArmed's own doc for why this is captured here.
-            HookCanaryArmed: processBindingForRequest?.Target.CountHookVerdicts is not null,
-            HookVerdictLedgerFileName: processBindingForRequest?.Target.HookVerdictLedgerFileName);
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
@@ -1676,6 +1679,14 @@ public static class MutationInterface
 
         return new PreparedExecution(request, outputDirectory);
     }
+
+    // #1741: the one fact every Process-dispatch ExecutionRequest construction site must journal --
+    // see ExecutionRequest.HookCanaryArmed's own doc for why (spec/baton.md §9). Shared so the two
+    // sites (a fresh step dispatch here, a `baton resume` dispatch in RecordResumeAsync) can't drift
+    // the way the #1753 review found RecordResumeAsync had.
+    private static (bool? HookCanaryArmed, string? HookVerdictLedgerFileName) CaptureHookCanaryArmingFields(
+        WorkerBinding.Process? processBinding) =>
+        (processBinding?.Target.CountHookVerdicts is not null, processBinding?.Target.HookVerdictLedgerFileName);
 
     private static FlowEvent.ExecutionRequestAccepted CreateExecutionRequestAccepted(ExecutionRequest request)
     {

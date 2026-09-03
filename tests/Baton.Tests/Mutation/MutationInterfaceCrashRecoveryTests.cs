@@ -912,6 +912,14 @@ public class MutationInterfaceCrashRecoveryTests
         // same refusing binding (no dependency on today's binding resolving either way), but a
         // HEALTHY ledger -- at least one recorded verdict -- so the canary does not fire and the
         // naturally-exited, contract-satisfied run settles Succeeded exactly as it would live.
+        //
+        // #1753 review F3: this is a forward regression guard, not a test that discriminates pre-#1741
+        // code from post-#1741 code -- under a REFUSING binding, pre-#1741 code takes the
+        // `countHookVerdicts is not null` branch, which BatonFlowException's catch above it leaves
+        // permanently null regardless of ledger content, so it settles Succeeded unconditionally here
+        // too. The discrimination between the two code states is carried entirely by the sibling test
+        // above (StartWorkflowAsync_arms_the_replay_canary_...), which flips Succeeded -> Indeterminate
+        // across the fix; this test only pins that a HEALTHY ledger keeps settling Succeeded once armed.
         var snapshot = MakeSnapshot(Step(A, dependsOn: [], worker: "unresolvable-worker"));
         var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
         try
