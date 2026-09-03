@@ -121,7 +121,60 @@ public sealed class StdoutTailRendererTests : IDisposable
             tail);
     }
 
-    /// <summary>Fail-closed (spec/baton.md §6, C-11): a <c>null</c> patterns list — the
+    /// <summary>
+    /// #1723's blob-elision threshold counts CODEPOINTS, matching Python's <c>len()</c> on a str — a
+    /// whitespace-free run of 150 astral-plane characters (emoji here) is 150 codepoints in Python
+    /// (under the 200 threshold, never elided) but would be 300 UTF-16 code units if a naive
+    /// <c>char</c>-based .NET <see cref="Regex"/> quantifier counted it, over the threshold and wrongly
+    /// elided. Second-reader review finding, pinned against a real pusher.py run.
+    /// </summary>
+    [Fact]
+    public void ComputeTail_CountsBlobThresholdByCodepoint_NotByUtf16Unit()
+    {
+        var emojiRun = string.Concat(Enumerable.Repeat("😀", 150));
+        var path = WriteLog("emoji.stdout.log", [emojiRun]);
+
+        var tail = StdoutTailRenderer.ComputeTail(path, patterns: []);
+
+        Assert.Equal(emojiRun, tail);
+    }
+
+    /// <summary>
+    /// Agy's <c>step_update</c> arm requires only <c>isinstance(step_type, str)</c> in pusher.py — an
+    /// empty string is a valid (if odd) step_type and still renders, it is not treated as absent.
+    /// Second-reader review finding, pinned against a real pusher.py run.
+    /// </summary>
+    [Fact]
+    public void ComputeTail_RendersAgyStepUpdate_WithEmptyStepType()
+    {
+        var path = WriteLog("step-empty.stdout.log", [
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":""}}""",
+        ]);
+
+        var tail = StdoutTailRenderer.ComputeTail(path, patterns: []);
+
+        Assert.Equal("[tool:  — done]", tail);
+    }
+
+    /// <summary>
+    /// Agy's <c>result</c> arm gates <c>response</c> on Python's <c>.strip()</c>-truthiness, not plain
+    /// non-emptiness — a whitespace-only response must fall through to the status/error branch instead
+    /// of rendering as an empty line and swallowing a real error. Second-reader review finding, pinned
+    /// against a real pusher.py run.
+    /// </summary>
+    [Fact]
+    public void ComputeTail_FallsThroughToError_WhenAgyResponseIsWhitespaceOnly()
+    {
+        var path = WriteLog("resp-whitespace.stdout.log", [
+            """{"event":"result","result":{"response":" ","status":"FAILED","error":"boom"}}""",
+        ]);
+
+        var tail = StdoutTailRenderer.ComputeTail(path, patterns: []);
+
+        Assert.Equal("[result: error — boom]", tail);
+    }
+
+    /// <summary>Fail-closed (spec/baton.md §6): a <c>null</c> patterns list — the
     /// <see cref="StdoutTailRenderer.LoadSecretPatterns"/> missing/unreadable-file sentinel — withholds
     /// EVERY line, not just the ones a present denylist would have caught.</summary>
     [Fact]
@@ -186,5 +239,26 @@ public sealed class StdoutTailRendererTests : IDisposable
         // The newest line in the source log must survive somewhere in the tail (front-truncated, never
         // an arbitrary window) -- plain lines pass through RenderTailLine unchanged.
         Assert.Contains("line 009999", tail);
+    }
+
+    /// <summary>
+    /// The OTHER branch of the byte-cap logic: when the single surviving line alone has no '\n' inside
+    /// the truncation budget at all (a one-line tail, or -- as here -- every candidate boundary falls
+    /// outside the kept window), <c>stdout_tail_for_room</c> keeps the newest line alone rather than
+    /// collapsing to just the truncation mark (review rev1738 F3). The bound test above only exercises
+    /// the "a newline WAS found" branch; this pins the other one, matching a real pusher.py run for the
+    /// same fixture (a single long line -- word-repeated so no run is a 200+-char blob -- read with a
+    /// deliberately tiny max_bytes).
+    /// </summary>
+    [Fact]
+    public void ComputeTail_KeepsNewestLineAlone_WhenNoLineBoundaryFitsTheByteBudget()
+    {
+        var line = string.Join(' ', Enumerable.Repeat("word", 60));
+        var path = WriteLog("no-boundary.stdout.log", [line]);
+
+        var tail = StdoutTailRenderer.ComputeTail(path, patterns: [], maxBytes: 50);
+
+        Assert.Equal("…ord word word word word word word word word …", tail);
+        Assert.Equal(50, System.Text.Encoding.UTF8.GetByteCount(tail!));
     }
 }

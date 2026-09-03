@@ -195,7 +195,7 @@ public static class BatonPaths
     /// <summary>
     /// <c>{Root}/secretpatterns.local.txt</c> — the daemon's own copy of the fail-closed secret-gate
     /// denylist <c>tools/fleet-glass/pusher.py</c>'s <c>load_secret_patterns</c>/<c>secret_hit_index</c>
-    /// already define (spec/baton.md §6, C-11): one regex per line, '#' starts a comment, blank lines
+    /// already define (spec/baton.md §6): one regex per line, '#' starts a comment, blank lines
     /// ignored. A NEW path, not the pusher's own <c>tools/fleet-glass/secretpatterns.local.txt</c> —
     /// the daemon and the pusher are separate processes with no shared working directory in general
     /// (the daemon runs from an installed <see cref="Tools"/> checkout, the pusher from its own repo

@@ -54,8 +54,6 @@ internal static class StdoutTailRenderer
     /// </summary>
     private const int ProseFieldLimit = 200;
 
-    private static readonly Regex BlobTokenPattern = new(@"\S{200,}", RegexOptions.Compiled);
-
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
@@ -140,12 +138,84 @@ internal static class StdoutTailRenderer
     /// least <see cref="BlobElisionThreshold"/> characters with a byte-count marker. Applies to every
     /// surviving tail line, JSON-rendered or plain-text alike.
     /// </summary>
-    private static string ElideBlobTokens(string text) =>
-        BlobTokenPattern.Replace(text, m => $"{TruncationMark}[{Encoding.UTF8.GetByteCount(m.Value)} bytes elided]{TruncationMark}");
+    /// <summary>
+    /// Scans <paramref name="text"/> rune by rune (not UTF-16 code unit by code unit) so a
+    /// whitespace-free run is counted the same way Python's <c>\S{200,}</c> counts it: by codepoint.
+    /// A .NET <see cref="Regex"/> quantifier over <c>char</c> counts UTF-16 code UNITS, which
+    /// double-counts every astral-plane character (emoji, some CJK extensions) relative to Python's
+    /// codepoint-native <c>re</c> — a 150-emoji run is 150 codepoints in Python (under the 200
+    /// threshold, never elided) but 300 UTF-16 units in a naive C# count (elided). Elides on a rune
+    /// boundary, never splitting a surrogate pair.
+    /// </summary>
+    private static string ElideBlobTokens(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        var index = 0;
+        while (index < text.Length)
+        {
+            if (char.IsWhiteSpace(text[index]))
+            {
+                sb.Append(text[index]);
+                index++;
+                continue;
+            }
 
-    /// <summary>Port of pusher.py's <c>_cap_plain_line</c> (review rev1738 F3): caps to <paramref name="limit"/> chars.</summary>
-    private static string CapPlainLine(string line, int limit = ProseFieldLimit) =>
-        line.Length <= limit ? line : line[..limit] + TruncationMark;
+            var runStart = index;
+            var runeCount = 0;
+            while (index < text.Length && !char.IsWhiteSpace(text[index]))
+            {
+                index += Rune.TryGetRuneAt(text, index, out var rune) ? rune.Utf16SequenceLength : 1;
+                runeCount++;
+            }
+
+            var run = text[runStart..index];
+            sb.Append(runeCount >= BlobElisionThreshold
+                ? $"{TruncationMark}[{Encoding.UTF8.GetByteCount(run)} bytes elided]{TruncationMark}"
+                : run);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>Number of Unicode codepoints (runes) in <paramref name="text"/> — Python's <c>len()</c> on a str counts codepoints, not UTF-16 code units.</summary>
+    private static int CodepointLength(string text)
+    {
+        var count = 0;
+        var index = 0;
+        while (index < text.Length)
+        {
+            index += Rune.TryGetRuneAt(text, index, out var rune) ? rune.Utf16SequenceLength : 1;
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Truncates <paramref name="text"/> to its first <paramref name="limit"/> CODEPOINTS (matching
+    /// Python's <c>text[:limit]</c> on a str, which slices by codepoint) plus <see cref="TruncationMark"/>
+    /// — never mid-surrogate-pair, unlike a naive <c>text[..limit]</c> UTF-16 slice.
+    /// </summary>
+    private static string CapToCodepoints(string text, int limit)
+    {
+        if (CodepointLength(text) <= limit)
+        {
+            return text;
+        }
+
+        var count = 0;
+        var index = 0;
+        while (index < text.Length && count < limit)
+        {
+            index += Rune.TryGetRuneAt(text, index, out var rune) ? rune.Utf16SequenceLength : 1;
+            count++;
+        }
+
+        return text[..index] + TruncationMark;
+    }
+
+    /// <summary>Port of pusher.py's <c>_cap_plain_line</c> (review rev1738 F3): caps to <paramref name="limit"/> codepoints.</summary>
+    private static string CapPlainLine(string line, int limit = ProseFieldLimit) => CapToCodepoints(line, limit);
 
     /// <summary>
     /// Port of pusher.py's splitlines-based line scanner, shared by <see cref="ProseFirstLine"/> (first
@@ -179,7 +249,7 @@ internal static class StdoutTailRenderer
     {
         var stripped = text.Trim();
         var first = stripped.Length > 0 ? (SplitLines(stripped) is { Count: > 0 } lines ? lines[0] : "") : "";
-        return first.Length <= limit ? first : first[..limit] + TruncationMark;
+        return CapToCodepoints(first, limit);
     }
 
     /// <summary>
@@ -210,7 +280,7 @@ internal static class StdoutTailRenderer
         }
 
         var summary = string.Join(", ", parts);
-        return summary.Length <= limit ? summary : summary[..limit] + TruncationMark;
+        return CapToCodepoints(summary, limit);
     }
 
     /// <summary>Python truthiness for a JSON-decoded value — used only where pusher.py itself tests truthiness rather than <c>isinstance(x, bool)</c> (the claude <c>tool_result</c> block's <c>is_error</c>).</summary>
@@ -240,17 +310,27 @@ internal static class StdoutTailRenderer
         internal static ProseResult Rendered(string text) => new(ProseKind.Rendered, text);
     }
 
-    private static string? TryGetNonEmptyString(JsonElement obj, string property)
-    {
-        if (obj.ValueKind == JsonValueKind.Object
+    /// <summary>A string field's raw value regardless of emptiness, or <c>null</c> if absent/not a string — Python's bare <c>isinstance(x, str)</c>, with no truthiness test at all.</summary>
+    private static string? TryGetString(JsonElement obj, string property) =>
+        obj.ValueKind == JsonValueKind.Object
             && obj.TryGetProperty(property, out var value)
-            && value.ValueKind == JsonValueKind.String)
-        {
-            var s = value.GetString();
-            return s is { Length: > 0 } ? s : null;
-        }
+            && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
-        return null;
+    /// <summary>Python's <c>isinstance(x, str) and x</c> — a non-empty string is truthy regardless of whether it is all whitespace.</summary>
+    private static string? TryGetNonEmptyString(JsonElement obj, string property) =>
+        TryGetString(obj, property) is { Length: > 0 } s ? s : null;
+
+    /// <summary>
+    /// Python's <c>isinstance(x, str) and x.strip()</c> — the RAW (unstripped) string is truthy only
+    /// when it has non-whitespace content, distinct from <see cref="TryGetNonEmptyString"/>'s plain
+    /// non-empty check: a whitespace-only string is truthy under the plain check but not this one.
+    /// </summary>
+    private static string? TryGetStrippedNonEmptyString(JsonElement obj, string property)
+    {
+        var s = TryGetString(obj, property);
+        return s is not null && s.Trim().Length > 0 ? s : null;
     }
 
     /// <summary>
@@ -407,7 +487,7 @@ internal static class StdoutTailRenderer
                 }
 
                 var state = TryGetNonEmptyString(step, "state");
-                var stepType = TryGetNonEmptyString(step, "step_type");
+                var stepType = TryGetString(step, "step_type");
 
                 if ((state == "DONE" || state == "ERROR") && stepType is not null
                     && stepType is not ("unknown" or "checkpoint" or "user_input"))
@@ -426,7 +506,7 @@ internal static class StdoutTailRenderer
                     return ProseResult.Noise;
                 }
 
-                if (TryGetNonEmptyString(result, "response") is { } response)
+                if (TryGetStrippedNonEmptyString(result, "response") is { } response)
                 {
                     return ProseResult.Rendered(ProseFirstLine(response));
                 }
@@ -517,7 +597,7 @@ internal static class StdoutTailRenderer
         {
             size = new FileInfo(path).Length;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return "";
         }
@@ -532,7 +612,7 @@ internal static class StdoutTailRenderer
             stream.CopyTo(buffer);
             chunk = buffer.ToArray();
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return "";
         }

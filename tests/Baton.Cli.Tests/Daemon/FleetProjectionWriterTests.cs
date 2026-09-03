@@ -268,7 +268,7 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
     /// <summary>Fail-closed polarity arm: no <see cref="BatonPaths.SecretPatternsFile"/> under this
     /// test's isolated <c>BATON_HOME</c> at all -- every line withheld, matching pusher.py's own
-    /// missing-denylist ruling (spec/baton.md §6, C-11), not merely a per-pattern miss.</summary>
+    /// missing-denylist ruling (spec/baton.md §6), not merely a per-pattern miss.</summary>
     [Fact]
     public async Task RunningRoom_WithAliveEngine_WithholdsStdoutTail_WhenPatternsFileMissing()
     {
