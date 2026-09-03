@@ -221,9 +221,10 @@ public class WorkerRoleCatalogTests
     public void A_catalog_file_with_comments_fails_loudly_so_both_readers_agree()
     {
         using var cat = new TempCatalog();
-        // dispatch.py reads the same files through stdlib json.loads, which rejects comments. The C#
-        // reader must reject them too, or an operator's inline // WHY loads in the engine and breaks
-        // every dispatch.
+        // tools/audit-completeness/completeness.py reads WorkerTiers.json through stdlib json.load,
+        // which rejects comments (tools/baton-agy-loop/dispatch.py did too, before #1759 retired it).
+        // The C# reader must reject them too, or an operator's inline // WHY loads in the engine and
+        // breaks every dispatch.
         using var env = PointAt(
             cat,
             "{\n  // #742 operator directive\n  \"t\":{\"adapter\":\"gemini\",\"model\":\"m\",\"effort\":null}\n}",

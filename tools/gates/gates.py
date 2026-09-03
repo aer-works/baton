@@ -34,10 +34,12 @@ from datetime import datetime, timedelta, timezone
 #
 # The split is deliberate, not stylistic. OVERLAP holds only gates that read files and run python:
 # nothing that starts MSBuild, and nothing that touches the built Baton.Cli binary. `fmt-check`
-# loads every project through MSBuild, and `audit-selfcheck`/`audit-controls` refresh a copy of
-# the repo's built CLI (#717) -- overlapping either with `lint`'s build reintroduces the
-# concurrent-MSBuild and torn-binary failures that MSBUILDDISABLENODEREUSE (#909) and the
-# 2026-08-04 mutual-kill catalogue were paid for.
+# loads every project through MSBuild. `audit-selfcheck`/`audit-controls` used to refresh a copy of
+# the repo's built CLI too (#717) -- overlapping either with `lint`'s build would have reintroduced
+# the concurrent-MSBuild and torn-binary failures that MSBUILDDISABLENODEREUSE (#909) and the
+# 2026-08-04 mutual-kill catalogue were paid for. #1759 retired the dispatch.py call that CLI
+# dependency rested on (pixi.toml's `audit-selfcheck` entry has the full account); they stay out of
+# OVERLAP regardless (see AFTER_BUILD_FAST below).
 OVERLAP = [
     "audit-completeness",
     "audit-recordonce",
@@ -92,17 +94,19 @@ BUILD_PHASE = [
     "lint",
 ]
 
-# Sequential too, but only because they read the CLI binary `lint` writes -- they run after the
-# build phase, once the overlapped audits have been joined. `baton-dispatch-selftest` belongs here for
-# the same reason and used to sit in OVERLAP by mistake: `dispatch.py` loads the worker catalog from
-# the built `Baton.Cli` binary AT IMPORT, so running it before `lint` produces that binary dies with
-# "baton engine CLI binary not found ... Build it first". Overlapped, it raced the very build it depends
-# on -- invisible everywhere a prior build had left the binary on disk, and a hard first-run FAIL in a
-# fresh worktree, which is exactly the intermittent gate failure #1088 spent a session diagnosing.
+# `vendor-check` is sequential because it reads the CLI binary `lint` writes -- it runs after the
+# build phase, once the overlapped audits have been joined. `audit-selfcheck`/`audit-controls` sat
+# here for the matching reason before #1759: `tools/baton-agy-loop/dispatch.py` loaded the worker
+# catalog from the built `Baton.Cli` binary AT IMPORT, so running either check before `lint` produced
+# that binary died with "baton engine CLI binary not found ... Build it first" -- overlapped, it raced
+# the very build it depended on, invisible everywhere a prior build had left the binary on disk, and a
+# hard first-run FAIL in a fresh worktree, which is exactly the intermittent gate failure #1088 spent
+# a session diagnosing. #1759 retired dispatch.py and its own selftest arm (`baton-dispatch-selftest`,
+# which used to sit right here) along with it; the two checks below no longer touch the CLI at all but
+# stay in this phase rather than being relocated as part of that change.
 AFTER_BUILD_FAST = [
     "audit-selfcheck",
     "audit-controls",
-    "baton-dispatch-selftest",
     # #1487: the loud half of the drift grace window. Console.WriteLine here is inherited straight to
     # the gates output (run_gates -> pixi_runner), which a passing xunit test's ITestOutputHelper is
     # not -- dotnet test only prints a test's output when it fails, so this is the layer that can

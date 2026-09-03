@@ -71,8 +71,9 @@ public sealed record WorkerRole(
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
-/// form of what <c>tools/baton-agy-loop/dispatch.py</c> spells out inline today. The front door (#887)
-/// declares it as a <see cref="ProducedOutput"/> the engine's <c>ContractValidator</c> checks, and
+/// form of what <c>tools/baton-agy-loop/dispatch.py</c> used to spell out inline, before #1759
+/// retired it. The front door (#887) declares it as a <see cref="ProducedOutput"/> the engine's
+/// <c>ContractValidator</c> checks, and
 /// appends <see cref="Instruction"/> to the dispatch prompt so the worker is told to produce exactly
 /// what the contract asserts — the name, the shape, and the instruction single-sourced here so a spec
 /// prompt stays just the task.
@@ -85,8 +86,9 @@ public sealed record WorkerRoleOutput(string Name, OutputSchema Schema, string I
 
 /// <summary>
 /// The single, shared worker-role catalog — the same <c>WorkerRoles.json</c>/<c>WorkerTiers.json</c>
-/// that <c>tools/baton-agy-loop/dispatch.py</c> reads (#888, the #836 shared-source pattern). Read at
-/// runtime, never embedded, so the operator can retune tiers without a rebuild.
+/// <c>tools/baton-agy-loop/dispatch.py</c> read until #1759 retired it (#888, the #836 shared-source
+/// pattern); <c>tools/audit-completeness/completeness.py</c> still reads <c>WorkerTiers.json</c>
+/// directly today. Read at runtime, never embedded, so the operator can retune tiers without a rebuild.
 /// </summary>
 /// <remarks>
 /// Resolution order per file:
@@ -122,9 +124,12 @@ public static class WorkerRoleCatalog
     private const string TiersOverrideFileName = "worker-tiers.json";
     private const string RolesOverrideFileName = "worker-roles.json";
 
-    // Plain JSON only — no comments, no trailing commas. dispatch.py reads the same two files through
-    // stdlib json.loads, which tolerates neither; matching that here keeps "one shared source" a real
-    // guarantee rather than a file only the C# side can parse (#888 finding).
+    // Plain JSON only — no comments, no trailing commas. #1759: verified by grep, the surviving
+    // Python reader is `tools/audit-completeness/completeness.py`'s step 9 (WorkerTiers.json only,
+    // via stdlib `json.load`, which tolerates neither) — dispatch.py read both files this way too
+    // until #1759 retired it, and no other Python tool (fleet-glass's pusher included) reads either
+    // file. Kept for WorkerRoles.json as well, both files sharing this one JsonOptions, rather than
+    // splitting the constraint per file for a reader step 9 does not have today.
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -230,8 +235,8 @@ public static class WorkerRoleCatalog
         }
 
         // Mapped explicitly rather than deserialized straight into OutputSchema: the catalog's wire
-        // form is snake_case (dispatch.py reads the same file), and an unknown value must fail loudly
-        // at load — a silently-defaulted OutputSchema.None would drop a verdict's schema check and
+        // form is snake_case (matching every other Python/JSON reader of this file), and an unknown
+        // value must fail loudly at load — a silently-defaulted OutputSchema.None would drop a verdict's schema check and
         // pass a file that is not a verdict, the exact false capability the RawRole discipline forbids.
         var schema = raw.Schema switch
         {
