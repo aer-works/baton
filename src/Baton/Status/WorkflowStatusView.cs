@@ -194,11 +194,8 @@ public sealed record WorkflowStatusView(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ResolvedBy = null,
     // #1157: when this run ended (ISO-8601, UTC) -- Projection.TerminalInstantResolver's answer off
-    // the journal's own writer stamps, never flow.jsonl's or terminal.json's mtime. See spec/baton.md
-    // §3's `terminalAt` entry for the absence rules; the short form is that it is present only for a
-    // terminal run whose transition line carries a writer stamp, and absent (never fabricated) in
-    // every other case, including a pre-#745 journal and a terminal.json written before this field
-    // existed -- TerminalSentinelWriter never re-derives a sentinel once written.
+    // the journal's own writer stamps, never a file's mtime. spec/baton.md §3 "The terminal instant"
+    // is the record of what it means and of every case it is absent in.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null);

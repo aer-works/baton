@@ -113,8 +113,8 @@ public class TerminalInstantResolverTests
     }
 
     /// <summary>
-    /// The crash window (spec/baton.md §3): a journal whose terminal event was never written is a room
-    /// that has not ended. Nothing here synthesises an instant from the events that DID land.
+    /// The crash-window rule, stated in spec/baton.md §3 "The terminal instant" and pinned here:
+    /// nothing synthesises an instant from the events that DID land.
     /// </summary>
     [Fact]
     public void Resolve_JournalTruncatedBeforeItsTerminalEvent_InventsNothing()

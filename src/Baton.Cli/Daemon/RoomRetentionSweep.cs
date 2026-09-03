@@ -309,8 +309,8 @@ public sealed class RoomRetentionSweep : BackgroundService
             {
                 (warningSink ?? Console.Error).WriteLine(
                     $"RoomRetentionSweep: '{roomDirectoryPath}' is terminal but its journal predates writer " +
-                    "timestamps (#745), so the retention grace window is falling back to flow.jsonl's mtime " +
-                    "for this room. Reported once per room per daemon process.");
+                    $"timestamps (#745), so the retention grace window is falling back to " +
+                    $"{BatonPaths.FlowLogFileName}'s mtime for this room. Reported once per room per daemon process.");
             }
 
             terminalAtUtc = File.GetLastWriteTimeUtc(flowLogPath);

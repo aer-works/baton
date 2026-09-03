@@ -644,14 +644,11 @@ public sealed record FleetRoomStatusView(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ParentExecutionId = null,
     // #1157: the room-level WorkflowStatusView.TerminalAt, copied the same way Rejected/ResolvedBy
-    // above are -- never re-derived here, and never terminal.json's or flow.jsonl's mtime. A terminal
-    // room reports when its run ENDED; before this field the fleet reported no terminal instant at
-    // all, and a consumer wanting one had to stat a file. Omitted rather than back-filled from a
-    // mtime for the two legacy shapes spec/baton.md §3 names (a pre-#745 journal, and a terminal.json
-    // frozen before this field existed -- TerminalSentinelWriter never re-derives a written sentinel,
-    // #1522 review finding 4): fleet_status only displays, so absent is the honest answer and there is
-    // no destructive decision here that a proxy would be better than nothing for. The retention sweep,
-    // which does have such a decision, falls back explicitly instead (RoomRetentionSweep.PruneRoomAsync).
+    // above are -- never re-derived here. A terminal room reports when its run ENDED; before this
+    // field the fleet reported no terminal instant at all and a consumer wanting one had to stat a
+    // file. spec/baton.md §3 "The terminal instant" is the record of the absence rules, including why
+    // this surface omits the field on the legacy shapes rather than falling back to a mtime the way
+    // the retention sweep does.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null);

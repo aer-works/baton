@@ -2095,5 +2095,107 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Empty(deliberatelyOmitted.Except(source).OrderBy(n => n, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// #1157: a terminal room reports when its run ENDED, off the journal's own writer stamps — not
+    /// when anything last touched a file. This drives the projection path (no sentinel), where a room
+    /// whose journal was written hours ago but whose directory was created seconds ago is the clearest
+    /// separation of the two answers available.
+    /// </summary>
+    [Fact]
+    public async Task TerminalRoom_ReportsTheTerminalInstant_NotTheJournalsTouchTime()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ended-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-done"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(new WorkflowTemplateId("ended-wf"), 1, [stepDef]));
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var execId = new ExecutionId("exec-ended-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("ended-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+
+        var endedAt = new DateTime(2026, 8, 20, 9, 30, 0, DateTimeKind.Utc);
+        var logPath = Path.Combine(room, "flow.jsonl");
+        await WriteStampedJournalAsync(
+            logPath,
+            (new FlowEvent.ExecutionRequestAccepted(req), endedAt.AddMinutes(-10)),
+            (new FlowEvent.ExecutionSucceeded(execId), endedAt));
+
+        // The control that makes this discriminate: the file itself was written just now, so anything
+        // reading a touch time would report today rather than the recorded ending.
+        Assert.True(DateTime.UtcNow - File.GetLastWriteTimeUtc(logPath) < TimeSpan.FromMinutes(5));
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var ended = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", ended.State);
+        Assert.Equal(endedAt, DateTime.Parse(ended.TerminalAt!, null, System.Globalization.DateTimeStyles.RoundtripKind));
+    }
+
+    /// <summary>
+    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above — spec/baton.md §3
+    /// "The terminal instant" is the rule this pins: the fleet omits the field rather than
+    /// back-filling it from a file's mtime.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSentinelWrittenBeforeTheField_OmitsTerminalAt_RatherThanUsingItsMtime()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var legacyRoom = Path.Combine(defaultRoomsDir, "legacy-sentinel-room");
+        var currentRoom = Path.Combine(defaultRoomsDir, "current-sentinel-room");
+        Directory.CreateDirectory(legacyRoom);
+        Directory.CreateDirectory(currentRoom);
+
+        await TerminalSentinelWriter.WriteAsync(
+            legacyRoom,
+            new WorkflowStatusView("Succeeded", [], [], null),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            currentRoom,
+            new WorkflowStatusView("Succeeded", [], [], null, TerminalAt: "2026-08-20T09:30:00.0000000Z"),
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+
+        Assert.NotNull(rooms);
+        var legacy = rooms!.First(r => r.Name == "legacy-sentinel-room");
+        Assert.Null(legacy.TerminalAt);
+        // Wire-level: omitted, never emitted null -- the omission rests on JsonIgnoreCondition and
+        // only a serialized assertion catches that attribute breaking.
+        Assert.DoesNotContain("\"terminalAt\"", JsonSerializer.Serialize(legacy));
+
+        // The arm that proves the assertion above is about the ABSENT field and not about the fast
+        // path never carrying one.
+        var current = rooms.First(r => r.Name == "current-sentinel-room");
+        Assert.Equal("2026-08-20T09:30:00.0000000Z", current.TerminalAt);
+    }
+
+    /// <summary>
+    /// Writes journal lines carrying chosen writer stamps — <see cref="FlowEventLogWriter"/> stamps
+    /// <c>DateTime.UtcNow</c>, so no test built through it can tell a run's ending apart from the
+    /// moment its fixture was written. Same wire contract, same one-complete-line-per-entry shape.
+    /// </summary>
+    private static async Task WriteStampedJournalAsync(
+        string logPath, params (FlowEvent Event, DateTime Stamp)[] entries)
+    {
+        var text = string.Concat(entries.Select(entry =>
+            JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(entry.Event, entry.Stamp),
+                typeof(LogEntry),
+                FlowEventLogJson.Options) + "\n"));
+
+        await File.WriteAllTextAsync(logPath, text, TestContext.Current.CancellationToken);
+    }
+
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 }
