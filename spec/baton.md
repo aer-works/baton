@@ -2689,10 +2689,8 @@ for `room-registry.jsonl`. That mechanism was extracted to `MutexGuardedFileLock
 so an older and a newer `baton` build still contend on the one lock. `QuotaLedgerStore.BuildEntries`
 harvests engine-side, at settle — `Program.cs`'s own terminal-sentinel write site — from the terminal
 usage `ExecutionUsageProjector` already has in hand for every execution with a recorded start and exit:
-one ledger line per execution — `AppendAsync` skips an execution id the file already holds, since
-`Program.cs`'s settle-time call site fires (and re-derives every execution in the room) on every
-command that carries a room to Terminal, not only the first, including a re-run, `supply`, and the
-`resolve --reject` → re-Terminal path `Program.cs`'s own remarks name. `Adapter`/`Model` are read off
+one ledger line per execution — `AppendAsync`'s own doc comment states why it skips an execution id
+the file already holds, and against what repeated-settle shapes. `Adapter`/`Model` are read off
 the frozen `ExecutionRequest` fields (#1567), with the identical `StepRebound` override
 `ExecutionUsageProjector` applies for the crash-recovery resubmit divergence (#1583) — never
 re-derived from *today's* `bindings.json` at read time, which is the read-time re-attribution #802's

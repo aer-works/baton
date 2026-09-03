@@ -260,9 +260,8 @@ public sealed class QuotaLedgerStoreTests
     [Fact]
     public async Task RebuildAsync_a_fresh_entry_overwrites_the_ledgers_existing_entry_for_the_same_execution()
     {
-        // The documented merge rule (QuotaLedgerStore.RebuildAsync's own remarks): a freshly-walked
-        // entry for an execution the ledger already had OVERWRITES it, not the reverse. Pinned
-        // directly, not just inferred from the "identical totals across two runs" test above.
+        // RebuildAsync's own doc comment states the merge direction this pins directly, not just
+        // inferred from the "identical totals across two runs" test above.
         var path = TempLedgerPath();
         try
         {
@@ -285,11 +284,8 @@ public sealed class QuotaLedgerStoreTests
     [Fact]
     public async Task AppendAsync_never_duplicates_a_line_for_an_execution_id_already_in_the_ledger()
     {
-        // #1570 review (advisor pass): Program.cs's settle-time call site fires on every command that
-        // carries a room to Terminal -- a re-run, `supply`, or `resolve --reject` re-reaching Terminal
-        // all re-derive the WHOLE room's executions via BuildEntries, not just what is new. Without
-        // this dedupe, a room settling twice would double the line for an execution that never
-        // changed.
+        // AppendAsync's own doc comment states why this dedupe exists (a room can settle more than
+        // once). Pinned directly rather than only through the end-to-end suite.
         var path = TempLedgerPath();
         try
         {
