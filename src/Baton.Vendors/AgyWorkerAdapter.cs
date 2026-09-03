@@ -701,7 +701,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             // which dispatches that covers and what it keeps unchanged.
             CountHookVerdicts: requiresHookAsSoleNarrowing
                 ? outputDirectory => AgyHookVerdictLedger.CountVerdicts(Path.Combine(outputDirectory, VerdictLedgerFileName))
-                : null);
+                : null,
+            // #1741: see ExecutionRequest.HookVerdictLedgerFileName's own doc for why this travels
+            // alongside CountHookVerdicts above.
+            HookVerdictLedgerFileName: requiresHookAsSoleNarrowing ? VerdictLedgerFileName : null);
     }
 
     /// <summary>

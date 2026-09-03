@@ -66,6 +66,27 @@ namespace Baton.Domain;
 /// the new vendor a model name it may not recognize (#1082), so a real execution can run, and burn
 /// real usage, on the new vendor's own default model while this field is still null.
 /// </param>
+/// <param name="HookCanaryArmed">
+/// #1741: whether this dispatch's own resolved <see cref="Mutation.WorkerBinding.Process.Target"/>
+/// carried a live <c>CountHookVerdicts</c> delegate at accept time — the same
+/// <c>CoreDispatchTarget.CountHookVerdicts != null</c> fact <c>AgyWorkerAdapter.Resolve</c> already
+/// decides (spec/baton.md §9's sole-hook-narrowing shape). Recorded so the crash-recovery replay
+/// arms the first-verdict canary from THIS fact rather than re-resolving today's <c>bindings.json</c>,
+/// which can legitimately refuse (the probe finds the hook dead now, or the entry moved off agy since
+/// the crash) without that refusal meaning the execution itself never ran under sole-hook narrowing.
+/// <see langword="true"/> arms the canary; <see langword="false"/> means this dispatch resolved and was
+/// NOT armed (a claude binding, or a fully-granted agy one); <see langword="null"/> means a line
+/// written before this field existed, where the replay keeps its pre-#1741 behaviour (spec/baton.md
+/// §9 has the full rule).
+/// </param>
+/// <param name="HookVerdictLedgerFileName">
+/// The file name (not a path) the hook's verdict ledger was written under inside this execution's own
+/// output directory, recorded alongside <paramref name="HookCanaryArmed"/> so the replay can count
+/// verdicts directly from disk without resolving today's binding to obtain the same delegate. Non-null
+/// only when <paramref name="HookCanaryArmed"/> is <see langword="true"/>. Adapter Isolation
+/// (CLAUDE.md Architecture Rule 2): this is an opaque string Flow never interprets or defaults, only
+/// carries — the vendor adapter is what names it.
+/// </param>
 public sealed record ExecutionRequest(
     ExecutionId ExecutionId,
     WorkflowId WorkflowId,
@@ -80,4 +101,6 @@ public sealed record ExecutionRequest(
     ExecutionId? LinkedFromExecutionId = null,
     string? SessionId = null,
     string? Adapter = null,
-    string? Model = null);
+    string? Model = null,
+    bool? HookCanaryArmed = null,
+    string? HookVerdictLedgerFileName = null);

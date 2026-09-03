@@ -2016,6 +2016,9 @@ public class AgyWorkerAdapterTests
 
         Assert.Equal(1, probe.CallCount);
         Assert.NotNull(target.CountHookVerdicts);
+        // #1741: the file name travels alongside the delegate so a caller can journal the arming
+        // fact durably (ExecutionRequest.HookVerdictLedgerFileName) -- same gate as CountHookVerdicts.
+        Assert.Equal(AgyWorkerAdapter.VerdictLedgerFileName, target.HookVerdictLedgerFileName);
     }
 
     [Fact]

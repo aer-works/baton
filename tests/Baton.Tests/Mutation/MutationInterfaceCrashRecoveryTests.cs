@@ -847,6 +847,111 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_arms_the_replay_canary_from_the_recorded_request_when_todays_binding_refuses_to_resolve()
+    {
+        // #1741 acceptance test: the RECORDED HookCanaryArmed fact -- not today's binding
+        // resolution -- decides whether the crash-recovery replay's first-verdict canary can fire.
+        // The binding here REFUSES to resolve on restart (RefusingBindings, the #710 shape
+        // ExecutionRequest.HookCanaryArmed's own doc names), which before this fix un-armed the
+        // canary entirely and settled Succeeded (spec/baton.md §9's former residual). The recorded
+        // request already says this execution ran under sole-hook narrowing, so the replay still
+        // counts and still settles Indeterminate.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: [], worker: "unresolvable-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var workflowId = new WorkflowId("wf");
+            var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+            // The empty ledger: the hook's own verdict channel recorded nothing for this execution.
+            File.WriteAllText(Path.Combine(outputDirectory, "verdicts.ndjson"), string.Empty);
+
+            var request = new ExecutionRequest(
+                executionId, workflowId, A, "unresolvable-worker", Inputs: [], Outputs: [], Timeout,
+                ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                Adapter: "agy",
+                HookCanaryArmed: true,
+                HookVerdictLedgerFileName: "verdicts.ndjson");
+
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, new RefusingBindings(), artifactsRoot, reader, writer,
+                new StubCoreDispatcher(), cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts", stepState.LatestFailureReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_settles_succeeded_when_the_recorded_canary_is_armed_and_the_ledger_is_healthy()
+    {
+        // Companion to the arm-from-the-recorded-request test above: same recorded arming fact,
+        // same refusing binding (no dependency on today's binding resolving either way), but a
+        // HEALTHY ledger -- at least one recorded verdict -- so the canary does not fire and the
+        // naturally-exited, contract-satisfied run settles Succeeded exactly as it would live.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: [], worker: "unresolvable-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var workflowId = new WorkflowId("wf");
+            var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+            File.WriteAllText(Path.Combine(outputDirectory, "verdicts.ndjson"), "{\"decision\":\"allow\"}\n");
+
+            var request = new ExecutionRequest(
+                executionId, workflowId, A, "unresolvable-worker", Inputs: [], Outputs: [], Timeout,
+                ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                Adapter: "agy",
+                HookCanaryArmed: true,
+                HookVerdictLedgerFileName: "verdicts.ndjson");
+
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, new RefusingBindings(), artifactsRoot, reader, writer,
+                new StubCoreDispatcher(), cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single(s => s.StepId == A).Status);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events, e => e is FlowEvent.ExecutionSucceeded es && es.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static async Task<ExecutionId> AcceptRequestAsync(
         FlowEventLogWriter writer,
         WorkflowId workflowId,

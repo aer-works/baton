@@ -71,7 +71,12 @@ public sealed record CoreDispatchTarget(
     // hook is the sole thing narrowing the grant (AgyWorkerAdapter.RequiresHookAsSoleNarrowing) —
     // null everywhere else (claude, or an agy grant the hook does not solely narrow) keeps the
     // canary's parameters null and every other dispatch's classification unchanged.
-    Func<string, int>? CountHookVerdicts = null);
+    Func<string, int>? CountHookVerdicts = null,
+    // #1741: the file name (not a path) CountHookVerdicts above reads, alongside it so a caller can
+    // record the arming fact durably (ExecutionRequest.HookVerdictLedgerFileName) rather than only
+    // holding a delegate that cannot survive a journal round-trip. Non-null exactly when
+    // CountHookVerdicts is non-null -- same gate, same reason.
+    string? HookVerdictLedgerFileName = null);
 
 /// <summary>
 /// A launch-configuration file an adapter needs written into place before its worker spawns, where the
