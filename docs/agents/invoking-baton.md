@@ -462,6 +462,13 @@ value (the source repository), never the auto-provisioned worktree path, which i
 never has to (and never could) trust a fresh directory `dispatch` only allocates after this refusal
 would already have fired.
 
+**Several manually-created worktrees of the same repository each need their own `baton trust`.** The
+ceiling key is the literal `--workspace` directory, canonicalised (absolute, trailing separator
+trimmed, case-insensitive) — there is no git-aware dereferencing to a shared `git-common-dir` or
+`origin`, so trusting one checkout does not trust a sibling one dispatch never auto-provisioned.
+That dereferencing was considered and not done: the operator's explicit act should name the path
+they actually typed, not a repository identity `dispatch` infers on their behalf.
+
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
 the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or
 `WorkerBindingResolver` refuses it at bind time. `dispatch` now provisions that worktree itself,
