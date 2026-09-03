@@ -14,8 +14,7 @@ namespace Baton.Cli.Tests;
 /// asserted in isolation (that half is <see cref="RedispatchBindingTests"/>). Mirrors
 /// <see cref="DispatchCommandEndToEndTests"/>'s catalog-pinning and fake-adapter setup.
 /// </summary>
-// #1524: stays enrolled for its Console.Error mutation, not env vars anymore -- see
-// SerializedEnvironmentCollection's own remarks.
+// #1524: kept enrolled solely for Console.Error; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RedispatchCommandEndToEndTests : IDisposable
 {
@@ -30,9 +29,7 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     private readonly IsolatedBatonHome _batonHome = new();
     private readonly IDisposable _catalogScope;
 
-    // Pin the shipped catalogs via an isolated BatonEnvironmentSnapshot.BeginScope (#1524), built from
-    // BatonEnvironmentSnapshot.Current so it layers on top of _batonHome's own HomeOverride scope
-    // rather than clobbering it. Mirrors DispatchCommandEndToEndTests' own ctor.
+    // Catalog pinning mirrors DispatchCommandEndToEndTests' own #1524 ctor.
     public RedispatchCommandEndToEndTests()
     {
         _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with

@@ -10,9 +10,8 @@ using Xunit;
 namespace Baton.Cli.Tests.Daemon;
 
 /// <remarks>
-/// #1524: every env-override test below isolates its value through an explicit
-/// <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not a process mutation, so this class needs no
-/// <see cref="SerializedEnvironmentCollection"/> enrollment and runs parallel-safe.
+/// #1524: same <see cref="BatonEnvironmentSnapshot.BeginScope"/> isolation as
+/// <c>Baton.Vendors.Tests.WorkerRoleCatalogTests</c>.
 /// </remarks>
 public class RoomRetentionSweepTests
 {

@@ -10,11 +10,7 @@ namespace Baton.Vendors.Tests;
 /// take precedence, and that load-time validation catches empty catalogs, duplicate ids, zero-phase
 /// templates, unknown role references, duplicate phase names, and invalid input declarations.
 /// </summary>
-/// <remarks>
-/// #1524: every override below is an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not
-/// a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment and
-/// runs parallel-safe.
-/// </remarks>
+/// <remarks>#1524: same BeginScope isolation as <see cref="WorkerRoleCatalogTests"/>.</remarks>
 public class WorkflowTemplateCatalogTests
 {
     private sealed class TempCatalog : IDisposable

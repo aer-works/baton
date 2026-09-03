@@ -10,11 +10,7 @@ namespace Baton.Vendors.Tests;
 /// as a failing build here, not as a runtime error a user hits. The runtime refusal is the belt; this is
 /// the braces.
 /// </summary>
-/// <remarks>
-/// #1524: pins the shipped catalogs via an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>,
-/// not a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment
-/// and runs parallel-safe.
-/// </remarks>
+/// <remarks>#1524: same BeginScope isolation as <see cref="WorkerRoleCatalogTests"/>.</remarks>
 public sealed class CatalogNamespaceTests : IDisposable
 {
     // Pin the shipped catalogs so this reads what ships, not an operator's local override on this

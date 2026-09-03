@@ -18,17 +18,14 @@ namespace Baton.Cli.Tests;
 /// <c>WithheldWritesReachTheOutbox</c> (false) and flips the grant to <c>AuditedNotEnforced</c>, while
 /// the process actually dispatched is still this file's fake — no live vendor needed.
 /// </summary>
-// #1524: stays enrolled for its Console.Out mutation, not env vars anymore -- see
-// SerializedEnvironmentCollection's own remarks.
+// #1524: enrolled for Console.Out only now, per SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 {
     private readonly IsolatedBatonHome _batonHome = new();
     private readonly IDisposable _catalogScope;
 
-    // Pin the shipped catalog via an isolated BatonEnvironmentSnapshot.BeginScope (#1524), built from
-    // BatonEnvironmentSnapshot.Current so it layers on top of _batonHome's own HomeOverride scope
-    // rather than clobbering it.
+    // Catalog pinning: same #1524 BeginScope pattern as DispatchCommandEndToEndTests' own ctor.
     public DispatchAuditedWorktreeAcceptanceTests()
     {
         _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with

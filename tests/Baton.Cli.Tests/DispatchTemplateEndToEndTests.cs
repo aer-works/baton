@@ -16,18 +16,15 @@ namespace Baton.Cli.Tests;
 /// binding → capture HEAD → adapter receives it) is proven without a live LLM and without git having to
 /// produce a real diff. The one namespace rule (0047 §5) and the role-vs-template spec split are here too.
 /// </summary>
-// #1524: stays enrolled for its Console.Out mutation, not env vars anymore -- see
-// SerializedEnvironmentCollection's own remarks.
+// #1524: kept enrolled solely for Console.Out; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchTemplateEndToEndTests : IDisposable
 {
     private readonly IsolatedBatonHome _batonHome = new();
     private readonly IDisposable _catalogScope;
 
-    // Pin all three shipped catalogs -- same hazard, same reason as DispatchCommandEndToEndTests'
-    // own ctor comment: an isolated BatonEnvironmentSnapshot.BeginScope (#1524) built from
-    // BatonEnvironmentSnapshot.Current so it layers on top of _batonHome's own HomeOverride scope
-    // rather than clobbering it.
+    // Pins all three shipped catalogs, same #1524 BeginScope pattern as
+    // DispatchCommandEndToEndTests' own ctor.
     public DispatchTemplateEndToEndTests()
     {
         _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
