@@ -16,15 +16,14 @@ namespace Baton.Cli;
 /// The task prompt given inline via <c>--spec-text</c> (#1518) — a scout question that does not
 /// warrant a brief file. Mutually exclusive with <paramref name="SpecFilePath"/> and
 /// <paramref name="SpecFromStdin"/>; <see cref="DispatchOptionsParser"/> enforces at most one of the
-/// three, and <see cref="DispatchCommand"/> enforces that at least one is present for a role. Flows
-/// into the exact same <c>spec</c> string parameter <see cref="Baton.Vendors.RoleDispatch.Materialize"/>
-/// already takes, so the room record (lint, <c>--attach</c>, the built prompt) is identical in shape to
-/// a file-sourced dispatch — there is no separate on-disk spec artifact for either source to land in.
+/// three, and <see cref="DispatchCommand"/> enforces that at least one is present for a role.
+/// spec/baton.md's dispatch entry has the full rationale for why all three sources produce an
+/// identical room record (record-once, not restated here).
 /// </param>
 /// <param name="SpecFromStdin">
 /// True when <c>--spec -</c> (#1518) was passed — read the task prompt from stdin instead of a file.
 /// Mutually exclusive with <paramref name="SpecFilePath"/> and <paramref name="SpecText"/>; see
-/// <paramref name="SpecText"/>'s remarks for how the resulting string is handled identically downstream.
+/// <paramref name="SpecText"/>'s remarks.
 /// </param>
 /// <param name="RoomDirectoryPath">
 /// Where this dispatch's durable state lives. Defaults to a fresh, uniquely-named directory per

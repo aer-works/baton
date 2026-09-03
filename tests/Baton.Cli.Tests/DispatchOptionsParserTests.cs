@@ -521,11 +521,11 @@ public class DispatchOptionsParserTests
     }
 
     /// <summary>
-    /// #1518: exactly one of the three spec sources — naming two is very likely a mistake with no sane
-    /// resolution (which one did the operator mean?), so it is refused outright rather than picking one
-    /// silently. Whether at least one is required at all is a catalog question the parser does not
-    /// answer (a template dispatch takes none) — <see cref="A_name_without_a_spec_parses_because_a_template_takes_none"/>
-    /// already pins that this parser stays permissive on the "none" side.
+    /// #1518: <see cref="DispatchOptionsParser"/>'s own remarks above the exclusivity check have the
+    /// rationale (record-once, not restated here). Whether at least one source is required at all is a
+    /// catalog question the parser does not answer (a template dispatch takes none) —
+    /// <see cref="A_name_without_a_spec_parses_because_a_template_takes_none"/> already pins that this
+    /// parser stays permissive on the "none" side.
     /// </summary>
     [Fact]
     public void A_spec_file_and_spec_text_together_is_a_typed_argument_error()

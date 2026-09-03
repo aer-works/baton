@@ -495,14 +495,10 @@ public static class DispatchCommand
                 $"baton dispatch {options.Name} --spec <spec-file>");
         }
 
-        // #1518: three sources for the one task-prompt string RoleSpecMaterializer.Materialize takes —
-        // DispatchOptionsParser already refused any combination of two, so exactly one of these three is
-        // non-default here. Resolved BEFORE the role lookup/--output validation below, preserving the
-        // pre-#1518 precedence (a missing spec file was always reported before a --output collision) —
-        // a malformed spec source is what makes the invocation invalid in the first place, so it stays
-        // the first thing reported. Once resolved to a string, every downstream step (lint, --attach,
-        // the built prompt, the room's bindings.json record) is the exact same code path regardless of
-        // source — there is no separate on-disk artifact a file spec lands in for text/stdin to match.
+        // #1518: three sources for the one spec string -- spec/baton.md's dispatch entry has the full
+        // rationale (record-once, not restated here). Resolved BEFORE the role lookup/--output
+        // validation below so a missing/blank spec source is still reported ahead of a --output
+        // collision, the same precedence dispatch had before this issue.
         var spec = await ResolveSpecAsync(options, cancellationToken).ConfigureAwait(false);
 
         var role = WorkerRoleCatalog.For(options.Name);

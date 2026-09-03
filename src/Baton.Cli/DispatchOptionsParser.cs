@@ -4,12 +4,11 @@ namespace Baton.Cli;
 
 /// <summary>
 /// Parses <c>baton dispatch</c>'s arguments — see <see cref="Usage"/> for the full, authoritative flag
-/// list (not restated here, record-once). A role's task prompt has three mutually exclusive sources
-/// (#1518): <c>--spec &lt;spec-file&gt;</c>, <c>--spec -</c> (stdin), or <c>--spec-text &lt;text&gt;</c>
-/// — none is required here because whether one is required at all depends on whether
-/// <c>&lt;name&gt;</c> resolves to a role (needs one) or a workflow template (rejects all three) — a
-/// catalog question <see cref="DispatchCommand"/> answers, not the parser. Every malformed invocation
-/// is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), never a bare
+/// list (not restated here, record-once), and spec/baton.md's dispatch entry for why the spec has
+/// three sources (#1518). None is required here because whether one is required at all depends on
+/// whether <c>&lt;name&gt;</c> resolves to a role (needs one) or a workflow template (rejects all
+/// three) — a catalog question <see cref="DispatchCommand"/> answers, not the parser. Every malformed
+/// invocation is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), never a bare
 /// <see cref="InvalidOperationException"/>.
 /// </summary>
 public static class DispatchOptionsParser
