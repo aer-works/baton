@@ -196,6 +196,37 @@ try {
         throw "Assertion failed: baton.cmd still ran the OLD target after the pointer flip. Got:`n$out5"
     }
 
+    # 6. Neither task-registering script calls New-ScheduledTaskSettingsSet with a parameter name
+    # that cmdlet doesn't actually have (#1770: -DisallowStartIfOnBatteries/-StopIfGoingOnBatteries
+    # don't exist on it and blew up the register call with NamedParameterNotFound before either
+    # script reached Register-ScheduledTask). Both scripts carried the same bug, so both are checked.
+    Write-Host "Test 6: task-registering scripts only pass real New-ScheduledTaskSettingsSet parameters..."
+    $realParams = (Get-Command New-ScheduledTaskSettingsSet).Parameters.Keys
+    $taskScripts = @(
+        [System.IO.Path]::Combine($repoRoot, "tools", "tool-refresh", "register-daemon-task.ps1"),
+        [System.IO.Path]::Combine($repoRoot, "tools", "fleet-glass", "deploy.ps1")
+    )
+    foreach ($registerScript in $taskScripts) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($registerScript, [ref]$null, [ref]$null)
+        $calls = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -eq "New-ScheduledTaskSettingsSet"
+        }, $true)
+        if ($calls.Count -eq 0) {
+            throw "Assertion failed: no New-ScheduledTaskSettingsSet call found in $registerScript"
+        }
+        foreach ($call in $calls) {
+            $usedParams = $call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } | ForEach-Object { $_.ParameterName }
+            foreach ($p in $usedParams) {
+                $match = $realParams | Where-Object { $_ -like "$p*" }
+                if (-not $match) {
+                    throw "Assertion failed: New-ScheduledTaskSettingsSet call in $registerScript passes unknown parameter '-$p'"
+                }
+            }
+        }
+    }
+
     Write-Host "All launcher tests PASSED!"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

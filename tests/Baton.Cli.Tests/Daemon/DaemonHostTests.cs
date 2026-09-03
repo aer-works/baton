@@ -159,4 +159,42 @@ public class DaemonHostTests
             }
         }
     }
+
+    /// <summary>#1488: <see cref="WatchSweep"/> registered the same way as
+    /// <see cref="RoomRetentionSweep"/> above — on the same daemon host, not a second process.</summary>
+    [Fact]
+    public async Task RunDaemonAsync_RegistersWatchSweepAsAHostedServiceAndStartsIt()
+    {
+        var tempHome = CreateTempHome();
+        using var scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with { HomeOverride = tempHome });
+        try
+        {
+            List<IHostedService>? hostedServices = null;
+            var applicationStarted = false;
+
+            await DaemonHost.RunDaemonAsync(
+                ["--no-mutex"],
+                host =>
+                {
+                    hostedServices = [.. host.Services.GetServices<IHostedService>()];
+
+                    var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+                    lifetime.ApplicationStarted.Register(() =>
+                    {
+                        applicationStarted = true;
+                        lifetime.StopApplication();
+                    });
+                }).WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
+
+            Assert.Contains(hostedServices!, s => s is WatchSweep);
+            Assert.True(applicationStarted);
+        }
+        finally
+        {
+            if (Directory.Exists(tempHome))
+            {
+                Directory.Delete(tempHome, true);
+            }
+        }
+    }
 }

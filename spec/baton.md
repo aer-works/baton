@@ -246,6 +246,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
 | `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `CancelOptionsParser.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json] [--repo <checkout-dir>]` | `StatusOptionsParser.cs` |
+| `watch` | `baton watch <room-dir> --notify <command\|url>` \| `baton watch --list` \| `baton watch --clear-fired` | `WatchOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
 | `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
@@ -254,6 +255,67 @@ through `RoleDispatch.Materialize` against the real role catalog.
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
+
+**`watch` (#1488): one-shot, block-free registration, never a poll loop.** `baton status --follow`
+(above) blocks its own process until the room reaches Terminal; `watch` is the opposite shape a
+harness needs to end its turn immediately after dispatch — it writes one file under
+`{BatonPaths.Watches}` (`{BATON_HOME}/watches/<watch-id>.json`, `WatchStore.cs`) and returns. Terminal
+detection is the identical predicate `FleetStatusTool`, `rooms prune --terminal`, and `room delete`
+already read a room's terminal state through — `TerminalSentinelWriter.TryReadAsync(room-dir)` returns
+non-null — never a second definition. An already-terminal room at registration fires immediately, in
+the registering process, before it returns (no lost wake-up); a room that reaches Terminal afterward
+fires from `WatchSweep`, a `baton daemon`-hosted `BackgroundService` (§7) polling every pending watch
+on a 15-second cadence — the same host `RoomRetentionSweep` already runs on, not a second long-running
+process. **Firing is exactly-once-or-lost, never double.** `WatchStore.TryClaimAsync` marks a watch's
+`firedAt` under a per-file named `Mutex` every access to that file takes (mirroring
+`RoomRegistryStore`'s own `RunUnderLock`, §8), atomically checking-and-setting in one critical section
+— so a registration's own immediate check and a concurrent `WatchSweep` iteration can never both
+observe an unclaimed watch and both notify: exactly one claims, the other is a no-op. A process that
+crashes after a successful claim but before the notify send completes loses that notification rather
+than risking a duplicate — nothing re-tries a claimed watch. `--notify <target>` is either an absolute
+`http`/`https` URL (POSTed the notification as its JSON body) or a command line, spawned once with the
+identical JSON on stdin and in the `BATON_WATCH_EVENT` environment variable — never interpolated into
+the command string itself. The JSON carries `{room, state, verdict, outputs, terminalAt}`: `verdict` is
+the parsed content of a file literally named `verdict.json` among the room's declared outputs, when one
+exists (omitted otherwise — most workflows have none). `baton watch --list` prints every registered
+watch, pending and fired; `baton watch --clear-fired` deletes the fired ones. **Depends on `baton
+daemon` running for any transition after registration** — an already-terminal room at registration
+time is the only case this feature guarantees without one; `baton watch`'s own registration warns on
+stderr when no daemon mutex (`Global\BatonDaemonMutex_{user}`) is found for the current user, though a
+daemon started with `--no-mutex` is invisible to that check and reads as running regardless.
+
+**The stdin write is bounded by the same 30 s timeout as the command's own exit** (fix round,
+`WatchNotifier.cs`): the timeout is armed *before* the write starts and the write runs under it, so a
+command that never reads stdin — the documented `curl -X POST …` shape above is exactly this — cannot
+wedge the sweep once the payload exceeds the OS pipe buffer (~4 KB on Windows). A write that has not
+drained by the deadline gets the process tree killed and the failure logged, since a command that never
+consumed the first byte was never going to finish reading the rest; a command that exits after its own
+work is left to keep running past the timeout unkilled, as before. This is a deliberate decision *not*
+to gate the stdin write on payload size or fall back to a temp file: `BATON_WATCH_EVENT` already
+carries the identical payload with no blocking risk (set at spawn time, not written to a stream), so a
+command that only wants the common case can read from there and skip stdin entirely — the timeout is
+what makes attempting the stdin write unconditionally safe rather than something that needs a size
+threshold to avoid.
+
+**The watches directory is reaped, not just fired-in-place.** `WatchSweep`'s sweep pass also deletes a
+fired watch whose `firedAt` is older than a retention window (default 24 h,
+`BATON_WATCH_REAPER_RETENTION_HOURS`-configurable, the same env-override shape `RoomRetentionSweep`'s
+own intervals use) and any watch — fired or still pending — whose room directory no longer exists,
+logged once at the moment of removal. Without this the directory only ever grows: `baton watch
+--clear-fired` remains the manual, immediate path, but nothing previously reclaimed a watch an operator
+forgot to clear, and `WatchStore.ListAsync`'s per-sweep scan is O(n) in whatever accumulated there.
+
+**Trust model.** A watch file is an unauthenticated instruction to run its `--notify` target under the
+daemon's own identity, at an arbitrary later time, outside any lane's Job Object containment and after
+the lane that registered it is gone. That is acceptable only because nothing narrower can reach
+`{BatonPaths.Watches}` today: a write-granted worker's `Edit`/`Write`/`NotebookEdit` calls are bounded
+to its workspace or outbox by the `PreToolUse` hook (`HookCheckCommand.cs`,
+`AgyHookCheckCommand.cs`, `OutboxPath.cs`), so only a role already holding an unscoped shell grant
+(`run_shell_commands: true` with no pattern list, e.g. `implement` in `WorkerRoles.json`) can write a
+watch file directly — and that grant already defeats every withheld category (#529,
+`PermissionGrant.cs`'s `CategoriesDefeatedByTheShell`), so a watch adds deferred, post-lane execution
+rather than new privilege. If a narrower write path into `~/.baton` is ever added, or `OutboxPath`'s
+containment loosened, this paragraph is what it would be breaking.
 
 **`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
 exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
@@ -2224,6 +2286,35 @@ definition has no exit event yet and needs every line scanned, not just the last
   arithmetic-gate arm proves the worst-day write total is identical whether or not any Running room
   carries a `stdoutTail`.
 
+**The fleet projection file (#1557 PR-A) carries four more fields the mailbox payload above does
+not — a local file has no KV-write-budget or payload-size ceiling to weigh against them, so this is
+new surface, not a relocation of anything above.** `BatonPaths.FleetProjectionFile`
+(`{Root}/fleet/projection.json`, §7) wraps the same per-room shape this section already describes —
+`fleet_status`'s own fields, plus `live`/`pruned` gated exactly as above — under one more top-level
+`derived_at` (the daemon's own wall-clock at successful write completion; unrelated to the
+mailbox-payload `derived_at` above, which is the pusher's cycle time). Per room, alongside `live`,
+whenever that room's steps carry a Running execution (present even when #1513 has downgraded the
+room's own displayed `state` to `"Stalled"` — these three exist specifically to diagnose that case,
+so gating them on `state == "Running"` the way `live` itself is gated would hide them from exactly
+the room they are for):
+- **`processAlive`**: `"alive"` / `"dead"` / `"unknown"`, from `EngineLivenessProbe.Probe` against the
+  Running step's own recorded `FlowEvent.ExecutionRequestAccepted.EnginePid`/`.EngineStartTime` — the
+  same probe and identity source `StatusCommand`/`MutationInterface` already read, never a second
+  liveness mechanism.
+- **`stdout_last_write_ago_sec`**: seconds since the Running execution's `.stdout.log` last-write
+  time — a byproduct of the same incremental read `live.toolCalls`/`live.billedTokens` are computed
+  from, not a second file open.
+- **`elapsed`**: seconds since the Running step's own `timestamp` (already emitted, this schema
+  above) — paired arithmetic this section's `timeoutMs` remarks already noted a renderer could do,
+  now actually done. `timeoutMs` itself is not duplicated here; it already rides the base shape.
+
+A fifth field the operator's own ask named — pending-outputs status — has no clean source:
+`StepOutputResolver` resolves a Succeeded (or Paused-then-Succeeded) step's already-produced output
+paths, not a verdict for a step that has not reached that state yet, so PR-A omits it rather than
+inventing a projection nothing in `src/` computes today. `stdoutTail` is also absent from this file
+in PR-A — deferred to a later PR that ports pusher.py's prose-rendering block, the single largest,
+least-reusable piece of that file's own live-telemetry logic.
+
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
 rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
@@ -2561,18 +2652,32 @@ and the **quota-runway ledger** (below). Two more live responsibilities need a s
 than silently dropping out with the rest of the deleted daemon surface. All of the above assumes
 `baton daemon` is actually running persistently; it is kept running by the `baton-daemon` scheduled
 task (`tools/tool-refresh/register-daemon-task.ps1`, #1557), cycled onto each newly refreshed tool
-head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`.
+head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`. That script
+registers unelevated, so its only trigger is a logon trigger scoped to the registering user; a boot
+trigger is not registrable by a standard user and is not used (#1770).
 
 - **`RoomRetentionSweep`** (`Program.cs`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
   them (`src/Baton/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
+- **`WatchSweep`** (`Program.cs`, a hosted service, #1488) — fires pending `baton watch`
+  registrations once their room reaches Terminal; the full contract (exactly-once claim, notify
+  shapes, the daemon dependency) is §2's, under `watch`, not restated here.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Baton.Vendors/DaemonSettingsStore.cs`,
   reading/writing `BatonPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
 - **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
+- **The fleet projection file (#1557 PR-A)** — `FleetProjectionWriter` (`src/Baton.Cli/Daemon/`, a
+  hosted service registered beside `RoomRetentionSweep`) rewrites `BatonPaths.FleetProjectionFile`
+  (`{Root}/fleet/projection.json`) atomically roughly every 30s (env-var-configurable, clamped, same
+  pattern as `RoomRetentionSweep`'s own interval), calling `FleetStatusTool`'s room-processing logic
+  in-process and adding the §6 `live`/`pruned` fields plus `processAlive`/`stdout_last_write_ago_sec`/
+  `elapsed` (§6 schema). A fourth kept responsibility under the same outbound-only ceiling the rest of
+  this section states: the daemon only ever writes this file, never serves it over a listener. No
+  pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
+  own derivation.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,
 `/api/ws/progress`), sidecar/Tailscale supervision, a desktop-owner-only auth tier, template-picker

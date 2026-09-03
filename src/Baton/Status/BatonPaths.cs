@@ -178,6 +178,21 @@ public static class BatonPaths
     public const string RoomRegistryFileName = "room-registry.jsonl";
 
     /// <summary>
+    /// <c>{Root}/fleet/projection.json</c> — the daemon-written fleet projection file (#1557,
+    /// spec/baton.md §7's fourth kept responsibility): the same <c>fleet_status</c> room array
+    /// (spec/baton.md §6) plus per-room <c>live</c>/<c>pruned</c> and the top-level <c>derived_at</c>,
+    /// rewritten atomically roughly every 30s so a local reader (a janitor sweep, the pusher once
+    /// #1557 PR-B lands) never has to re-derive it by scanning every room itself.
+    /// </summary>
+    public static string FleetProjectionFile => Path.Combine(Root, FleetDirectoryName, FleetProjectionFileName);
+
+    /// <summary>Directory name <see cref="FleetProjectionFile"/> lives under, relative to a root.</summary>
+    public const string FleetDirectoryName = "fleet";
+
+    /// <summary>Filename of <see cref="FleetProjectionFile"/> relative to <see cref="FleetDirectoryName"/>.</summary>
+    public const string FleetProjectionFileName = "projection.json";
+
+    /// <summary>
     /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
     /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
     /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.
@@ -186,6 +201,18 @@ public static class BatonPaths
 
     /// <summary>Filename of <see cref="DeletedRoomsFile"/> relative to a root.</summary>
     public const string DeletedRoomsFileName = "deleted-rooms.jsonl";
+
+    /// <summary>
+    /// <c>{Root}/watches</c> — one JSON file per <c>baton watch</c> registration (#1488), named
+    /// <c>&lt;watch-id&gt;.json</c>. <c>Baton.Cli</c>'s <c>WatchStore</c> (not referenced from here —
+    /// this project has no <c>Baton.Cli</c> reference) owns what each file holds and how exactly-once
+    /// firing is guaranteed. Operator-trust-level, per spec/baton.md §2's trust-model paragraph (M4,
+    /// fix round) — not restated here.
+    /// </summary>
+    public static string Watches => Path.Combine(Root, WatchesDirectoryName);
+
+    /// <summary>Directory name of <see cref="Watches"/> relative to a root.</summary>
+    public const string WatchesDirectoryName = "watches";
 
     /// <summary>
     /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what

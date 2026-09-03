@@ -212,6 +212,19 @@ The room directory also holds `snapshot.json` (the workflow this room is bound t
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
+**Don't hand-roll the file-watching the paragraph above describes — `baton watch` (#1488) is the
+built-in version.** `baton watch <room-dir> --notify <command|url>` registers a one-shot notification
+and returns immediately (never a poll loop of its own); once the room reaches Terminal, the command is
+spawned (a small JSON object — `room, state, verdict, outputs, terminalAt`, not the full `terminal.json`
+shape — on stdin and in `BATON_WATCH_EVENT`) or the URL is POSTed the same JSON, exactly once. An already-terminal room at registration fires right away — no lost wake-up. This is the
+dispatch → `baton watch --notify <wake command>` → end-turn pattern: a harness ends its own turn right
+after registering rather than blocking on `baton status --follow` or a hand-rolled sentinel-file/poll
+loop, and gets woken back up by the notify command instead. **Firing after registration depends on
+`baton daemon` running** — it is what actually polls pending watches; `baton watch` warns on stderr at
+registration if it can't find one for the current user. `baton watch --list` /
+`baton watch --clear-fired` are the visibility/cleanup pair — full contract, including what each
+prints, is `spec/baton.md` §2, not restated here.
+
 **A path in `outputs` IS the worker's own write (#1594/#1608, conductor-writes shape).** Baton never
 writes into a declared output itself except through the one verb below. That step's own **room**
 settles the top-level `state` `Indeterminate`, not `Failed`, whenever journal facts alone cannot

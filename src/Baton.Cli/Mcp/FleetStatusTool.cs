@@ -49,7 +49,10 @@ public sealed class FleetStatusTool : IMcpTool
         return gated.Count > 0 && gated.All(s => s.Liveness == "dead");
     }
 
-    private static readonly JsonSerializerOptions SerializerOptions = new()
+    // internal, not private: spec/baton.md §7's daemon-written fleet projection file (#1557)
+    // serializes each room with these SAME options, so the wire shape stays one construction site
+    // rather than a second copy drifting from this one.
+    internal static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
     };
@@ -107,6 +110,40 @@ public sealed class FleetStatusTool : IMcpTool
             }
         }
 
+        var discovered = await DiscoverRoomsAsync(extraRoots, cancellationToken).ConfigureAwait(false);
+        var results = new List<FleetRoomStatusView>();
+
+        foreach (var room in discovered)
+        {
+            var roomStatus = await ProcessRoomAsync(room.RoomDir, includeTerminal, cancellationToken).ConfigureAwait(false);
+            if (roomStatus is not null)
+            {
+                results.Add(room.Project is null ? roomStatus : roomStatus with { Project = room.Project });
+            }
+        }
+
+        var json = JsonSerializer.Serialize(results, SerializerOptions);
+        return new McpToolCallResult(json);
+    }
+
+    /// <summary>
+    /// One room directory, plus its project (spec/baton.md §8), the way the scan-plus-registry union
+    /// below resolves it — the discovery half of <see cref="ProcessRoomAsync"/>, factored out so #1557's
+    /// daemon-side fleet projection writer can walk the SAME set of rooms in the SAME order without a
+    /// second, drifting copy of the registry-union logic.
+    /// </summary>
+    internal readonly record struct DiscoveredRoom(string RoomDir, string? Project);
+
+    /// <summary>
+    /// Resolves every room this tool's scan-plus-registry union would find (spec/baton.md §8), without
+    /// processing any of them — <see cref="CallAsync"/> and <c>Baton.Cli.Daemon.FleetProjectionWriter</c>
+    /// (#1557) both walk this same list and call <see cref="ProcessRoomAsync"/> themselves, so the
+    /// discovery rule (which directories count, how a registry entry decorates one with its project) is
+    /// stated once.
+    /// </summary>
+    internal static async Task<IReadOnlyList<DiscoveredRoom>> DiscoverRoomsAsync(
+        IReadOnlyList<string> extraRoots, CancellationToken cancellationToken)
+    {
         var searchRoots = new List<string>();
         if (Directory.Exists(BatonPaths.Rooms))
         {
@@ -165,7 +202,7 @@ public sealed class FleetStatusTool : IMcpTool
         }
 
         var seenRooms = new HashSet<string>(BatonPaths.RecordKeyComparer);
-        var results = new List<FleetRoomStatusView>();
+        var discovered = new List<DiscoveredRoom>();
 
         foreach (var searchRoot in searchRoots)
         {
@@ -189,11 +226,8 @@ public sealed class FleetStatusTool : IMcpTool
                     continue;
                 }
 
-                var roomStatus = await ProcessRoomAsync(roomDir, includeTerminal, cancellationToken).ConfigureAwait(false);
-                if (roomStatus is not null)
-                {
-                    results.Add(DecorateWithProject(roomStatus, recordKey, projectByRoom));
-                }
+                projectByRoom.TryGetValue(recordKey, out var project);
+                discovered.Add(new DiscoveredRoom(roomDir, project));
             }
         }
 
@@ -207,22 +241,13 @@ public sealed class FleetStatusTool : IMcpTool
                 continue;
             }
 
-            var roomStatus = await ProcessRoomAsync(roomPath, includeTerminal, cancellationToken).ConfigureAwait(false);
-            if (roomStatus is not null)
-            {
-                results.Add(roomStatus with { Project = projectRoot });
-            }
+            discovered.Add(new DiscoveredRoom(roomPath, projectRoot));
         }
 
-        var json = JsonSerializer.Serialize(results, SerializerOptions);
-        return new McpToolCallResult(json);
+        return discovered;
     }
 
-    private static FleetRoomStatusView DecorateWithProject(
-        FleetRoomStatusView roomStatus, string recordKey, IReadOnlyDictionary<string, string> projectByRoom) =>
-        projectByRoom.TryGetValue(recordKey, out var projectRoot) ? roomStatus with { Project = projectRoot } : roomStatus;
-
-    private static async Task<FleetRoomStatusView?> ProcessRoomAsync(
+    internal static async Task<FleetRoomStatusView?> ProcessRoomAsync(
         string roomDir, bool includeTerminal, CancellationToken cancellationToken)
     {
         var roomName = Path.GetFileName(Path.TrimEndingDirectorySeparator(roomDir));
