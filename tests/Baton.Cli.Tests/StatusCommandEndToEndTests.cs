@@ -456,6 +456,74 @@ public class StatusCommandEndToEndTests
         }
     }
 
+    /// <summary>
+    /// #1574 second-reader finding 2: a `--follow` poll can read a worker's stdout mid-write and hold
+    /// the newline-less tail in its line assembler for a later poll to complete -- pre-#1574 raw
+    /// tailing never buffered anything, so Ctrl-C never had content to lose. This drives the SAME
+    /// cancellation path an operator's Ctrl-C takes (a token cancelled mid-poll-loop, after the
+    /// assembler has already buffered the partial line -- not the already-cancelled-before-the-first-
+    /// await case the test above covers) and asserts the held content is flushed rather than
+    /// silently dropped.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_a_follow_after_it_has_buffered_a_partial_line_still_flushes_it()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("follow-cancel-probe"),
+                1,
+                [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
+            var snapshot = SnapshotBinder.Bind(definition);
+            var snapshotPath = Path.Combine(roomDirectory, "snapshot.json");
+            await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var executionId = new ExecutionId("exec-still-running");
+            var request = new ExecutionRequest(
+                executionId,
+                new WorkflowId("wf-follow-cancel"),
+                new StepId("implement"),
+                "implement",
+                Inputs: [],
+                Outputs: [],
+                Timeout: TimeSpan.FromMinutes(30),
+                Environment: [],
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            }
+
+            var artifactsRoot = Path.Combine(roomDirectory, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+            var executionDir = Baton.Artifacts.ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            await File.WriteAllTextAsync(
+                Path.Combine(executionDir, Baton.Dispatch.ExecutionStreamLogger.StdoutLogFileName),
+                "partial progress with no trailing newline yet",
+                TestContext.Current.CancellationToken);
+
+            // Long enough to survive one full 500ms poll cycle (which buffers the partial line, held
+            // unflushed) and then land the cancellation partway through the NEXT poll's Task.Delay --
+            // the exact window the pre-fix code dropped.
+            using var followCancellation = new CancellationTokenSource();
+            followCancellation.CancelAfter(TimeSpan.FromMilliseconds(700));
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory, Follow: true), output, followCancellation.Token);
+
+            Assert.Contains("partial progress with no trailing newline yet", output.ToString());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Cancelling_a_one_shot_status_probe_still_throws_it_produced_no_answer()
     {
