@@ -2763,8 +2763,16 @@ remarks for the full reasoning; in short, `--allowedTools`/`--disallowedTools` a
 whether `Bash` is reachable at all before this check is even reached, so a hard denial on its own
 absence would have broken every already-shipped unscoped shell role the moment this landed. An explicitly
 unscoped grant reads the same way, matching `AgyHookCheckCommand`'s existing treatment of an empty
-pattern list on that vendor. Scoped to claude for now; the evaluator lives in vendor-neutral
-`Baton.Vendors` so agy can adopt it later, but agy's own `run_command` gate does not segment today.
+pattern list on that vendor. **`AgyHookCheckCommand` now routes through the same
+`EvaluateChainedCommand` segmentation (#1685), evaluating the DenyAlways channel on every top-level
+segment even when the allow list is empty** — unlike claude, whose deny check stays nested under a
+non-empty allow list because `--disallowedTools` is its own primary enforcement of that rung, a layer
+agy has no equivalent for, so agy cannot afford the same nesting. Two user-visible behaviour changes
+follow from this: a scoped agy grant now permits chains it used to refuse outright (a segment riding
+after an allowed prefix on a `;`/`&&`/`||`/`|` boundary is judged on its own terms rather than failing
+the old whole-line scan), and an unscoped-with-deny grant now refuses an unparseable line — one
+`TrySegmentChainedCommand` will not guess a boundary for — that it used to allow, since the segmenter's
+own fail-closed verdict applies before either pattern list is consulted.
 `PermissionGrant.ShellCommandsAreReadOnly`
 (new, #1456) is the named, author-asserted escape hatch that lets a grant like this one compose
 without widening `WriteFiles`/`NetworkAccess` just to satisfy `CategoriesDefeatedByTheShell`'s

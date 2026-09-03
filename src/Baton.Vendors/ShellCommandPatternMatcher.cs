@@ -276,8 +276,9 @@ public static class ShellCommandPatternMatcher
     }
 
     /// <summary>
-    /// The <c>DenyAlways</c> rung's standing-"never" check (0022, M-Phase-6 #390) — called by
-    /// <c>AgyHookCheckCommand</c> to refuse a <c>run_command</c> whose command line matches a persisted
+    /// The <c>DenyAlways</c> rung's standing-"never" check (0022, M-Phase-6 #390) — reused by
+    /// <see cref="EvaluateChainedCommand"/> (segment-level since #1685) to refuse a <c>run_command</c>
+    /// whose command line matches a persisted
     /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> entry, deny-beats-allow. (claude enforces
     /// the same rung through <c>--disallowedTools</c> rather than this matcher.) Returns
     /// <see langword="true"/> iff <paramref name="commandLine"/> matches at least one pattern in
@@ -447,7 +448,13 @@ public static class ShellCommandPatternMatcher
     /// <see cref="IsAllowed"/> already has.
     /// </remarks>
     /// <param name="commandLine">The full shell command line as claude's <c>Bash</c> tool received it.</param>
-    /// <param name="allowedPatterns">The grant's allowed patterns. Never call this with an empty/null list — that is the unscoped-shell case, handled by the caller before reaching here.</param>
+    /// <param name="allowedPatterns">
+    /// The grant's allowed patterns. An empty/null list is the unscoped-shell case: every segment
+    /// passes the allow half of the check unconditionally, and only <paramref name="deniedPatterns"/>
+    /// (if any), or the segmenter's own fail-closed <see cref="ScopedShellVerdict.Unparseable"/>
+    /// verdict above, can still refuse it. Callers with a non-empty allow list get the original
+    /// narrowing — every segment must match one of these patterns.
+    /// </param>
     /// <param name="deniedPatterns">The grant's standing-deny patterns, or empty/null when none apply.</param>
     public static ScopedShellResult EvaluateChainedCommand(
         string? commandLine, IReadOnlyList<string>? allowedPatterns, IReadOnlyList<string>? deniedPatterns)
@@ -472,7 +479,7 @@ public static class ShellCommandPatternMatcher
                     $"segment '{segment}' matches this session's standing deny list");
             }
 
-            if (!IsAllowed(segment, allowedPatterns))
+            if (allowedPatterns is { Count: > 0 } && !IsAllowed(segment, allowedPatterns))
             {
                 return new ScopedShellResult(
                     ScopedShellVerdict.DeniedSegment, segment,
