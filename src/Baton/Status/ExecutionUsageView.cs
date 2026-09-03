@@ -76,14 +76,11 @@ public sealed record ExecutionUsageView(
     string? BilledReconciliationUnavailable = null,
     /// <summary>
     /// #1709: <c>FlowEvent.ExecutionSucceeded.PeakBilledInWindow</c>/<c>FlowEvent.ExecutionFailed.PeakBilledInWindow</c>
-    /// off this execution's own terminal outcome event — the largest Σ billed tokens the LIVE
-    /// <c>Mutation.TokenBudgetMonitor</c> ever held inside one trailing window, journalled once at
-    /// classification time. Distinct from <see cref="LiveBilledTokens"/> above: that figure is a
-    /// REPLAY reconstruction over the captured stream, computed fresh on every read; this one is the
-    /// number the running execution actually measured, read back verbatim. Null when the terminal event
-    /// carries none — no live monitor was in scope for this execution (a non-Process dispatch, a
-    /// crash-recovery classification of a recorded exit, or a spawn refusal before dispatch), or the
-    /// ledger line predates #1709.
+    /// off this execution's own terminal outcome event, read back verbatim — see that field's own doc
+    /// comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
+    /// this one is a JOURNALLED measurement from the live execution itself, where <see cref="LiveBilledTokens"/>
+    /// is this projector's own REPLAY over the captured stream (this type's own remarks, above, state
+    /// that distinction for the whole reconciliation triple).
     /// </summary>
     [property: JsonPropertyName("peakBilledInWindow")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -129,9 +126,9 @@ public static class ExecutionUsageProjector
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var workerNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         var recordedAdapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
-        // #1709: FlowEvent.ExecutionSucceeded/ExecutionFailed's own PeakBilledInWindow -- the JOURNALLED
-        // measurement, off the terminal outcome event, never a second reconstruction of LiveBilledTokens
-        // above (which is a replay over the captured stream, computed fresh every read).
+        // #1709: FlowEvent.ExecutionSucceeded/ExecutionFailed's own PeakBilledInWindow -- see
+        // ExecutionUsageView.PeakBilledInWindow's own doc comment for what this is and is not the same
+        // figure as.
         var peakBilledInWindowByExecutionId = new Dictionary<string, long>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
