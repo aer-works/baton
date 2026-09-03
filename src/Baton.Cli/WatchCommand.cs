@@ -11,7 +11,11 @@ namespace Baton.Cli;
 /// </summary>
 public static class WatchCommand
 {
-    public static async Task<int> ExecuteAsync(WatchOptions options, TextWriter output, CancellationToken cancellationToken = default)
+    /// <param name="notifier">Test seam (<c>WatchCommandTests</c> passes a
+    /// <c>RecordingWatchNotifier</c>) — <c>null</c> in production, where registration uses a real
+    /// <see cref="WatchNotifier"/> for the "no lost wake-up" immediate-fire check.</param>
+    public static async Task<int> ExecuteAsync(
+        WatchOptions options, TextWriter output, CancellationToken cancellationToken = default, IWatchNotifier? notifier = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(output);
@@ -30,7 +34,8 @@ public static class WatchCommand
                 return 0;
 
             case WatchMode.Register:
-                return await RegisterAsync(options, watchesDirectoryPath, output, cancellationToken).ConfigureAwait(false);
+                return await RegisterAsync(options, watchesDirectoryPath, output, notifier ?? new WatchNotifier(), cancellationToken)
+                    .ConfigureAwait(false);
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(options));
@@ -55,7 +60,7 @@ public static class WatchCommand
     }
 
     private static async Task<int> RegisterAsync(
-        WatchOptions options, string watchesDirectoryPath, TextWriter output, CancellationToken cancellationToken)
+        WatchOptions options, string watchesDirectoryPath, TextWriter output, IWatchNotifier notifier, CancellationToken cancellationToken)
     {
         var roomDirectoryPath = options.RoomDirectoryPath!;
         if (!Directory.Exists(roomDirectoryPath))
@@ -73,7 +78,7 @@ public static class WatchCommand
         // spec/baton.md §2: no lost wake-up -- a room that is already terminal at registration time
         // fires immediately here, in-process, rather than waiting for the daemon's next sweep.
         var fired = await WatchFireService
-            .TryFireIfTerminalAsync(watchesDirectoryPath, record, new WatchNotifier(), cancellationToken)
+            .TryFireIfTerminalAsync(watchesDirectoryPath, record, notifier, cancellationToken)
             .ConfigureAwait(false);
         if (fired)
         {

@@ -45,11 +45,19 @@ public sealed class WatchCommandTests
             roomDir, new WorkflowStatusView(WorkflowOutcome.Succeeded, [], [], null), TestContext.Current.CancellationToken);
         var output = new StringWriter();
         var options = new WatchOptions(WatchMode.Register, roomDir, "https://example.invalid/hook");
+        var notifier = new RecordingWatchNotifier();
 
-        var exitCode = await WatchCommand.ExecuteAsync(options, output, TestContext.Current.CancellationToken);
+        var exitCode = await WatchCommand.ExecuteAsync(options, output, TestContext.Current.CancellationToken, notifier);
 
         Assert.Equal(0, exitCode);
         Assert.Contains("fired immediately", output.ToString(), StringComparison.Ordinal);
+
+        // The claim (M3 fix): assert the notifier was actually invoked with this watch's target, not
+        // just that FiredAt got set -- FiredAt alone is the claim, not the notification, and would pass
+        // identically even if NotifyAsync were deleted.
+        var (target, payload) = Assert.Single(notifier.Calls);
+        Assert.Equal(options.NotifyTarget, target);
+        Assert.Equal(roomDir, payload.Room);
 
         var watches = await WatchStore.ListAsync(BatonPaths.Watches, TestContext.Current.CancellationToken);
         var watch = Assert.Single(watches);
