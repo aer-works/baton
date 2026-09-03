@@ -381,4 +381,275 @@ public class QuotaParkCancelArrestTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    // #1634: the redispatch race a poller-less pump loses. CancelCommand's DIRECT path (no live
+    // `baton run` holding flow.lock) never runs CancelRequestPoller, so nothing ever calls
+    // MarkParkedCancelIntent for it -- MutationInterface.RequestCancellationAsync journals
+    // CancellationRequested itself (intent-first) and then drives its OWN pump to a fixed point.
+    // Reachable only against an already-OVERDUE park (a still-future one is refused earlier by
+    // CancelCommand's own hasFutureDeferral gate, spec/baton.md's "direct path" paragraph) --
+    // fabricated here the same way MutationInterfaceRetryBackoffTests' Test13 fabricates an
+    // already-due StepRetryScheduled, so DependencyResolver.GetReadySteps sees the deadline as
+    // already elapsed without ever needing to advance the fake clock.
+    [Fact]
+    public async Task Overdue_park_cancelled_through_the_direct_poller_less_path_settles_Cancelled_not_a_redispatch()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1634"),
+                new WorkflowTemplateId("template-1634"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            // The overdue-park history, written directly: a first attempt failed and a retry was
+            // already scheduled for a deadline now in the past -- the exact shape a real crash or a
+            // prior pump exit would leave behind.
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1634"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            // The DIRECT path itself: no CancelRequestPoller runs alongside this call, and
+            // MarkParkedCancelIntent is never invoked. RequestCancellationAsync journals
+            // CancellationRequested before starting its own pump (intent-first ordering) -- the
+            // ledger already carries the fact by the time the pump's first round runs.
+            var finalState = await MutationInterface.RequestCancellationAsync(
+                    new WorkflowId("wf-1634"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    firstAttempt,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
+            Assert.Equal(StepStatus.Cancelled, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Contains(events, e => e is FlowEvent.CancellationRequested c && c.ExecutionId == firstAttempt);
+            Assert.Contains(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == firstAttempt);
+            // The race this issue is about: the journalled cancel must win it, not a second dispatch.
+            Assert.Single(events.OfType<FlowEvent.ExecutionRequestAccepted>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Regression control for the fix above: the IDENTICAL overdue-park history, pumped with NO
+    // cancellation request in the ledger at all, must still redispatch exactly as it always has --
+    // the ledger-read rule must only preempt a redispatch when a CancellationRequested is actually
+    // present, never on an ordinary overdue park.
+    [Fact]
+    public async Task Overdue_park_with_no_cancel_request_still_redispatches()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1634b"),
+                new WorkflowTemplateId("template-1634b"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1634b"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                    new WorkflowId("wf-1634b"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(2, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Polarity control (second-reader finding): a CancellationRequested naming a STALE execution id
+    // — one the step already redispatched past, no longer its LatestExecutionId — must NOT stop the
+    // step's CURRENT overdue park from redispatching. Mirrors
+    // Marking_an_intent_for_a_mismatched_execution_id_leaves_the_real_park_untouched's polarity for
+    // the poller-driven path, but for the direct/ledger-read path this fixture adds: proves
+    // IsParkedRetryTarget's `LatestExecutionId ==` clause is load-bearing here too, not incidental.
+    [Fact]
+    public async Task Overdue_park_with_a_cancel_request_for_a_stale_execution_id_still_redispatches()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var overdueRetryNotBefore = now.AddSeconds(-10);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-1634c"),
+                new WorkflowTemplateId("template-1634c"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        Inputs: [],
+                        Outputs: [],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 3, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [], []),
+                    ExitCleanlyWithoutWriting(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            // Two attempts already exhausted BEFORE this pump starts: the first (staleAttempt) failed
+            // and was already redispatched to the second (currentAttempt) by a prior pump — the
+            // second is the step's CURRENT parked attempt, overdue, still with retry budget left
+            // (MaxAttempts: 3).
+            var staleAttempt = new ExecutionId("a-1");
+            var currentAttempt = new ExecutionId("a-2");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(staleAttempt, new WorkflowId("wf-1634c"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(staleAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, staleAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(currentAttempt, new WorkflowId("wf-1634c"), StepA, "worker-a", [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(currentAttempt, FailureClassification.Retryable, "boom again"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, currentAttempt, overdueRetryNotBefore, RetryDelayMs: 500), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            // The DIRECT path, targeting the STALE first attempt — not the step's current parked one.
+            var finalState = await MutationInterface.RequestCancellationAsync(
+                    new WorkflowId("wf-1634c"),
+                    roomDirectory,
+                    snapshot,
+                    bindings,
+                    artifactsRoot,
+                    reader,
+                    writer,
+                    dispatcher,
+                    staleAttempt,
+                    timeProvider: fakeTime,
+                    jitterSource: () => 0.0,
+                    cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
+
+            // The step's CURRENT park redispatched normally — the stale target's cancel request
+            // never touches it.
+            Assert.Equal(StepStatus.Succeeded, finalState.Steps.Single(s => s.StepId == StepA).Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Contains(events, e => e is FlowEvent.CancellationRequested c && c.ExecutionId == staleAttempt);
+            // The stale target itself never settles Cancelled — dropped, not spuriously arrested.
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == staleAttempt);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled c && c.ExecutionId == currentAttempt);
+            // Three attempts total: the two fabricated ones plus the redispatch this test proves happened.
+            Assert.Equal(3, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }

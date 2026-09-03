@@ -294,11 +294,25 @@ ever runs, since that check scans every step for a future deferral, not just the
 That check itself was widened in the same change (#1607) from firing only on a confirmed-`Dead`
 holder to firing on anything but a confirmed-`Alive` one — see `CancelCommand.cs`'s own dead-holder
 gate comment for which `EngineLivenessProbe.Unknown` cases motivate this and why leaving it at
-`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park
-raced against a confirmed-live pump loses to `MutationInterface`'s own retry-obligation check, which
-redispatches it before a poller-less pump's parked-cancel-intent wait is ever reached — the same
-outcome explicit `--execution` targeting an overdue park already had (tracked separately, #1634);
-#1607 did not introduce it and does not close it.
+`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park raced
+against a poller-less pump used to lose to `MutationInterface`'s own retry-obligation check, which
+redispatched it before the parked-cancel-intent wait (armed only by `CancelRequestPoller.TickAsync`,
+which a poller-less pump never runs) was ever reached — the same outcome explicit `--execution`
+targeting an overdue park already had; #1607 did not introduce it. **Fixed by #1634**: before
+`GetRetryObligations` can schedule, or `DependencyResolver.GetReadySteps` can redispatch, a parked
+step's retry, `MutationInterface`'s pump loop now checks the raw ledger — every `ExecutionId` a
+`CancellationRequested` has named in a round *this pump call has itself read*, accumulated across the
+call's own rounds — not `FlowState.CancellationRequestedExecutionIds`, which excludes a target with a
+terminal event, and a parked target's `Failed` outcome is exactly that — for the step's
+`LatestExecutionId` and, if found, appends `ExecutionCancelled` instead of letting either mechanism
+redispatch: the ledger-read rule. Gated on the pump's own `!hostStopRequested`, matching ordinary
+dispatch's own gating: a host stop (Ctrl-C) journals `CancellationRequested` for every still-registered
+execution as part of winding the pump down, not as an operator naming that step, so it must not read
+as one. Scoped to what this call itself observed, not a claim over the full durable ledger — a
+`CancellationRequested` from a run this pump did not itself read (e.g. one journalled before a saved
+checkpoint a later, resumed pump loads) is a known gap, left for a follow-up alongside the host-stop
+question above once resolved (`MutationInterface.cs`'s own `cancellationRequestedExecutionIds` remarks
+have the detail).
 
 **The dead-holder gate applies to both targeting modes, deliberately, with a real cost on the
 explicit one.** The gate runs before `--execution` is even inspected, so `cancel <room> --execution
