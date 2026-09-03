@@ -1,0 +1,608 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Baton.Artifacts;
+using Baton.Cli.Mcp;
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Mutation;
+using Baton.Outcomes;
+using Baton.Status;
+using Baton.Store;
+using Microsoft.Extensions.Hosting;
+
+namespace Baton.Cli.Daemon;
+
+/// <summary>
+/// #1557: the daemon's fourth kept responsibility (spec/baton.md §7) — writes
+/// <see cref="BatonPaths.FleetProjectionFile"/> roughly every 30s so a local reader (a janitor sweep,
+/// eventually the pusher per #1557's own PR-B) never has to re-derive <c>fleet_status</c> by scanning
+/// every room itself. Mirrors <see cref="RoomRetentionSweep"/>'s <see cref="BackgroundService"/> shape
+/// and env-var-configurable-interval-with-clamped-bounds pattern.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Reuses <see cref="FleetStatusTool.DiscoverRoomsAsync"/>/<see cref="FleetStatusTool.ProcessRoomAsync"/>
+/// in-process (same assembly) rather than going through the MCP tool's JSON-in/JSON-out wrapper — the
+/// exact room list and per-room projection <c>fleet_status</c> itself would return, serialized with the
+/// SAME <see cref="FleetStatusTool.SerializerOptions"/>. This PR (PR-A) adds no pusher.py change: both
+/// paths run side by side until #1557's own PR-B.
+/// </para>
+/// <para>
+/// <b>Not in this PR (see the tracking issue's PR slicing):</b> <c>stdoutTail</c> (PR-A2 — no C#
+/// precedent, largest remaining piece); pending-outputs status (grepped
+/// <see cref="Status.StepOutputResolver"/> — it resolves a Succeeded/Paused-Succeeded step's already-
+/// produced outputs, not a "pending" verdict for a step that has not reached that state yet, so there is
+/// no clean source to copy here without inventing one).
+/// </para>
+/// </remarks>
+public sealed class FleetProjectionWriter : BackgroundService
+{
+    public const string IntervalSecondsEnvironmentVariable = "BATON_FLEET_PROJECTION_INTERVAL_SECONDS";
+
+    public static readonly TimeSpan DefaultInterval = TimeSpan.FromSeconds(30);
+
+    // Same reasoning as RoomRetentionSweep.MinInterval/MaxInterval: bounded so a pathological env value
+    // can neither overflow TimeSpan.FromSeconds nor hot-loop ExecuteAsync.
+    public static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan MaxInterval = TimeSpan.FromDays(1);
+
+    // spec/baton.md §6: `LAST_ACTIVITY_BUCKET_SECONDS` in pusher.py -- floors a Running room's stdout
+    // mtime to this bucket before it enters the payload, so a continuously-streaming lane's every-chunk
+    // mtime advance does not itself change the file every cycle.
+    private const int LastActivityBucketSeconds = 90;
+
+    // spec/baton.md §6 (#1155): newest N pruned execution dirs surfaced per room.
+    private const int PrunedItemsCap = 20;
+
+    private readonly Dictionary<string, ExecutionLiveState> _liveCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PrunedCacheEntry> _prunedCache = new(StringComparer.Ordinal);
+
+    public static TimeSpan GetInterval()
+    {
+        var val = BatonEnvironmentSnapshot.Current.FleetProjectionIntervalSecondsOverride;
+        if (!string.IsNullOrWhiteSpace(val) &&
+            double.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out var seconds) &&
+            seconds > 0)
+        {
+            return TimeSpan.FromSeconds(Math.Clamp(seconds, MinInterval.TotalSeconds, MaxInterval.TotalSeconds));
+        }
+
+        return DefaultInterval;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await WriteOnceAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"FleetProjectionWriter: iteration failed: {ex.Message}");
+            }
+
+            try
+            {
+                await Task.Delay(GetInterval(), stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>One tick's worth of work — public entry point for tests, and what <see cref="ExecuteAsync"/> loops.</summary>
+    internal async Task WriteOnceAsync(CancellationToken cancellationToken = default)
+    {
+        var json = await BuildProjectionJsonAsync(cancellationToken).ConfigureAwait(false);
+        WriteAtomic(BatonPaths.FleetProjectionFile, json);
+    }
+
+    internal async Task<string> BuildProjectionJsonAsync(CancellationToken cancellationToken)
+    {
+        var discovered = await FleetStatusTool.DiscoverRoomsAsync([], cancellationToken).ConfigureAwait(false);
+        var roomsArray = new JsonArray();
+        var liveKeysThisTick = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var room in discovered)
+        {
+            var view = await FleetStatusTool.ProcessRoomAsync(room.RoomDir, includeTerminal: true, cancellationToken)
+                .ConfigureAwait(false);
+            if (view is null)
+            {
+                continue;
+            }
+
+            if (room.Project is not null)
+            {
+                view = view with { Project = room.Project };
+            }
+
+            var node = JsonSerializer.SerializeToNode(view, FleetStatusTool.SerializerOptions)!.AsObject();
+
+            var pruned = ComputePrunedInfo(view.Path);
+            if (pruned is not null)
+            {
+                node["pruned"] = pruned;
+            }
+
+            // #1513: a Running STEP whose engine is confirmed dead downgrades the room-level State to
+            // "Stalled" (FleetStatusTool's own display-only override) -- the step's own State stays
+            // "Running" regardless. processAlive/stdout_last_write_ago_sec/elapsed exist precisely to
+            // diagnose that case, so they gate on the step, never on the room's display state. `live`
+            // (spec/baton.md §6, pre-existing pusher.py contract) stays narrower -- gated inside
+            // AttachLiveFieldsAsync on the room's displayed State being exactly "Running", matching
+            // pusher's own "never a live section a dead process cannot honestly back" rule.
+            if (view.Steps?.Any(s => s.State == "Running" && s.Execution is not null) == true)
+            {
+                await AttachLiveFieldsAsync(node, view, liveKeysThisTick, cancellationToken).ConfigureAwait(false);
+            }
+
+            roomsArray.Add(node);
+        }
+
+        PruneLiveCache(liveKeysThisTick);
+        PrunePrunedCache(discovered);
+
+        var root = new JsonObject
+        {
+            ["derived_at"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["rooms"] = roomsArray,
+        };
+
+        return root.ToJsonString(FleetStatusTool.SerializerOptions);
+    }
+
+    /// <summary>
+    /// spec/baton.md §6's <c>rooms[].live</c>/<c>processAlive</c>/<c>stdout_last_write_ago_sec</c>/
+    /// <c>elapsed</c> — everything that needs the Running step's own execution id. Absent (never a
+    /// fabricated reading) whenever a Running room's steps carry no Running execution id, its stdout
+    /// has not been captured yet, or the step's own timestamp is unreadable.
+    /// </summary>
+    private async Task AttachLiveFieldsAsync(
+        JsonObject node, FleetRoomStatusView view, HashSet<string> liveKeysThisTick, CancellationToken cancellationToken)
+    {
+        var runningStep = view.Steps?.FirstOrDefault(s => s.State == "Running" && s.Execution is not null);
+        if (runningStep is null)
+        {
+            return;
+        }
+
+        var executionId = runningStep.Execution!;
+        var liveKey = $"{view.Path}::{executionId}";
+        liveKeysThisTick.Add(liveKey);
+
+        var (stdoutPath, rolloverPath) = FindStdoutPaths(view.Path, executionId);
+        if (stdoutPath is not null)
+        {
+            var state = GetOrCreateLiveState(liveKey, view.Adapter);
+            ReadIncrementalInto(state, stdoutPath, rolloverPath);
+
+            var liveNode = new JsonObject();
+            if (state.Monitor is not null)
+            {
+                var usage = state.Monitor.SnapshotUsage();
+                liveNode["toolCalls"] = state.Monitor.SnapshotToolStepCount();
+                if (usage.BilledTokens is { } billedTokens)
+                {
+                    liveNode["billedTokens"] = billedTokens;
+                }
+
+                if (usage.BilledIsFloor)
+                {
+                    liveNode["billedIsFloor"] = true;
+                }
+
+                if (usage.Turns is { } turns)
+                {
+                    liveNode["turns"] = turns;
+                }
+
+                if (usage.ContextLevelTokens is { } contextTokens)
+                {
+                    liveNode["contextTokens"] = contextTokens;
+                }
+
+                if (usage.CacheReadTokens is { } cacheReadTokens)
+                {
+                    liveNode["cacheReadTokens"] = cacheReadTokens;
+                }
+            }
+
+            DateTime mtimeUtc;
+            try
+            {
+                mtimeUtc = File.GetLastWriteTimeUtc(stdoutPath);
+            }
+            catch (IOException)
+            {
+                mtimeUtc = DateTime.UtcNow;
+            }
+
+            liveNode["lastActivityAt"] = QuantizeActivity(mtimeUtc);
+
+            // spec/baton.md §6 (pre-existing pusher.py contract): `live` itself stays gated on the
+            // room's DISPLAYED state being exactly "Running" -- never a live section for a room #1513
+            // already downgraded to "Stalled" once its engine is confirmed dead, matching pusher's own
+            // "never a live section a dead process cannot honestly back" rule. processAlive below is
+            // deliberately NOT behind this gate -- it is the diagnostic that explains a Stalled room.
+            if (view.State == "Running")
+            {
+                node["live"] = liveNode;
+            }
+
+            var agoSec = Math.Max(0, (DateTime.UtcNow - mtimeUtc).TotalSeconds);
+            node["stdout_last_write_ago_sec"] = Math.Round(agoSec, 1);
+        }
+
+        if (runningStep.Timestamp is { } timestamp &&
+            DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var startedAt))
+        {
+            var elapsedSec = Math.Max(0, (DateTimeOffset.UtcNow - startedAt).TotalSeconds);
+            node["elapsed"] = Math.Round(elapsedSec, 1);
+        }
+
+        var (pid, startTime) = await TryGetEngineIdentityAsync(view.Path, executionId, cancellationToken).ConfigureAwait(false);
+        var probe = EngineLivenessProbe.Probe(pid, startTime);
+        node["processAlive"] = probe.Status switch
+        {
+            EngineLivenessStatus.Alive => "alive",
+            EngineLivenessStatus.Dead => "dead",
+            _ => "unknown",
+        };
+    }
+
+    private ExecutionLiveState GetOrCreateLiveState(string liveKey, string? adapter)
+    {
+        if (_liveCache.TryGetValue(liveKey, out var existing))
+        {
+            return existing;
+        }
+
+        var parser = adapter is not null && StandardWorkerUsageParsers.Default.TryGetValue(adapter, out var resolved)
+            ? resolved
+            : null;
+
+        var state = new ExecutionLiveState
+        {
+            // #1682: pure accumulation, no arrest triggers -- the daemon only ever reads, never cancels
+            // a room's own dispatch process.
+            Monitor = parser is not null ? new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, parser) : null,
+        };
+        _liveCache[liveKey] = state;
+        return state;
+    }
+
+    private void PruneLiveCache(HashSet<string> liveKeysThisTick)
+    {
+        foreach (var staleKey in _liveCache.Keys.Where(k => !liveKeysThisTick.Contains(k)).ToList())
+        {
+            _liveCache.Remove(staleKey);
+        }
+    }
+
+    private void PrunePrunedCache(IReadOnlyList<FleetStatusTool.DiscoveredRoom> discovered)
+    {
+        var roomPaths = new HashSet<string>(discovered.Select(r => r.RoomDir), StringComparer.Ordinal);
+        foreach (var staleKey in _prunedCache.Keys.Where(k => !roomPaths.Contains(k)).ToList())
+        {
+            _prunedCache.Remove(staleKey);
+        }
+    }
+
+    /// <summary>
+    /// Two-location fallback for a Running execution's own captured stream — the SAME addressing
+    /// <c>ExecutionUsageProjector</c>'s terminal-usage read already uses
+    /// (<see cref="ArtifactManager.ResolveOutputDirectory"/>, falling back to
+    /// <see cref="ArtifactManager.ResolvePrunedOutputDirectory"/> for a retention-swept execution), not
+    /// a reimplementation of pusher.py's own path logic.
+    /// </summary>
+    private static (string? StdoutPath, string? RolloverPath) FindStdoutPaths(string roomPath, string executionId)
+    {
+        var artifactsRootPath = Path.Combine(roomPath, ArtifactManager.ArtifactsDirectoryName);
+        var id = new ExecutionId(executionId);
+
+        foreach (var directory in new[]
+                 {
+                     ArtifactManager.ResolveOutputDirectory(artifactsRootPath, id),
+                     ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id),
+                 })
+        {
+            var candidate = Path.Combine(directory, ExecutionStreamLogger.StdoutLogFileName);
+            if (File.Exists(candidate))
+            {
+                var rollover = Path.Combine(directory, ExecutionStreamLogger.StdoutRolloverFileName);
+                return (candidate, File.Exists(rollover) ? rollover : null);
+            }
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Byte-offset incremental read plus rollover detection — the daemon's own port of pusher.py's
+    /// <c>_read_new_lines</c>/rollover heuristic (no C# precedent existed; <c>ExecutionStreamLogger</c>
+    /// writes the rollover, nothing before this read it back incrementally). A size DECREASE since the
+    /// offset last read is the rollover signal: <c>.stdout.log</c> rolls to <c>.stdout.log.1</c> at 8
+    /// MiB and resets to empty.
+    /// </summary>
+    private static void ReadIncrementalInto(ExecutionLiveState state, string stdoutPath, string? rolloverPath)
+    {
+        long currentSize;
+        try
+        {
+            currentSize = new FileInfo(stdoutPath).Length;
+        }
+        catch (IOException)
+        {
+            return;
+        }
+
+        if (currentSize < state.StdoutOffset)
+        {
+            state.RolloverOffset = Math.Max(state.RolloverOffset, state.StdoutOffset);
+            state.StdoutOffset = 0;
+        }
+
+        if (rolloverPath is not null)
+        {
+            var (rolloverLines, newRolloverOffset) = ReadNewLines(rolloverPath, state.RolloverOffset);
+            state.RolloverOffset = newRolloverOffset;
+            foreach (var line in rolloverLines)
+            {
+                state.Monitor?.OnStdoutLine(line);
+            }
+        }
+
+        var (newLines, newStdoutOffset) = ReadNewLines(stdoutPath, state.StdoutOffset);
+        state.StdoutOffset = newStdoutOffset;
+        foreach (var line in newLines)
+        {
+            state.Monitor?.OnStdoutLine(line);
+        }
+    }
+
+    /// <summary>
+    /// Complete lines appended to <paramref name="path"/> since byte <paramref name="offset"/>, and the
+    /// new offset positioned right after the last complete line consumed. A trailing partial line (the
+    /// vendor CLI mid-flush, no newline yet) is left unconsumed so it is read whole next cycle instead
+    /// of split across two parses — mirrors pusher.py's <c>_read_new_lines</c>.
+    /// </summary>
+    private static (List<string> Lines, long NewOffset) ReadNewLines(string path, long offset)
+    {
+        byte[] chunk;
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var seekOffset = offset > stream.Length ? 0 : offset;
+            stream.Seek(seekOffset, SeekOrigin.Begin);
+            using var buffer = new MemoryStream();
+            stream.CopyTo(buffer);
+            chunk = buffer.ToArray();
+            offset = seekOffset;
+        }
+        catch (IOException)
+        {
+            return ([], offset);
+        }
+
+        if (chunk.Length == 0)
+        {
+            return ([], offset);
+        }
+
+        var text = Encoding.UTF8.GetString(chunk);
+        var lastNewline = text.LastIndexOf('\n');
+        if (lastNewline == -1)
+        {
+            return ([], offset);
+        }
+
+        var complete = text[..lastNewline];
+        var consumed = Encoding.UTF8.GetByteCount(complete) + 1;
+        return ([.. complete.Split('\n')], offset + consumed);
+    }
+
+    private static string QuantizeActivity(DateTime mtimeUtc)
+    {
+        var epochSeconds = new DateTimeOffset(DateTime.SpecifyKind(mtimeUtc, DateTimeKind.Utc)).ToUnixTimeSeconds();
+        var bucketed = epochSeconds / LastActivityBucketSeconds * LastActivityBucketSeconds;
+        return DateTimeOffset.FromUnixTimeSeconds(bucketed).ToString("O");
+    }
+
+    /// <summary>
+    /// The Running execution's own recorded engine identity — the same
+    /// <c>FlowEvent.ExecutionRequestAccepted.EnginePid</c>/<c>EngineStartTime</c>
+    /// <see cref="EngineLivenessProbe"/>'s every other caller reads (<c>StatusCommand</c>,
+    /// <c>MutationInterface</c>). <see cref="FleetStatusTool.ProcessRoomAsync"/> already reads
+    /// <c>flow.jsonl</c> once for its own projection but does not return the raw events, so this is a
+    /// second, Running-room-only read of the same file rather than a threaded-through return value —
+    /// cheap next to the 30s cadence, and it keeps <c>ProcessRoomAsync</c>'s own signature untouched.
+    /// </summary>
+    private static async Task<(int? Pid, DateTimeOffset? StartTime)> TryGetEngineIdentityAsync(
+        string roomDir, string executionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
+            if (!File.Exists(logPath))
+            {
+                return (null, null);
+            }
+
+            var reader = new FlowEventLogReader(logPath);
+            var entries = await reader.ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
+
+            // Last match, not first -- MutationInterface.RecordResumeAsync's own identical
+            // EnginePid/EngineStartTime lookup uses .LastOrDefault. No execution id gets a second
+            // ExecutionRequestAccepted under current code (every dispatch/resume mints a fresh
+            // ExecutionId), so this cannot currently change the result -- matching the established
+            // idiom rather than depending on that invariant is the point.
+            FlowEvent.ExecutionRequestAccepted? match = null;
+            foreach (var entry in entries)
+            {
+                if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.ExecutionRequestAccepted accepted } &&
+                    accepted.Request.ExecutionId.Value == executionId)
+                {
+                    match = accepted;
+                }
+            }
+
+            if (match is not null)
+            {
+                return (match.EnginePid, match.EngineStartTime);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return (null, null);
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// spec/baton.md §6 (#1155) — port of pusher.py's <c>pruned_info_for_room</c>: present only for a
+    /// room whose <c>artifacts/pruned/</c> directory is non-empty, capped at the
+    /// <see cref="PrunedItemsCap"/> newest entries by <c>prunedAt</c>. Cached per room path, keyed on
+    /// the pruned directory's own (mtime, child count) — a room with an unchanged pruned/ directory
+    /// skips the walk entirely, mirroring pusher's own cache.
+    /// </summary>
+    private JsonObject? ComputePrunedInfo(string roomPath)
+    {
+        var prunedRoot = Path.Combine(roomPath, ArtifactManager.ArtifactsDirectoryName, "pruned");
+        if (!Directory.Exists(prunedRoot))
+        {
+            return null;
+        }
+
+        DateTime dirMtimeUtc;
+        string[] children;
+        try
+        {
+            dirMtimeUtc = Directory.GetLastWriteTimeUtc(prunedRoot);
+            children = Directory.GetFileSystemEntries(prunedRoot);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+
+        if (_prunedCache.TryGetValue(roomPath, out var cached)
+            && cached.DirMtimeUtc == dirMtimeUtc && cached.ChildCount == children.Length)
+        {
+            return cached.Result is null ? null : (JsonObject)cached.Result.DeepClone();
+        }
+
+        var entries = new List<(string Name, long Bytes, DateTime PrunedAtUtc)>();
+        foreach (var child in children)
+        {
+            try
+            {
+                long size;
+                DateTime prunedAt;
+                if (Directory.Exists(child))
+                {
+                    // #1351: `child` here is a pruned execution's own former output directory
+                    // (`artifacts/pruned/execution_{id}`) -- ExecutionStreamLogger's engine-written
+                    // .stdout.log/.stderr.log (and rollovers/truncation markers) live in that SAME
+                    // directory as whatever a worker declared as output, so a raw byte sum over it
+                    // would count engine-written bytes as if a worker had produced them. Excluded here,
+                    // the same filter every other execution-output-directory reader in src/ applies.
+                    size = new DirectoryInfo(child)
+                        .EnumerateFiles("*", SearchOption.AllDirectories)
+                        .Where(f => !ExecutionStreamLogger.IsStreamLogFileName(f.Name))
+                        .Sum(f => f.Length);
+                    prunedAt = Directory.GetLastWriteTimeUtc(child);
+                }
+                else
+                {
+                    var fileInfo = new FileInfo(child);
+                    size = fileInfo.Length;
+                    prunedAt = fileInfo.LastWriteTimeUtc;
+                }
+
+                entries.Add((Path.GetFileName(child), size, prunedAt));
+            }
+            catch (IOException)
+            {
+                // Best-effort, same as pusher.py's own try/except OSError per child.
+            }
+        }
+
+        JsonObject? result = null;
+        if (entries.Count > 0)
+        {
+            entries.Sort((a, b) => b.PrunedAtUtc.CompareTo(a.PrunedAtUtc));
+            var items = new JsonArray();
+            foreach (var entry in entries.Take(PrunedItemsCap))
+            {
+                items.Add(new JsonObject
+                {
+                    ["name"] = entry.Name,
+                    ["bytes"] = entry.Bytes,
+                    ["prunedAt"] = entry.PrunedAtUtc.ToString("O"),
+                });
+            }
+
+            result = new JsonObject { ["count"] = entries.Count, ["items"] = items };
+        }
+
+        _prunedCache[roomPath] = new PrunedCacheEntry(dirMtimeUtc, children.Length, result);
+        return result is null ? null : (JsonObject)result.DeepClone();
+    }
+
+    /// <summary>Single-writer temp-plus-rename — the ~15-line core of <c>AtomicLaunchConfigWriter.Write</c>,
+    /// minus its retry budget: this daemon is the file's only writer, so the "two processes racing the
+    /// same rename" case that retry exists for does not apply here.</summary>
+    internal static void WriteAtomic(string path, string content)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        File.WriteAllText(tempPath, content);
+        try
+        {
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteTemp(tempPath);
+            throw;
+        }
+    }
+
+    private static void TryDeleteTemp(string tempPath)
+    {
+        try
+        {
+            File.Delete(tempPath);
+        }
+        catch
+        {
+            // Best-effort cleanup only, same posture as AtomicLaunchConfigWriter's own.
+        }
+    }
+
+    private sealed class ExecutionLiveState
+    {
+        public long StdoutOffset;
+        public long RolloverOffset;
+        public TokenBudgetMonitor? Monitor;
+    }
+
+    private sealed record PrunedCacheEntry(DateTime DirMtimeUtc, int ChildCount, JsonObject? Result);
+}

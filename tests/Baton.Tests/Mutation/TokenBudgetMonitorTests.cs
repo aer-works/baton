@@ -67,6 +67,23 @@ public sealed class TokenBudgetMonitorTests
         Assert.True(usage.BilledIsFloor);
     }
 
+    /// <summary>
+    /// #1557: the plan's one named gap in reuse -- <c>WorkerUsage.Turns</c> existed as a field but
+    /// <c>SnapshotUsage</c> never populated it. Additive the same way <c>BilledTokens</c> is: one per
+    /// usage-bearing line that actually contributed a billed delta, not per line fed to the monitor.
+    /// </summary>
+    [Fact]
+    public void SnapshotUsage_counts_Turns_as_one_per_usage_bearing_line_contributing_to_BilledTokens()
+    {
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":100,"output_tokens":3}}}""");
+        monitor.OnStdoutLine("not json, and not a usage line at all");
+        monitor.OnStdoutLine("""{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":20,"cache_read_input_tokens":200,"output_tokens":3}}}""");
+
+        Assert.Equal(2, monitor.SnapshotUsage().Turns);
+    }
+
     [Fact]
     public void A_sub_agents_smaller_context_never_lowers_the_tracked_level_below_the_parents()
     {
@@ -556,4 +573,48 @@ public sealed class TokenBudgetMonitorTests
     private static string AgyBilledLine(long billed) =>
         "{\"event\":\"step_update\",\"step_update\":{\"state\":\"DONE\",\"step_type\":\"agent_response\",\"usage\":{"
         + "\"input_tokens\":" + billed + ",\"output_tokens\":0}}}";
+
+    /// <summary>
+    /// #1557: the daemon feeds a monitor incremental batches read off disk every ~30s tick, never the
+    /// whole stream at once the way every OTHER test in this file does. This is the plan's own named
+    /// order-of-batching risk -- <c>_apply_live_delta</c>'s pusher-side design already assumes
+    /// accumulation is batch-shape-independent, unverified for this type under the daemon's new call
+    /// pattern. Replays the real captured agy stream <c>CONTROL_an_agy_stream_reconciles_to_a_ZERO_under_read</c>
+    /// (<c>ExecutionUsageProjectorTests.cs</c>) already pins the terminal totals for, split into
+    /// differently-sized chunks, and asserts the two monitors converge on an identical snapshot.
+    /// </summary>
+    [Fact]
+    public void SnapshotUsage_is_identical_whether_a_real_captured_stream_arrives_in_one_batch_or_many_small_ones()
+    {
+        var lines = File.ReadAllLines(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "agy-38c24d11-agent-response-usage.jsonl"));
+        Assert.True(lines.Length > 10, "fixture must carry enough lines to make chunking meaningful");
+
+        var oneShot = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
+        foreach (var line in lines)
+        {
+            oneShot.OnStdoutLine(line);
+        }
+
+        var incremental = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
+        const int chunkSize = 3;
+        for (var i = 0; i < lines.Length; i += chunkSize)
+        {
+            foreach (var line in lines.Skip(i).Take(chunkSize))
+            {
+                incremental.OnStdoutLine(line);
+            }
+        }
+
+        var oneShotUsage = oneShot.SnapshotUsage();
+        var incrementalUsage = incremental.SnapshotUsage();
+
+        Assert.Equal(oneShotUsage.BilledTokens, incrementalUsage.BilledTokens);
+        Assert.Equal(oneShotUsage.Turns, incrementalUsage.Turns);
+        Assert.Equal(oneShotUsage.TokensOut, incrementalUsage.TokensOut);
+        Assert.Equal(oneShotUsage.CacheReadTokens, incrementalUsage.CacheReadTokens);
+        Assert.Equal(oneShotUsage.BilledIsFloor, incrementalUsage.BilledIsFloor);
+        Assert.Equal(oneShot.SnapshotToolStepCount(), incremental.SnapshotToolStepCount());
+        Assert.NotNull(oneShotUsage.BilledTokens);
+    }
 }

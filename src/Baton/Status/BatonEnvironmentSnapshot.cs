@@ -69,7 +69,8 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionSweepIntervalSecondsOverride = null,
     string? RetentionSweepThresholdBytesOverride = null,
     string? RetentionPruneEnabledOverride = null,
-    string? RetentionPruneGraceSecondsOverride = null)
+    string? RetentionPruneGraceSecondsOverride = null,
+    string? FleetProjectionIntervalSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -106,7 +107,8 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepIntervalSecondsOverride: null,
         RetentionSweepThresholdBytesOverride: null,
         RetentionPruneEnabledOverride: null,
-        RetentionPruneGraceSecondsOverride: null);
+        RetentionPruneGraceSecondsOverride: null,
+        FleetProjectionIntervalSecondsOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -146,7 +148,11 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_INTERVAL_SECONDS"),
         RetentionSweepThresholdBytesOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_THRESHOLD_BYTES"),
         RetentionPruneEnabledOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_ENABLED"),
-        RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"));
+        RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"),
+        // "BATON_FLEET_PROJECTION_INTERVAL_SECONDS" -- Baton.Cli.Daemon.FleetProjectionWriter's own
+        // IntervalSecondsEnvironmentVariable (#1557), same fold reason as the five BATON_RETENTION_*
+        // fields immediately above.
+        FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient

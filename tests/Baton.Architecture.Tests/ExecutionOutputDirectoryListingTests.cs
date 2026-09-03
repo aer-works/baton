@@ -51,6 +51,13 @@ public class ExecutionOutputDirectoryListingTests
         // Lists a slash-command definitions directory shipped alongside the adapter, never an
         // execution's own output directory.
         ["Baton.Vendors/ClaudeWorkerAdapter.cs"] = "lists commandsDir (bundled slash-command defs), not an execution output directory",
+        // #1557: GetFileSystemEntries lists artifacts/pruned/ itself (the room-level pruned root, not
+        // an execution's own output directory) to find pruned execution dirs. The nested
+        // EnumerateFiles DOES walk into a pruned execution's own former output directory to size it,
+        // but filters ExecutionStreamLogger.IsStreamLogFileName entries out of that sum -- the #1351
+        // convention this test enforces, applied rather than bypassed.
+        ["Baton.Cli/Daemon/FleetProjectionWriter.cs"] =
+            "GetFileSystemEntries lists the pruned room root, not an execution output directory; the nested EnumerateFiles filters ExecutionStreamLogger.IsStreamLogFileName",
     };
 
     [Fact]
