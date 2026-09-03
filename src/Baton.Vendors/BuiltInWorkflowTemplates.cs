@@ -26,9 +26,11 @@ public sealed record RoleTemplateExport(
     [property: JsonPropertyName("shell_command_patterns")] IReadOnlyList<string>? ShellCommandPatterns = null,
     [property: JsonPropertyName("denied_shell_command_patterns")] IReadOnlyList<string>? DeniedShellCommandPatterns = null,
     [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false,
-    // #1683 F2: exported for the same reason as the two lists above — dispatch.py builds its
-    // PermissionGrant from this export, so a field missing here is a deny silently absent from every
-    // lane dispatched through that tool.
+    // #1683 F2: exported for the same reason as the two lists above — until #1759 retired it,
+    // dispatch.py built its PermissionGrant from this export, so a field missing here was a deny
+    // silently absent from every lane dispatched through that tool. `baton templates --json`
+    // (this export's own surface) is still exercised today by tool-refresh/refresh.py's install
+    // smoke check.
     [property: JsonPropertyName("denied_shell_option_tokens")] IReadOnlyList<string>? DeniedShellOptionTokens = null);
 
 /// <summary>

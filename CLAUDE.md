@@ -244,8 +244,9 @@ Note the test keys on the *pass*, not on the change: "I handed it a specific lis
 trigger for the cheap tier, because handing over a specific list is already mandatory above.
 
 Say what a pass will spend before spending it, the same way the cost-and-reversibility policy below requires for a live run: it is the
-operator's budget either way. `tools/baton-agy-loop/dispatch.py` announces the tier before it dispatches,
-so that path says it without being asked; every other way of launching a reviewer does not.
+operator's budget either way. `tools/baton-agy-loop/dispatch.py` used to announce the tier before it
+dispatched, so that path said it without being asked; #1759 retired it, and no launch path says it
+automatically now, so naming the tier is on whoever launches the reviewer, every time.
 *Four reviewer passes in one session all inherited the parent's model because none was ever named, so
 the frontier rate was paid for the grep half too (#548).*
 

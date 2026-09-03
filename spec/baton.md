@@ -3045,15 +3045,12 @@ honest cost of not declining both vendors to keep their capability artificially 
 what closed that gap on the agy side, so the two vendors converge on the same grant shape rather than
 staying deliberately unequal.
 
-**`tools/baton-agy-loop/dispatch.py`'s own grant model is extended to match.** That tool reads the
-same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`, the #836 shared-source
-pattern) but has its own `grant_refusal()` coherence check and its own `build_bindings()`
-permission-grant construction. All three scoped-shell fields are exported on
-`BuiltInWorkflowTemplates.RoleTemplateExport` (so `baton templates --json` carries them),
-`grant_refusal()` mirrors `ShellCommandsAreReadOnly`'s exact exemption (WriteFiles/NetworkAccess
-only, never ReadFiles), and `build_bindings()` threads the fields into the `PermissionGrant` it
-actually sends — without that last step the tool would have dispatched `review` with an UNSCOPED
-shell grant, the silent hole the whole design refuses elsewhere.
+Until #1759 retired it, `tools/baton-agy-loop/dispatch.py` mirrored this same coherence rule in its
+own `grant_refusal()`/`build_bindings()` rather than calling the engine's. #1759 ported the one
+assertion that mirror still carried — that every catalog role actually dispatches, on every real
+adapter — onto the production path itself (`RoleDispatch.ToBinding` /
+`WorkerBindingResolver`, `tests/Baton.Vendors.Tests/TemplateDispatchabilityTests.cs`), so there is now
+exactly one implementation of this rule rather than two kept in step by hand.
 
 ---
 

@@ -35,11 +35,11 @@ from datetime import datetime, timedelta, timezone
 # The split is deliberate, not stylistic. OVERLAP holds only gates that read files and run python:
 # nothing that starts MSBuild, and nothing that touches the built Baton.Cli binary. `fmt-check`
 # loads every project through MSBuild. `audit-selfcheck`/`audit-controls` used to refresh a copy of
-# the repo's built CLI too (#717, via `tools/baton-agy-loop/dispatch.py`'s own `baton templates
-# --json` call at import) -- overlapping either with `lint`'s build would have reintroduced the
-# concurrent-MSBuild and torn-binary failures that MSBUILDDISABLENODEREUSE (#909) and the
-# 2026-08-04 mutual-kill catalogue were paid for. #1759 retired dispatch.py, so neither check
-# touches the CLI anymore; they stay out of OVERLAP regardless (see AFTER_BUILD_FAST below).
+# the repo's built CLI too (#717) -- overlapping either with `lint`'s build would have reintroduced
+# the concurrent-MSBuild and torn-binary failures that MSBUILDDISABLENODEREUSE (#909) and the
+# 2026-08-04 mutual-kill catalogue were paid for. #1759 retired the dispatch.py call that CLI
+# dependency rested on (pixi.toml's `audit-selfcheck` entry has the full account); they stay out of
+# OVERLAP regardless (see AFTER_BUILD_FAST below).
 OVERLAP = [
     "audit-completeness",
     "audit-recordonce",
