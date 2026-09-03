@@ -1,3 +1,5 @@
+using Baton.Dispatch;
+
 namespace Baton.Vendors.Tests;
 
 /// <summary>
@@ -72,6 +74,51 @@ public class AgyHookVerdictLedgerTests
             File.WriteAllText(path, "2026-01-01T00:00:00Z\n2026-01-0");
 
             Assert.Equal(2, AgyHookVerdictLedger.CountVerdicts(path));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// #1760: the live-dispatch entry point (<see cref="AgyHookVerdictLedger.CountVerdicts"/>) and the
+    /// crash-recovery replay entry point (<see cref="HookVerdictLedger.CountLines"/>, which
+    /// <c>MutationInterface</c> now calls directly) must never disagree, because both count from the
+    /// same primitive. Before the dedupe the two readers already agreed on every one of these
+    /// fixtures -- this pins that fact rather than a fix for a discovered divergence.
+    /// </summary>
+    private const string MissingFileSentinel = "<missing-file>";
+
+    public static IEnumerable<object[]> LedgerFixtures()
+    {
+        yield return ["missing file", MissingFileSentinel];
+        yield return ["empty file", ""];
+        yield return ["one line, no trailing newline", "verdict-1"];
+        yield return ["one line with trailing newline", "verdict-1\n"];
+        yield return ["several lines with trailing newline", "verdict-1\nverdict-2\nverdict-3\n"];
+        yield return ["partial trailing line", "verdict-1\nverdict-"];
+        yield return ["CRLF line endings", "verdict-1\r\nverdict-2\r\nverdict-3\r\n"];
+        yield return ["blank interior lines", "verdict-1\n\n\nverdict-2\n"];
+        yield return ["blank file (whitespace only)", "   \n\t\n"];
+    }
+
+    [Theory]
+    [MemberData(nameof(LedgerFixtures))]
+    public void The_live_and_replay_entry_points_count_every_fixture_identically(string _, string contents)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agy-hook-verdicts-fixture-{Guid.NewGuid():N}.ndjson");
+        try
+        {
+            if (contents != MissingFileSentinel)
+            {
+                File.WriteAllText(path, contents);
+            }
+
+            var liveCount = AgyHookVerdictLedger.CountVerdicts(path);
+            var replayCount = HookVerdictLedger.CountLines(path);
+
+            Assert.Equal(liveCount, replayCount);
         }
         finally
         {

@@ -2825,8 +2825,9 @@ recorded request rather than from today's binding (#1741): `ExecutionRequest.Hoo
 `HookVerdictLedgerFileName` are journaled at dispatch time, from the same `CoreDispatchTarget
 .CountHookVerdicts != null` fact the live-dispatch site already reads, so the replay counts tool
 calls (the recorded adapter's stream parser) and verdicts (the ledger file the recorded execution
-wrote into the artifacts output directory, read directly, mirroring `AgyHookVerdictLedger
-.CountVerdicts`) from that recorded fact alone — never by re-resolving today's `bindings.json`. A
+wrote into the artifacts output directory, read directly through `Baton.Dispatch.HookVerdictLedger
+.CountLines` — the one reader `AgyHookVerdictLedger.CountVerdicts` also delegates to, since #1760)
+from that recorded fact alone — never by re-resolving today's `bindings.json`. A
 binding that refuses to resolve on restart (the probe finds the hook dead now — the persistent #710
 shape, not a transient one — or the entry was widened or moved off agy since the crash) no longer
 disarms a canary the dispatch-time fact says was actually live. A pre-#1741 journal line carries
