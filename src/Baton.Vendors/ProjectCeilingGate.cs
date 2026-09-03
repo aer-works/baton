@@ -86,11 +86,10 @@ internal static class ProjectCeilingGate
             throw new IncoherentPermissionGrantException(contract.WorkerName, withheld);
         }
 
-        if (!capped.WriteFiles && contract.ProducedOutputs.Count > 0 && !withheldWritesReachTheOutbox)
-        {
-            throw new UnsatisfiableOutputContractException(
-                contract.WorkerName, [.. contract.ProducedOutputs.Select(o => o.Name)]);
-        }
+        // #1166 review finding M1: the same predicate WorkerBindingResolver's pre-existing check uses,
+        // called directly rather than re-implemented, so the two rechecks cannot drift apart.
+        WorkerBindingResolver.RefuseIfTheContractCannotBeWritten(
+            contract.WorkerName, contract, capped, withheldWritesReachTheOutbox);
 
         return invocation with { PermissionGrant = capped };
     }

@@ -130,7 +130,8 @@ public static class WorkerBindingResolver
             // shell believing it escaped the write withhold. Told only that the contract is
             // unsatisfiable, they would grant more shell.
             RefuseIfShellDefeatsAWithheldCategory(workerName, entry.PermissionGrant);
-            RefuseIfTheContractCannotBeWritten(workerName, entry.Contract, entry.PermissionGrant, adapter);
+            RefuseIfTheContractCannotBeWritten(
+                workerName, entry.Contract, entry.PermissionGrant, adapter.WithheldWritesReachTheOutbox);
         }
 
         var workingDirectory = ResolveWorkingDirectory(workerName, entry.WorkingDirectory, profiles);
@@ -195,9 +196,16 @@ public static class WorkerBindingResolver
     /// <c>review.md</c>. So the question goes to <see cref="IWorkerAdapter.WithheldWritesReachTheOutbox"/>
     /// rather than being answered here, and adapters where it is still true keep the refusal.
     /// </para>
+    /// <para>
+    /// <b>#1166's second caller.</b> <see cref="ProjectCeilingGate.Apply"/> re-checks the same
+    /// condition against a grant it has just narrowed (a coherent role grant can become contract-breaking
+    /// once capped by a project ceiling, the same reason it re-runs
+    /// <see cref="RefuseIfShellDefeatsAWithheldCategory"/>'s predicate) — internal rather than private so
+    /// that gate can call this method directly instead of carrying its own copy of the condition.
+    /// </para>
     /// </summary>
-    private static void RefuseIfTheContractCannotBeWritten(
-        string workerName, WorkerContract contract, PermissionGrant? grant, IWorkerAdapter adapter)
+    internal static void RefuseIfTheContractCannotBeWritten(
+        string workerName, WorkerContract contract, PermissionGrant? grant, bool withheldWritesReachTheOutbox)
     {
         // A null grant is the raw PermissionScope escape hatch — nothing structured to reconcile
         // against the contract, so there is no claim here to check.
@@ -206,7 +214,7 @@ public static class WorkerBindingResolver
             return;
         }
 
-        if (adapter.WithheldWritesReachTheOutbox)
+        if (withheldWritesReachTheOutbox)
         {
             return;
         }
