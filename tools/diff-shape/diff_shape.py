@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -166,8 +165,10 @@ def check_diff_shape(
     if is_failing:
         if has_operator_label:
             messages.append("OK Failure lifted by 'operator-merge' PR label.")
-            actor_clause = f" by {actor}" if actor else ""
-            messages.append(f"::notice::diff-shape gate lifted by the 'operator-merge' label{actor_clause}.")
+            if actor:
+                messages.append(f"::notice::diff-shape gate lifted by the 'operator-merge' label by {actor}.")
+            else:
+                messages.append("::notice::diff-shape gate lifted by the 'operator-merge' label (see the PR timeline for who applied it).")
             return True, messages
         else:
             messages.append("To proceed: ask the operator to add the 'operator-merge' label to this PR if these changes are intended.")
@@ -179,7 +180,7 @@ def check_diff_shape(
 
 
 def selftest() -> int:
-    """Run synthetic test fixtures for the 5 diff-shape gate scenarios."""
+    """Run synthetic test fixtures for the diff-shape gate's discrimination arms."""
     print("diff-shape: running selftest fixtures")
     failures: list[str] = []
 
@@ -288,7 +289,7 @@ def selftest() -> int:
         moved_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
 
         passed_f, msgs_f = check_diff_shape(moved_base, head_f, labels=[], cwd=repo)
-        if passed_f:
+        if passed_f or not any("Test-only PR weakening" in m for m in msgs_f):
             failures.append(f"(f) test-only weakening against a moved base did not fail as expected (two-dot diff bug): {msgs_f}")
         else:
             print("  OK (f) test-only weakening against moved base -> FAIL")
@@ -303,16 +304,52 @@ def selftest() -> int:
         head_g = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
 
         passed_g, msgs_g = check_diff_shape(base_sha, head_g, labels=[], cwd=repo)
-        if passed_g:
+        if passed_g or not any("Test-only PR weakening" in m for m in msgs_g):
             failures.append(f"(g) renamed+weakened test file did not fail as expected (rename fail-open bug): {msgs_g}")
         else:
             print("  OK (g) renamed+weakened test file -> FAIL")
+
+        # (h) main()'s GITHUB_EVENT_PATH fallback, with no --labels passed -- the actual channel
+        # CI uses. A synthetic event payload carries two labels including operator-merge; the
+        # failing shape (head_a) must be lifted, and the negative arm (label absent) must not be.
+        event_path = repo / "event.json"
+        prev_event_path = os.environ.get("GITHUB_EVENT_PATH")
+        prev_cwd = os.getcwd()
+        try:
+            event_path.write_text(
+                json.dumps({"pull_request": {"labels": [{"name": "bug"}, {"name": "operator-merge"}]}}),
+                encoding="utf-8",
+            )
+            os.environ["GITHUB_EVENT_PATH"] = str(event_path)
+            os.chdir(repo)
+
+            rc_lifted = main(["--base", base_sha, "--head", head_a])
+            if rc_lifted != 0:
+                failures.append(f"(h) event-path labels with operator-merge present did not lift the gate: exit {rc_lifted}")
+            else:
+                print("  OK (h1) event-path labels incl. operator-merge -> exit 0")
+
+            event_path.write_text(
+                json.dumps({"pull_request": {"labels": [{"name": "bug"}]}}),
+                encoding="utf-8",
+            )
+            rc_blocked = main(["--base", base_sha, "--head", head_a])
+            if rc_blocked != 1:
+                failures.append(f"(h) event-path labels without operator-merge did not fail: exit {rc_blocked}")
+            else:
+                print("  OK (h2) event-path labels w/o operator-merge -> exit 1")
+        finally:
+            os.chdir(prev_cwd)
+            if prev_event_path is None:
+                os.environ.pop("GITHUB_EVENT_PATH", None)
+            else:
+                os.environ["GITHUB_EVENT_PATH"] = prev_event_path
 
     if failures:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 7 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 8 discrimination arms passed)")
     return 0
 
 
@@ -327,7 +364,8 @@ def get_labels_from_event_path() -> list[str]:
         pr = data.get("pull_request") or {}
         labels = pr.get("labels") or []
         return [lbl.get("name", "") for lbl in labels if isinstance(lbl, dict) and "name" in lbl]
-    except Exception:
+    except Exception as exc:
+        print(f"diff-shape: failed to read labels from GITHUB_EVENT_PATH: {exc}", file=sys.stderr)
         return []
 
 
@@ -335,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Diff-shape CI gate check (#1603)")
     parser.add_argument("--base", type=str, default="origin/main", help="Base commit/ref to diff against")
     parser.add_argument("--head", type=str, default="HEAD", help="Head commit/ref to diff against")
-    parser.add_argument("--labels", type=str, default="", help="Newline-delimited PR labels (a label name may itself contain a comma)")
+    parser.add_argument("--labels", type=str, default="", help="Newline-delimited PR labels, for tests; CI reads GITHUB_EVENT_PATH instead")
     parser.add_argument("--actor", type=str, default="", help="Who to name in the lift notice, if the failure is lifted by label")
     parser.add_argument("--selftest", action="store_true", help="Run synthetic selftest fixtures")
 
@@ -348,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     if not labels_list:
         labels_list = get_labels_from_event_path()
 
-    actor = args.actor or os.environ.get("GITHUB_ACTOR", "")
+    actor = args.actor
 
     passed, messages = check_diff_shape(args.base, args.head, labels=labels_list, actor=actor)
     for msg in messages:

@@ -19,13 +19,11 @@ jobs:
           fetch-depth: 0
       - uses: prefix-dev/setup-pixi@v0.8.0
         with:
+          run-install: false
           cache: false
       - name: Verify PR diff shape and protected tooling
-        env:
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: |
           pixi run diff-shape -- \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
-            --labels "$PR_LABELS" \
-            --actor "$GITHUB_ACTOR"
+            --actor "${{ github.event.action == 'labeled' && github.event.sender.login || '' }}"
