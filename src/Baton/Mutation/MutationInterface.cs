@@ -849,6 +849,7 @@ public static class MutationInterface
         var inputPaths = ArtifactManager.ResolveInputPaths(stepDefinition, snapshot, state, artifactsRootPath);
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
         var environment = ArtifactManager.BuildEnvironment(inputPaths, outputDirectory, artifactsRootPath);
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBinding);
 
         var request = new ExecutionRequest(
             executionId,
@@ -864,7 +865,9 @@ public static class MutationInterface
             LinkedFromExecutionId: previousExecutionId,
             SessionId: sessionId,
             Adapter: processBinding.Adapter,
-            Model: processBinding.Model);
+            Model: processBinding.Model,
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
@@ -1075,11 +1078,10 @@ public static class MutationInterface
                                 // tree-changing role never gets an auto-provisioned worktree, so that gate
                                 // would leave this permanently null for every real run.
                                 changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
-                                // #1732 review N3 (ruled: close the gap): the same CoreDispatchTarget
-                                // already resolved above for worktreePath/changesTree carries
-                                // CountHookVerdicts when this binding is an agy grant under sole-hook
-                                // narrowing (AgyWorkerAdapter.Resolve) -- captured here so the canary
-                                // also covers the crash-recovery replay, not only live dispatch.
+                                // #1741: still captured as a fallback for a PRE-#1741 journal line
+                                // (request.HookCanaryArmed is null, below) -- a current line no longer
+                                // relies on this, since HookCanaryArmed/HookVerdictLedgerFileName are
+                                // now the recorded facts the canary arms from.
                                 countHookVerdicts = p.Target.CountHookVerdicts;
                             }
                         }
@@ -1090,10 +1092,10 @@ public static class MutationInterface
                             // pinning this: StartWorkflowAsync_classifies_crash_recovery_candidate_
                             // when_its_worker_binding_refuses_to_resolve). The consequence is not a
                             // skip: if the journal promised an audit, Classify fails closed on the
-                            // null worktree path. countHookVerdicts also stays null on this path
-                            // (#1732 review round 3, Finding B), which un-arms the replay's hook
-                            // canary whenever today's binding will not resolve — the residual is
-                            // registered in spec/baton.md §9, not here.
+                            // null worktree path. countHookVerdicts also stays null on this path, which
+                            // only matters for a pre-#1741 journal line (ExecutionRequest.HookCanaryArmed's
+                            // own doc has the full #1741 reasoning) -- see the counting block below for
+                            // a line that already recorded arming.
                         }
 
                         // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
@@ -1104,17 +1106,22 @@ public static class MutationInterface
                             ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
                             : null;
 
-                        // #1732 review N3 (ruled: close the gap, option a): mirrors the live-dispatch
-                        // site's counting rather than passing null/null. The ledger lives in the
-                        // artifacts output directory resolved above at :1038 -- not the workspace,
-                        // which is the only thing this branch's "may be defunct" reasoning ever
-                        // applied to -- and usageParser is already resolved above; countHookVerdicts
-                        // is the already-resolved CoreDispatchTarget's own delegate, captured in the
-                        // try block above, so this spawns no extra probe.
+                        // #1741: arms from the RECORDED request fact, never from today's binding --
+                        // see ExecutionRequest.HookCanaryArmed's own doc for why (spec/baton.md §9).
                         int? toolCallCount = null;
                         int? hookVerdictCount = null;
-                        if (countHookVerdicts is not null)
+                        if (request.HookCanaryArmed is { } armed)
                         {
+                            if (armed)
+                            {
+                                toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
+                                hookVerdictCount = CountHookVerdictLedgerLines(outputDirectory, request.HookVerdictLedgerFileName);
+                            }
+                        }
+                        else if (countHookVerdicts is not null)
+                        {
+                            // request.HookCanaryArmed is null: a journal line predating #1741, kept on
+                            // its old path (ExecutionRequest.HookCanaryArmed's own doc has the rule).
                             toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
                             hookVerdictCount = countHookVerdicts(outputDirectory);
                         }
@@ -1646,6 +1653,9 @@ public static class MutationInterface
             upstreamExecutionIds[dependencyStepId] = stateByStepId[dependencyStepId].LatestExecutionId!.Value;
         }
 
+        var processBindingForRequest = binding as WorkerBinding.Process;
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBindingForRequest);
+
         var request = new ExecutionRequest(
             executionId,
             workflowId,
@@ -1653,12 +1663,14 @@ public static class MutationInterface
             step.Worker,
             inputPaths,
             step.Outputs,
-            binding is WorkerBinding.Process processBinding ? processBinding.Timeout : null,
+            processBindingForRequest?.Timeout,
             environment,
             upstreamExecutionIds,
             GrantAuditMode: binding.GrantAuditMode,
-            Adapter: (binding as WorkerBinding.Process)?.Adapter,
-            Model: (binding as WorkerBinding.Process)?.Model);
+            Adapter: processBindingForRequest?.Adapter,
+            Model: processBindingForRequest?.Model,
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
@@ -1667,6 +1679,14 @@ public static class MutationInterface
 
         return new PreparedExecution(request, outputDirectory);
     }
+
+    // #1741: the one fact every Process-dispatch ExecutionRequest construction site must journal --
+    // see ExecutionRequest.HookCanaryArmed's own doc for why (spec/baton.md §9). Shared so the two
+    // sites (a fresh step dispatch here, a `baton resume` dispatch in RecordResumeAsync) can't drift
+    // the way the #1753 review found RecordResumeAsync had.
+    private static (bool? HookCanaryArmed, string? HookVerdictLedgerFileName) CaptureHookCanaryArmingFields(
+        WorkerBinding.Process? processBinding) =>
+        (processBinding?.Target.CountHookVerdicts is not null, processBinding?.Target.HookVerdictLedgerFileName);
 
     private static FlowEvent.ExecutionRequestAccepted CreateExecutionRequestAccepted(ExecutionRequest request)
     {
@@ -2280,5 +2300,40 @@ public static class MutationInterface
         }
 
         return toolCallCount;
+    }
+
+    /// <summary>
+    /// The first-verdict canary's hook-verdict count for the crash-recovery replay ONLY (#1741) --
+    /// the live-dispatch site keeps reading <see cref="CoreDispatchTarget.CountHookVerdicts"/> directly,
+    /// since it always has a freshly-resolved binding. This counts the same way
+    /// <c>Baton.Vendors.AgyHookVerdictLedger.CountVerdicts</c> does -- every non-whitespace line, 0 when
+    /// the file is absent or the name is null -- duplicated rather than referenced (same
+    /// sub-threshold call <see cref="ExecutionStreamLogger"/>'s own duplicated ledger file-name constant
+    /// already makes): Architecture Rule 2 keeps this core layer from taking a project reference on
+    /// <c>Baton.Vendors</c>, and from naming a vendor at all, so the one place record-once would
+    /// normally point is unreachable from here. If that method's counting rule ever changes, this is
+    /// the other place it must change too.
+    /// </summary>
+    private static int CountHookVerdictLedgerLines(string outputDirectory, string? ledgerFileName)
+    {
+        if (string.IsNullOrWhiteSpace(ledgerFileName))
+        {
+            return 0;
+        }
+
+        var path = Path.Combine(outputDirectory, ledgerFileName);
+        if (!File.Exists(path))
+        {
+            return 0;
+        }
+
+        try
+        {
+            return File.ReadLines(path).Count(line => line.Trim().Length > 0);
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
     }
 }

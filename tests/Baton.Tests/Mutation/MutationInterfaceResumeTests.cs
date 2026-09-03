@@ -409,6 +409,137 @@ public class MutationInterfaceResumeTests
         }
     }
 
+    [Fact]
+    public async Task RecordResumeAsync_arms_the_replay_canary_from_its_own_recorded_request_when_todays_binding_refuses_to_resolve()
+    {
+        // #1753 review F1: RecordResumeAsync builds its OWN ExecutionRequest -- a second, distinct
+        // Process-dispatch site from PrepareExecutionAsync's, which #1741's fix originally covered.
+        // This pins that a `baton resume` dispatch also journals HookCanaryArmed/
+        // HookVerdictLedgerFileName from the resolved binding (spec/baton.md §9), so a resumed
+        // execution that crashes before its outcome is recorded, whose binding then refuses to
+        // resolve at replay, still arms the canary from the recorded request instead of fail-open
+        // Succeeded -- the same #1741 bug, reopened on this second site.
+        var snapshot = MakeSnapshot(Step(Solo, worker: "solo-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, WriteFile("plan", "first"), Timeout),
+            };
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+            var workflowId = new WorkflowId("wf-resume-canary");
+
+            var firstState = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,
+                cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(StepStatus.Succeeded, firstState.Steps.Single().Status);
+
+            // The resume's binding is armed for agy sole-hook narrowing (a live CountHookVerdicts
+            // delegate) -- what AgyWorkerAdapter.Resolve wires up for that shape.
+            var armedTarget = WriteFile("plan", "resumed") with
+            {
+                CountHookVerdicts = _ => 0,
+                HookVerdictLedgerFileName = "verdicts.ndjson",
+            };
+            var armedBindings = new Dictionary<string, WorkerBinding>
+            {
+                ["solo-worker"] = new WorkerBinding.Process(Contract, armedTarget, Timeout, Adapter: "agy"),
+            };
+
+            // Simulates the real crash window: Core durably records the start and exit, then the
+            // engine dies -- an uncaught exception, mirroring DispatchAndRecordOutcomeAsync's own "no
+            // local catch" contract -- before Flow ever appends the outcome event.
+            var crashingDispatcher = new CrashAfterCoreExitDispatcher(writer, artifactsRoot);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => MutationInterface.RecordResumeAsync(
+                workflowId, roomDirectory, snapshot, armedBindings, artifactsRoot, "solo-worker",
+                reader, writer, crashingDispatcher, cancellationToken: TestContext.Current.CancellationToken));
+
+            var resumedExecutionId = crashingDispatcher.LastExecutionId!.Value;
+
+            // The fix, checked directly: the journaled request already carries the arming fact, not
+            // the null/null the pre-fix RecordResumeAsync left it at.
+            var eventsAfterCrash = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var resumedRequest = eventsAfterCrash.OfType<FlowEvent.ExecutionRequestAccepted>()
+                .Single(e => e.Request.ExecutionId == resumedExecutionId).Request;
+            Assert.True(resumedRequest.HookCanaryArmed);
+            Assert.Equal("verdicts.ndjson", resumedRequest.HookVerdictLedgerFileName);
+
+            // Replay against a binding that now REFUSES to resolve (#710 shape). Before the fix,
+            // request.HookCanaryArmed was null, so the replay fell back to re-deriving from today's
+            // binding, found nothing to derive from (the catch at MutationInterface.cs ~1085), and
+            // settled Succeeded -- the exact fail-open #1741 closed, reopened for this site. After the
+            // fix it arms from the recorded request and settles Indeterminate instead.
+            var replayedState = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, new RefusingSoloWorkerBindings(), artifactsRoot, reader, writer,
+                new StubCoreDispatcher(), cancellationToken: TestContext.Current.CancellationToken);
+
+            var resumedStep = replayedState.Steps.Single();
+            Assert.True(resumedStep.IndeterminateAwaitingResolution);
+            var finalEvents = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(finalEvents.OfType<FlowEvent.ExecutionSucceeded>(), e => e.ExecutionId == resumedExecutionId);
+            Assert.Single(finalEvents, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == resumedExecutionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// A dispatcher double standing in for a real Core process for the F1 crash test above: it
+    /// writes exactly the files and Core-half events a real agy dispatch that then crashed would
+    /// have left durable (a stdout log with one tool call, an empty verdict ledger, a recorded
+    /// start and exit), then throws instead of returning -- Core recorded the exit; Flow never got
+    /// to append the outcome.
+    /// </summary>
+    private sealed class CrashAfterCoreExitDispatcher(ICoreEventLogWriter coreEventLogWriter, string artifactsRootPath) : ICoreDispatcher
+    {
+        public ExecutionId? LastExecutionId { get; private set; }
+
+        public async Task<CoreDispatchResult> DispatchAsync(
+            ExecutionRequest request, CoreDispatchTarget target, CancellationToken cancellationToken = default)
+        {
+            LastExecutionId = request.ExecutionId;
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, request.ExecutionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+            File.WriteAllText(Path.Combine(outputDirectory, "verdicts.ndjson"), string.Empty);
+
+            await coreEventLogWriter.AppendAsync(new CoreEvent.ExecutionStarted(request.ExecutionId, Pid: 4242), cancellationToken)
+                .ConfigureAwait(false);
+            await coreEventLogWriter.AppendAsync(
+                    new CoreEvent.ExecutionExited(request.ExecutionId, ExitCode: 0, CoreExitReason.Natural), cancellationToken)
+                .ConfigureAwait(false);
+
+            throw new InvalidOperationException("Simulated engine crash after Core durably recorded the exit.");
+        }
+    }
+
+    /// <summary>
+    /// The #710 shape: the binding is present but resolution refuses, mirroring
+    /// <c>MutationInterfaceCrashRecoveryTests.RefusingBindings</c> but keyed to this file's own
+    /// "solo-worker" so the F1 crash test above can replay against it.
+    /// </summary>
+    private sealed class RefusingSoloWorkerBindings : IReadOnlyDictionary<string, WorkerBinding>
+    {
+        private sealed class TestResolutionRefusal(string message) : BatonFlowException(message);
+
+        public WorkerBinding this[string key] => throw new TestResolutionRefusal($"No adapter for '{key}'.");
+        public bool TryGetValue(string key, out WorkerBinding value) => throw new TestResolutionRefusal($"No adapter for '{key}'.");
+        public bool ContainsKey(string key) => true;
+        public int Count => 1;
+        public IEnumerable<string> Keys => ["solo-worker"];
+        public IEnumerable<WorkerBinding> Values => throw new TestResolutionRefusal("enumerated");
+        public IEnumerator<KeyValuePair<string, WorkerBinding>> GetEnumerator() => throw new TestResolutionRefusal("enumerated");
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => throw new TestResolutionRefusal("enumerated");
+    }
+
     private static WorkflowStepDefinition Step(StepId stepId, string worker, int maxAttempts = 1, PausePoint? pausePoint = null) =>
         new(stepId, worker, [], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(maxAttempts), PausePoint: pausePoint);
 
