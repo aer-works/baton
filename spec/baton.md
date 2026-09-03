@@ -2572,6 +2572,7 @@ head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pu
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
   `GlobalConcurrencyCap`/`PerVendorConcurrencyCap` (`DaemonSettingsStore.cs`) — it is machine-wide,
   not per-room, so it belongs in the narrowed daemon too.
+- **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,
 `/api/ws/progress`), sidecar/Tailscale supervision, a desktop-owner-only auth tier, template-picker
