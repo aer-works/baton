@@ -17,8 +17,8 @@ namespace Baton.Cli;
 /// warrant a brief file. Mutually exclusive with <paramref name="SpecFilePath"/> and
 /// <paramref name="SpecFromStdin"/>; <see cref="DispatchOptionsParser"/> enforces at most one of the
 /// three, and <see cref="DispatchCommand"/> enforces that at least one is present for a role.
-/// spec/baton.md's dispatch entry has the full rationale for why all three sources produce an
-/// identical room record (record-once, not restated here).
+/// Why all three sources produce an identical room record is stated once, on the dispatch entry of
+/// spec/baton.md — not repeated in this file.
 /// </param>
 /// <param name="SpecFromStdin">
 /// True when <c>--spec -</c> (#1518) was passed — read the task prompt from stdin instead of a file.
