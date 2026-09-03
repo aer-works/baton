@@ -1198,18 +1198,10 @@ PRUNED_ITEMS_CAP = 20  # #1155: newest N pruned execution dirs surfaced per room
 
 
 def pruned_info_for_room(room: dict) -> dict | None:
-    """`{"count": N, "items": [{"name", "bytes", "prunedAt"}, ...]}` for the room's
-    `artifacts/pruned/` directory (ArtifactPruner.PruneAsync's grace-window destination,
-    #1027 Option B) -- or `None` when there is nothing to report, so an old consumer of the
-    pushed snapshot sees no change (#1155 scope: "absent directory -> field omitted, not an
-    empty object").
-
-    Each entry under `artifacts/pruned/` is one pruned execution directory (ArtifactPruner
-    never leaves a manifest -- RetryingFileMove.MoveDirectory is a bare rename), so `prunedAt`
-    is that directory's own mtime, the same "real file timestamp, not a manufactured now" stance
-    `live_telemetry_for_room`'s `lastActivityAt` already takes. `items` caps at the
-    `PRUNED_ITEMS_CAP` newest by `prunedAt`; `count` is the true total so the glass can show
-    "N pruned" even when only the newest `PRUNED_ITEMS_CAP` are listed."""
+    """`rooms[].pruned` -- shape and rationale are canonical in spec/baton.md §6 (#1155), not
+    restated here. `None` when there is nothing to report (no directory, or an unreadable one),
+    so an old consumer of the pushed snapshot sees no change. `items` caps at `PRUNED_ITEMS_CAP`,
+    newest-`prunedAt`-first; `count` is the true total."""
     room_path = room.get("path")
     if not isinstance(room_path, str) or not room_path:
         return None
