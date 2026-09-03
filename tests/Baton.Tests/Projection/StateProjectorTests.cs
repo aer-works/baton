@@ -494,6 +494,45 @@ public class StateProjectorTests
         }
     }
 
+    /// <summary>
+    /// #734: the same discriminating instrument as
+    /// <see cref="The_1549_heartbeat_and_cancellation_delivery_events_never_change_projected_state"/>
+    /// above, for the four delivery-poll facts (spec/baton.md §7) -- they are room-level facts about a
+    /// PR, not tied to any step, so there is no <see cref="StepState"/> they could plausibly change,
+    /// but this proves it rather than assuming it.
+    /// </summary>
+    [Fact]
+    public void The_734_delivery_events_never_change_projected_state()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var baseline = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+        var baselineJson = JsonSerializer.Serialize(StateProjector.Project(baseline, TwoStepSnapshot()));
+
+        FlowEvent[] Interleaved(FlowEvent noOpEvent) =>
+        [
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            noOpEvent,
+            new FlowEvent.ExecutionSucceeded(executionId),
+        ];
+
+        foreach (var noOpEvent in new FlowEvent[]
+                 {
+                     new FlowEvent.DeliveryPrOpened(123, "734-lane"),
+                     new FlowEvent.DeliveryChecksGreen(123),
+                     new FlowEvent.DeliveryChecksRed(123),
+                     new FlowEvent.DeliveryMerged(123),
+                     new FlowEvent.DeliveryMerged(123, Merged: false),
+                 })
+        {
+            var json = JsonSerializer.Serialize(StateProjector.Project(Interleaved(noOpEvent), TwoStepSnapshot()));
+            Assert.Equal(baselineJson, json);
+        }
+    }
+
     [Fact]
     public void A_fail_fail_succeed_sequence_resets_the_consecutive_failure_count_to_zero()
     {

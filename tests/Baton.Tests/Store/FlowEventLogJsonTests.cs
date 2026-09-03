@@ -58,6 +58,10 @@ public class FlowEventLogJsonTests
         new FlowEvent.ExecutionProgress(ExecutionId),
         new FlowEvent.CancellationDelivered(ExecutionId),
         new FlowEvent.CancellationRejected(ExecutionId),
+        new FlowEvent.DeliveryPrOpened(123, "734-lane"),
+        new FlowEvent.DeliveryChecksGreen(123),
+        new FlowEvent.DeliveryChecksRed(123),
+        new FlowEvent.DeliveryMerged(123),
     ];
 
     /// <summary>

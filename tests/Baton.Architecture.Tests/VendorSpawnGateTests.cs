@@ -48,6 +48,7 @@ public class VendorSpawnGateTests
         ["src/Baton.Cli/WorkstreamJunctionLinker.cs"] = "'cmd.exe /c mklink /J' to create a --workstream navigation link (#1619) — a Windows shell built-in, not a vendor CLI; no -p, no tool execution, spawns no vendor process.",
         ["src/Baton.Vendors/AgyHookLivenessProbe.cs"] = "#1680 (F6, #1732 review): spawns the platform shell ('cmd /c' on Windows, 'sh -c' on Unix) running the identical 'dotnet <Baton.Cli.dll> agy-hook-check' command string BuildHooksJson writes into hooks.json — AER's OWN hook binary, not a vendor CLI — once at resolve time, to confirm the PreToolUse gate itself is live before a worker whose only narrowing is that gate is ever dispatched. This IS the gate's own liveness check, run before the vendor spawn AgyWorkerAdapter.Resolve constructs; it never starts agy or any other vendor process.",
         ["src/Baton.Cli/WatchNotifier.cs"] = "#1488: spawns the platform shell to run an OPERATOR-authored '--notify <command>' target once a watched room reaches Terminal — never a vendor CLI, no dispatch, no PreToolUse surface. Payload delivery and the trust model are spec/baton.md §2's contract, not restated here.",
+        ["src/Baton.Cli/Daemon/IGhCliRunner.cs"] = "#734: spawns 'gh pr view --json ...', a read-only forge query the delivery poller uses to record PR/checks/merge facts — gh, not a vendor CLI (claude/agy); no -p, no tool execution, spawns no vendor process.",
     };
 
     private static readonly string[] SpawnMarkers = ["new ProcessStartInfo", "Process.Start", "new BatonTask"];

@@ -320,7 +320,8 @@ public sealed class FleetStatusTool : IMcpTool
                 Workstream: ExtractRoomWorkstream(terminalBindings),
                 ParentRoomPath: terminalLineage.ParentRoomDirectoryPath,
                 ParentExecutionId: terminalLineage.ParentExecutionId,
-                TerminalAt: sentinel.TerminalAt);
+                TerminalAt: sentinel.TerminalAt,
+                Delivery: await TryResolveDeliveryAsync(roomDir, sentinel.Outputs, cancellationToken).ConfigureAwait(false));
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -452,7 +453,8 @@ public sealed class FleetStatusTool : IMcpTool
                 // (WorkflowStatusProjector.Project gates it on WorkflowStatus.Terminal), so this needs
                 // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
                 // which never turns a terminal room into a Running one.
-                TerminalAt: view.TerminalAt);
+                TerminalAt: view.TerminalAt,
+                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -463,6 +465,53 @@ public sealed class FleetStatusTool : IMcpTool
                 Name: roomName,
                 Path: roomDir,
                 Error: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// #734: the room's latest journaled <c>FlowEvent.Delivery*</c> fact, gated on
+    /// <see cref="DeliveryReferenceResolver"/> first finding a resolved delivery reference among
+    /// <paramref name="outputs"/> — the common case (no declared delivery output) skips the extra
+    /// <c>flow.jsonl</c> read entirely rather than paying it for every room. Delivery facts keep
+    /// appending after a room's own workflow goes Terminal (the poller tracks the PR independently of
+    /// the room's DAG), so this reads <c>flow.jsonl</c> directly rather than trusting the terminal
+    /// sentinel's frozen snapshot, which predates any post-terminal delivery fact.
+    /// </summary>
+    private static async Task<DeliveryStatusView?> TryResolveDeliveryAsync(
+        string roomDir, IReadOnlyList<string>? outputs, CancellationToken cancellationToken)
+    {
+        if (DeliveryReferenceResolver.Resolve(outputs) is null)
+        {
+            return null;
+        }
+
+        var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
+        if (!File.Exists(logPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var events = await new FlowEventLogReader(logPath).ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            DeliveryStatusView? latest = null;
+            foreach (var flowEvent in events)
+            {
+                latest = flowEvent switch
+                {
+                    FlowEvent.DeliveryPrOpened opened => new DeliveryStatusView(opened.PullRequestNumber, "Opened"),
+                    FlowEvent.DeliveryChecksGreen green => new DeliveryStatusView(green.PullRequestNumber, "ChecksGreen"),
+                    FlowEvent.DeliveryChecksRed red => new DeliveryStatusView(red.PullRequestNumber, "ChecksRed"),
+                    FlowEvent.DeliveryMerged merged => new DeliveryStatusView(merged.PullRequestNumber, merged.Merged ? "Merged" : "Closed"),
+                    _ => latest,
+                };
+            }
+
+            return latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FlowEventLogReadException)
+        {
+            return null;
         }
     }
 
@@ -675,7 +724,14 @@ public sealed record FleetRoomStatusView(
     // back to a mtime is part of spec/baton.md §3's absence rules.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? TerminalAt = null);
+    string? TerminalAt = null,
+    // #734: the delivery poller's own latest recorded fact for this room (spec/baton.md §7) -- never
+    // a live `gh` read here, only what Baton.Cli.Daemon.DeliveryPoller has already journaled. Absent
+    // until the poller has recorded a first fact, including for a room whose declared outputs never
+    // resolved a delivery reference at all (the common case).
+    [property: JsonPropertyName("delivery")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DeliveryStatusView? Delivery = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

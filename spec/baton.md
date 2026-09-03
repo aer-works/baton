@@ -130,6 +130,31 @@ reach every downstream mailbox surface unfiltered without any widening of their 
 in that pipeline (`extract_timeline`, `RoomDetailTool`'s tag map, `room_detail`'s schema in §6)
 filters by event type in the first place.
 
+**Delivery state facts (#734).** A workflow whose deliverable is a PR is "done" in Baton the moment
+its final step succeeds — but the deliverable's actual forge state (opened → checks green/red →
+merged, or closed unmerged) lives only on GitHub until something records it. Four more `FlowEvent`
+cases close that gap, all content-free beyond a PR number and (for the first) the declared branch
+name:
+
+- **`DeliveryPrOpened(PullRequestNumber, Branch?)`** — the poller (§7) confirmed, via `gh`, that the
+  PR a room's declared delivery reference names exists. Recorded once per room.
+- **`DeliveryChecksGreen(PullRequestNumber)`** / **`DeliveryChecksRed(PullRequestNumber)`** — every
+  required check on the tracked PR completed non-failing / at least one concluded failing. Neither is
+  terminal: a later push can flip the state again, recorded as a fresh fact each time it does.
+- **`DeliveryMerged(PullRequestNumber, Merged = true)`** — the PR reached a terminal forge state.
+  `Merged: false` is the closed-unmerged case, recorded once the same way rather than adding a fifth
+  event kind for it. Once a room's journal carries one of these, the poller never polls that room
+  again.
+
+**Facts only, never actions.** Nothing reads any of the four to make a routing, retry, or merge
+decision (Architecture Rule 1) — a red check is recorded, never acted on. All four project as
+explicit no-ops in `StateProjector`, the identical shape the three #1549 cases above already
+establish, proven the same way (`StateProjectorTests.The_734_delivery_events_never_change_projected_state`).
+The declaration half — how a step names a delivery reference in the first place — is
+`Status.DeliveryReferenceOutputNames`: two well-known declared-output names (`delivery-branch.txt`,
+`delivery-pr.txt`) `Status.DeliveryReferenceResolver` reads back off a room's already-resolved
+outputs, the same `verdict.json`-by-name lookup `WatchFireService` already uses for its own payload.
+
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
 - **`baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>]
@@ -2056,7 +2081,8 @@ Output: a JSON array of
   "workstream"?: string,  // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
   "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
   "parentExecutionId"?: string, // #1441/#1620: the parent room's own execution id at redispatch time
-  "terminalAt"?: string        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
+  "terminalAt"?: string,        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
+  "delivery"?: { "pr": number, "state": string } // #734: the room's latest recorded delivery fact (§2, §7) -- "state" is one of Opened/ChecksGreen/ChecksRed/Merged/Closed. Absent until the poller has recorded a first fact, including for a room whose outputs never resolved a delivery reference. Read from `flow.jsonl` directly, even on the terminal-sentinel fast path -- delivery facts keep appending after a room's own workflow goes Terminal
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -2780,6 +2806,19 @@ trigger is not registrable by a standard user and is not used (#1770).
   this section states: the daemon only ever writes this file, never serves it over a listener. No
   pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
   own derivation.
+- **`DeliveryPoller`** (`Baton.Cli.Daemon`, a hosted service, #734) — a fifth kept responsibility, the
+  same outbound-only ceiling as the fleet projection file above: a slow-cadence (default 5 min,
+  `BATON_DELIVERY_POLL_INTERVAL_SECONDS`-configurable through `BatonEnvironmentSnapshot`, matching the
+  other hosted services' own pattern) `gh`-backed poll of every room whose declared outputs resolve a
+  delivery reference (above), recording the four delivery facts once each transition is observed and
+  never acting on them. `gh` is invoked the same way workers already invoke it — no credential
+  handling of its own (Credential Isolation) — from the room's registered project root (§8); a room
+  with no registered project root, or a `gh` that is absent or unauthenticated, is skipped with at
+  most one logged line per daemon process, never a daemon failure. Polls/day per open-PR room at the
+  default cadence: 288 (one every 5 minutes) — this never touches the snapshot push mailbox's 1,000/day
+  KV cap above, because the poller talks to GitHub and writes `flow.jsonl` directly; it neither reads
+  nor writes through the pusher's coalesced KV path at all. Polling for a room stops the moment its own
+  journal already carries a `DeliveryMerged` fact.
 - **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,

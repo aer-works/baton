@@ -75,6 +75,11 @@ public static class DaemonHost
         // daemon responsibility, outbound-only (no listener added).
         builder.Services.AddHostedService<FleetProjectionWriter>();
 
+        // #734: gh-backed delivery poll (branch/PR -> checks -> merged), spec/baton.md §7's fifth
+        // kept daemon responsibility, outbound-only (reads GitHub via gh, writes flow.jsonl, never
+        // acts on what it observes).
+        builder.Services.AddHostedService<DeliveryPoller>();
+
         var host = builder.Build();
         onHostBuilt?.Invoke(host);
         await host.RunAsync();

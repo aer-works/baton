@@ -372,12 +372,17 @@ public static class StateProjector
             case FlowEvent.ExecutionProgress:
             case FlowEvent.CancellationDelivered:
             case FlowEvent.CancellationRejected:
+            case FlowEvent.DeliveryPrOpened:
+            case FlowEvent.DeliveryChecksGreen:
+            case FlowEvent.DeliveryChecksRed:
+            case FlowEvent.DeliveryMerged:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 // The two VerifyDeclaration* events are listed here on purpose rather than by falling off
                 // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
                 // The three #1549 events (progress heartbeat, cancellation delivered/rejected) are the
                 // same shape: durable operator/observability facts that never change what a step's own
-                // state projects to.
+                // state projects to. The four #734 delivery events (spec/baton.md §7) are room-level
+                // facts about a PR, not tied to any StepState at all -- there is no step to affect.
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:

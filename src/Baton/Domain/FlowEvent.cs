@@ -34,6 +34,10 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(ExecutionProgress), "executionProgress")]
 [JsonDerivedType(typeof(CancellationDelivered), "cancellationDelivered")]
 [JsonDerivedType(typeof(CancellationRejected), "cancellationRejected")]
+[JsonDerivedType(typeof(DeliveryPrOpened), "deliveryPrOpened")]
+[JsonDerivedType(typeof(DeliveryChecksGreen), "deliveryChecksGreen")]
+[JsonDerivedType(typeof(DeliveryChecksRed), "deliveryChecksRed")]
+[JsonDerivedType(typeof(DeliveryMerged), "deliveryMerged")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -501,4 +505,38 @@ public abstract record FlowEvent
     /// on and stays a file-and-stderr-only rejection, same as before this event existed.
     /// </summary>
     public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #734 (spec/baton.md §7): <c>Baton.Cli.Daemon.DeliveryPoller</c> observed, via <c>gh</c>, that
+    /// the PR a room's declared delivery reference names (<see cref="Status.DeliveryReferenceOutputNames"/>)
+    /// exists on the forge. Recorded at most once per room — the poller's own dedup reads this event
+    /// back before ever emitting a second one. A fact only: nothing reads this to make a routing or
+    /// merge decision (Architecture Rule 1; spec/baton.md §7 states the "facts, never actions" rule
+    /// for the whole poller).
+    /// </summary>
+    /// <param name="Branch">
+    /// The room's own declared branch name, when the step also declared one — carried for context,
+    /// never re-derived from the forge.
+    /// </param>
+    public sealed record DeliveryPrOpened(int PullRequestNumber, string? Branch = null) : FlowEvent;
+
+    /// <summary>
+    /// #734: the poller observed every required check on the tracked PR complete non-failing. Not
+    /// terminal — a later push can re-arm checks, which the poller reports as a fresh
+    /// <see cref="DeliveryChecksRed"/> or a repeated <see cref="DeliveryChecksGreen"/> the same
+    /// dedup-on-last-recorded-state way.
+    /// </summary>
+    public sealed record DeliveryChecksGreen(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>#734: the poller observed at least one check on the tracked PR conclude failing. Not terminal — see <see cref="DeliveryChecksGreen"/>'s remarks.</summary>
+    public sealed record DeliveryChecksRed(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>
+    /// #734: the tracked PR reached a terminal forge state. <paramref name="Merged"/> discriminates
+    /// which one — <c>true</c> for an actual merge, <c>false</c> for closed without merging — so the
+    /// closed-unmerged case reuses this event kind rather than adding a fifth. Either way this is the
+    /// poller's last word on the room: <c>DeliveryPoller</c> never polls a room again once its journal
+    /// already carries one of these.
+    /// </summary>
+    public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = true) : FlowEvent;
 }

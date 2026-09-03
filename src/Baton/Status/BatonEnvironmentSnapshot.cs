@@ -72,7 +72,8 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionPruneGraceSecondsOverride = null,
     string? WatchReaperRetentionHoursOverride = null,
     string? FleetProjectionIntervalSecondsOverride = null,
-    string? ExecutionProgressIntervalSecondsOverride = null)
+    string? ExecutionProgressIntervalSecondsOverride = null,
+    string? DeliveryPollIntervalSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -112,7 +113,8 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionPruneGraceSecondsOverride: null,
         WatchReaperRetentionHoursOverride: null,
         FleetProjectionIntervalSecondsOverride: null,
-        ExecutionProgressIntervalSecondsOverride: null);
+        ExecutionProgressIntervalSecondsOverride: null,
+        DeliveryPollIntervalSecondsOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -162,7 +164,10 @@ public sealed record BatonEnvironmentSnapshot(
         FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"),
         // "BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS" -- #1549's heartbeat cadence,
         // Baton.Cli.ExecutionProgressHeartbeat.IntervalSecondsEnvironmentVariable.
-        ExecutionProgressIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS"));
+        ExecutionProgressIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_EXECUTION_PROGRESS_INTERVAL_SECONDS"),
+        // "BATON_DELIVERY_POLL_INTERVAL_SECONDS" -- #734's delivery poll cadence,
+        // Baton.Cli.Daemon.DeliveryPoller.IntervalSecondsEnvironmentVariable.
+        DeliveryPollIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_DELIVERY_POLL_INTERVAL_SECONDS"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient
