@@ -420,6 +420,14 @@ baton dispatch <role> --spec <spec-file> --room-dir <fresh-dir> [--adapter agy|c
                     [--output <path>]
 ```
 
+A quick read-only scoping question doesn't need a brief file at all: `--spec-text <text>` (or
+`--spec -` to pipe the prompt in over stdin) is a drop-in alternative to `--spec <spec-file>` — same
+room record, same lint, same everything downstream (#1518). One line, no file:
+
+```
+baton dispatch advise --spec-text "what does baton cancel actually do today?" --workspace <repo> --output <report>
+```
+
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
 the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or
 `WorkerBindingResolver` refuses it at bind time. `dispatch` now provisions that worktree itself,

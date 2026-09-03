@@ -100,11 +100,17 @@ A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
   long `--wait`'s poll loop sits on an undecided pause: ignored without `--wait`, and once it elapses
   the call stops waiting and reports exit code 3 (`Timeout`, below) rather than blocking forever on a
   workflow nobody has decided.
-- **`baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>]
+- **`baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--adapter <name>] [--model <name>] [--effort <name>]
   [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>]
   [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`**
-  — the one-shot form: `<name>` resolves to either a worker role (needs `--spec`) or a built-in
-  template (`src/Baton.Cli/DispatchOptionsParser.cs`). Left unset, `--room-dir` derives a fresh, unique
+  — the one-shot form: `<name>` resolves to either a worker role (needs a spec) or a built-in
+  template (`src/Baton.Cli/DispatchOptionsParser.cs`). A role's task prompt has three mutually exclusive
+  sources (#1518): a file (`--spec`), stdin (`--spec -`, refused outright on a non-redirected terminal
+  rather than hanging on EOF that never comes), or an inline string (`--spec-text`) — a scout question
+  ("what does `baton cancel` actually do today?") no longer needs a brief file first. All three resolve
+  to the same `spec` string `RoleDispatch.Materialize` takes, so the room record (the spec/grant lint,
+  `--attach`, the built prompt persisted into `bindings.json`) is identical in shape regardless of
+  source — there is no separate on-disk spec artifact for any of the three to land in. Left unset, `--room-dir` derives a fresh, unique
   directory under `BatonPaths.Rooms` per invocation — never a stable name derived from `<name>`, so a
   second `baton dispatch review` reruns rather than resuming the first's terminal snapshot. Bindings are
   written into the room directory by `DispatchCommand.ExecuteAsync`
@@ -174,7 +180,9 @@ forward — it settles one execution's `Indeterminate` verdict and stops.
 [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]`** (#1441) reruns
 a single-role `baton dispatch` room into a fresh one, once the operator finds the brief was wrong or
 incomplete — without hand-retyping the adapter/model/effort/workspace/timeout flags a from-scratch
-`baton dispatch` would otherwise force. `<room-dir>` names the parent room; like `baton dispatch`, the
+`baton dispatch` would otherwise force. Unlike `baton dispatch`'s `--spec` (#1518), `redispatch`'s
+`--spec` is file-only — no `--spec -`/`--spec-text` here; the amendment is a deliberate write, not a
+scout question, so the asymmetry is by design, not an oversight. `<room-dir>` names the parent room; like `baton dispatch`, the
 new room's own directory is always freshly generated (`RedispatchOptionsParser.cs`) — a redispatch is
 never a resume, same rule as §2's dispatch entry above. Every flag inherits the parent room's recorded
 `bindings.json` entry as its default — adapter, model, effort, workspace, timeout, token budget (#1623),
@@ -230,7 +238,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |

@@ -476,4 +476,92 @@ public class DispatchOptionsParserTests
     {
         Assert.Contains("--verify <cmd>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// #1518: a scout question's inline source — parsed the same way every other free-text flag value
+    /// is, no sanitization (unlike <c>--label</c>) because this string becomes the task prompt itself,
+    /// not display text.
+    /// </summary>
+    [Fact]
+    public void Parses_spec_text_verbatim()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec-text", "What does baton cancel do today?"]);
+
+        Assert.Equal("What does baton cancel do today?", options.SpecText);
+        Assert.Null(options.SpecFilePath);
+        Assert.False(options.SpecFromStdin);
+    }
+
+    /// <summary>#1518: <c>--spec -</c> reuses the existing <c>--spec</c> flag rather than adding a fourth one.</summary>
+    [Fact]
+    public void A_dash_spec_value_selects_stdin_and_clears_the_file_path()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "-"]);
+
+        Assert.True(options.SpecFromStdin);
+        Assert.Null(options.SpecFilePath);
+        Assert.Null(options.SpecText);
+    }
+
+    /// <summary>
+    /// A blank <c>--spec-text</c> has no sane invocation to correct into ("did you mean to pass
+    /// nothing?") the way an empty <c>--label</c> does — unlike a label, this string becomes the whole
+    /// task prompt, so a silent no-op dispatch is the wrong failure mode. Refused at parse time, like
+    /// every other malformed <c>baton dispatch</c> argument.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void A_blank_spec_text_is_a_typed_argument_error(string blank)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec-text", blank]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1518: exactly one of the three spec sources — naming two is very likely a mistake with no sane
+    /// resolution (which one did the operator mean?), so it is refused outright rather than picking one
+    /// silently. Whether at least one is required at all is a catalog question the parser does not
+    /// answer (a template dispatch takes none) — <see cref="A_name_without_a_spec_parses_because_a_template_takes_none"/>
+    /// already pins that this parser stays permissive on the "none" side.
+    /// </summary>
+    [Fact]
+    public void A_spec_file_and_spec_text_together_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--spec-text", "inline text"]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Same refusal as the file-plus-text combination, for the stdin form of <c>--spec</c>.</summary>
+    [Fact]
+    public void A_dash_spec_and_spec_text_together_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "-", "--spec-text", "inline text"]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Repeating the SAME flag is last-wins, same convention every other repeatable-in-practice flag in
+    /// this parser follows — only naming two DIFFERENT sources is refused.
+    /// </summary>
+    [Fact]
+    public void A_repeated_spec_flag_is_last_wins()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "first.md", "--spec", "second.md"]);
+
+        Assert.Equal("second.md", options.SpecFilePath);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_spec_text_and_the_dash_stdin_form()
+    {
+        Assert.Contains("--spec-text <text>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+        Assert.Contains("--spec -", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
 }
