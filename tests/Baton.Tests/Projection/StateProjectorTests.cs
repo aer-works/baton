@@ -497,9 +497,8 @@ public class StateProjectorTests
     /// <summary>
     /// #734: the same discriminating instrument as
     /// <see cref="The_1549_heartbeat_and_cancellation_delivery_events_never_change_projected_state"/>
-    /// above, for the four delivery-poll facts (spec/baton.md §7) -- they are room-level facts about a
-    /// PR, not tied to any step, so there is no <see cref="StepState"/> they could plausibly change,
-    /// but this proves it rather than assuming it.
+    /// above, applied to the four newer cases <c>StateProjector</c>'s own no-op group cites this test
+    /// by name for.
     /// </summary>
     [Fact]
     public void The_734_delivery_events_never_change_projected_state()

@@ -42,7 +42,37 @@ public sealed class DeliveryReferenceResolverTests : IDisposable
 
         Assert.NotNull(reference);
         Assert.Equal(1799, reference!.PullRequestNumber);
+        Assert.Equal("1799", reference.PullRequestReference);
         Assert.Equal("734-lane", reference.Branch);
+    }
+
+    /// <summary>
+    /// #734 review: a worker writing what `gh pr create` itself prints (a full URL) must resolve the
+    /// same as a bare number -- and the URL is preserved verbatim as `PullRequestReference`, since
+    /// `DeliveryPoller` hands it straight to `gh pr view` rather than reconstructing one.
+    /// </summary>
+    [Fact]
+    public void A_full_pr_url_resolves_the_trailing_number_and_preserves_the_url_as_the_reference()
+    {
+        var outputs = new[] { Write(DeliveryReferenceOutputNames.PullRequest, "https://github.com/philipreese/baton/pull/1799") };
+
+        var reference = DeliveryReferenceResolver.Resolve(outputs);
+
+        Assert.NotNull(reference);
+        Assert.Equal(1799, reference!.PullRequestNumber);
+        Assert.Equal("https://github.com/philipreese/baton/pull/1799", reference.PullRequestReference);
+    }
+
+    [Fact]
+    public void A_hash_prefixed_pr_number_resolves_with_the_hash_stripped_from_the_reference()
+    {
+        var outputs = new[] { Write(DeliveryReferenceOutputNames.PullRequest, "#1799") };
+
+        var reference = DeliveryReferenceResolver.Resolve(outputs);
+
+        Assert.NotNull(reference);
+        Assert.Equal(1799, reference!.PullRequestNumber);
+        Assert.Equal("1799", reference.PullRequestReference);
     }
 
     [Fact]

@@ -1,25 +1,25 @@
+using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 
 namespace Baton.Status;
 
-/// <summary>
-/// #734 (spec/baton.md §7): the two declared-output names <c>Baton.Cli.Daemon.DeliveryPoller</c>
-/// recognizes by name — the same "search a room's already-resolved outputs for a literal file name"
-/// pattern <c>Baton.Cli.WatchFireService.BuildPayload</c>'s own <c>verdict.json</c> lookup already
-/// uses. A workflow step includes either or both of these names in its
-/// <see cref="Domain.WorkflowStepDefinition.Outputs"/>, and the worker writes the branch name / PR
-/// number as that file's own content, to have the poller pick the room up. Neither name is validated
-/// or reserved anywhere else — <see cref="Domain.ProducedOutput"/> accepts them like any other
-/// declared output name.
-/// </summary>
+/// <summary>The two declared-output names <c>Baton.Cli.Daemon.DeliveryPoller</c> recognizes — spec/baton.md §2's "Delivery state facts" names the convention; see there, not restated here.</summary>
 public static class DeliveryReferenceOutputNames
 {
     public const string Branch = "delivery-branch.txt";
     public const string PullRequest = "delivery-pr.txt";
 }
 
-/// <summary>A room's declared delivery reference, resolved from its own produced outputs.</summary>
-public sealed record DeliveryReference(int? PullRequestNumber, string? Branch);
+/// <summary>
+/// A room's declared delivery reference, resolved from its own produced outputs.
+/// </summary>
+/// <param name="PullRequestNumber">Parsed out of <paramref name="PullRequestReference"/> regardless of which shape it came in.</param>
+/// <param name="PullRequestReference">
+/// The declared PR content verbatim (minus a leading <c>#</c>) — a bare number, or a full PR URL. This
+/// is what <c>DeliveryPoller</c> hands to <c>gh pr view</c> directly: a URL pins its own repo, so the
+/// poller needs no working-directory/repo-root fallback for that shape.
+/// </param>
+public sealed record DeliveryReference(int? PullRequestNumber, string? PullRequestReference, string? Branch);
 
 /// <summary>
 /// #734: reads <see cref="DeliveryReferenceOutputNames"/> off a room's already-resolved output paths
@@ -29,6 +29,11 @@ public sealed record DeliveryReference(int? PullRequestNumber, string? Branch);
 /// </summary>
 public static class DeliveryReferenceResolver
 {
+    // A worker writing a PR reference reaches for what `gh pr create` itself prints -- a full URL --
+    // at least as often as a bare number, and might write "#123" by hand. All three read the same
+    // trailing digits.
+    private static readonly Regex TrailingNumber = new(@"(\d+)\s*$", RegexOptions.Compiled);
+
     public static DeliveryReference? Resolve(IReadOnlyList<string>? outputs)
     {
         if (outputs is null || outputs.Count == 0)
@@ -38,9 +43,22 @@ public static class DeliveryReferenceResolver
 
         var branch = ReadNamed(outputs, DeliveryReferenceOutputNames.Branch);
         var prText = ReadNamed(outputs, DeliveryReferenceOutputNames.PullRequest);
-        int? pullRequestNumber = prText is not null && int.TryParse(prText, out var parsed) ? parsed : null;
 
-        return branch is null && pullRequestNumber is null ? null : new DeliveryReference(pullRequestNumber, branch);
+        string? reference = null;
+        int? pullRequestNumber = null;
+        if (prText is not null)
+        {
+            reference = prText.StartsWith('#') ? prText[1..] : prText;
+            var match = TrailingNumber.Match(prText);
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var parsed))
+            {
+                pullRequestNumber = parsed;
+            }
+        }
+
+        return branch is null && pullRequestNumber is null
+            ? null
+            : new DeliveryReference(pullRequestNumber, reference, branch);
     }
 
     private static string? ReadNamed(IReadOnlyList<string> outputs, string fileName)
@@ -57,11 +75,7 @@ public static class DeliveryReferenceResolver
     }
 }
 
-/// <summary>
-/// #734: <c>fleet_status</c>'s own per-room delivery summary (spec/baton.md §6/§7) — the latest
-/// <c>FlowEvent.Delivery*</c> fact already journaled for the room, never a live <c>gh</c> read of its
-/// own. Absent until the poller has actually recorded a first fact.
-/// </summary>
+/// <summary>`fleet_status`'s own per-room delivery summary — spec/baton.md's §6 schema block states the field and its absence rule; see there, not restated here.</summary>
 public sealed record DeliveryStatusView(
     [property: JsonPropertyName("pr")] int Pr,
     [property: JsonPropertyName("state")] string State);

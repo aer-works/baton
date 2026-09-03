@@ -141,10 +141,11 @@ name:
 - **`DeliveryChecksGreen(PullRequestNumber)`** / **`DeliveryChecksRed(PullRequestNumber)`** — every
   required check on the tracked PR completed non-failing / at least one concluded failing. Neither is
   terminal: a later push can flip the state again, recorded as a fresh fact each time it does.
-- **`DeliveryMerged(PullRequestNumber, Merged = true)`** — the PR reached a terminal forge state.
-  `Merged: false` is the closed-unmerged case, recorded once the same way rather than adding a fifth
-  event kind for it. Once a room's journal carries one of these, the poller never polls that room
-  again.
+- **`DeliveryMerged(PullRequestNumber, Merged = false)`** — the PR reached a terminal forge state.
+  `Merged: false` is also the closed-unmerged case, recorded once the same way rather than adding a
+  fifth event kind for it — and the deliberate default direction: a ledger line that lost this field
+  replays as the unremarkable outcome, never as a fabricated merge. Once a room's journal carries one
+  of these, the poller never polls that room again.
 
 **Facts only, never actions.** Nothing reads any of the four to make a routing, retry, or merge
 decision (Architecture Rule 1) — a red check is recorded, never acted on. All four project as
@@ -154,6 +155,10 @@ The declaration half — how a step names a delivery reference in the first plac
 `Status.DeliveryReferenceOutputNames`: two well-known declared-output names (`delivery-branch.txt`,
 `delivery-pr.txt`) `Status.DeliveryReferenceResolver` reads back off a room's already-resolved
 outputs, the same `verdict.json`-by-name lookup `WatchFireService` already uses for its own payload.
+`delivery-pr.txt`'s content may be a bare number or a full PR URL (what `gh pr create` itself prints);
+either way `DeliveryReferenceResolver` reads off the trailing digits for `PullRequestNumber`, and the
+poller (§7) hands the content on to `gh pr view` verbatim (minus a leading `#`) rather than
+reconstructing a reference of its own.
 
 A harness invokes work two ways, both in `src/Baton.Cli/Program.cs`:
 
@@ -2082,7 +2087,7 @@ Output: a JSON array of
   "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
   "parentExecutionId"?: string, // #1441/#1620: the parent room's own execution id at redispatch time
   "terminalAt"?: string,        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
-  "delivery"?: { "pr": number, "state": string } // #734: the room's latest recorded delivery fact (§2, §7) -- "state" is one of Opened/ChecksGreen/ChecksRed/Merged/Closed. Absent until the poller has recorded a first fact, including for a room whose outputs never resolved a delivery reference. Read from `flow.jsonl` directly, even on the terminal-sentinel fast path -- delivery facts keep appending after a room's own workflow goes Terminal
+  "delivery"?: { "pr": number, "state": string } // #734: the room's latest recorded delivery fact (§2, §7) -- "state" is one of Opened/ChecksGreen/ChecksRed/Merged/Closed. Absent until the poller has recorded a first fact, including for a room whose outputs resolved no PR number at all (no delivery reference, or a branch-only one). Read from `flow.jsonl` directly, even on the terminal-sentinel fast path -- delivery facts keep appending after a room's own workflow goes Terminal
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -2812,13 +2817,19 @@ trigger is not registrable by a standard user and is not used (#1770).
   other hosted services' own pattern) `gh`-backed poll of every room whose declared outputs resolve a
   delivery reference (above), recording the four delivery facts once each transition is observed and
   never acting on them. `gh` is invoked the same way workers already invoke it — no credential
-  handling of its own (Credential Isolation) — from the room's registered project root (§8); a room
-  with no registered project root, or a `gh` that is absent or unauthenticated, is skipped with at
-  most one logged line per daemon process, never a daemon failure. Polls/day per open-PR room at the
-  default cadence: 288 (one every 5 minutes) — this never touches the snapshot push mailbox's 1,000/day
-  KV cap above, because the poller talks to GitHub and writes `flow.jsonl` directly; it neither reads
-  nor writes through the pusher's coalesced KV path at all. Polling for a room stops the moment its own
-  journal already carries a `DeliveryMerged` fact.
+  handling of its own (Credential Isolation). A PR URL reference needs no working directory of its own
+  (the URL names its own repo); a bare-number reference runs from the room's registered §8 project
+  root, and a room declaring one with no such root is skipped, logged once per room rather than
+  silently. `gh` absent from PATH entirely is a daemon-wide fact, logged once per daemon process, never
+  a daemon failure; a `gh` that ran but refused for one room (not authenticated, a stale PR number) is
+  logged per occurrence rather than sharing that same one-shot latch — one bad room must never silence
+  the daemon-wide warning for every other room. Polls/day per open-PR room at the default cadence: 288
+  (one every 5 minutes). The poller itself never writes through the snapshot push mailbox's coalesced
+  KV path (§6) — it talks to GitHub and appends to `flow.jsonl` directly. `delivery` eventually rides
+  that mailbox too, as one more field on a room row `FleetProjectionWriter` already emits every ~30s
+  regardless (above) — the same "changes a push's contents, never its count" accounting the #1549
+  heartbeat entry (§2) already gives for its own field, at at most four transitions per room's entire
+  lifetime. Polling for a room stops the moment its own journal already carries a `DeliveryMerged` fact.
 - **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,

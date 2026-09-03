@@ -506,37 +506,22 @@ public abstract record FlowEvent
     /// </summary>
     public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
 
-    /// <summary>
-    /// #734 (spec/baton.md §7): <c>Baton.Cli.Daemon.DeliveryPoller</c> observed, via <c>gh</c>, that
-    /// the PR a room's declared delivery reference names (<see cref="Status.DeliveryReferenceOutputNames"/>)
-    /// exists on the forge. Recorded at most once per room — the poller's own dedup reads this event
-    /// back before ever emitting a second one. A fact only: nothing reads this to make a routing or
-    /// merge decision (Architecture Rule 1; spec/baton.md §7 states the "facts, never actions" rule
-    /// for the whole poller).
-    /// </summary>
-    /// <param name="Branch">
-    /// The room's own declared branch name, when the step also declared one — carried for context,
-    /// never re-derived from the forge.
-    /// </param>
+    /// <summary>#734: see spec/baton.md §2's "Delivery state facts" for the producer and the no-action rule shared by all four of these cases — not restated per-case here.</summary>
+    /// <param name="Branch">The room's own declared branch name, when the step also declared one.</param>
     public sealed record DeliveryPrOpened(int PullRequestNumber, string? Branch = null) : FlowEvent;
 
-    /// <summary>
-    /// #734: the poller observed every required check on the tracked PR complete non-failing. Not
-    /// terminal — a later push can re-arm checks, which the poller reports as a fresh
-    /// <see cref="DeliveryChecksRed"/> or a repeated <see cref="DeliveryChecksGreen"/> the same
-    /// dedup-on-last-recorded-state way.
-    /// </summary>
+    /// <summary>#734: see <see cref="DeliveryPrOpened"/>'s remarks. Not terminal, unlike <see cref="DeliveryMerged"/> — a later push can flip this again.</summary>
     public sealed record DeliveryChecksGreen(int PullRequestNumber) : FlowEvent;
 
-    /// <summary>#734: the poller observed at least one check on the tracked PR conclude failing. Not terminal — see <see cref="DeliveryChecksGreen"/>'s remarks.</summary>
+    /// <summary>#734: see <see cref="DeliveryChecksGreen"/>'s remarks — the failing counterpart.</summary>
     public sealed record DeliveryChecksRed(int PullRequestNumber) : FlowEvent;
 
     /// <summary>
-    /// #734: the tracked PR reached a terminal forge state. <paramref name="Merged"/> discriminates
-    /// which one — <c>true</c> for an actual merge, <c>false</c> for closed without merging — so the
-    /// closed-unmerged case reuses this event kind rather than adding a fifth. Either way this is the
-    /// poller's last word on the room: <c>DeliveryPoller</c> never polls a room again once its journal
-    /// already carries one of these.
+    /// #734: see <see cref="DeliveryPrOpened"/>'s remarks. <paramref name="Merged"/> discriminates an
+    /// actual merge from closed-unmerged, so the latter reuses this kind rather than adding a fifth.
+    /// Defaults <c>false</c> deliberately — fail closed: a corrupted or truncated line that lost this
+    /// field must not replay as the one outcome ("shipped") a reader would act differently on than the
+    /// other ("abandoned").
     /// </summary>
-    public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = true) : FlowEvent;
+    public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = false) : FlowEvent;
 }

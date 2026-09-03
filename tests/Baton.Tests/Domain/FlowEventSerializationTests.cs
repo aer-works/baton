@@ -170,7 +170,7 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.DeliveryPrOpened(123, "734-lane")];
         yield return [new FlowEvent.DeliveryChecksGreen(123)];
         yield return [new FlowEvent.DeliveryChecksRed(123)];
-        yield return [new FlowEvent.DeliveryMerged(123)];
+        yield return [new FlowEvent.DeliveryMerged(123, Merged: true)];
         yield return [new FlowEvent.DeliveryMerged(123, Merged: false)];
     }
 

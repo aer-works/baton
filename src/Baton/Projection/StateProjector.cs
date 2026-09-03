@@ -381,8 +381,9 @@ public static class StateProjector
                 // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
                 // The three #1549 events (progress heartbeat, cancellation delivered/rejected) are the
                 // same shape: durable operator/observability facts that never change what a step's own
-                // state projects to. The four #734 delivery events (spec/baton.md §7) are room-level
-                // facts about a PR, not tied to any StepState at all -- there is no step to affect.
+                // state projects to. The four #734 delivery events are the same shape once more, for a
+                // reason of their own: StateProjectorTests.The_734_delivery_events_never_change_projected_state
+                // states it.
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:

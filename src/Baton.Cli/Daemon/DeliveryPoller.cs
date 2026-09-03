@@ -8,18 +8,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace Baton.Cli.Daemon;
 
-/// <summary>
-/// #734 (spec/baton.md §7): a slow-cadence, outbound-only <c>gh</c> poll of every room whose declared
-/// outputs resolve a <see cref="DeliveryReference"/> with a PR number
-/// (<see cref="DeliveryReferenceOutputNames"/> has the two recognized names). Records
-/// <see cref="FlowEvent.DeliveryPrOpened"/>/<see cref="FlowEvent.DeliveryChecksGreen"/>/
-/// <see cref="FlowEvent.DeliveryChecksRed"/>/<see cref="FlowEvent.DeliveryMerged"/> as room facts and
-/// nothing else — it never merges, retries, comments, or otherwise acts on what it observes (spec/baton.md
-/// §7's "facts, never actions" rule). Registered alongside <see cref="WatchSweep"/>/
-/// <see cref="FleetProjectionWriter"/> on the same daemon host. Runs unconditionally, no
-/// <c>BATON_*_ENABLED</c> gate, matching <see cref="WatchSweep"/>'s own reasoning: a room with no
-/// resolved delivery output makes each iteration cheap regardless.
-/// </summary>
+/// <summary>#734: see spec/baton.md §7's "DeliveryPoller" bullet for the design this implements — not restated here.</summary>
 public sealed class DeliveryPoller : BackgroundService
 {
     public const string IntervalSecondsEnvironmentVariable = "BATON_DELIVERY_POLL_INTERVAL_SECONDS";
@@ -37,8 +26,17 @@ public sealed class DeliveryPoller : BackgroundService
         "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE",
     };
 
+    // `statusCheckRollup` is a GraphQL union of CheckRun (status/conclusion) and the legacy commit-status
+    // StatusContext shape (state/context) -- gh's own JSON flattens both into one object per entry with
+    // the inapplicable fields absent. A CI provider that posts commit statuses (Jenkins, CircleCI classic,
+    // Codecov) surfaces only the second shape; treating an entry with neither known field as complete would
+    // fabricate green before anything actually reported (the bug this pair of sets closes).
+    private static readonly HashSet<string> FailingStates = new(StringComparer.OrdinalIgnoreCase) { "ERROR", "FAILURE" };
+    private static readonly HashSet<string> PendingStates = new(StringComparer.OrdinalIgnoreCase) { "PENDING", "EXPECTED" };
+
     private readonly IGhCliRunner _gh;
-    private bool _ghUnavailableWarned;
+    private bool _ghMissingWarned;
+    private readonly HashSet<string> _missingProjectRootWarnedRooms = new(StringComparer.Ordinal);
 
     public DeliveryPoller()
         : this(new GhCliRunner())
@@ -130,7 +128,7 @@ public sealed class DeliveryPoller : BackgroundService
         }
 
         var reference = DeliveryReferenceResolver.Resolve(view.Outputs);
-        if (reference?.PullRequestNumber is not { } pullRequestNumber)
+        if (reference?.PullRequestNumber is not { } pullRequestNumber || reference.PullRequestReference is not { } prArgument)
         {
             // No declared delivery output resolved yet (or only a branch, no PR number yet) -- the
             // poller never starts for this room until a PR number is there to poll against.
@@ -146,31 +144,53 @@ public sealed class DeliveryPoller : BackgroundService
             return;
         }
 
-        if (room.Project is null)
+        // A full PR URL (what `gh pr create` itself prints) pins its own repo, so `gh pr view <url>`
+        // needs no working directory inside that repo's checkout at all. A bare number does -- `gh`
+        // resolves the repo from the cwd it runs in, so that shape falls back to the room's own §8
+        // registry project root, and is skipped (logged once per room) when the room has none.
+        var isUrlReference = prArgument.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || prArgument.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var workingDirectory = isUrlReference ? room.RoomDir : room.Project;
+        if (workingDirectory is null)
         {
-            // No registered project root for this room (spec/baton.md §8) -- `gh` has no repo
-            // context to run in without one, and this poller never guesses at a cwd.
+            if (_missingProjectRootWarnedRooms.Add(room.RoomDir))
+            {
+                (warningSink ?? Console.Error).WriteLine(
+                    $"DeliveryPoller: '{room.RoomDir}' declares a bare PR number with no registered §8 "
+                    + "project root, so 'gh' has no repo context to run in -- skipped. Reported once per room.");
+            }
+
             return;
         }
 
         var result = await _gh.RunAsync(
-                room.Project,
-                ["pr", "view", pullRequestNumber.ToString(CultureInfo.InvariantCulture), "--json", "state,mergedAt,statusCheckRollup"],
+                workingDirectory,
+                ["pr", "view", prArgument, "--json", "state,statusCheckRollup"],
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (!result.Started || result.ExitCode != 0)
+        if (!result.Started)
         {
-            if (!_ghUnavailableWarned)
+            // Unambiguous and permanent for this process: `gh` is not on PATH at all. Every other room
+            // will hit the identical failure, so one line for the whole daemon process is enough.
+            if (!_ghMissingWarned)
             {
-                _ghUnavailableWarned = true;
-                var why = result.Started ? result.Stderr.Trim() : "gh was not found on PATH";
+                _ghMissingWarned = true;
                 (warningSink ?? Console.Error).WriteLine(
-                    $"DeliveryPoller: 'gh pr view' unavailable ({why}) -- delivery polling is disabled "
-                    + "until it is. A missing or unauthenticated forge must not fail the daemon. "
-                    + "Reported once per daemon process.");
+                    "DeliveryPoller: 'gh' was not found on PATH -- a missing forge must not fail the "
+                    + "daemon, so delivery polling records nothing until it is. Reported once per daemon process.");
             }
 
+            return;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            // `gh` ran but refused -- unauthenticated, a stale/renumbered PR, a transient API error.
+            // Per-room and per-tick, not latched: a bad PR number on one room must never permanently
+            // silence a genuine problem on every other room the way one shared flag would.
+            (warningSink ?? Console.Error).WriteLine(
+                $"DeliveryPoller: 'gh pr view' failed for '{room.RoomDir}' (PR {prArgument}): {result.Stderr.Trim()}");
             return;
         }
 
@@ -223,9 +243,11 @@ public sealed class DeliveryPoller : BackgroundService
     private sealed record ObservedPrState(DeliveryCheckState Checks, bool? Merged);
 
     /// <summary>
-    /// Parses <c>gh pr view --json state,mergedAt,statusCheckRollup</c>'s stdout. Lenient by design:
-    /// an unrecognized or empty shape reads as Pending/not-terminal rather than throwing, since a
-    /// malformed response this tick is retried next tick regardless.
+    /// Parses <c>gh pr view --json state,statusCheckRollup</c>'s stdout. Lenient by design: an
+    /// unrecognized or empty shape reads as Pending/not-terminal rather than throwing, since a
+    /// malformed response this tick is retried next tick regardless. Never reads an unrecognized check
+    /// entry as complete-and-passing -- see <see cref="FailingStates"/>/<see cref="PendingStates"/>'
+    /// own remarks for the shape this guards against.
     /// </summary>
     private static ObservedPrState? ParsePrView(string stdout)
     {
@@ -262,16 +284,39 @@ public sealed class DeliveryPoller : BackgroundService
                 var allComplete = true;
                 foreach (var check in rollup.EnumerateArray())
                 {
-                    var conclusion = check.TryGetProperty("conclusion", out var c) ? c.GetString() : null;
-                    var status = check.TryGetProperty("status", out var s) ? s.GetString() : null;
+                    var conclusion = check.TryGetProperty("conclusion", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+                    var status = check.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+                    var legacyState = check.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
 
-                    if (conclusion is not null && FailingConclusions.Contains(conclusion))
+                    if (conclusion is not null || status is not null)
                     {
-                        sawFailure = true;
+                        // The CheckRun shape.
+                        if (conclusion is not null && FailingConclusions.Contains(conclusion))
+                        {
+                            sawFailure = true;
+                        }
+
+                        if (!string.Equals(status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                        {
+                            allComplete = false;
+                        }
                     }
-
-                    if (!string.IsNullOrEmpty(status) && !string.Equals(status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                    else if (legacyState is not null)
                     {
+                        // The legacy commit-status (StatusContext) shape.
+                        if (FailingStates.Contains(legacyState))
+                        {
+                            sawFailure = true;
+                        }
+
+                        if (PendingStates.Contains(legacyState))
+                        {
+                            allComplete = false;
+                        }
+                    }
+                    else
+                    {
+                        // Neither shape recognized -- never fabricate green off a check this cannot read.
                         allComplete = false;
                     }
                 }

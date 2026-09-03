@@ -469,18 +469,15 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// #734: the room's latest journaled <c>FlowEvent.Delivery*</c> fact, gated on
-    /// <see cref="DeliveryReferenceResolver"/> first finding a resolved delivery reference among
-    /// <paramref name="outputs"/> — the common case (no declared delivery output) skips the extra
-    /// <c>flow.jsonl</c> read entirely rather than paying it for every room. Delivery facts keep
-    /// appending after a room's own workflow goes Terminal (the poller tracks the PR independently of
-    /// the room's DAG), so this reads <c>flow.jsonl</c> directly rather than trusting the terminal
-    /// sentinel's frozen snapshot, which predates any post-terminal delivery fact.
+    /// spec/baton.md §6 schema states the field and its absence rule; this is the read side.
+    /// Gated on <see cref="DeliveryReferenceResolver"/> resolving a PR number specifically (not merely
+    /// a branch) — the same gate <c>DeliveryPoller.PollRoomAsync</c> itself uses, so a branch-only
+    /// room (which the poller never touches either) never pays the extra <c>flow.jsonl</c> read below.
     /// </summary>
     private static async Task<DeliveryStatusView?> TryResolveDeliveryAsync(
         string roomDir, IReadOnlyList<string>? outputs, CancellationToken cancellationToken)
     {
-        if (DeliveryReferenceResolver.Resolve(outputs) is null)
+        if (DeliveryReferenceResolver.Resolve(outputs)?.PullRequestNumber is null)
         {
             return null;
         }
