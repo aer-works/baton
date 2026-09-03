@@ -1273,6 +1273,52 @@ public class ClaudeWorkerAdapterTests
         }
     }
 
+    /// <summary>
+    /// #1727 (found while fixing the #1720 review's F1): the SAME tail as the arm above, in the shape
+    /// production actually captures it — see <see cref="StreamJsonTailScanner"/> for the collapse and
+    /// what it did to the old whole-parse-then-split-on-newline check. Red before that scanner; the
+    /// raw-newline arm above is the control that stayed green throughout, which is exactly why the
+    /// gap was invisible.
+    /// </summary>
+    [Fact]
+    public void CreditsRequired_InTheWhitespaceCollapsedTailProductionActuallyCaptures_ClassifiesExhaustedUntil()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}} """
+            + """{"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+    }
+
+    /// <summary>
+    /// #1727's polarity control: an assistant message whose own TEXT quotes the typed error code is
+    /// nested under <c>message.content[].text</c>, so scanning for top-level objects must not match
+    /// it — the scanner widened WHERE the check looks, not WHAT counts as the signal.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_quoting_credits_required_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"The vendor reports errorCode credits_required when the subscription runs dry."}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => utcNow;

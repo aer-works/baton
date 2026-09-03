@@ -420,6 +420,96 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
+    /// The TRI-STATE reading of the same question <see cref="IsWorkspaceUntouched"/> answers, for the
+    /// #1390 work-product evidence (<c>workspaceChanged</c>/<c>hollow</c>, spec/baton.md §3): returns
+    /// false when git could not answer at all — <paramref name="worktreePath"/> null/missing, not a
+    /// git checkout, an unset <c>@{upstream}</c> on a plain checkout, any git failure — and otherwise
+    /// sets <paramref name="changed"/> to what was measured.
+    /// <para>
+    /// Deliberately NOT <c>!IsWorkspaceUntouched(...)</c> (#1720 review F2). That helper fails CLOSED
+    /// to false for its own consumer, the #1593 retry carve-out, where "could not measure" must read
+    /// as "do not take the carve-out"; negated for this consumer the same false becomes a FABRICATED
+    /// positive — the engine asserting the worker changed the tree on no evidence, and pinning
+    /// <c>hollow</c> false exactly where the probe is blind. Two consumers, opposite safe defaults,
+    /// so two entry points; the git reads themselves are the same ones, kept in the same order.
+    /// </para>
+    /// </summary>
+    public static bool TryReadWorkspaceChanged(string? worktreePath, string? baseRef, out bool changed)
+    {
+        changed = false;
+
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain");
+            if (statusCode != 0)
+            {
+                // Not a git checkout, or git could not run here: unmeasurable, not "unchanged".
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(statusOut))
+            {
+                // Uncommitted changes are conclusive on their own — no ref to compare against is
+                // needed, so this arm measures cleanly even where the commit probes below cannot.
+                changed = true;
+                return true;
+            }
+
+            if (IsWorktree(worktreePath))
+            {
+                if (!string.IsNullOrWhiteSpace(baseRef))
+                {
+                    var (countCode, countOut, _) = RunGit(worktreePath, "rev-list", "--count", $"{baseRef}..HEAD");
+                    if (countCode != 0 || !int.TryParse(countOut.Trim(), out var count))
+                    {
+                        return false;
+                    }
+
+                    changed = count > 0;
+                    return true;
+                }
+
+                var (refCode, refOut, _) = RunGit(worktreePath, "log", "-g", "-n", "1", "--format=%gs");
+                if (refCode != 0)
+                {
+                    return false;
+                }
+
+                changed = !string.IsNullOrWhiteSpace(refOut)
+                    && refOut.Trim().StartsWith("commit", StringComparison.OrdinalIgnoreCase);
+                return true;
+            }
+
+            var (upCode, upOut, _) = RunGit(worktreePath, "rev-parse", "--abbrev-ref", "@{upstream}");
+            if (upCode != 0 || string.IsNullOrWhiteSpace(upOut))
+            {
+                // The ordinary state of a locally-created branch: nothing to compare HEAD against,
+                // so whether it carries commits is unknown rather than known-false.
+                return false;
+            }
+
+            var (upstreamCountCode, upstreamCountOut, _) = RunGit(worktreePath, "rev-list", "--count", "@{upstream}..HEAD");
+            if (upstreamCountCode != 0 || !int.TryParse(upstreamCountOut.Trim(), out var upstreamCount))
+            {
+                return false;
+            }
+
+            changed = upstreamCount > 0;
+            return true;
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            changed = false;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Tear down provisioned worktrees only once the run is Terminal — a Paused run must keep its
     /// tree for the resume, and this deliberately runs on the success path (not in a finally) so a
     /// crashed or cancelled run leaves the worker's tree intact too. Teardown never throws; a tree

@@ -34,5 +34,25 @@ public interface IFailureClassifier
     {
         return TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore);
     }
+
+    /// <summary>
+    /// The same classification, asked on the SATISFIED exit-0 path (#1622 (a)'s veto,
+    /// <c>Outcomes.OutcomeClassifier</c>) rather than on a failing dispatch. Separate because the
+    /// admissible evidence differs: on a failing dispatch the tails are diagnostics, but on a
+    /// satisfied run the stdout tail is the worker's own answer text, so an adapter whose matcher is
+    /// prose (<c>Vendors.AgyWorkerAdapter</c>'s quota sentence) would let a worker veto its own
+    /// successful run by writing ABOUT a quota refusal (#1720 review F1). An adapter overrides this
+    /// to require a vendor-CONTROLLED signal on that channel; the default is the failing-dispatch
+    /// classification, which is correct for an adapter whose stdout matcher is already a typed field.
+    /// </summary>
+    bool TryClassifySatisfiedRunFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        return TryClassifyFailure(stderrTail, stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
 }
 

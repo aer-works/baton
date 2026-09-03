@@ -107,7 +107,8 @@ public sealed record WorkflowStatusStepView(
     // same way CapturedResponseFile is above -- present only for a currently-Failed step. A consumer
     // (RedispatchCommand's Indeterminate-parent remedy) needs this to tell a ContractFailure parent
     // (which `baton resolve --reject --reason` can still resolve) from a VerifyFailed/Arrested one
-    // (which no `baton resolve` verb ever admits) without guessing from CapturedResponseFile alone,
+    // (which `baton resolve --close --reason` resolves instead, #1622 (d)) without guessing from
+    // CapturedResponseFile alone,
     // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -352,7 +353,12 @@ public static class WorkflowStatusProjector
                 firstFailureReason = step.LatestFailureReason;
             }
 
-            if (step.Status == StepStatus.Rejected || step.ResolvedByConductor)
+            // F11 (#1720 review, conductor ruling): `rejected` is the human "no" — a decide-time
+            // Rejected step or a `baton resolve --reject`. A `--close` is an administrative
+            // settlement whose own remedy text says the work already landed, so it sets `resolvedBy`
+            // WITHOUT setting `rejected`; a harness branching on `rejected` to mean "a person refused
+            // this work" would otherwise read a closed lane as refused. spec/baton.md §3.
+            if (step.Status == StepStatus.Rejected || step.ConductorRejected)
             {
                 anyRejected = true;
             }

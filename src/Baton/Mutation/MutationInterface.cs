@@ -1060,9 +1060,14 @@ public static class MutationInterface
                                 }
 
                                 responseParser = p.ResponseParser;
-                                // #1622/#1390: the same catalog-derived bit the live-dispatch path
-                                // reads off `binding.ChangesTree` below -- crash recovery classifies
-                                // from a freshly re-resolved binding, so this is the identical value.
+                                // #1622/#1390: the same bit the live-dispatch path reads off
+                                // `binding.ChangesTree` below. 7c (#1720 review) corrects the
+                                // mechanism this used to state: the binding is NOT re-derived from
+                                // the role catalog here -- ChangesTree is a serialized field of
+                                // WorkerBindingConfigEntry, written into the room's own bindings.json
+                                // at dispatch and read back from that file, so this is the value
+                                // recorded at dispatch and a catalog grant that changed since then
+                                // cannot diverge the two.
                                 changesTree = p.ChangesTree;
                                 // #1622/#1390: deliberately NOT gated on p.IsWorktree the way worktreePath
                                 // above is -- see OutcomeClassifier.Classify's own parameter doc for why a

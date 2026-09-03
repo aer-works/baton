@@ -14,13 +14,20 @@ namespace Baton.Tests.Mutation;
 /// <see cref="MutationInterface"/> feeds it — every real <c>implement</c>/<c>janitor</c> dispatch has
 /// <c>WorkerBinding.Process.IsWorktree == false</c> (a tree-changing role's <c>WriteFiles</c> grant
 /// means <c>Baton.Vendors.RoleDispatch.ToBinding</c> never auto-provisions a worktree for it), and the
-/// live-dispatch call site used to gate the path handed to <c>WorktreeProvisioner.IsWorkspaceUntouched</c>
-/// behind that same <c>IsWorktree</c> flag — so <c>workspaceChanged</c> read <c>true</c> unconditionally
-/// for every real dispatch, regardless of what the worker actually did. This test dispatches through
-/// the real, managed engine (same discipline as <see cref="MutationInterfaceTests"/>) against a real git
-/// repository directly as <see cref="WorkerBinding.Process.Target"/>'s <c>WorkingDirectory</c> — never
-/// wrapped in <c>git worktree add</c>, so <c>IsWorktree</c> stays <c>false</c> — and pins that
-/// <c>workspaceChanged</c>/<c>hollow</c> still read the real state.
+/// live-dispatch call site used to gate the path handed to the workspace probe behind that same
+/// <c>IsWorktree</c> flag — so <c>workspaceChanged</c> read <c>true</c> unconditionally for every real
+/// dispatch, regardless of what the worker actually did. These tests dispatch through the real,
+/// managed engine (same discipline as <see cref="MutationInterfaceTests"/>) with the binding's
+/// <c>IsWorktree</c> flag left <c>false</c> throughout — the shape <c>RoleDispatch.ToBinding</c>
+/// actually produces — over the two workspace shapes a real dispatch lands in:
+/// <list type="bullet">
+/// <item>an operator-created <c>git worktree add</c> tree (this very checkout's own shape), where the
+/// probe measures and <c>workspaceChanged</c>/<c>hollow</c> read the real state; and</item>
+/// <item>a plain checkout with no <c>@{upstream}</c> — the ordinary state after <c>git switch -c</c> —
+/// where the probe cannot measure at all and both fields must be ABSENT rather than fabricated
+/// (F2/F7, #1720 review: this class's summary previously claimed the plain-checkout shape while every
+/// arm used <c>git worktree add</c>, and that unclaimed branch was the one the defect lived on).</item>
+/// </list>
 /// </summary>
 public sealed class MutationInterfaceWorkProductWiringTests : IDisposable
 {
@@ -82,6 +89,58 @@ public sealed class MutationInterfaceWorkProductWiringTests : IDisposable
         Assert.Equal(StepStatus.Succeeded, stepState.Status);
         Assert.False(stepState.WorkspaceChanged);
         Assert.True(stepState.Hollow);
+    }
+
+    /// <summary>
+    /// F2 (#1720 review): the arm the class summary always claimed and never had. A plain checkout on
+    /// a locally-created branch has no <c>@{upstream}</c> to count commits against, so the probe
+    /// cannot answer — and the fix's whole point is that "cannot measure" renders as ABSENCE. Before
+    /// it, this same run reported <c>workspaceChanged: true</c> (the negation of a fail-closed
+    /// <c>false</c>) for a worker that did nothing at all, and <c>hollow</c> could never fire here.
+    /// </summary>
+    [Fact]
+    public async Task A_tree_changing_dispatch_on_a_plain_checkout_with_no_upstream_reports_no_work_product_evidence()
+    {
+        var repo = NewDir("plain-repo");
+        RunGit(repo, "init", "-b", "main");
+        RunGit(repo, "config", "user.email", "test@example.com");
+        RunGit(repo, "config", "user.name", "Test");
+        File.WriteAllText(Path.Combine(repo, "committed.txt"), "committed content");
+        RunGit(repo, "add", ".");
+        RunGit(repo, "commit", "-m", "initial");
+
+        var roomDirectory = Path.Combine(_root, $"room-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var stepId = new StepId("implement-step");
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId("snapshot-workproduct-wiring-plain"),
+            new WorkflowTemplateId("implement"),
+            WorkflowTemplateVersion: 1,
+            Steps: [new WorkflowStepDefinition(stepId, "implement", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1))]);
+
+        var bindings = new Dictionary<string, WorkerBinding>
+        {
+            ["implement"] = new WorkerBinding.Process(
+                new WorkerContract("implement", [], [], []),
+                ExitCleanlyWithoutWriting() with { WorkingDirectory = repo },
+                TimeSpan.FromSeconds(30),
+                ChangesTree: true),
+        };
+
+        await using var writer = new FlowEventLogWriter(logPath);
+        var reader = new FlowEventLogReader(logPath);
+        var dispatcher = new CoreDispatcher(writer);
+
+        var finalState = await MutationInterface.StartWorkflowAsync(
+            new WorkflowId("wf-workproduct-wiring-plain"), roomDirectory, snapshot, bindings, artifactsRoot,
+            reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
+
+        var stepState = Assert.Single(finalState.Steps);
+        Assert.Equal(StepStatus.Succeeded, stepState.Status);
+        Assert.Null(stepState.WorkspaceChanged);
+        Assert.Null(stepState.Hollow);
+        Assert.Null(stepState.HollowReason);
     }
 
     private string NewDir(string name)

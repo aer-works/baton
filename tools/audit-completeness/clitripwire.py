@@ -32,6 +32,19 @@ never shown at all) is out of scope for direction 2 -- there is nothing there to
 Bare mentions (`baton templates`, `` `baton run` `` with no arguments) still have their verb checked
 against Program.cs's own `knownSubcommands` list, so a doc reference to a retired or misspelled verb
 is still caught even though it carries no flags to validate.
+
+TWO MORE GRAMMAR SURFACES (F3, #1720 review)
+`baton resolve --close` shipped reaching neither `baton help` nor the spec's own CLI table, and this
+checker could not see it: it read one doc. Both surfaces are REFERENCE statements of the same
+grammar, not quickstarts, so both are checked against the parser's FULL flag set rather than only its
+required flags:
+3. `Program.cs`'s hand-written help lines. Only the literal ones are checked -- most verbs print
+   `{SomeOptionsParser.Usage[7..]}`, which cannot drift by construction; the handful spelled out as
+   string literals (`decide`, `resolve`, `supply`, `cancel`) are the ones that can, and did.
+4. `spec/baton.md` §2's CLI argument table, whose own `Source` column names the parser each row
+   restates -- so the row is matched to its parser by that column, not by guessing from the verb.
+An operator who runs `baton --help`, or a harness reading the register, must not be able to conclude
+a shipped verb does not exist.
 """
 from __future__ import annotations
 
@@ -58,11 +71,23 @@ CLASS_RE = re.compile(r"class\s+(\w+OptionsParser)\b")
 FENCE_RE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)
 INLINE_RE = re.compile(r"`(baton [^`]*)`", re.S)
 
+SPEC = ROOT / "spec" / "baton.md"
+
+# One `Console.Error.WriteLine("...")` whose argument is plain (possibly concatenated) string
+# literals. An interpolated `$"...{Parser.Usage}..."` line deliberately does not match: it cannot
+# drift from the constant it prints.
+WRITELINE_RE = re.compile(
+    r'Console\.Error\.WriteLine\(\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+)\)\s*;')
+# A §2 CLI-table row: | `verb` | `usage` | `SomeOptionsParser.cs` |
+SPEC_ROW_RE = re.compile(r"^\|\s*`([a-z][a-z0-9-]*)`\s*\|\s*(.+?)\s*\|\s*`([^`]+)`\s*\|\s*$", re.M)
+
 # Sanity floor (#common-sense): a checker that silently extracted nothing is worse than none.
 MIN_PARSERS = 5
 MIN_PARSER_FLAGS = 15
 MIN_KNOWN_VERBS = 5
 MIN_DOC_INVOCATIONS = 10
+MIN_HELP_LINES = 3
+MIN_SPEC_ROWS = 5
 
 
 class ParserContract:
@@ -121,6 +146,80 @@ def parse_parser_file(text: str, file_rel: str) -> ParserContract | None:
     if verb is None:
         return None
     return ParserContract(class_match.group(1), file_rel, line, verb, all_flags, required_flags, or_groups)
+
+
+class GrammarStatement:
+    """One REFERENCE restatement of a verb's grammar outside the parser that owns it."""
+
+    def __init__(self, source, line, verb, flags, raw, parser_class=None):
+        self.source = source          # e.g. "src/Baton.Cli/Program.cs"
+        self.line = line
+        self.verb = verb
+        self.flags = flags
+        self.raw = raw
+        self.parser_class = parser_class  # spec rows name their parser; help lines do not
+
+
+def parse_help_lines(program_cs_text: str) -> list[GrammarStatement]:
+    """Every hand-written `baton <verb> ...` usage line `baton help` prints.
+
+    Interpolated lines (`$"       {DispatchOptionsParser.Usage[7..]}"`) are skipped by the regex:
+    they restate nothing, so they cannot drift.
+    """
+    statements = []
+    for m in WRITELINE_RE.finditer(program_cs_text):
+        text = "".join(STRING_LITERAL_RE.findall(m.group(1)))
+        verb_match = VERB_RE.search(text)
+        if verb_match is None or not text.strip().startswith("baton "):
+            continue
+        line = program_cs_text.count("\n", 0, m.start()) + 1
+        statements.append(GrammarStatement(
+            "src/Baton.Cli/Program.cs", line, verb_match.group(1),
+            set(FLAG_RE.findall(text)), text.strip()))
+    return statements
+
+
+def parse_spec_table(spec_text: str) -> list[GrammarStatement]:
+    """Every §2 CLI-table row, matched to its parser by the row's own `Source` column."""
+    statements = []
+    for m in SPEC_ROW_RE.finditer(spec_text):
+        verb, usage_cell, source_cell = m.group(1), m.group(2), m.group(3)
+        if not source_cell.endswith("OptionsParser.cs"):
+            continue  # `cancel`/`templates` are spelled in Program.cs and own no parser
+        line = spec_text.count("\n", 0, m.start()) + 1
+        statements.append(GrammarStatement(
+            "spec/baton.md", line, verb, set(FLAG_RE.findall(usage_cell)), usage_cell.strip(),
+            parser_class=source_cell[:-3]))
+    return statements
+
+
+def find_grammar_drift(parsers: dict[str, ParserContract],
+                        statements: list[GrammarStatement]) -> list[str]:
+    """Direction 3/4: a reference restatement must carry a verb's FULL flag set, no more, no less."""
+    problems = []
+    by_class = {p.cls_name: p for p in parsers.values()}
+
+    for statement in statements:
+        parser = by_class.get(statement.parser_class) if statement.parser_class else parsers.get(statement.verb)
+        if parser is None:
+            if statement.parser_class is not None:
+                problems.append(
+                    f"{statement.source}:{statement.line}: `baton {statement.verb}`'s row names "
+                    f"'{statement.parser_class}.cs' as its source, but no such parser was extracted "
+                    f"from {CLI_DIR.name}")
+            continue
+
+        for missing in sorted(parser.all_flags - statement.flags):
+            problems.append(
+                f"{statement.source}:{statement.line}: `baton {statement.verb}` grammar omits "
+                f"'{missing}', which {parser.cls_name}.Usage carries. Restated as: `{statement.raw}`")
+        for unknown in sorted(statement.flags - parser.all_flags):
+            problems.append(
+                f"{statement.source}:{statement.line}: `baton {statement.verb}` grammar uses "
+                f"'{unknown}', which {parser.cls_name}.Usage does not recognise. Restated as: "
+                f"`{statement.raw}`")
+
+    return problems
 
 
 def parse_known_subcommands(program_cs_text: str) -> set[str]:
@@ -222,14 +321,21 @@ def main(argv: list[str]) -> int:
         parsers[contract.verb] = contract
         total_flags += len(contract.all_flags)
 
-    known_verbs = parse_known_subcommands(PROGRAM_CS.read_text(encoding="utf-8"))
+    program_cs_text = PROGRAM_CS.read_text(encoding="utf-8")
+    known_verbs = parse_known_subcommands(program_cs_text)
+    help_lines = parse_help_lines(program_cs_text)
+    if not SPEC.is_file():
+        print(f" !! {SPEC.relative_to(ROOT)}: missing -- this check's target moved without it")
+        return 1
+    spec_rows = parse_spec_table(SPEC.read_text(encoding="utf-8"))
     if not DOC.is_file():
         print(f" !! {DOC.relative_to(ROOT)}: missing -- this check's target moved without it")
         return 1
     invocations = parse_doc(DOC.read_text(encoding="utf-8"))
 
     print(f"clitripwire: {len(parsers)} parser(s), {total_flags} flag(s), {len(known_verbs)} known "
-          f"verb(s), {len(invocations)} doc invocation(s)")
+          f"verb(s), {len(invocations)} doc invocation(s), {len(help_lines)} help line(s), "
+          f"{len(spec_rows)} spec table row(s)")
 
     if len(parsers) < MIN_PARSERS or total_flags < MIN_PARSER_FLAGS:
         print(f" !! sanity floor tripped: expected >= {MIN_PARSERS} parsers and >= {MIN_PARSER_FLAGS} "
@@ -245,13 +351,25 @@ def main(argv: list[str]) -> int:
               f"in {DOC.relative_to(ROOT)}, got {len(invocations)}")
         return 1
 
+    if len(help_lines) < MIN_HELP_LINES:
+        print(f" !! sanity floor tripped: expected >= {MIN_HELP_LINES} hand-written `baton <verb>` "
+              f"help lines in Program.cs, got {len(help_lines)} -- the WriteLine extraction anchor "
+              "likely no longer matches the source")
+        return 1
+    if len(spec_rows) < MIN_SPEC_ROWS:
+        print(f" !! sanity floor tripped: expected >= {MIN_SPEC_ROWS} parser-backed rows in "
+              f"spec/baton.md's §2 CLI table, got {len(spec_rows)} -- the table's shape likely moved")
+        return 1
+
     problems = find_drift(parsers, known_verbs, invocations)
+    problems += find_grammar_drift(parsers, help_lines + spec_rows)
     if problems:
         print(f" !! {len(problems)} problem(s):")
         for p in problems:
             print(f"  {p}")
         return 1
-    print(" OK every doc command line matches its parser's usage string, in both directions")
+    print(" OK every doc command line, `baton help` line, and §2 table row matches its parser's "
+          "usage string")
     return 0
 
 
@@ -343,6 +461,76 @@ def _selftest() -> int:
         if problems:
             failures.append(f"arm 7 FAILED: a bare mention with no flags was treated as a covered "
                              f"invocation: {problems}")
+
+    # Arm 8 (F3, #1720 review): a `baton help` line that omits a shipped flag -- the exact shape
+    # `--close` shipped in. Red arm, then the green control with the flag present.
+    fake_resolve_source = (
+        'namespace Baton.Cli;\npublic static class ResolveOptionsParser {\n'
+        '    public const string Usage =\n'
+        '        "Usage: baton resolve <room-dir> [--execution <id>] --accept-capture | --reject '
+        '--reason <text> | --close --reason <text>";\n}\n')
+    resolve_contract = parse_parser_file(fake_resolve_source, "src/Baton.Cli/ResolveOptionsParser.cs")
+    if resolve_contract is None:
+        failures.append("could not parse the fixture ResolveOptionsParser")
+    else:
+        resolve_parsers = {"resolve": resolve_contract}
+
+        stale_help = parse_help_lines(
+            'Console.Error.WriteLine(\n'
+            '    "       baton resolve <room-dir> [--execution <id>] --accept-capture | --reject '
+            '--reason <text>");\n')
+        if len(stale_help) != 1:
+            failures.append(f"arm 8 FAILED: expected 1 help line extracted, got {len(stale_help)}")
+        problems = find_grammar_drift(resolve_parsers, stale_help)
+        if not any("--close" in p and "Program.cs" in p for p in problems):
+            failures.append("arm 8 FAILED: a help line omitting a shipped flag was not caught")
+
+        current_help = parse_help_lines(
+            'Console.Error.WriteLine(\n'
+            '    "       baton resolve <room-dir> [--execution <id>] --accept-capture | --reject "\n'
+            '    + "--reason <text> | --close --reason <text>");\n')
+        problems = find_grammar_drift(resolve_parsers, current_help)
+        if problems:
+            failures.append(f"arm 8 control FAILED: an up-to-date help line fired: {problems}")
+
+        # An interpolated help line restates nothing and must not be extracted at all.
+        interpolated = parse_help_lines(
+            'Console.Error.WriteLine($"       {ResolveOptionsParser.Usage[7..]}");\n')
+        if interpolated:
+            failures.append("arm 8 control FAILED: an interpolated help line was extracted as a "
+                             "restatement it cannot be")
+
+        # Arm 9: the §2 table row, matched to its parser by the row's own Source column.
+        stale_row = parse_spec_table(
+            "| `resolve` | `baton resolve <room-dir> [--execution <id>] --accept-capture \\| "
+            "--reject --reason <text>` | `ResolveOptionsParser.cs` |\n")
+        if len(stale_row) != 1:
+            failures.append(f"arm 9 FAILED: expected 1 spec row extracted, got {len(stale_row)}")
+        problems = find_grammar_drift(resolve_parsers, stale_row)
+        if not any("--close" in p and "spec/baton.md" in p for p in problems):
+            failures.append("arm 9 FAILED: a §2 table row omitting a shipped flag was not caught")
+
+        current_row = parse_spec_table(
+            "| `resolve` | `baton resolve <room-dir> [--execution <id>] --accept-capture \\| "
+            "--reject --reason <text> \\| --close --reason <text>` | `ResolveOptionsParser.cs` |\n")
+        problems = find_grammar_drift(resolve_parsers, current_row)
+        if problems:
+            failures.append(f"arm 9 control FAILED: an up-to-date §2 row fired: {problems}")
+
+        # Arm 10: a row using a flag no parser recognises (the other direction).
+        invented_row = parse_spec_table(
+            "| `resolve` | `baton resolve <room-dir> --accept-capture \\| --reject --reason <text> "
+            "\\| --close --reason <text> \\| --defenestrate` | `ResolveOptionsParser.cs` |\n")
+        problems = find_grammar_drift(resolve_parsers, invented_row)
+        if not any("--defenestrate" in p for p in problems):
+            failures.append("arm 10 FAILED: a §2 row using an unrecognised flag was not caught")
+
+        # Arm 11: a row naming a parser that does not exist is an extraction failure, not a skip.
+        orphan_row = parse_spec_table(
+            "| `resolve` | `baton resolve <room-dir>` | `GhostOptionsParser.cs` |\n")
+        problems = find_grammar_drift(resolve_parsers, orphan_row)
+        if not any("GhostOptionsParser" in p for p in problems):
+            failures.append("arm 11 FAILED: a §2 row naming a nonexistent parser was not caught")
 
     if failures:
         print(" !! clitripwire selftest FAILED:")

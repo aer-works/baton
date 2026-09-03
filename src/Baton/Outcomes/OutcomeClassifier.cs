@@ -310,7 +310,12 @@ public static class OutcomeClassifier
             // above parses via TryClassifyQuotaExhaustion, so a satisfied-contract exit-0 run that
             // still carries the vendor's quota signal is classified ExhaustedUntil, not Succeeded --
             // RetryEngine then parks it identically to an exit-1 quota failure.
-            if (failureClassifier is not null && failureClassifier.TryClassifyFailure(
+            //
+            // #1720 review F1: TryClassifySatisfiedRunFailure, NOT the exit-1 path's
+            // TryClassifyFailure -- see that member's own doc (Outcomes.IFailureClassifier) for what
+            // makes the satisfied path a different question, and spec/baton.md §3's exit-0 quota
+            // veto for the scope (live dispatch only).
+            if (failureClassifier is not null && failureClassifier.TryClassifySatisfiedRunFailure(
                     result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore))
             {
                 if (classifiedFailure == FailureClassification.ToolDenied)
@@ -558,20 +563,6 @@ public static class OutcomeClassifier
         && validation.UnsatisfiedOutputs.All(u => u.Reason == UnsatisfiedOutputReason.Missing);
 
     /// <summary>
-    /// The "substantial work" half of the #1586 S1 tripwire: the worker's own final usage line —
-    /// the execution's captured <c>.stdout.log</c>, last non-blank line, read via
-    /// <see cref="OutputMaterializer.TryReadLastNonBlankLine"/> (#1586 S1 review F5: shared with
-    /// <see cref="OutputMaterializer.TryCaptureFinalResponse"/>'s response-line read, so the two
-    /// cannot silently disagree about what "the worker's final line" is) — reporting turns and/or
-    /// output tokens. Chosen over a worktree-dirty read (also considered): <c>worktreePath</c> is the
-    /// operator's own working directory whenever no worktree was provisioned, routinely dirty for
-    /// reasons that have nothing to do with this execution, which would make the tripwire fire on the
-    /// operator's OWN uncommitted changes rather than the worker's. A vendor-reported usage figure has
-    /// no such false-positive source. Returns null — not "zero", which this deliberately does not
-    /// fabricate — when no parser was supplied, no stdout log exists, the line does not parse, or the
-    /// vendor reported neither figure.
-    /// </summary>
-    /// <summary>
     /// Builds a plain <see cref="OutcomeVerdict.Succeeded"/> classification, plus — when
     /// <paramref name="changesTree"/> is true — the work-product evidence spec/baton.md §3
     /// ("workspaceChanged/hollow/hollowReason") specifies in full; not restated here. Shared by both
@@ -589,7 +580,16 @@ public static class OutcomeClassifier
             return new OutcomeClassification(OutcomeVerdict.Succeeded);
         }
 
-        var workspaceChanged = !Workspaces.WorktreeProvisioner.IsWorkspaceUntouched(changesTreeWorkingDirectory, worktreeBaseRef);
+        // #1720 review F2: tri-state. When git cannot answer (not a checkout, no upstream, git
+        // failure) both fields stay NULL and render as absent -- never a fabricated `true`, which is
+        // what negating the fail-closed IsWorkspaceUntouched produced, and never a fabricated
+        // `false`, which would pin `hollow` off exactly where the probe is blind.
+        if (!Workspaces.WorktreeProvisioner.TryReadWorkspaceChanged(
+                changesTreeWorkingDirectory, worktreeBaseRef, out var workspaceChanged))
+        {
+            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+        }
+
         var hollow = !workspaceChanged && contract.ProducedOutputs.Count == 0;
         var hollowReason = hollow
             ? "the worker exited 0 with a satisfied contract, but the worktree is unchanged (no commit, " +
@@ -600,6 +600,20 @@ public static class OutcomeClassifier
             OutcomeVerdict.Succeeded, WorkspaceChanged: workspaceChanged, Hollow: hollow, HollowReason: hollowReason);
     }
 
+    /// <summary>
+    /// The "substantial work" half of the #1586 S1 tripwire: the worker's own final usage line —
+    /// the execution's captured <c>.stdout.log</c>, last non-blank line, read via
+    /// <see cref="OutputMaterializer.TryReadLastNonBlankLine"/> (#1586 S1 review F5: shared with
+    /// <see cref="OutputMaterializer.TryCaptureFinalResponse"/>'s response-line read, so the two
+    /// cannot silently disagree about what "the worker's final line" is) — reporting turns and/or
+    /// output tokens. Chosen over a worktree-dirty read (also considered): <c>worktreePath</c> is the
+    /// operator's own working directory whenever no worktree was provisioned, routinely dirty for
+    /// reasons that have nothing to do with this execution, which would make the tripwire fire on the
+    /// operator's OWN uncommitted changes rather than the worker's. A vendor-reported usage figure has
+    /// no such false-positive source. Returns null — not "zero", which this deliberately does not
+    /// fabricate — when no parser was supplied, no stdout log exists, the line does not parse, or the
+    /// vendor reported neither figure.
+    /// </summary>
     private static string? DescribeSubstantialWorkEvidence(string outputDirectory, IWorkerUsageParser? usageParser)
     {
         if (usageParser is null)

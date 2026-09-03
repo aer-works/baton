@@ -767,8 +767,11 @@ public class MutationInterfaceCaptureResolutionTests
             Assert.Contains("workspace inspected -- staged but never committed", step.LatestFailureReason, StringComparison.Ordinal);
 
             var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory);
+            // F11 (#1720 review): `--reject` IS the human "no", so it keeps `rejected: true` — the
+            // polarity control for the `--close` arm below, which sets only `resolvedBy`.
             Assert.True(view.Rejected);
             Assert.Equal("conductor", view.ResolvedBy);
+            Assert.True(step.ConductorRejected);
         }
         finally
         {
@@ -806,8 +809,14 @@ public class MutationInterfaceCaptureResolutionTests
             Assert.Contains("overlap flake", step.LatestFailureReason, StringComparison.Ordinal);
 
             var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory);
-            Assert.True(view.Rejected);
+            // F11 (#1720 review, conductor ruling): `--close` sets `resolvedBy` WITHOUT `rejected`.
+            // The `--reject` arm above is the discriminating control -- identical event shape,
+            // opposite `rejected`, told apart only by the producer the projector reads
+            // (spec/baton.md §3).
+            Assert.False(view.Rejected);
             Assert.Equal("conductor", view.ResolvedBy);
+            Assert.True(step.ResolvedByConductor);
+            Assert.False(step.ConductorRejected);
         }
         finally
         {

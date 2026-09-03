@@ -129,6 +129,7 @@ public static class StateProjector
                     // #1622 (c)/(d): a fresh dispatch is a new attempt, not a continuation of a
                     // previously conductor-resolved one -- same reasoning as the clears above.
                     state.ResolvedByConductorStepIds.Remove(acceptedStepId);
+                    state.ConductorRejectedStepIds.Remove(acceptedStepId);
 
                     // #1622/#1390: a fresh dispatch's own eventual ExecutionSucceeded is what sets
                     // these next, if it settles Succeeded at all -- a prior attempt's workspaceChanged/
@@ -437,7 +438,7 @@ public static class StateProjector
                         state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
                         state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
                     }
-                    else if (resolvedProducer == IndeterminateProducer.ContractFailure)
+                    else if (resolvedProducer is IndeterminateProducer.ContractFailure or null)
                     {
                         // F8 (#1593 review): forecloses retry on a ContractFailure reject, the same way
                         // #1623's VerifyFailed/Arrested producers already foreclose unconditionally in
@@ -445,6 +446,12 @@ public static class StateProjector
                         // leave the step retry-eligible again on the very next pump. Deliberately NOT
                         // applied to a CapturedResponse reject, which #1608's own ruling keeps
                         // retry-eligible. spec/baton.md §3's producer table has the full reasoning.
+                        //
+                        // F8 (#1720 review): `or null` covers the legacy no-producer step -- unreachable
+                        // today (no writer of IndeterminateProducerByStepId leaves it null, and a v4
+                        // checkpoint always carries the map), which is exactly why an unforeclosed
+                        // arm here would be invisible if it ever became reachable: the engine would
+                        // re-dispatch a step a conductor had just closed.
                         state.RetryForeclosedStepIds.Add(resolvedStepId);
                     }
 
@@ -456,6 +463,16 @@ public static class StateProjector
                         state.LatestFailureReasonByStepId[resolvedStepId] =
                             BuildConductorResolvedReason(priorReason, resolved.Reason);
                         state.ResolvedByConductorStepIds.Add(resolvedStepId);
+
+                        // F11 (#1720 review, conductor ruling): WHICH verb, discriminated here and
+                        // nowhere else -- the producer is cleared four lines above, so nothing
+                        // downstream can still tell the two apart. Read off the admission table
+                        // (Cli.ResolveCommand, Mutation.MutationInterface, and spec/baton.md §3's
+                        // settle-shape table, which is where the reasoning lives).
+                        if (resolvedProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure)
+                        {
+                            state.ConductorRejectedStepIds.Add(resolvedStepId);
+                        }
                     }
 
                     // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
@@ -685,7 +702,8 @@ public static class StateProjector
                 state.WorkspaceChangedByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.HollowByStepId.GetValueOrDefault(stepDefinition.StepId),
                 state.HollowReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
-                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId)));
+                state.VerifyNotRunReasonByStepId.GetValueOrDefault(stepDefinition.StepId),
+                state.ConductorRejectedStepIds.Contains(stepDefinition.StepId)));
         }
 
         var workflowStatus = DeriveWorkflowStatus(steps, snapshot);

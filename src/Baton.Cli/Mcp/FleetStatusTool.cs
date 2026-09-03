@@ -285,6 +285,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: sentinel.Error,
                 Try: sentinel.Try,
                 Rejected: sentinel.Rejected,
+                ResolvedBy: sentinel.ResolvedBy,
                 Role: terminalRole,
                 Adapter: terminalAdapter,
                 Model: terminalModel,
@@ -411,6 +412,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: view.Error,
                 Try: view.Try,
                 Rejected: view.Rejected,
+                ResolvedBy: view.ResolvedBy,
                 Role: role,
                 Adapter: adapter,
                 Model: model,
@@ -593,6 +595,14 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("rejected")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool Rejected = false,
+    // F10/F11 (#1720 review): the room-level WorkflowStatusView.ResolvedBy, copied the same way
+    // Rejected above is. Needed BECAUSE F11 scoped `rejected` to `--reject`: without this the glass
+    // has no signal at all for a conductor `baton resolve --close`, which settles a room Failed with
+    // a recorded ruling rather than a crash. The per-step resolvedByConductor flag stays
+    // deliberately omitted -- WHICH step is a one-room `baton status --json` question.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null,
     // #1503, extended by #1584: worker role/adapter/model/effort/timeout for this room's Running step,
     // read via TryResolveRunningBinding -- see spec/baton.md §6 schema for resolution rules and gating.
     [property: JsonPropertyName("role")]

@@ -1557,41 +1557,14 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         return true;
     }
 
-    private static bool ContainsTypedCreditsRequiredError(string input)
-    {
-        if (TryCheckElementForCreditsRequired(input))
-        {
-            return true;
-        }
-
-        var lines = input.Split('\n');
-        if (lines.Length > 1)
-        {
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length > 0 && TryCheckElementForCreditsRequired(trimmed))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryCheckElementForCreditsRequired(string jsonCandidate)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(jsonCandidate);
-            return HasTypedCreditsRequiredCode(doc.RootElement);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    /// <summary>
+    /// #1720 review (found while fixing F1, issue #1727): this used to whole-parse the tail and then
+    /// split it on <c>'\n'</c>, which finds nothing in a REAL captured tail — see
+    /// <see cref="StreamJsonTailScanner"/> for the whitespace-collapse that makes a multi-object tail
+    /// one line. The shared scanner reads both the collapsed and the raw-newline shape.
+    /// </summary>
+    private static bool ContainsTypedCreditsRequiredError(string input) =>
+        StreamJsonTailScanner.AnyObject(input, HasTypedCreditsRequiredCode);
 
     private static bool HasTypedCreditsRequiredCode(JsonElement element)
     {

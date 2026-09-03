@@ -95,7 +95,8 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
         "       baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede " +
         "[--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]");
     Console.Error.WriteLine(
-        "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text>");
+        "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text> " +
+        "| --close --reason <text>");
     Console.Error.WriteLine(
         "       baton supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");

@@ -275,7 +275,10 @@ public sealed record StepState(
     // a pre-flight check (no resolved command, or the command WAS runnable), or the step has since had
     // a fresh execution accepted (StateProjector clears this the same breath it clears
     // IndeterminateReason on ExecutionRequestAccepted).
-    string? VerifyNotRunReason = null);
+    string? VerifyNotRunReason = null,
+    // F11 (#1720 review, conductor ruling): the `--reject` subset of ResolvedByConductor above --
+    // see spec/baton.md §3 for why the two are not one flag and where they are told apart.
+    bool ConductorRejected = false);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

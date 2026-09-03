@@ -64,7 +64,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, bool?>? WorkspaceChangedByStepId = null,
     Dictionary<StepId, bool?>? HollowByStepId = null,
     Dictionary<StepId, string?>? HollowReasonByStepId = null,
-    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null)
+    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null,
+    HashSet<StepId>? ConductorRejectedStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -140,6 +141,15 @@ public sealed record ProjectionCheckpointState(
     /// load-bearing note applies.
     /// </summary>
     public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
+
+    /// <summary>
+    /// F11 (#1720 review): the <c>--reject</c> SUBSET of <see cref="ResolvedByConductorStepIds"/> —
+    /// see `Domain.FlowState.StepState.ConductorRejected`'s remarks for why the two are not the same
+    /// set. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above;
+    /// no <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
+    /// </summary>
+    public HashSet<StepId> ConductorRejectedStepIds { get; init; } = ConductorRejectedStepIds ?? new();
 
     /// <summary>
     /// #1622/#1390: see spec/baton.md §3's `workspaceChanged` entry. Same trailing-optional
@@ -239,5 +249,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, bool?>(WorkspaceChangedByStepId),
         new Dictionary<StepId, bool?>(HollowByStepId),
         new Dictionary<StepId, string?>(HollowReasonByStepId),
-        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId));
+        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId),
+        new HashSet<StepId>(ConductorRejectedStepIds));
 }

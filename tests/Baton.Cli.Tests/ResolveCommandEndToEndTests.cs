@@ -483,11 +483,74 @@ public class ResolveCommandEndToEndTests
             var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, roomDirectory);
             Assert.DoesNotContain("awaiting conductor resolution", view.Error, StringComparison.Ordinal);
             Assert.Contains("Resolved by the conductor", view.Error, StringComparison.Ordinal);
-            Assert.True(view.Rejected);
+            // F11 (#1720 review, conductor ruling): a `--close` is an administrative settlement, not
+            // a refusal -- `resolvedBy` carries it, `rejected` stays false. spec/baton.md §3.
+            Assert.False(view.Rejected);
             Assert.Equal("conductor", view.ResolvedBy);
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// F4 (#1720 review): the transition nothing covered, and which the refusal text asserted the
+    /// opposite of — after a <c>--close</c>, <c>baton redispatch</c> no longer refuses this room. The
+    /// room reaches Terminal/Failed, so <c>Program.cs</c>'s post-command block rewrites
+    /// <c>terminal.json</c> from the fresh view (the two calls this test makes verbatim after
+    /// <c>ResolveCommand</c> returns, since <c>Program.Main</c> is not callable from a test), and
+    /// <c>RedispatchCommand</c>'s gate — which reads <c>State == Indeterminate</c> from that file —
+    /// stops firing. The refusal now says so.
+    /// </summary>
+    [Fact]
+    public async Task Redispatch_no_longer_refuses_a_verify_failed_room_once_it_has_been_closed()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        var originalError = Console.Error;
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            // (The refusal text itself is pinned in RedispatchCommandEndToEndTests, which can
+            // fabricate the Indeterminate sentinel this room only reaches through the engine.)
+            var closed = await ResolveCommand.ExecuteAsync(
+                ResolveOptionsParser.Parse(
+                    [roomDirectory, "--execution", executionId.Value, "--close", "--reason", "overlap flake, work already landed"]),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, closed.State.Status);
+
+            // `baton dispatch` writes bindings.json INTO the room; this room was made by `baton run`
+            // (the only way these fixtures can reach a real Indeterminate), which keeps its bindings
+            // file beside the workflow instead, so redispatch's own lookup needs a copy in the room.
+            File.Copy(
+                Path.Combine(testRoot, "bindings.json"),
+                Baton.Status.BatonPaths.RoomBindingsFile(roomDirectory));
+            File.Copy(
+                Path.Combine(testRoot, "workflow.json"),
+                Path.Combine(roomDirectory, "workflow.json"), overwrite: true);
+
+            // Program.cs's own post-command sentinel write, verbatim.
+            await TerminalSentinelWriter.WriteAsync(
+                roomDirectory,
+                WorkflowStatusProjector.Project(closed.State, closed.Snapshot, roomDirectory),
+                TestContext.Current.CancellationToken);
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            var childRoom = Path.Combine(testRoot, "child-after");
+            var result = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(roomDirectory, childRoom), Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.True(Directory.Exists(childRoom));
+            Assert.Contains("did not succeed", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }

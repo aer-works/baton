@@ -229,15 +229,15 @@ through `RoleDispatch.Materialize` against the real role catalog.
 
 | Verb | Usage | Source |
 |---|---|---|
-| `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `DispatchOptionsParser.cs` |
-| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
+| `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
+| `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
-| `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text>` | `ResolveOptionsParser.cs` |
+| `resolve` | `baton resolve <room-dir> [--execution <execution-id>] --accept-capture \| --reject --reason <text> \| --close --reason <text>` | `ResolveOptionsParser.cs` |
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
 | `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `Program.cs` |
-| `status` | `baton status <room-dir> [--follow] [--json]` | `StatusOptionsParser.cs` |
+| `status` | `baton status <room-dir> [--follow] [--json] [--repo <checkout-dir>]` | `StatusOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
 | `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
@@ -550,6 +550,20 @@ failed condition, so re-running it blind is wrong either way. A worker relying o
 retry-until-satisfied pattern now settles `Indeterminate` on its first unsatisfied attempt and needs an
 explicit `baton resolve --reject --reason <text>` before a fresh dispatch can try again.
 
+**The exit-0 quota veto (#1622 (a)).** A satisfied exit-0 run still settles `Failed`/`ExhaustedUntil`
+— parked by `RetryEngine` exactly as an exit-1 quota failure is — when the vendor's own
+quota-exhaustion signal is in the stream: a vendor can deny a tool or run a subscription dry mid-turn
+while the worker goes on to write its contract output and exit 0, and nothing else here would catch
+it. The evidence must be **vendor-controlled**, which is why this path asks the adapter a different
+question than the exit-1 path does — `Outcomes.IFailureClassifier.TryClassifySatisfiedRunFailure`,
+whose own doc states why (F1, #1720 review; the shape agy's matcher had). claude reads a typed
+`errorCode`; agy reads its own terminal `result` envelope with a non-`SUCCESS` `status`. Stderr keeps
+the fuller matcher on both vendors: it is the CLI's diagnostics, not the model's answer.
+**Scope: the live dispatch path only.**
+Crash recovery rebuilds the result without either tail (they are not written to the Event Store), so a
+room whose engine crashed and recovered never gets this veto on either vendor — pre-existing, and the
+same on the exit-1 path.
+
 **Workspace evidence in the reason (#1593 F2).** #1593's acceptance criteria include: "a room that ends
 `Failed` with uncommitted work in its workspace says so somewhere a person will see, rather than
 reporting `outputs: []` and leaving the evidence to `git status`." The `ContractFailure` reason text
@@ -634,9 +648,15 @@ this fix a resolved step's `error`/`LatestFailureReason` kept the pre-resolution
 Failed`, `rejected: false`, and `error` ending "awaiting conductor resolution". `StateProjector`'s
 `CaptureResolved(Accepted: false)` arm now replaces the reason with a sentence naming the conductor and
 carrying the reason (`Projection.StateProjector.BuildConductorResolvedReason`), and marks the step so
-`rejected`/`resolvedBy` (§3 schema above) read `true`/`"conductor"` — for either verb, since both are "a
-person looked at this step and said no". `--accept-capture` is unaffected: an accepted step settles
-`Succeeded` and carries no failure reason to clear.
+`resolvedBy` (§3 schema above) reads `"conductor"` — for either verb, since both are a recorded
+conductor ruling. **`rejected` is narrower: `--reject` only** (F11, #1720 review). A `--close` is an
+administrative settlement whose own CLI remedy text says the work already landed, so reporting it as
+`rejected` would tell a harness branching on that field that a person refused work that in fact
+shipped. The two verbs are told apart in `StateProjector`'s `CaptureResolved` arm — the only place the
+producer that distinguishes them is still in scope, since the same arm clears it — via the admission
+table above: `--reject` is admitted only for `CapturedResponse`/`ContractFailure`, `--close` only for
+the other three. `--accept-capture` is unaffected: an accepted step settles `Succeeded` and carries no
+failure reason to clear.
 
 Those three producers reopen only through a fresh dispatch (in addition to `--close`) —
 `ExecutionRequestAccepted` clears the flag, per `StateProjector`. `baton redispatch` against the same
@@ -694,7 +714,7 @@ intercept it first.
 **Ruled (#1655, owner, 2026-09-02): option 1.** `ExternalDecisionValidator` refuses a `baton decide`
 against a `Paused` step whose `IndeterminateAwaitingResolution` is still set — "resolve first, then
 decide". The refusal names the room, the step, and the recovery verb (`baton resolve <room>
-[--execution <id>] --accept-capture | --reject --reason <text>`); only `FlowEvent.CaptureResolved`
+[--execution <id>] --accept-capture | --reject --reason <text> | --close --reason <text>`); only `FlowEvent.CaptureResolved`
 ever clears the flag, matching every other producer's own rule above. A recorded external decision
 never outranks the flag: admitting one anyway would leave `IndeterminateAwaitingResolution` set with no
 `CaptureResolved` appended, so a later Terminal read of the room would still report `Indeterminate`
@@ -1446,8 +1466,8 @@ code is the only signal a lane is even still going, and it is unreliable for tha
   "outputs": [string],                 // resolved output paths
   "error": string | null,
   "try": string | null,                // corrected-invocation text; only set on a pre-ledger refusal
-  "rejected": boolean,                 // #1377, widened by #1622 (c)/(d): true iff some step settled via `DecisionType.Reject` OR a non-accepting `baton resolve` ruling (--reject/--close)
-  "resolvedBy"?: string                // #1622 (d)/#1700: "conductor" when `rejected` is true for the `baton resolve` reason; omitted otherwise
+  "rejected": boolean,                 // #1377, widened by #1622 (c) and re-scoped by F11 (#1720 review): true iff some step settled via `DecisionType.Reject` OR `baton resolve --reject` -- NOT `--close`, which is an administrative settlement rather than a refusal
+  "resolvedBy"?: string                // #1622 (d)/#1700: "conductor" when some step settled via a non-accepting `baton resolve` ruling (--reject OR --close); omitted otherwise. The signal for a `--close`, which sets this without setting `rejected`
 }
 ```
 
@@ -1462,8 +1482,15 @@ never re-derived downstream — see `Baton.Vendors.WorkerBindingConfigEntry.Chan
 why a downstream re-derivation from a resolved binding's possibly-widened grant would misclassify a
 read-only role). Absent for every other role (`review`, `patch`, `fact-check`, `advise`, `orchestrate`)
 and for every non-`Succeeded` step — the field's mere absence is the signal, not a fabricated `false`.
-`true`: the worktree carries commits over base or uncommitted changes
-(`Workspaces.WorktreeProvisioner.IsWorkspaceUntouched`'s negation — the same worktree-status probe
+`true`: the worktree carries commits over base or uncommitted changes; `false`: it measurably carries
+neither; **absent when the probe could not measure** (F2, #1720 review) — a working directory that is
+not a git checkout, a plain checkout whose branch has no `@{upstream}` to compare HEAD against, or any
+git failure. Read through `Workspaces.WorktreeProvisioner.TryReadWorkspaceChanged`, a TRI-STATE reading
+deliberately not the negation of the fail-closed `IsWorkspaceUntouched` the retry carve-out uses: that
+helper's `false` means "could not measure OR is touched", so negating it fabricated `workspaceChanged:
+true` on no evidence and pinned `hollow` false exactly where the probe is blind. Both fields are omitted
+together in the unmeasurable case, per the same absence-is-the-signal rule above. It reads the same
+git status/commit-count pair
 `OutcomeClassifier`'s own dead-worker-on-an-untouched-workspace arm already reads elsewhere in this
 document, not the narrower `WorktreeProvisioner.Audit` the grant-audit branch uses, which only reads
 dirty-tree: #1390's second occurrence measured a workspace that was dirty with real, substantial changes
@@ -1729,6 +1756,7 @@ Output: a JSON array of
   "error"?: string,
   "try"?: string,
   "rejected"?: boolean,
+  "resolvedBy"?: string,  // F10 (#1720 review): the room-level WorkflowStatusView.ResolvedBy, copied like `rejected`. The glass's only signal for a conductor `baton resolve --close`, which sets this WITHOUT setting `rejected` (§3)
   "role"?: string,        // bindings.json's own key for the Running step's worker
   "adapter"?: string,     // that role's WorkerBindingConfigEntry.Adapter
   "model"?: string,       // that role's WorkerBindingConfigEntry.Model

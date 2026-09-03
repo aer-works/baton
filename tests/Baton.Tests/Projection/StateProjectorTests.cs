@@ -912,6 +912,34 @@ public class StateProjectorTests
         Assert.Equal(["plan"], architect.LatestUnsatisfiedOutputNames);
     }
 
+    /// <summary>
+    /// F8 (#1720 review): a non-accepting resolution of a step with NO recorded producer — the legacy
+    /// pre-#1593 shape `--close` admits — must foreclose retry, or the engine re-dispatches a step the
+    /// conductor just closed. Unreachable through today's writers (every one records a producer),
+    /// which is exactly why an unforeclosed arm would be invisible if it became reachable.
+    /// </summary>
+    [Fact]
+    public void CaptureResolved_on_a_step_with_no_recorded_producer_forecloses_retry()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, "worker exited 1"),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false, Reason: "closed by the conductor"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.RetryForeclosed);
+        // F11's other half: a null producer means `--close`, not `--reject` -- the admission
+        // predicates never let `--reject` reach one -- so the room reads resolved, not rejected.
+        Assert.True(architect.ResolvedByConductor);
+        Assert.False(architect.ConductorRejected);
+    }
+
     [Fact]
     public void CaptureResolved_is_a_noop_when_StepId_does_not_match_the_execution_owning_step()
     {
