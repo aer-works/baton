@@ -63,7 +63,8 @@ public sealed record ProjectionCheckpointState(
     HashSet<StepId>? ResolvedByConductorStepIds = null,
     Dictionary<StepId, bool?>? WorkspaceChangedByStepId = null,
     Dictionary<StepId, bool?>? HollowByStepId = null,
-    Dictionary<StepId, string?>? HollowReasonByStepId = null)
+    Dictionary<StepId, string?>? HollowReasonByStepId = null,
+    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -159,6 +160,18 @@ public sealed record ProjectionCheckpointState(
     /// </summary>
     public Dictionary<StepId, string?> HollowReasonByStepId { get; init; } = HollowReasonByStepId ?? new();
 
+    /// <summary>
+    /// #1702: which steps' latest attempt recorded a <see cref="FlowEvent.VerifyNotRun"/> — the
+    /// pre-flight "not runnable" reason, surfaced on <see cref="Status.WorkflowStatusStepView"/> as
+    /// <c>verify: "not-run"</c> so a conductor can tell "this ran unverified" apart from an ordinary
+    /// Succeeded step. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/>
+    /// above, and the same <see cref="DeepCopy"/> load-bearing note applies. Cleared on a fresh
+    /// <see cref="FlowEvent.ExecutionRequestAccepted"/> for the step, the same "the pump is dispatching
+    /// it, so the prior attempt's diagnostic is stale" reasoning <see cref="IndeterminateReasonByStepId"/>
+    /// already follows.
+    /// </summary>
+    public Dictionary<StepId, string?> VerifyNotRunReasonByStepId { get; init; } = VerifyNotRunReasonByStepId ?? new();
+
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
         new Dictionary<StepId, Dictionary<StepId, ExecutionId>>(),
@@ -225,5 +238,6 @@ public sealed record ProjectionCheckpointState(
         new HashSet<StepId>(ResolvedByConductorStepIds),
         new Dictionary<StepId, bool?>(WorkspaceChangedByStepId),
         new Dictionary<StepId, bool?>(HollowByStepId),
-        new Dictionary<StepId, string?>(HollowReasonByStepId));
+        new Dictionary<StepId, string?>(HollowReasonByStepId),
+        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId));
 }

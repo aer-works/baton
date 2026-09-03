@@ -14,7 +14,7 @@ public static class RedispatchOptionsParser
     public const string Usage =
         "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] "
         + "[--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
-        + "[--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--label <text>] [--workstream <slug>]";
+        + "[--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -29,6 +29,7 @@ public static class RedispatchOptionsParser
         long? tokenBudget = null;
         int? maxToolSteps = null;
         long? billedRateLimit = null;
+        string? verifyCommand = null;
         string? label = null;
         var labelSpecified = false;
         string? workstream = null;
@@ -73,6 +74,9 @@ public static class RedispatchOptionsParser
                     break;
                 case "--billed-rate-limit":
                     billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
+                    break;
+                case "--verify":
+                    verifyCommand = RequireValue(args, ref i, arg);
                     break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
@@ -120,7 +124,7 @@ public static class RedispatchOptionsParser
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
             timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified,
-            attachments.Count > 0 ? attachments : null, maxToolSteps, billedRateLimit);
+            attachments.Count > 0 ? attachments : null, maxToolSteps, billedRateLimit, verifyCommand);
     }
 
     /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>

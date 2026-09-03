@@ -25,8 +25,13 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// </param>
     /// <param name="Model">The resolved config entry's <c>WorkerBindingConfigEntry.Model</c>, carried for the same reason.</param>
     /// <param name="VerifyPixiTask">
-    /// #1623: this execution's resolved verify task — see
-    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. Null runs no verify step.
+    /// #1623: this execution's role-default verify task — see
+    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. Lowest-precedence input to
+    /// <see cref="VerifyCommandResolver.Resolve"/> (full precedence order on
+    /// <c>Baton.Vendors.WorkerBindingConfigEntry.VerifyCommandOverride</c>'s own doc, spec/baton.md §3).
+    /// </param>
+    /// <param name="VerifyCommandOverride">
+    /// #1702: this execution's <c>--verify</c> value, carried the same hop as <paramref name="VerifyPixiTask"/>.
     /// </param>
     /// <param name="TokenBudget">
     /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
@@ -71,6 +76,7 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         // declared output from the worker's own terminal response).
         Outcomes.IWorkerResponseParser? ResponseParser = null,
         string? VerifyPixiTask = null,
+        string? VerifyCommandOverride = null,
         long? TokenBudget = null,
         int? MaxToolSteps = null,
         long? BilledRateLimit = null,

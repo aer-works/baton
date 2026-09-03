@@ -244,6 +244,17 @@ not (a downstream step just became deliverable, or a rejected step still has ret
 that moves it and `baton run` cannot. `baton resolve` names whichever of the two applies on its own
 stdout; follow that rather than the general rule (spec/baton.md §3).
 
+**`Succeeded` does not by itself mean the engine's gate ran (#1702).** After a step exits 0 with its
+outputs written, the engine runs that workspace's own verify command — but when the workspace does not
+define one (a role's baked-in `pixi` task absent from a foreign workspace), the step still settles
+`Succeeded`, and the room still exits 0, with the gate never having fired. `steps[].verify` is where
+that is said: it reads `"not-run"` exactly in that case and is **absent otherwise**, with
+`steps[].verifyReason` naming what was missing. So exit 0 plus `verify: "not-run"` means "the worker's
+own work looks clean and nothing checked it" — read the field before reporting a run as gated.
+`spec/baton.md` §3 is the register for the resolution order, for how to declare a verify command for
+your own workspace (`.baton/verify`, which must be **committed** to take effect), and for the
+`--verify <cmd>` override.
+
 Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
 `baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
 line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;
@@ -349,7 +360,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 
 | Code | Meaning |
 |---|---|
-| 0 | `Succeeded` — every step Succeeded |
+| 0 | `Succeeded` — every step Succeeded. **Not the same as "the gates passed" (#1702).** A step can succeed with the engine's own verify command never having run — see `steps[].verify` below |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
 | 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |

@@ -99,6 +99,14 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "timed out", VerifyFailedKind.TimedOut)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "cancelled", VerifyFailedKind.Cancelled)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "restart", VerifyFailedKind.EngineRestart)];
+        // #1702
+        yield return [new FlowEvent.VerifyNotRun(ExecutionId, "task absent: gates-quiet")];
+        // #1708 H1 -- both digests present, and the "nothing committed" shape that carries a null.
+        yield return [new FlowEvent.VerifyDeclarationIgnored(ExecutionId, "0f2b", "9ac1")];
+        yield return [new FlowEvent.VerifyDeclarationIgnored(ExecutionId, null, "9ac1")];
+        // #1708 M1 -- the HEAD fallback's announcement, and the null-digest shape.
+        yield return [new FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, "0f2b")];
+        yield return [new FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, null)];
         yield return [new FlowEvent.ExecutionArrested(ExecutionId)];
         yield return
         [

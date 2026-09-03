@@ -564,7 +564,14 @@ public static class StatusCommand
         // finding). Pending has no execution yet, so no liveness claim applies there either.
         if (step.Status is not StepStatus.Running)
         {
-            return step.Status.ToString();
+            // #1702: the one human-prose surface for StepState.VerifyNotRunReason (see
+            // WorkflowStatusStepView.Verify's remarks for the machine-readable shape; spec/baton.md §3
+            // for the full contract). Checked only below the Running guard, not above it, so a step
+            // that crashed mid-verify still reaches the liveness probe's own report instead of a
+            // permanently-stuck "Running (unverified)".
+            return step.VerifyNotRunReason is not null
+                ? $"{step.Status} (unverified — {step.VerifyNotRunReason})"
+                : step.Status.ToString();
         }
 
         if (step.LatestExecutionId is null)

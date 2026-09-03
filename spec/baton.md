@@ -791,6 +791,149 @@ Worker briefs no longer ask for the full gate suite themselves; the prompt-level
 from #1625 (`AgyWorkerAdapter.ForegroundGateInstructionText`) stays as belt (any slow command, not just
 gates, should run in the foreground) now that this is the braces.
 
+**Verify command resolution, and the not-run outcome (#1702).** The verify command run above is a
+property of the WORKSPACE being worked on, not of the role — a role's `verify_pixi_task` bakes in an
+assumption (that the workspace is this repo, or shares its task names) which fails by construction
+against a foreign workspace (measured 2026-09-02: an `implement` lane dispatched with `--workspace`
+pointing at a different, non-baton repo ran `pixi run gates-quiet` there, got "command not found",
+and settled `Indeterminate` even though the worker's own exit and output contract were already clean).
+`Baton.Mutation.VerifyCommandResolver.Resolve` resolves the command actually run, in precedence order:
+
+1. `--verify <cmd>` (`DispatchOptions.VerifyCommand` → `RoleDispatch.ToBinding`'s `verifyCommandOverride`
+   → `WorkerBindingConfigEntry.VerifyCommandOverride` → `WorkerBinding.Process.VerifyCommandOverride`) —
+   mirrors `--token-budget`'s override plumbing end to end, including through `baton redispatch`.
+2. The workspace's own declaration: a `.baton/verify` file directly under the dispatched workspace
+   directory, whose first non-blank, non-`#`-comment line is the command line to run. The one
+   repo-level declaration mechanism this issue picks (never also a `[tool.baton]` table in
+   `pixi.toml`/`pyproject.toml`) — a plain-text file works for any workspace, pixi-based or not, which
+   is the whole point since a foreign workspace's own task runner is unknown to this engine.
+   **Read from the workspace's REVIEWED tree — `git show <merge-base of HEAD and origin/main>:.baton/verify`
+   — at dispatch time, before the worker is spawned (#1708).** Both halves are load-bearing: a worker
+   with write access to its own workspace must never be able to author the command that grades it, and
+   a worker with shell access could commit one, so a read taken *after* the worker ran, or taken from
+   the branch tip, would be no boundary at all. The merge-base is what makes the boundary hold across
+   *executions* and not only within one: an `implement` lane committing and pushing is its ordinary
+   designed behaviour, so `HEAD` on a lane branch contains the lane's own work, and a second dispatch
+   or a `baton redispatch` into the same worktree would otherwise be graded by a file the previous
+   worker wrote. Nothing a lane commits on its own branch changes what grades it. A fresh dispatch
+   still takes a fresh snapshot, so a `baton redispatch` against a workspace whose *reviewed* declaration
+   changed never runs a stale command.
+
+   **Scope, precisely — the one shape where that wider claim does not hold.** When no merge-base can be
+   computed (no remote at all, a default branch that is not `main`, unrelated histories) the read falls
+   back to `HEAD` and the engine appends the diagnostic-only
+   `FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, Digest)`. On such a workspace the boundary is the
+   narrower, per-execution one: this execution still cannot author what grades it, but an earlier lane's
+   commit on the current branch is inside the baseline. That is announced rather than silent, which is
+   the whole point of the event. `origin/main` is one fixed ref on purpose and is never discovered from
+   `refs/remotes/origin/HEAD` or `remote.origin.*`: discovery would read repository config a worker can
+   write, which is the boundary this read exists to hold — so a repo whose default branch is not `main`
+   takes the loud fallback rather than a quiet, steerable answer.
+
+   Two deliberate costs, both fail-closed: an **uncommitted** `.baton/verify` does not take effect (and
+   neither does one committed only on the lane's branch), and a workspace that is not a git repository
+   (or whose `git` cannot spawn) declares nothing, falling through to the role default rather than to a
+   worker-writable file. When the working-tree file differs from what was read, the engine appends the
+   diagnostic-only `FlowEvent.VerifyDeclarationIgnored(ExecutionId, CommittedDigest, WorkingTreeDigest)`
+   — **on every execution that drift is observed, whatever the verdict**, because "did anything touch my
+   verify declaration?" is a question an operator asks after a failed, arrested or cancelled run just as
+   often as after a clean one. No `StepState` field, no status surface, no verdict consequence for
+   either event: the journal is the whole record, and it is what tells an operator that the file in
+   their workspace is not what graded the run.
+
+   **The `git` spawns that produce this value are hardened (#1708), because their stdout decides what
+   command grades the run** — a stricter job than `pixi task list`'s, whose output only chooses between
+   running a gate and not. They run with a scrubbed environment (an allowlist, so no ambient `GIT_*`
+   redirects the read and no `~/.gitconfig` is consulted), a `PATH` with every relative or
+   workspace-rooted entry removed (so a `git.exe` dropped into the dispatched workspace cannot answer
+   the question), `-c core.hooksPath=` and `--no-textconv` (so nothing written into the workspace's
+   `.git/config` or `.gitattributes` filters — or executes against — the bytes), `--no-pager`, and
+   **stdout only**, so a warning git writes to stderr can never be taken for the declaration's own first
+   non-comment line. `Baton.Mutation.VerifyCommandResolver`'s single hardened-spawn helper is where all
+   of that is applied; there is no second, unhardened path to this value.
+3. `WorkerRole.VerifyPixiTask` (`implement` → `gates-quiet`; every other shipped role → none) — today's
+   only source, run as `pixi run <task>`, unchanged. Baton's own repo keeps working unchanged under
+   this arm: no `.baton/verify` file here and no `--verify` on baton's own dispatches.
+
+An override/repo-declared command line runs through the platform shell (`cmd.exe /d /c <line>`, this
+project ships Windows-only per #1405) rather than hand-tokenized; the role default stays a direct
+`pixi run <task>` spawn, unchanged from #1623.
+
+**A verify command is now a property of the workspace, not gated on the role declaring one.** Unlike
+pre-#1702, where no `VerifyPixiTask` meant no verify step full stop, `Resolve` can still produce an
+override or repo-declared command for a role that declares none (`review`/`advise`/every other
+non-`implement` shipped role) — a workspace's own `.baton/verify` speaks for that workspace regardless
+of which role is dispatched against it, the same way `--verify` does. This is deliberate, not a gap:
+the whole point of #1702 is that verify answers "does this workspace's own gate suite pass", which a
+role has no authority to opt a workspace out of. A red run through this arm settles `Indeterminate`
+exactly like any other running-and-red verify.
+
+**Before running, the engine checks the resolved command is runnable** (`VerifyCommandResolver.CheckRunnableAsync`) —
+and after #1708 that probe exists for the `pixi run <task>` shape ONLY: a role-default task name checked
+against that workspace's own `pixi task list` output, the #1702 measured shape. **An override or
+repo-declared command line is not pre-probed at all.** It runs through `cmd.exe /d /c`, where a cmd
+intrinsic (`echo`, `call`, `exit`, `cd`) is perfectly runnable while resolving to no file on PATH — so
+the filesystem lookup that used to run here answered a question the shell was never going to ask, and
+answering it wrong skipped a real gate. The exit code decides instead: a command line that cannot run
+fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` has
+exactly two producers, and both are POSITIVE evidence that `pixi run <task>` does not exist in this
+workspace** — never an inference from something failing:
+
+- **The workspace is not a pixi project** (#1708): no `pixi.toml`, and no `pyproject.toml` carrying a
+  `[tool.pixi]` table, in the dispatched directory or any ancestor. A filesystem read, taken **before**
+  any spawn. Reason: `"no pixi project: gates-quiet"`. The ancestor walk mirrors pixi's own manifest
+  discovery and is load-bearing: a monorepo package dispatched with `--workspace` is a real pixi
+  workspace whose manifest sits at the repo root, and calling that "not a pixi project" would skip a
+  gate that plainly exists. Every uncertain answer (an unreadable manifest, an unresolvable path) is
+  read as "it is a pixi project", which defers to the probe and then to the real run.
+- **A SUCCESSFUL `pixi task list` whose output positively does not contain the role's task.** Reason:
+  `"task absent: gates-quiet"` — #1702's own measured shape.
+
+A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
+manifest, a concurrent lock, or `pixi` refusing to spawn at all — is an engine-environment problem and
+is never read as absence; it reports runnable and lets the real run decide, which fails closed. **The
+ordering between the two is what keeps those compatible**: the manifest check runs first, so a
+non-pixi workspace on a host with no `pixi` at all is answered by the filesystem, while a workspace
+that *is* a pixi project and whose `pixi` will not spawn stays "the engine's own tool is broken" and
+never softens into a not-run. If not runnable, the engine appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason)` and stops: **no
+`VerifyStarted` (never started), no `VerifyFailed`, and no
+`Indeterminate` settle.** The execution's own already-`Succeeded` classification (this branch is only
+reached when it is) decides `StepStatus`/`WorkflowOutcome` unassisted, exactly as if the role declared
+no verify command at all — the same "ENGINE, never the worker" ownership as an ordinary verify run, just
+never fired. `StateProjector` records the reason on `StepState.VerifyNotRunReason` (cleared on the
+step's next `ExecutionRequestAccepted`, same as `IndeterminateReason`); `WorkflowStatusProjector`
+surfaces it as `verify: "not-run"` / `verifyReason` on `WorkflowStatusStepView` (§3 schema above) and
+`fleet_status`'s `FleetStepStatusView` copies it verbatim, so `baton status --json`/Fleet Glass can
+render "unverified" instead of a bare `Succeeded` — Fleet Glass's own `UNVERIFIED` chip. **A verify
+command that actually STARTS and then fails still settles `Indeterminate` exactly as before** — #1702
+only changes the "never ran at all" case; a genuinely broken gate is not softened into a pass. A
+pre-flight probe cancelled by the operator's own cancellation token is never read as "not runnable" —
+it falls through as if runnable, so the real (already-cancelled) attempt below resolves the SAME
+cancellation the ordinary verify-window handling above already covers, rather than a second, divergent
+cancellation path.
+
+**`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
+Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its
+step's terminal `Status` read `Succeeded` — but a verify failure (or, pre-#1702, the not-run case
+misread as a failure) settles the step `Failed`/`Indeterminate` even though the worker already wrote
+its declared output before the engine's own (later) verify step ran at all. The measured cost: a
+foreign-workspace `implement` lane's report sat unseen in the room's artifacts while `--output` was
+never written. The copy is now keyed on the step actually having executed (`LatestExecutionId is not
+null`) and the declared output file existing on disk at that execution's artifact path — the real,
+unconditional gate — regardless of what verify (running-and-green, running-and-red, or #1702's
+not-run) decided.
+
+**That gate is deliberately broader than the verify case that motivated it (#1708).** Keying on
+"the step executed and the file exists" also delivers from an execution that never exited naturally —
+an `ExecutionArrested` (token/tool-step budget), an operator `ExecutionCancelled`, or a timeout — where
+the worker was killed *during* the write and the file on disk may be **partial**. That is the intended
+behaviour, not an oversight: a partial report is better evidence than none, it is the only account of
+what the arrested worker had done, and nothing about delivering it reads as success — the room word and
+the process exit code both still say arrested/cancelled/failed, and `--output` has never been a claim
+about the verdict. A caller that needs "this file is complete" reads the terminal state, never the mere
+existence of the file.
+
 **The per-execution token budget (#1682: arrests on billed, not context level).** #1623's own review
 recorded the ceiling as "not shown reachable" from `600,000 − 200,000(context) = 400,000 needed from
 Σoutput` — that derivation described a monitor tracking `context_level + Σoutput_tokens`, where the
@@ -1189,10 +1332,13 @@ code is the only signal a lane is even still going, and it is unreliable for tha
       "linkedFromUsage"?: ExecutionUsageView,
       "liveness"?: "alive" | "dead" | "unknown",  // #1375/#1513: present while this step reads "Running", or "Failed" with a RetryNotBefore still pending
       "exhaustedUntil"?: string,  // #1551: the ExhaustedUntil park's reset instant (ISO-8601, UTC) -- gating rule at §6 schema below
+      "verifyTail"?: string,      // #1701: the failing gate member(s)' OWN captured output for a VerifyFailed Indeterminate -- see "Engine-run verify" below. Distinct from "verify"/"verifyReason": that pair says verify never ran, this says it ran and went red.
       "resolvedByConductor"?: boolean,  // #1622 (c)/(d): true iff this step's terminal state was set by an explicit, non-accepting `baton resolve` ruling (--reject or --close); omitted when false
       "workspaceChanged"?: boolean,     // #1622 (b)/#1390: present ONLY for a tree-changing role's (implement/janitor) Succeeded settle -- see the paragraph below the table
       "hollow"?: boolean,               // #1622 (b)/#1390: present under the identical gate as workspaceChanged, true only when workspaceChanged is false AND the contract declares zero outputs
-      "hollowReason"?: string           // #1622 (b)/#1390: present only when hollow is true
+      "hollowReason"?: string,          // #1622 (b)/#1390: present only when hollow is true
+      "verify"?: "not-run",       // #1702: present iff the latest attempt's resolved verify command failed its pre-flight runnability check -- an ordinarily-Succeeded step, never a gate. See "Verify command resolution" below.
+      "verifyReason"?: string     // #1702: the pre-flight verdict -- "task absent: <task>", the only shape #1708 leaves reachable -- present only alongside "verify"
     }
   ],
   "outputs": [string],                 // resolved output paths
@@ -1443,7 +1589,9 @@ Output: a JSON array of
   "effort"?: string,      // that role's WorkerBindingConfigEntry.Effort
   "timeoutMs"?: number,   // that role's WorkerBindingConfigEntry.Timeout, in milliseconds
   "label"?: string,       // #1499: the room's --label, WorkerBindingConfigEntry.Label
-  "workstream"?: string   // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
+  "workstream"?: string,  // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
+  "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
+  "parentExecutionId"?: string // #1441/#1620: the parent room's own execution id at redispatch time
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
@@ -1517,6 +1665,24 @@ that section-per-state layout with compact board cards that have no room for a g
 card with a workstream instead carries it as a small line under the title (`boardCardHtml`'s own
 `wsLine`) — the field is still surfaced, just not still grouped. Rooms with no workstream render with
 no such line, the same fail-open-to-absent contract `label`'s own absence already has.
+
+**`parentRoomPath`/`parentExecutionId` (#1441/#1620)** are read back off `.baton/room.json`'s
+`ParentRoomDirectoryPath`/`ParentExecutionId` fields — the redispatch lineage `RedispatchCommand.cs`
+already writes at redispatch time (`InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync`) and,
+until #1620, nothing read back. `InteractiveSessionMaterializer.ReadLineageAsync` is the read side and
+the canonical account of its own file-open strategy (own doc comment) and fail-open rules; `FleetStatusTool`'s
+`TryReadLineageAsync` wraps it with one more fail-open layer for an I/O fault at that call site, the
+same posture `TryLoadBindingsAsync` already applies to `bindings.json` — one unreadable or corrupt
+marker degrades this room's lineage fields, never the whole `fleet_status` call. Both absent together
+for an ordinary `baton dispatch` room, which writes no lineage marker at all. Read on **both**
+`ProcessRoomAsync` paths, the same reasoning that puts `label` on both paths above (own remarks).
+Fleet Glass renders these as a "supersedes"/"superseded by" chain on the room's detail
+pane (`tools/fleet-glass/glass.html`, `roomDetailHtml`/`lineageLineHtml`) — the #1678 board redesign
+replaced the old per-state lane grid this feature originally targeted, so the chain reads off
+`detailPaneHtml`'s own `roomsByPath` map (a straight lookup for "supersedes", a reverse scan for
+"superseded by") rather than the state-bucket grouping `workstream` above used to have. Independent
+of `workstream`'s own grouping — a chain renders on any room's detail pane whether or not that room
+carries a workstream.
 
 **`attempt`/`maxAttempts`/`failureKind`/`retryEligible` (#1509/#1510/#1522)** are copied verbatim from
 `WorkflowStatusStepView`, never re-derived here — see that record's own remarks for the gating

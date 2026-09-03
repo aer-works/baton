@@ -100,7 +100,7 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card); min-width:0;}
 .lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
 .lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
-.lane .roomid, .lane .project, .board-detail-side .roomid, .board-detail-side .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .roomid, .lane .project, .board-detail-side .roomid, .board-detail-side .project, .board-detail-side .lineage{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .chips, .board-detail-side .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; max-width:100%;}
 .lane .ev, .board-detail-side .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .lane .age, .board-detail-side .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
@@ -350,6 +350,33 @@ function projectLineHtml(room){
 }
 
 // -----------------------------------------------------------------------------------------------
+// #1441/#1620: redispatch lineage read off .baton/room.json (spec/baton.md §6 schema) --
+// parentRoomPath/parentExecutionId are fixed at redispatch time, so "supersedes" is a straight
+// lookup and "superseded by" is a reverse scan of roomsByPath for a child naming this room as
+// parent. Both stay absent-safe: an ordinary dispatch room has neither field, and a parent that has
+// since aged off the fleet snapshot (retention swept, or simply outside include_terminal) still
+// names itself by its own trailing path segments (projectTail) rather than rendering nothing.
+// -----------------------------------------------------------------------------------------------
+function lineageLineHtml(room, roomsByPath){
+  if(!room) return "";
+  const byPath = roomsByPath instanceof Map ? roomsByPath : new Map();
+  const bits = [];
+  if(room.parentRoomPath){
+    const parent = byPath.get(room.parentRoomPath);
+    const parentName = parent ? (parent.label || parent.name) : (projectTail(room.parentRoomPath) || room.parentRoomPath);
+    bits.push(`supersedes ${esc(parentName)}`);
+  }
+  if(room.path){
+    for(const child of byPath.values()){
+      if(child && child.parentRoomPath === room.path){
+        bits.push(`superseded by ${esc(child.label || child.name)}`);
+      }
+    }
+  }
+  return bits.length ? `<div class="lineage">${bits.join(" · ")}</div>` : "";
+}
+
+// -----------------------------------------------------------------------------------------------
 // #1505 item 1: binding fields (role/adapter/model/effort, engine PR #1504) + client-derived
 // timebox remaining (timeoutMs - (now - the Running step's own timestamp), both absent-safe).
 // -----------------------------------------------------------------------------------------------
@@ -395,6 +422,15 @@ function failureKindChip(step){
   if(!step || !step.failureKind) return null;
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
+}
+// #1702: `step.verify === "not-run"` (WorkflowStatusStepView.Verify) is the pre-flight "not runnable"
+// outcome -- the step still ran and Succeeded, but the engine's own verify step never confirmed it.
+// Presence-gated the same convention as failureKindChip above; chipsHtml's [label,cls] tuple shape
+// has no room for the reason text (`step.verifyReason`), same as every other chip here -- a caller
+// wanting the reason reads fleet_status/status --json directly.
+function unverifiedChip(step){
+  if(!step || step.verify !== "not-run") return null;
+  return ["UNVERIFIED", "c-warn"];
 }
 // -----------------------------------------------------------------------------------------------
 // #1551: `step.exhaustedUntil` is the vendor-quota park's own reset instant (WorkflowStatusStepView,
@@ -472,6 +508,8 @@ function chipsHtml(room, running, focusStep){
   if(fc) chips.push(fc);
   const pc = parkChip(focusStep);
   if(pc) chips.push(pc);
+  const uc = unverifiedChip(focusStep);
+  if(uc) chips.push(uc);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 
@@ -518,6 +556,12 @@ const EVENT_NAMES = {
   "verifyPassed": "verify passed",
   "flow.verifyFailed": "verify failed",
   "verifyFailed": "verify failed",
+  "flow.verifyNotRun": "verify not run",
+  "verifyNotRun": "verify not run",
+  "flow.verifyDeclarationIgnored": "verify declaration ignored",
+  "verifyDeclarationIgnored": "verify declaration ignored",
+  "flow.verifyDeclarationUnreviewed": "verify declaration unreviewed",
+  "verifyDeclarationUnreviewed": "verify declaration unreviewed",
   "flow.executionArrested": "execution arrested",
   "executionArrested": "execution arrested",
 
@@ -1004,7 +1048,7 @@ function conductorDetailHtml(conductor){
 // Full detail: path (tap to expand), role/adapter/model/effort, error, step timeline, full
 // telemetry, deliverables link, and the same state-appropriate copy verbs the old per-lane card
 // used to carry directly (copyButtonsHtml, unchanged -- read-only, copies only, never executes).
-function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt){
+function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt, roomsByPath){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   const failedStep = (room.steps||[]).find(s => s.state === "Failed");
@@ -1023,6 +1067,7 @@ function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt){
   return `<div class="detail-top"><span class="detail-title">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
     ${roomIdLine}
     ${projectLineHtml(room)}
+    ${lineageLineHtml(room, roomsByPath)}
     ${pathHtml}
     ${bindingLineHtml(room)}
     ${err}${tryLine}
@@ -1040,7 +1085,7 @@ function detailPaneHtml(selectedKey, roomsByPath, conductor, timelines, openTime
   if(selectedKey === CONDUCTOR_KEY) return backBtn + conductorDetailHtml(conductor);
   const room = roomsByPath.get(selectedKey);
   if(!room) return backBtn + `<div class="empty">That room is no longer in the fleet snapshot.</div>`;
-  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths, derivedAt);
+  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths, derivedAt, roomsByPath);
 }
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
   if(totalDismissed <= 0) return "";
