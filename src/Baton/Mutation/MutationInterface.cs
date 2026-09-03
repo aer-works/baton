@@ -1136,7 +1136,9 @@ public static class MutationInterface
                             if (armed)
                             {
                                 toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
-                                hookVerdictCount = CountHookVerdictLedgerLines(outputDirectory, request.HookVerdictLedgerFileName);
+                                hookVerdictCount = request.HookVerdictLedgerFileName is { } ledgerFileName
+                                    ? HookVerdictLedger.CountLines(Path.Combine(outputDirectory, ledgerFileName))
+                                    : 0;
                             }
                         }
                         else if (countHookVerdicts is not null)
@@ -2374,38 +2376,4 @@ public static class MutationInterface
         return toolCallCount;
     }
 
-    /// <summary>
-    /// The first-verdict canary's hook-verdict count for the crash-recovery replay ONLY (#1741) --
-    /// the live-dispatch site keeps reading <see cref="CoreDispatchTarget.CountHookVerdicts"/> directly,
-    /// since it always has a freshly-resolved binding. This counts the same way
-    /// <c>Baton.Vendors.AgyHookVerdictLedger.CountVerdicts</c> does -- every non-whitespace line, 0 when
-    /// the file is absent or the name is null -- duplicated rather than referenced (same
-    /// sub-threshold call <see cref="ExecutionStreamLogger"/>'s own duplicated ledger file-name constant
-    /// already makes): Architecture Rule 2 keeps this core layer from taking a project reference on
-    /// <c>Baton.Vendors</c>, and from naming a vendor at all, so the one place record-once would
-    /// normally point is unreachable from here. If that method's counting rule ever changes, this is
-    /// the other place it must change too.
-    /// </summary>
-    private static int CountHookVerdictLedgerLines(string outputDirectory, string? ledgerFileName)
-    {
-        if (string.IsNullOrWhiteSpace(ledgerFileName))
-        {
-            return 0;
-        }
-
-        var path = Path.Combine(outputDirectory, ledgerFileName);
-        if (!File.Exists(path))
-        {
-            return 0;
-        }
-
-        try
-        {
-            return File.ReadLines(path).Count(line => line.Trim().Length > 0);
-        }
-        catch (IOException)
-        {
-            return 0;
-        }
-    }
 }
