@@ -183,4 +183,95 @@ public sealed class WatchStoreTests
 
         Assert.Equal(0, removed);
     }
+
+    /// <summary>
+    /// M1 (fix round): the daemon reaper — <see cref="WatchStore.ReapAsync"/> — is what keeps
+    /// <see cref="ListAsync"/>'s per-sweep O(n) scan bounded instead of growing with every watch ever
+    /// registered. Three cases in one room-backed test, mirroring exactly what the fix round asked for:
+    /// a fired watch older than the retention window is removed; a fired watch still inside the window
+    /// is kept; a pending watch whose room directory was deleted is removed regardless of age.
+    /// </summary>
+    [Fact]
+    public async Task ReapAsync_FiredAndOldWatch_IsRemoved()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches");
+        var roomDir = Path.Combine(home.Path, "rooms", "room-1");
+        Directory.CreateDirectory(roomDir);
+        var record = new WatchRecord("fired-old", roomDir, "https://example.invalid/hook", DateTime.UtcNow.AddDays(-2));
+        await WatchStore.WriteAsync(record, watchesDir, TestContext.Current.CancellationToken);
+        await WatchStore.TryClaimAsync(
+            watchesDir, record.WatchId, DateTime.UtcNow.AddHours(-25), TestContext.Current.CancellationToken);
+
+        var removed = await WatchStore.ReapAsync(
+            watchesDir, TimeSpan.FromHours(24), TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, removed);
+        Assert.Null(await WatchStore.TryReadAsync(watchesDir, record.WatchId, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReapAsync_FiredButRecentWatch_IsKept()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches");
+        var roomDir = Path.Combine(home.Path, "rooms", "room-1");
+        Directory.CreateDirectory(roomDir);
+        var record = new WatchRecord("fired-recent", roomDir, "https://example.invalid/hook", DateTime.UtcNow);
+        await WatchStore.WriteAsync(record, watchesDir, TestContext.Current.CancellationToken);
+        await WatchStore.TryClaimAsync(
+            watchesDir, record.WatchId, DateTime.UtcNow.AddMinutes(-5), TestContext.Current.CancellationToken);
+
+        var removed = await WatchStore.ReapAsync(
+            watchesDir, TimeSpan.FromHours(24), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, removed);
+        Assert.NotNull(await WatchStore.TryReadAsync(watchesDir, record.WatchId, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReapAsync_PendingWatchOnADeletedRoom_IsRemoved()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches");
+        var roomDir = Path.Combine(home.Path, "rooms", "room-deleted");
+        Directory.CreateDirectory(roomDir);
+        var record = new WatchRecord("pending-orphaned", roomDir, "https://example.invalid/hook", DateTime.UtcNow);
+        await WatchStore.WriteAsync(record, watchesDir, TestContext.Current.CancellationToken);
+        DirectoryCleanup.EnsureDeletedRecursively(roomDir);
+
+        var removed = await WatchStore.ReapAsync(
+            watchesDir, TimeSpan.FromHours(24), TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, removed);
+        Assert.Null(await WatchStore.TryReadAsync(watchesDir, record.WatchId, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReapAsync_PendingWatchOnAnExistingRoom_IsKept()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches");
+        var roomDir = Path.Combine(home.Path, "rooms", "room-still-here");
+        Directory.CreateDirectory(roomDir);
+        var record = new WatchRecord("pending-live", roomDir, "https://example.invalid/hook", DateTime.UtcNow);
+        await WatchStore.WriteAsync(record, watchesDir, TestContext.Current.CancellationToken);
+
+        var removed = await WatchStore.ReapAsync(
+            watchesDir, TimeSpan.FromHours(24), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, removed);
+        Assert.NotNull(await WatchStore.TryReadAsync(watchesDir, record.WatchId, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReapAsync_MissingDirectory_ReturnsZero()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches-never-created");
+
+        var removed = await WatchStore.ReapAsync(watchesDir, TimeSpan.FromHours(24), TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, removed);
+    }
 }

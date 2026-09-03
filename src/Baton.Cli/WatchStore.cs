@@ -175,6 +175,64 @@ public static class WatchStore
             cancellationToken);
     }
 
+    /// <summary>Daemon reaper pass (spec/baton.md §2): deletes a fired watch whose <see cref="WatchRecord.FiredAt"/>
+    /// is older than <paramref name="retentionWindow"/>, and any watch — fired or still pending — whose
+    /// <see cref="WatchRecord.RoomDirectoryPath"/> no longer exists (logged once, at the moment of
+    /// removal, since removal itself stops the sweep from ever revisiting it). Without this, every watch
+    /// ever registered stays in <see cref="ListAsync"/>'s O(n) scan — one file read plus one cross-process
+    /// mutex acquisition per watch, every 15 s — forever. Returns the count removed.</summary>
+    public static Task<int> ReapAsync(
+        string watchesDirectoryPath, TimeSpan retentionWindow, CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(watchesDirectoryPath))
+        {
+            return Task.FromResult(0);
+        }
+
+        return Task.Run(
+            () =>
+            {
+                var removed = 0;
+                var nowUtc = DateTime.UtcNow;
+                foreach (var file in Directory.GetFiles(watchesDirectoryPath, "*.json"))
+                {
+                    var removedThis = RunUnderLock(file, () =>
+                    {
+                        var record = TryReadFile(file);
+                        if (record is null)
+                        {
+                            return false;
+                        }
+
+                        if (record.FiredAt is { } firedAt && nowUtc - firedAt >= retentionWindow)
+                        {
+                            File.Delete(file);
+                            return true;
+                        }
+
+                        if (!Directory.Exists(record.RoomDirectoryPath))
+                        {
+                            File.Delete(file);
+                            Console.Error.WriteLine(
+                                $"baton watch: removed watch '{record.WatchId}' — room directory " +
+                                $"'{record.RoomDirectoryPath}' no longer exists.");
+                            return true;
+                        }
+
+                        return false;
+                    });
+
+                    if (removedThis)
+                    {
+                        removed++;
+                    }
+                }
+
+                return removed;
+            },
+            cancellationToken);
+    }
+
     private static WatchRecord? TryReadFile(string path)
     {
         if (!File.Exists(path))
