@@ -15,11 +15,10 @@ using Microsoft.Extensions.Hosting;
 namespace Baton.Cli.Daemon;
 
 /// <summary>
-/// #1557: the daemon's fourth kept responsibility (spec/baton.md §7) — writes
-/// <see cref="BatonPaths.FleetProjectionFile"/> roughly every 30s so a local reader (a janitor sweep,
-/// eventually the pusher per #1557's own PR-B) never has to re-derive <c>fleet_status</c> by scanning
-/// every room itself. Mirrors <see cref="RoomRetentionSweep"/>'s <see cref="BackgroundService"/> shape
-/// and env-var-configurable-interval-with-clamped-bounds pattern.
+/// #1557: the daemon's fourth kept responsibility (spec/baton.md §7) — periodically writes
+/// <see cref="BatonPaths.FleetProjectionFile"/>; that property's own doc has the cadence and why.
+/// Mirrors <see cref="RoomRetentionSweep"/>'s <see cref="BackgroundService"/> shape and
+/// env-var-configurable-interval-with-clamped-bounds pattern.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,10 +30,9 @@ namespace Baton.Cli.Daemon;
 /// </para>
 /// <para>
 /// <b>Not in this PR (see the tracking issue's PR slicing):</b> <c>stdoutTail</c> (PR-A2 — no C#
-/// precedent, largest remaining piece); pending-outputs status (grepped
-/// <see cref="Status.StepOutputResolver"/> — it resolves a Succeeded/Paused-Succeeded step's already-
-/// produced outputs, not a "pending" verdict for a step that has not reached that state yet, so there is
-/// no clean source to copy here without inventing one).
+/// precedent, largest remaining piece); pending-outputs status — grepped
+/// <see cref="Status.StepOutputResolver"/> first, per spec/baton.md §6's own remark on why that
+/// grep came up empty.
 /// </para>
 /// </remarks>
 public sealed class FleetProjectionWriter : BackgroundService

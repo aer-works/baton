@@ -147,15 +147,8 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Assert.False(roomObject.ContainsKey("processAlive"));
     }
 
-    /// <summary>
-    /// #1513: a Running step whose engine is confirmed dead downgrades the room's DISPLAYED state to
-    /// "Stalled" (FleetStatusTool's own override) even though the step itself is still "Running" --
-    /// spec/baton.md §6's `live` stays gated on the displayed state (matching pusher.py's existing
-    /// contract), so a Stalled room carries no `live`. `processAlive` is deliberately NOT behind that
-    /// gate: it is the diagnostic that explains why the room reads Stalled at all -- exactly the janitor
-    /// sweep's own ask (#1557's issue body) for a room a live `fleet_status` scan would otherwise need a
-    /// second read to explain.
-    /// </summary>
+    /// <summary>Pins the `live`-vs-diagnostics gating split <see cref="FleetProjectionWriter.BuildProjectionJsonAsync"/>'s
+    /// own remarks state -- see that method for why.</summary>
     [Fact]
     public async Task RunningRoom_WithDeadEngine_ReportsProcessAliveDeadButNoLiveSection()
     {

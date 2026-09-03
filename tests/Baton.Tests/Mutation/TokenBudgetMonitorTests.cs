@@ -67,11 +67,9 @@ public sealed class TokenBudgetMonitorTests
         Assert.True(usage.BilledIsFloor);
     }
 
-    /// <summary>
-    /// #1557: the plan's one named gap in reuse -- <c>WorkerUsage.Turns</c> existed as a field but
-    /// <c>SnapshotUsage</c> never populated it. Additive the same way <c>BilledTokens</c> is: one per
-    /// usage-bearing line that actually contributed a billed delta, not per line fed to the monitor.
-    /// </summary>
+    /// <summary>#1557: the plan's one named gap in reuse -- <c>WorkerUsage.Turns</c> existed as a
+    /// field but <c>SnapshotUsage</c> never populated it. See the <c>_turns</c> field's own comment
+    /// for what it counts.</summary>
     [Fact]
     public void SnapshotUsage_counts_Turns_as_one_per_usage_bearing_line_contributing_to_BilledTokens()
     {
