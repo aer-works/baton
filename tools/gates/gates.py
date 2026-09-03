@@ -334,8 +334,16 @@ def _tree_and_dirty(cwd=None):
     status = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
                             capture_output=True, text=True, check=True).stdout
     dirty = bool(status.strip())
+    # `git diff HEAD`'s stdout embeds arbitrary tracked-file bytes (a fixture captured on a
+    # non-UTF-8-clean source, a binary-looking text file) -- `text=True` alone decodes with the
+    # OS's default locale encoding (cp1252 on Windows), which raises UnicodeDecodeError on a byte
+    # that codepage has no mapping for and turns an already-passed gates run into a nonzero exit
+    # (the exact failure class this module's write_receipt docstring says a receipt-write failure
+    # must never cause). utf-8 with errors="replace" never raises, and a `diff_hash` computed from
+    # a replaced-lossy diff is still a valid, if imprecise, identity for the receipt's purpose.
     diff = subprocess.run(["git", "diff", "HEAD"], cwd=cwd,
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          check=True).stdout
     diff_hash = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     return tree, dirty, diff_hash
 
