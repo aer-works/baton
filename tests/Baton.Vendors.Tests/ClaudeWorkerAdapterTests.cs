@@ -3,6 +3,7 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Status;
+using Baton.Tests.Shared;
 
 namespace Baton.Vendors.Tests;
 
@@ -11,7 +12,17 @@ namespace Baton.Vendors.Tests;
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
 /// <see cref="ClaudeWorkerAdapter"/> resolving.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: the two config-root tests isolate <see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/>
+/// through <see cref="BatonEnvironmentSnapshot.BeginScope"/> rather than mutating process environment,
+/// so this class no longer needs <c>SerializedEnvironmentCollection</c> enrollment for that. It still
+/// needs <see cref="LaunchConfigCollection"/>, unrelated to this fold: this class writes launch config
+/// files (<c>claude-settings.json</c>/<c>claude-mcp.json</c>) under the assembly's shared
+/// <c>BATON_HOME</c>, and <see cref="LaunchConfigCollection"/>'s own remarks record the
+/// <see cref="UnauthorizedAccessException"/> race #667/#682 measured when a launch-config writer runs
+/// in the default parallel pool instead.
+/// </remarks>
+[Collection(LaunchConfigCollection.Name)]
 public class ClaudeWorkerAdapterTests
 {
     private static readonly WorkerContract ArchitectContract = new(
@@ -1111,37 +1122,77 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void Claude_config_root_unset_injects_no_CLAUDE_CONFIG_DIR()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, null);
-            var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        // Scope from Current, not Blank: Resolve() also writes claude-settings.json/claude-mcp.json
+        // under BatonPaths.WorkerLaunchConfig (BatonPaths.Root -> HomeOverride), so the scope must
+        // carry forward whatever redirected home is already ambient (BatonHomeRedirect's module
+        // initializer, in this assembly) rather than blanking it back to the real ~/.baton. See
+        // BatonEnvironmentSnapshot's remarks for why Blank is the wrong base for a partial override
+        // here.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
-            Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
-        }
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
     }
 
     [Fact]
     public void Claude_config_root_set_injects_CLAUDE_CONFIG_DIR_for_batch_and_gate()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
         var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        // See the sibling test above: scope from Current so the redirected BATON_HOME survives.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
+
+        Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
+    }
+
+    /// <summary>
+    /// Tripwire for the leak the CI post-test pollution check caught (see
+    /// <see cref="BatonEnvironmentSnapshot.Blank"/>'s remarks): under a <c>BeginScope</c> home
+    /// override, the launch config <see cref="ClaudeWorkerAdapter.Resolve"/> writes on every call must
+    /// land under that override — never under the real <c>~/.baton</c> — regardless of which other
+    /// fields the same scope also overrides.
+    /// </summary>
+    [Fact]
+    public void Resolve_writes_launch_config_under_a_scoped_home_override_never_the_real_home()
+    {
+        var overrideHome = Path.Combine(Path.GetTempPath(), $"claude-launch-config-tripwire-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(overrideHome);
+        // The negative half of the name: the real ~/.baton/worker-launch must not be rewritten. A leaked
+        // write stamps THIS test process's AppContext.BaseDirectory into the hook path (that is how the
+        // CI pollution check's diff read), so the real files must not mention it afterwards. Content, not
+        // mtime: on the operator's machine a legitimate dispatch can rewrite these files mid-test.
+        var realLaunchDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".baton", "worker-launch");
+        var realSettings = Path.Combine(realLaunchDir, "claude-settings.json");
+        var realMcp = Path.Combine(realLaunchDir, "claude-mcp.json");
+        var thisProcessMarker = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         try
         {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, testPath);
+            using var scope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { HomeOverride = overrideHome, ClaudeConfigRootOverride = null });
 
-            var target = new ClaudeWorkerAdapter().Resolve(
-                new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
+            new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
-            Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-settings.json")));
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-mcp.json")));
+            foreach (var realFile in new[] { realSettings, realMcp })
+            {
+                if (File.Exists(realFile))
+                {
+                    // JSON doubles backslashes; unescape before comparing so a Windows path can match at all.
+                    var unescaped = File.ReadAllText(realFile).Replace("\\\\", "\\");
+                    Assert.DoesNotContain(thisProcessMarker, unescaped, StringComparison.OrdinalIgnoreCase);
+                }
+            }
         }
         finally
         {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
+            DirectoryCleanup.DeleteRecursively(overrideHome);
         }
     }
 
@@ -1237,7 +1288,113 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    /// <summary>
+    /// #1622: the real integration arm for room dispatch-implement-d6101c3c's own measured shape —
+    /// <see cref="ClaudeWorkerAdapter"/> itself as the <see cref="IFailureClassifier"/>, parsing a
+    /// genuine multi-line stream-json tail, unlike Baton.Tests' OutcomeClassifierTests.cs arms, which
+    /// stand in a canned double (Baton cannot reference Baton.Vendors, Architecture Rule 2 -- this is
+    /// the one place the real parse and OutcomeClassifier.Classify run together).
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required()
+    {
+        var streamJsonTail = """
+            {"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}}
+            {"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+            """;
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new ClaudeWorkerAdapter();
 
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: streamJsonTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// #1727 (found while fixing the #1720 review's F1): the SAME tail as the arm above, in the shape
+    /// production actually captures it — see <see cref="StreamJsonTailScanner"/> for the collapse and
+    /// what it did to the old whole-parse-then-split-on-newline check. Red before that scanner; the
+    /// raw-newline arm above is the control that stayed green throughout, which is exactly why the
+    /// gap was invisible.
+    /// </summary>
+    [Fact]
+    public void CreditsRequired_InTheWhitespaceCollapsedTailProductionActuallyCaptures_ClassifiesExhaustedUntil()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}} """
+            + """{"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+    }
+
+    /// <summary>
+    /// #1727's polarity control: an assistant message whose own TEXT quotes the typed error code is
+    /// nested under <c>message.content[].text</c>, so scanning for top-level objects must not match
+    /// it — the scanner widened WHERE the check looks, not WHAT counts as the signal.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_quoting_credits_required_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"The vendor reports errorCode credits_required when the subscription runs dry."}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    /// <summary>
+    /// #1720 review Finding G: the arm above quotes only the ERROR CODE in prose ("errorCode
+    /// credits_required"), which the old check already rejected before this fix. The claim
+    /// <see cref="StreamJsonTailScanner.AnyObject"/> actually has to defeat is a worker's answer text
+    /// embedding a FULL verbatim JSON envelope — the escaped-quote shape a real vendor tail can never
+    /// produce unescaped, per <see cref="StreamJsonTailScanner"/>'s own doc. Written as a raw string
+    /// literal so the backslashes survive into the runtime bytes: a regular literal would collapse
+    /// <c>\"</c> to <c>"</c> at compile time and pin nothing.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"the failure line was {\"errorCode\":\"credits_required\"}"}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {

@@ -23,13 +23,16 @@
          internal race deterministically, not just through the public mutation surface. -->
     <InternalsVisibleTo Include="Baton.Tests" />
     <!-- #1496: BatonEnvironmentSnapshot.BeginScope is internal (a test-only seam, never production
-         surface). Baton.Cli.Tests needs it directly: FleetStatusToolTests, RoomDetailToolTests and
-         DaemonHostTests isolate BatonPaths.Root through a scope rather than mutating process
-         environment. (Baton.Vendors' own readers, WorkerRoleCatalog, WorkflowTemplateCatalog and
-         ClaudeWorkerAdapter, were tried against the snapshot and reverted, see the #1496 report;
-         add a matching Baton.Vendors.Tests grant only if a future PR actually folds one of them.)
-         #1495's poller tests share this same grant. -->
+         surface). Baton.Cli.Tests needs it directly: FleetStatusToolTests, RoomDetailToolTests,
+         DaemonHostTests, and (#1524) RoomRetentionSweepTests isolate their env-derived state through
+         a scope rather than mutating process environment. #1495's poller tests share this same
+         grant. -->
     <InternalsVisibleTo Include="Baton.Cli.Tests" />
+    <!-- #1524: Baton.Vendors' own readers (WorkerRoleCatalog, WorkflowTemplateCatalog and
+         ClaudeWorkerAdapter) folded into BatonEnvironmentSnapshot too (tried and reverted in #1496,
+         see that type's own remarks for why). WorkerRoleCatalogTests, WorkflowTemplateCatalogTests,
+         CatalogNamespaceTests, and ClaudeWorkerAdapterTests need BeginScope the same way. -->
+    <InternalsVisibleTo Include="Baton.Vendors.Tests" />
   </ItemGroup>
 
 </Project>

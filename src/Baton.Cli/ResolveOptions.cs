@@ -20,12 +20,23 @@ namespace Baton.Cli;
 /// instead.
 /// </param>
 /// <param name="Reason">
-/// The conductor's own justification, recorded as a room fact. Required for <c>--reject</c>
-/// (<see cref="ResolveOptionsParser"/> enforces this); optional for <c>--accept-capture</c>, where the
-/// accept/reject choice already speaks for itself.
+/// The conductor's own justification, recorded as a room fact. Required for <c>--reject</c> and
+/// <c>--close</c> (<see cref="ResolveOptionsParser"/> enforces this); optional for
+/// <c>--accept-capture</c>, where the accept/reject choice already speaks for itself.
+/// </param>
+/// <param name="Close">
+/// #1622 (d)/#1700: <c>true</c> for <c>--close</c> — the ruling for a settle shape <c>--reject</c>
+/// does not admit (a <c>VerifyFailed</c>/<c>ExecutionArrested</c>/no-producer Indeterminate: no
+/// captured response ever existed to accept or reject). Mutually exclusive with
+/// <see cref="Accept"/> being <c>true</c>; <see cref="ResolveOptionsParser"/> enforces the three-way
+/// exclusivity. <c>Accept</c> stays <c>false</c> when this is <c>true</c> — the room fact this
+/// settles on (<c>FlowEvent.CaptureResolved</c>) is a not-accepted resolution either way, and
+/// <c>ResolveCommand</c>/<c>MutationInterface.RecordCaptureResolutionAsync</c> are what widen which
+/// producers the not-accepted path admits when this flag is set.
 /// </param>
 public sealed record ResolveOptions(
     string RoomDirectoryPath,
     string? ExecutionId,
     bool Accept,
-    string? Reason = null);
+    string? Reason = null,
+    bool Close = false);

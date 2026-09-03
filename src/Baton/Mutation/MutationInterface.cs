@@ -226,6 +226,7 @@ public static class MutationInterface
         ExecutionId executionId,
         bool accepted,
         string? reason,
+        bool close = false,
         CancellationToken cancellationToken = default,
         string? holderDescription = null)
     {
@@ -238,8 +239,11 @@ public static class MutationInterface
         if (!accepted && string.IsNullOrWhiteSpace(reason))
         {
             throw new InvalidCaptureResolutionException(
-                "Rejecting a captured response requires --reason: the conductor's justification is " +
-                "itself the room fact this verb exists to record.");
+                close
+                    ? "Closing an Indeterminate settle requires --reason: the conductor's justification " +
+                      "is itself the room fact this verb exists to record."
+                    : "Rejecting a captured response requires --reason: the conductor's justification is " +
+                      "itself the room fact this verb exists to record.");
         }
 
         using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
@@ -267,9 +271,13 @@ public static class MutationInterface
         // checkpoint.
         var effectiveProducer = target?.IndeterminateProducer
             ?? (target?.LatestCapturedResponseFile is not null ? IndeterminateProducer.CapturedResponse : (IndeterminateProducer?)null);
+        // #1622 (d)/#1700: --close admits exactly the producers --accept-capture/--reject never did —
+        // VerifyFailed/Arrested/null — mirroring ResolveCommand's own widened admission one layer up.
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
-            && (effectiveProducer == IndeterminateProducer.CapturedResponse
-                || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
+            && (close
+                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                : effectiveProducer == IndeterminateProducer.CapturedResponse
+                    || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
         if (!admitsThisVerb)
         {
             // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
@@ -1036,6 +1044,8 @@ public static class MutationInterface
                         string? worktreePath = null;
                         string? worktreeBaseRef = null;
                         IWorkerResponseParser? responseParser = null;
+                        var changesTree = false;
+                        string? changesTreeWorkingDirectory = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
@@ -1050,6 +1060,20 @@ public static class MutationInterface
                                 }
 
                                 responseParser = p.ResponseParser;
+                                // #1622/#1390: the same bit the live-dispatch path reads off
+                                // `binding.ChangesTree` below. 7c (#1720 review) corrects the
+                                // mechanism this used to state: the binding is NOT re-derived from
+                                // the role catalog here -- ChangesTree is a serialized field of
+                                // WorkerBindingConfigEntry, written into the room's own bindings.json
+                                // at dispatch and read back from that file, so this is the value
+                                // recorded at dispatch and a catalog grant that changed since then
+                                // cannot diverge the two.
+                                changesTree = p.ChangesTree;
+                                // #1622/#1390: deliberately NOT gated on p.IsWorktree the way worktreePath
+                                // above is -- see OutcomeClassifier.Classify's own parameter doc for why a
+                                // tree-changing role never gets an auto-provisioned worktree, so that gate
+                                // would leave this permanently null for every real run.
+                                changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
                             }
                         }
                         catch (BatonFlowException)
@@ -1073,7 +1097,8 @@ public static class MutationInterface
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
-                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef);
+                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1736,9 +1761,13 @@ public static class MutationInterface
             // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
             // repository — see WorkerBinding.Process.IsWorktree's remarks.
             var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
+            // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
+            // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
+            var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
+                changesTreeWorkingDirectory);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append
@@ -1880,7 +1909,8 @@ public static class MutationInterface
     private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
         classification.Verdict switch
         {
-            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId),
+            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(
+                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason),
             OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
                 classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),

@@ -284,5 +284,50 @@ public class RoleDispatchTests
 
         Assert.Contains("Attached files (in C:/room/artifacts/attachments): file1.txt, file2.md", binding.PromptTemplate);
     }
+
+    /// <summary>
+    /// #1622 (b)/#1390: pins the exact role set <see cref="WorkerBindingConfigEntry.ChangesTree"/>
+    /// derives against the live <see cref="WorkerRoleCatalog.All"/> (never a second hardcoded list,
+    /// per that field's own remarks), including that no <c>fix</c> role exists to derive against.
+    /// </summary>
+    [Fact]
+    public void ChangesTree_is_derived_from_the_catalogs_own_write_and_shell_grant_for_every_role()
+    {
+        var expected = new Dictionary<string, bool>
+        {
+            ["advise"] = false,
+            ["implement"] = true,
+            ["review"] = false,
+            ["patch"] = false,
+            ["fact-check"] = false,
+            ["janitor"] = true,
+            ["orchestrate"] = false,
+        };
+
+        var actualRoleIds = WorkerRoleCatalog.All.Select(role => role.Id).OrderBy(id => id, StringComparer.Ordinal).ToList();
+        Assert.Equal(expected.Keys.OrderBy(id => id, StringComparer.Ordinal).ToList(), actualRoleIds);
+
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            var binding = RoleDispatch.ToBinding(role, "spec");
+            Assert.Equal(expected[role.Id], binding.ChangesTree);
+        }
+    }
+
+    /// <summary>
+    /// The specific defect the derivation avoids, per <see cref="WorkerBindingConfigEntry.ChangesTree"/>'s
+    /// own remarks: <c>fact-check</c> forced onto an adapter without outbox support reaches the
+    /// widened-grant shape those remarks describe, and <c>ChangesTree</c> must still read false.
+    /// </summary>
+    [Fact]
+    public void ChangesTree_stays_false_even_when_the_grant_widens_write_files_for_a_non_outbox_adapter()
+    {
+        var factCheck = WorkerRoleCatalog.For("fact-check");
+        var binding = RoleDispatch.ToBinding(factCheck, "spec", adapterOverride: "agy");
+
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.True(binding.PermissionGrant!.WriteFiles, "the widened grant this test targets must actually have fired");
+        Assert.False(binding.ChangesTree);
+    }
 }
 

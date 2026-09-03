@@ -437,6 +437,180 @@ public class ResolveCommandEndToEndTests
     }
 
     /// <summary>
+    /// #1622 (d)/#1700: fabricates a room settled Indeterminate by the #1623 verify producer — same
+    /// <see cref="FlowEvent.VerifyFailed"/> shape <see cref="Baton.Tests.Mutation.MutationInterfaceCaptureResolutionTests"/>'s
+    /// own <c>SeedVerifyFailedRoomAsync</c> uses, at this end-to-end layer.
+    /// </summary>
+    private static async Task<ExecutionId> SeedVerifyFailedRoomAsync(
+        string testRoot, string roomDirectory, string outputName)
+    {
+        var executionId = await RunOrdinaryFailureAsync(testRoot, roomDirectory, outputName);
+
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+                TestContext.Current.CancellationToken);
+        }
+
+        return executionId;
+    }
+
+    /// <summary>
+    /// #1622 (d)/#1700: end-to-end through the real CLI parser and command, the same round trip every
+    /// other fixture in this file proves — `--close --reason <text>` on a VerifyFailed-producer room
+    /// settles Failed, clears the "awaiting conductor resolution" text, and marks `rejected`/`resolvedBy`.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_verify_failed_room_through_the_real_CLI_parser_settles_Failed_and_reports_resolved_by_conductor()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var options = ResolveOptionsParser.Parse(
+                [roomDirectory, "--execution", executionId.Value, "--close", "--reason", "overlap flake, work already landed"]);
+            var result = await ResolveCommand.ExecuteAsync(options, TestContext.Current.CancellationToken);
+
+            var step = Assert.Single(result.State.Steps);
+            Assert.Equal(StepStatus.Failed, step.Status);
+            Assert.False(step.IndeterminateAwaitingResolution);
+            Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(result.State));
+
+            var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, roomDirectory);
+            Assert.DoesNotContain("awaiting conductor resolution", view.Error, StringComparison.Ordinal);
+            Assert.Contains("Resolved by the conductor", view.Error, StringComparison.Ordinal);
+            // F11 (#1720 review, conductor ruling): a `--close` is an administrative settlement, not
+            // a refusal -- `resolvedBy` carries it, `rejected` stays false. spec/baton.md §3.
+            Assert.False(view.Rejected);
+            Assert.Equal("conductor", view.ResolvedBy);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// F4 (#1720 review): the transition nothing covered, and which the refusal text asserted the
+    /// opposite of — after a <c>--close</c>, <c>baton redispatch</c> no longer refuses this room. The
+    /// room reaches Terminal/Failed, so <c>Program.cs</c>'s post-command block rewrites
+    /// <c>terminal.json</c> from the fresh view (the two calls this test makes verbatim after
+    /// <c>ResolveCommand</c> returns, since <c>Program.Main</c> is not callable from a test), and
+    /// <c>RedispatchCommand</c>'s gate — which reads <c>State == Indeterminate</c> from that file —
+    /// stops firing. The refusal now says so.
+    /// </summary>
+    [Fact]
+    public async Task Redispatch_no_longer_refuses_a_verify_failed_room_once_it_has_been_closed()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        var originalError = Console.Error;
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            // (The refusal text itself is pinned in RedispatchCommandEndToEndTests, which can
+            // fabricate the Indeterminate sentinel this room only reaches through the engine.)
+            var closed = await ResolveCommand.ExecuteAsync(
+                ResolveOptionsParser.Parse(
+                    [roomDirectory, "--execution", executionId.Value, "--close", "--reason", "overlap flake, work already landed"]),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, closed.State.Status);
+
+            // `baton dispatch` writes bindings.json INTO the room; this room was made by `baton run`
+            // (the only way these fixtures can reach a real Indeterminate), which keeps its bindings
+            // file beside the workflow instead, so redispatch's own lookup needs a copy in the room.
+            File.Copy(
+                Path.Combine(testRoot, "bindings.json"),
+                Baton.Status.BatonPaths.RoomBindingsFile(roomDirectory));
+            File.Copy(
+                Path.Combine(testRoot, "workflow.json"),
+                Path.Combine(roomDirectory, "workflow.json"), overwrite: true);
+
+            // Program.cs's own post-command sentinel write, verbatim.
+            await TerminalSentinelWriter.WriteAsync(
+                roomDirectory,
+                WorkflowStatusProjector.Project(closed.State, closed.Snapshot, roomDirectory),
+                TestContext.Current.CancellationToken);
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            var childRoom = Path.Combine(testRoot, "child-after");
+            var result = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(roomDirectory, childRoom), Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.True(Directory.Exists(childRoom));
+            Assert.Contains("did not succeed", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// The discriminating control: <c>--reject</c> (not <c>--close</c>) against the identical
+    /// VerifyFailed-producer room still gets #1700's own refusal shape, now pointing at <c>--close</c>
+    /// as the remedy instead of a dead end.
+    /// </summary>
+    [Fact]
+    public async Task Rejecting_a_verify_failed_room_still_refuses_but_now_names_close_as_the_remedy()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedVerifyFailedRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "not my problem"),
+                TestContext.Current.CancellationToken));
+
+            Assert.Contains("nothing for '--accept-capture'/'--reject' to accept or reject", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--close", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// The other direction of the same discrimination: <c>--close</c> against a `ContractFailure`
+    /// room -- one `--reject`/`--accept-capture` already admit -- must still refuse, through
+    /// <see cref="ResolveCommand"/>'s own <c>ThrowDiscriminatedRefusal</c> `close` branch, not just
+    /// <c>MutationInterface</c>'s guard one layer down.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_contract_failure_room_through_the_real_CLI_parser_still_refuses()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var executionId = await SeedContractFailureRoomAsync(testRoot, roomDirectory, "advice.md");
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => ResolveCommand.ExecuteAsync(
+                new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "not my problem", Close: true),
+                TestContext.Current.CancellationToken));
+
+            Assert.Contains("--close", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--reject", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// The durable shape a crash between "fact" and "files" leaves behind — an accepted
     /// <see cref="FlowEvent.CaptureResolved"/> whose declared output is not on disk — constructed
     /// directly, since what these fixtures test is the CLI's admission of that shape as a repair

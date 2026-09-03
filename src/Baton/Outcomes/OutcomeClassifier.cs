@@ -82,7 +82,12 @@ public sealed record OutcomeClassification(
     DateTimeOffset? RetryNotBefore = null,
     string? CapturedResponseFile = null,
     IReadOnlyList<string>? UnsatisfiedOutputNames = null,
-    string? SubstantialWorkNoOutputsEvidence = null);
+    string? SubstantialWorkNoOutputsEvidence = null,
+    // #1622/#1390: spec/baton.md §3's "workspaceChanged/hollow/hollowReason" is the canonical
+    // account of these three fields -- gating, meaning, null-vs-false, all stated there once.
+    bool? WorkspaceChanged = null,
+    bool? Hollow = null,
+    string? HollowReason = null);
 
 /// <summary>
 /// Maps a <see cref="CoreDispatchResult"/> plus a step's <see cref="WorkerContract"/> into one of
@@ -136,11 +141,29 @@ public static class OutcomeClassifier
 
     /// <summary>
     /// Classifies <paramref name="result"/> per this table:
-    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied</c> → Succeeded;
+    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + no ToolDenied/ExhaustedUntil signal in the stream</c> → Succeeded;
+    /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + a ToolDenied/ExhaustedUntil signal in the stream</c> → Failed (#914/#1622);
     /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput</c> → Indeterminate (#1593/#1594/#1608, unless a dead worker without result on an untouched workspace);
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
+    /// <param name="worktreePath">
+    /// Only an ACTUALLY-provisioned, auto-isolated worktree (<see cref="Mutation.WorkerBinding.Process.IsWorktree"/>) —
+    /// null otherwise, deliberately, per F4 (#1593 review): the retry/grant-audit reads below must
+    /// never see the operator's own working directory, routinely dirty for reasons unrelated to this
+    /// execution. <paramref name="changesTreeWorkingDirectory"/> below is the separate, wider path for
+    /// the #1622/#1390 work-product evidence, which explicitly wants the real directory.
+    /// </param>
+    /// <param name="changesTreeWorkingDirectory">
+    /// #1622/#1390: the caller's own <c>WorkingDirectory</c> when <paramref name="changesTree"/> is
+    /// true, regardless of whether it is an auto-provisioned worktree — unlike
+    /// <paramref name="worktreePath"/> above, this is never null merely because no isolation was
+    /// provisioned, since a tree-changing role's write grant means WriteFiles is true, which by
+    /// construction never gets an auto-provisioned worktree (see
+    /// <c>Baton.Vendors.RoleDispatch.ToBinding</c>'s own remarks) — so gating this on
+    /// <see cref="Mutation.WorkerBinding.Process.IsWorktree"/> the way <paramref name="worktreePath"/>
+    /// does would leave workspaceChanged/hollow permanently unable to read "changed".
+    /// </param>
     public static OutcomeClassification Classify(
         CoreDispatchResult result,
         WorkerContract contract,
@@ -152,6 +175,8 @@ public static class OutcomeClassifier
         IWorkerResponseParser? responseParser = null,
         IWorkerUsageParser? usageParser = null,
         string? worktreeBaseRef = null,
+        bool changesTree = false,
+        string? changesTreeWorkingDirectory = null,
         int? toolCallCount = null,
         int? hookVerdictCount = null)
     {
@@ -203,7 +228,7 @@ public static class OutcomeClassifier
             // falls through to today's behaviour, so the guard fails safe.
             if (result.TerminalSuccessObserved && ContractValidator.IsSatisfied(contract, outputDirectory))
             {
-                return new OutcomeClassification(OutcomeVerdict.Succeeded);
+                return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
             }
 
             var (classification, retryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
@@ -300,23 +325,46 @@ public static class OutcomeClassifier
                 }
             }
 
-            // #914: an auto-denied tool is the ONLY thing that vetoes an otherwise-satisfied exit-0
-            // run — agy denies a tool, exits 0, and the worker still writes its contract output, so
-            // nothing else here would catch it. Gate specifically on ToolDenied: quota exhaustion
-            // (ExhaustedUntil) cannot reach a *satisfied* contract, and gating narrowly keeps this from
-            // ever stamping some other classification with the auto-denied message below.
-            if (failureClassifier is not null && failureClassifier.TryClassifyFailure(
-                    result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore)
-                && classifiedFailure == FailureClassification.ToolDenied)
+            // #914/#1622: an auto-denied tool and mid-lane quota exhaustion are the two things that
+            // veto an otherwise-satisfied exit-0 run — agy denies a tool (or a vendor's quota runs out
+            // mid-turn), exits 0, and the worker still writes its contract output, so nothing else here
+            // would catch it. Gated specifically on these two classifications: any other classification
+            // (Retryable, Permanent) never fires here today (neither adapter's TryClassifyFailure emits
+            // them from stderr/stdout prose), and gating narrowly keeps this from ever stamping some
+            // other classification with either message below.
+            //
+            // #1622: this call already reads result.StdoutTail, the same stream the exit-1 path
+            // above parses via TryClassifyQuotaExhaustion, so a satisfied-contract exit-0 run that
+            // still carries the vendor's quota signal is classified ExhaustedUntil, not Succeeded --
+            // RetryEngine then parks it identically to an exit-1 quota failure.
+            //
+            // #1720 review F1: TryClassifySatisfiedRunFailure, NOT the exit-1 path's
+            // TryClassifyFailure -- see that member's own doc (Outcomes.IFailureClassifier) for what
+            // makes the satisfied path a different question, and spec/baton.md §3's exit-0 quota
+            // veto for the scope (live dispatch only).
+            if (failureClassifier is not null && failureClassifier.TryClassifySatisfiedRunFailure(
+                    result.StderrTail, result.StdoutTail, timeProvider ?? TimeProvider.System, out var classifiedFailure, out var retryNotBefore))
             {
-                return new OutcomeClassification(
-                    OutcomeVerdict.Failed,
-                    classifiedFailure,
-                    WithStderr("Execution failed: a required tool was auto-denied.", result.StderrTail),
-                    retryNotBefore);
+                if (classifiedFailure == FailureClassification.ToolDenied)
+                {
+                    return new OutcomeClassification(
+                        OutcomeVerdict.Failed,
+                        classifiedFailure,
+                        WithStderr("Execution failed: a required tool was auto-denied.", result.StderrTail),
+                        retryNotBefore);
+                }
+
+                if (classifiedFailure == FailureClassification.ExhaustedUntil)
+                {
+                    return new OutcomeClassification(
+                        OutcomeVerdict.Failed,
+                        classifiedFailure,
+                        WithStderr("Execution exited 0, but the vendor's quota-exhaustion signal was present in the stream.", result.StderrTail),
+                        retryNotBefore);
+                }
             }
 
-            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+            return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
         }
 
         // #1593: Natural exit 0 with unsatisfied contract settles Indeterminate (spec/baton.md §3 Producers).
@@ -540,6 +588,44 @@ public static class OutcomeClassifier
         contract.ProducedOutputs.Count > 0
         && validation.UnsatisfiedOutputs.Count == contract.ProducedOutputs.Count
         && validation.UnsatisfiedOutputs.All(u => u.Reason == UnsatisfiedOutputReason.Missing);
+
+    /// <summary>
+    /// Builds a plain <see cref="OutcomeVerdict.Succeeded"/> classification, plus — when
+    /// <paramref name="changesTree"/> is true — the work-product evidence spec/baton.md §3
+    /// ("workspaceChanged/hollow/hollowReason") specifies in full; not restated here. Shared by both
+    /// places <see cref="Classify"/> settles Succeeded so the two paths cannot silently diverge.
+    /// <paramref name="changesTree"/> is <see cref="Domain.WorkerBinding.Process.ChangesTree"/>,
+    /// forwarded down from <c>Mutation.MutationInterface</c>. <paramref name="changesTreeWorkingDirectory"/>
+    /// is <see cref="Classify"/>'s own parameter of that name — see its doc for why this is never the
+    /// retry-protected <c>worktreePath</c>.
+    /// </summary>
+    private static OutcomeClassification BuildSucceededClassification(
+        WorkerContract contract, string? changesTreeWorkingDirectory, string? worktreeBaseRef, bool changesTree)
+    {
+        if (!changesTree)
+        {
+            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+        }
+
+        // #1720 review F2: tri-state. When git cannot answer (not a checkout, no upstream, git
+        // failure) both fields stay NULL and render as absent -- never a fabricated `true`, which is
+        // what negating the fail-closed IsWorkspaceUntouched produced, and never a fabricated
+        // `false`, which would pin `hollow` off exactly where the probe is blind.
+        if (!Workspaces.WorktreeProvisioner.TryReadWorkspaceChanged(
+                changesTreeWorkingDirectory, worktreeBaseRef, out var workspaceChanged))
+        {
+            return new OutcomeClassification(OutcomeVerdict.Succeeded);
+        }
+
+        var hollow = !workspaceChanged && contract.ProducedOutputs.Count == 0;
+        var hollowReason = hollow
+            ? "the worker exited 0 with a satisfied contract, but the worktree is unchanged (no commit, " +
+              "no uncommitted changes) and the contract declares no outputs -- a strong hollow-success signal"
+            : null;
+
+        return new OutcomeClassification(
+            OutcomeVerdict.Succeeded, WorkspaceChanged: workspaceChanged, Hollow: hollow, HollowReason: hollowReason);
+    }
 
     /// <summary>
     /// The "substantial work" half of the #1586 S1 tripwire: the worker's own final usage line —

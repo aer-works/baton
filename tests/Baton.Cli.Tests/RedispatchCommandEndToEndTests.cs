@@ -14,6 +14,7 @@ namespace Baton.Cli.Tests;
 /// asserted in isolation (that half is <see cref="RedispatchBindingTests"/>). Mirrors
 /// <see cref="DispatchCommandEndToEndTests"/>'s catalog-pinning and fake-adapter setup.
 /// </summary>
+// #1524: kept enrolled solely for Console.Error; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RedispatchCommandEndToEndTests : IDisposable
 {
@@ -26,26 +27,22 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         };
 
     private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
 
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
-
+    // Catalog pinning mirrors DispatchCommandEndToEndTests' own #1524 ctor.
     public RedispatchCommandEndToEndTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _catalogScope.Dispose();
         _batonHome.Dispose();
     }
 
@@ -622,13 +619,27 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
             // parent" (which just names the refused invocation itself) -- a fresh `baton dispatch`
             // carrying the parent's own recorded flags forward.
             Assert.NotNull(ex.TryInvocation);
-            Assert.DoesNotContain("baton resolve " + parentRoom, ex.TryInvocation, StringComparison.Ordinal);
+            // #1622 (d): the remedy DOES name `baton resolve` now -- but `--close`, the verb that
+            // admits this producer, never the `--accept-capture`/`--reject` pair that still throws
+            // for it. Before #1622 no verb admitted it at all, and naming one was the dead end this
+            // arm was written to catch; the dead end, not the verb's name, is what it pins.
+            Assert.DoesNotContain("--accept-capture", ex.TryInvocation, StringComparison.Ordinal);
             Assert.DoesNotContain("re-dispatch the parent", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("baton dispatch advise --spec <brief>", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("--adapter fake", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("--timeout 45", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("--model sonnet", ex.TryInvocation, StringComparison.Ordinal);
             Assert.Contains("--workspace /repo", ex.TryInvocation, StringComparison.Ordinal);
+
+            // F4 (#1720 review): the remedy must not claim redispatch stays refused after a
+            // `--close`. It does not: `--close` leaves the room Terminal/Failed, Program.cs rewrites
+            // terminal.json from the fresh view, and the Indeterminate gate above stops firing --
+            // pinned end-to-end in ResolveCommandEndToEndTests
+            // .Redispatch_no_longer_refuses_a_verify_failed_room_once_it_has_been_closed.
+            Assert.Contains($"baton resolve {parentRoom}", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--close --reason <text>", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("redispatch this room", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("still refuses this room", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {

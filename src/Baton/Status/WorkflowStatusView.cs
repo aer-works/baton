@@ -107,7 +107,8 @@ public sealed record WorkflowStatusStepView(
     // same way CapturedResponseFile is above -- present only for a currently-Failed step. A consumer
     // (RedispatchCommand's Indeterminate-parent remedy) needs this to tell a ContractFailure parent
     // (which `baton resolve --reject --reason` can still resolve) from a VerifyFailed/Arrested one
-    // (which no `baton resolve` verb ever admits) without guessing from CapturedResponseFile alone,
+    // (which `baton resolve --close --reason` resolves instead, #1622 (d)) without guessing from
+    // CapturedResponseFile alone,
     // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
     [property: JsonPropertyName("indeterminateProducer")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -121,6 +122,25 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("verifyTail")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? VerifyTail = null,
+    // #1622 (c)/(d): mirrors StepState.ResolvedByConductor. Present per-step (as well as the
+    // room-level WorkflowStatusView.Rejected/ResolvedBy below) so a multi-step room's caller can tell
+    // WHICH step was resolved.
+    [property: JsonPropertyName("resolvedByConductor")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool ResolvedByConductor = false,
+    // #1622/#1390: mirrors StepState.WorkspaceChanged.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    // #1622/#1390: mirrors StepState.Hollow. Present under the identical gate as WorkspaceChanged
+    // above, never without it.
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    // #1622/#1390: StepState.HollowReason verbatim -- non-null only when Hollow is true.
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null,
     // #1702: StepState.VerifyNotRunReason's mere presence, not its text -- the one machine-readable
     // token a status/glass consumer branches on ("this step ran unverified"), the same "bare token,
     // never prose" shape State/liveness/failureKind already keep. Always "not-run" when present; no
@@ -162,14 +182,16 @@ public sealed record WorkflowStatusView(
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("try")] string? Try = null,
-    // #1377: true when at least one step settled via `DecisionType.Reject` -- the one structural
-    // fact this contract can honestly assert about a rejection. There is no recorded-reason text to
-    // surface alongside it: `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason
-    // field today, so a `reason` field here would always read `null` and this deliberately does not
-    // invent one. Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
-    // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
-    // and the which-step pointer live in spec/baton.md §3.
-    [property: JsonPropertyName("rejected")] bool Rejected = false);
+    // #1377, widened by #1622 (c)/(d): see spec/baton.md §3's `rejected` entry for the full branching
+    // recipe (which two verbs settle it, and why no `reason` field is invented for the
+    // DecisionType.Reject half). The `baton resolve` half's reason is instead folded into `Error`
+    // (see Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
+    [property: JsonPropertyName("rejected")] bool Rejected = false,
+    // #1622 (c)/(d): see spec/baton.md §3's `resolvedBy` entry. Non-null for either `baton resolve`
+    // verb — it is the wider fact, so it is set on `--close` runs where `Rejected` stays false.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -237,6 +259,7 @@ public static class WorkflowStatusProjector
         var outputs = new List<string>();
         string? firstFailureReason = null;
         var anyRejected = false;
+        string? resolvedBy = null;
 
         foreach (var step in state.Steps)
         {
@@ -321,8 +344,9 @@ public static class WorkflowStatusProjector
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind,
-                verifyTail, verify, verifyReason));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail,
+                step.ResolvedByConductor, step.WorkspaceChanged, step.Hollow, step.HollowReason,
+                verify, verifyReason));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
@@ -330,9 +354,19 @@ public static class WorkflowStatusProjector
                 firstFailureReason = step.LatestFailureReason;
             }
 
-            if (step.Status == StepStatus.Rejected)
+            // F11 (#1720 review, conductor ruling): `rejected` is the human "no" — a decide-time
+            // Rejected step or a `baton resolve --reject`. A `--close` is an administrative
+            // settlement whose own remedy text says the work already landed, so it sets `resolvedBy`
+            // WITHOUT setting `rejected`; a harness branching on `rejected` to mean "a person refused
+            // this work" would otherwise read a closed lane as refused. spec/baton.md §3.
+            if (step.Status == StepStatus.Rejected || step.ConductorRejected)
             {
                 anyRejected = true;
+            }
+
+            if (step.ResolvedByConductor)
+            {
+                resolvedBy = "conductor";
             }
 
             // #740's rule via StepOutputResolver, the one place it is implemented (#1374 F5) — this
@@ -343,7 +377,8 @@ public static class WorkflowStatusProjector
             }
         }
 
-        return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected);
+        return new WorkflowStatusView(
+            WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected, ResolvedBy: resolvedBy);
     }
 
     /// <summary>

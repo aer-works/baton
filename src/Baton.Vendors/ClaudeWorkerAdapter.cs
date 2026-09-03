@@ -256,10 +256,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
-        // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-        // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-        // BatonEnvironmentSnapshot's own remarks.
-        if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
+        // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+        // #1524: folded into BatonEnvironmentSnapshot.
+        if (BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot)
         {
             environment.Add((ClaudeConfigDirVariable, configRoot));
         }
@@ -1210,7 +1209,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // while the adapter redirects the root is defensible in neither reading, so this follows the
         // root when the operator has actually set one, rather than assert a roster for a directory the
         // worker does not use.
-        var configRoot = configRootDirectory ?? Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable);
+        // Read through the snapshot, not the process env: #1524 folded BATON_CLAUDE_CONFIG_ROOT so a
+        // BeginScope override is honoured here exactly as at the launch-config site above.
+        var configRoot = configRootDirectory ?? BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride;
         if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
             skillDirs.Add(Path.Combine(configRoot, "skills"));
@@ -1557,41 +1558,14 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         return true;
     }
 
-    private static bool ContainsTypedCreditsRequiredError(string input)
-    {
-        if (TryCheckElementForCreditsRequired(input))
-        {
-            return true;
-        }
-
-        var lines = input.Split('\n');
-        if (lines.Length > 1)
-        {
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length > 0 && TryCheckElementForCreditsRequired(trimmed))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryCheckElementForCreditsRequired(string jsonCandidate)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(jsonCandidate);
-            return HasTypedCreditsRequiredCode(doc.RootElement);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    /// <summary>
+    /// #1720 review (found while fixing F1, issue #1727): this used to whole-parse the tail and then
+    /// split it on <c>'\n'</c>, which finds nothing in a REAL captured tail — see
+    /// <see cref="StreamJsonTailScanner"/> for the whitespace-collapse that makes a multi-object tail
+    /// one line. The shared scanner reads both the collapsed and the raw-newline shape.
+    /// </summary>
+    private static bool ContainsTypedCreditsRequiredError(string input) =>
+        StreamJsonTailScanner.AnyObject(input, HasTypedCreditsRequiredCode);
 
     private static bool HasTypedCreditsRequiredCode(JsonElement element)
     {
