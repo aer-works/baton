@@ -336,6 +336,39 @@ def _sabotage_audit_selfcheck() -> None:
         )
 
 
+@fixture("diff-shape-selftest")
+def _sabotage_diff_shape_selftest() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td)
+        tools_dir = dest / "tools" / "diff-shape"
+        tools_dir.mkdir(parents=True)
+        src = (ROOT / "tools" / "diff-shape" / "diff_shape.py").read_text(encoding="utf-8")
+        # Mutate is_protected_tooling to always report nothing protected -- the selftest's own
+        # (d) arm asserts a protected-tooling edit fails, so a neutered predicate must go red.
+        mutated = src.replace(
+            "def is_protected_tooling(path: str) -> bool:\n"
+            '    """Check if path belongs to the protected-tooling set."""\n'
+            "    p = path.replace(\"\\\\\", \"/\")",
+            "def is_protected_tooling(path: str) -> bool:\n"
+            '    """Check if path belongs to the protected-tooling set."""\n'
+            "    return False\n"
+            "    p = path.replace(\"\\\\\", \"/\")",
+        )
+        assert mutated != src, "is_protected_tooling mutation target not found in diff_shape.py"
+        (tools_dir / "diff_shape.py").write_text(mutated, encoding="utf-8")
+
+        proc = subprocess.run(
+            [sys.executable, "-u", str(tools_dir / "diff_shape.py"), "--selftest"],
+            cwd=dest,
+            capture_output=True,
+            text=True,
+            env=_clean_git_env(),
+        )
+        assert proc.returncode != 0, (
+            f"diff-shape --selftest exited {proc.returncode} with is_protected_tooling neutered; expected non-zero"
+        )
+
+
 @fixture("audit-controls")
 def _sabotage_audit_controls() -> None:
     with tempfile.TemporaryDirectory() as td:

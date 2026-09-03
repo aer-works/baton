@@ -1,0 +1,29 @@
+name: Diff shape gate
+
+# CI check for test-only PR weakening and protected tooling edits (#1603).
+# Runs on pull_request events including label changes so adding operator-merge clears it immediately.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  diff-shape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        with:
+          run-install: false
+          cache: false
+      - name: Verify PR diff shape and protected tooling
+        run: |
+          pixi run diff-shape -- \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }} \
+            --actor "${{ github.event.action == 'labeled' && github.event.sender.login || '' }}"

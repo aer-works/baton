@@ -250,6 +250,8 @@ buildlock-selftest = { cmd = "python -u tools/buildlock.py --selftest" }
 # flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
 # has quietly stopped being able to report is indistinguishable, from the outside, from a quiet suite.
 flake-watch-selftest = { cmd = "python -u tools/flake-watch/summarize.py --selftest" }
+diff-shape = { cmd = "python -u tools/diff-shape/diff_shape.py" }
+diff-shape-selftest = { cmd = "python -u tools/diff-shape/diff_shape.py --selftest" }
 
 # Every local gate, one exit code. Report THIS command's exit status, never a per-gate line scraped
 # out of the combined output -- see tools/gates/gates.py for the two occasions that went wrong.
