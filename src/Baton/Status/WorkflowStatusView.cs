@@ -194,8 +194,8 @@ public sealed record WorkflowStatusView(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ResolvedBy = null,
     // #1157: when this run ended (ISO-8601, UTC) -- Projection.TerminalInstantResolver's answer off
-    // the journal's own writer stamps, never a file's mtime. spec/baton.md §3 "The terminal instant"
-    // is the record of what it means and of every case it is absent in.
+    // the journal's own writer stamps, never a file's mtime. What it means, and every case it is
+    // absent in: spec/baton.md §3.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null);

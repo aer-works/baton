@@ -157,8 +157,8 @@ public class TerminalInstantResolverTests
 
     /// <summary>
     /// Terminality is not monotone — a fresh <see cref="FlowEvent.ExecutionRequestAccepted"/> reopens
-    /// the step — so "first transition" and "last transition" are genuinely different answers on a
-    /// re-driven room. The one a reader wants is when it ended THIS time.
+    /// the step — so on a re-driven room "first transition" and "last transition" are two different
+    /// answers, and only one of them is this run's ending.
     /// </summary>
     [Fact]
     public void Resolve_RoomReopenedAndReTerminalised_ReportsTheSecondEnding()

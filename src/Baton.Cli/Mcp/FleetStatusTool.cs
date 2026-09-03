@@ -646,9 +646,8 @@ public sealed record FleetRoomStatusView(
     // #1157: the room-level WorkflowStatusView.TerminalAt, copied the same way Rejected/ResolvedBy
     // above are -- never re-derived here. A terminal room reports when its run ENDED; before this
     // field the fleet reported no terminal instant at all and a consumer wanting one had to stat a
-    // file. spec/baton.md §3 "The terminal instant" is the record of the absence rules, including why
-    // this surface omits the field on the legacy shapes rather than falling back to a mtime the way
-    // the retention sweep does.
+    // file. Why this surface omits the field on a legacy room where the retention sweep instead falls
+    // back: §3 of the spec, under `terminalAt`.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null);

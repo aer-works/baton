@@ -2139,9 +2139,8 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     /// <summary>
-    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above — spec/baton.md §3
-    /// "The terminal instant" is the rule this pins: the fleet omits the field rather than
-    /// back-filling it from a file's mtime.
+    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above. Pins the
+    /// omit-rather-than-back-fill half of the rule §3 of the spec states.
     /// </summary>
     [Fact]
     public async Task TerminalSentinelWrittenBeforeTheField_OmitsTerminalAt_RatherThanUsingItsMtime()
