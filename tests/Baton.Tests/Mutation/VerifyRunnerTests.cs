@@ -183,21 +183,21 @@ public sealed class VerifyRunnerTests
         // #1722: the actual production race was a FAST child (`cmd /c exit 0`) exiting before the
         // cancellation was observed, so a marker file written by that same child is not a reliable
         // instrument here -- even on unpatched code the child is USUALLY killed fast enough that the
-        // marker is never written, even though the process still launched (spawning cmd.exe, assigning
-        // it to a job object, etc. is not free). Elapsed time is the instrument that actually
-        // discriminates "never launched" from "launched and was killed quickly": on unpatched code this
-        // call spawns a real process and measured close to 20ms; the fix's guard returns before any of
-        // that happens and consistently measures under a millisecond.
+        // marker is never written, even though the process still launched. A wall-clock threshold is
+        // not the instrument either: this file already records one load flake of that shape (see the
+        // comment on Cancellation_during_verify_reports_Cancelled_kind). The pre-spawn guard is the only
+        // arm that can produce this exact Tail, and it textually precedes RunProcessAsync's sole
+        // CaptureAsync call, so pinning the Tail pins "never launched" by construction, deterministically:
+        // on unpatched code the outcome is either Pass (Tail null) or the BatonCancelException arm's
+        // "Verify command cancelled: ..." text, never this string.
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", "exit 0"], workingDirectory: null, cts.Token);
-        sw.Stop();
 
         Assert.False(outcome.Passed);
         Assert.Equal(Baton.Domain.VerifyFailedKind.Cancelled, outcome.Kind);
-        Assert.True(sw.ElapsedMilliseconds < 5, $"took {sw.ElapsedMilliseconds}ms -- a genuine short-circuit before spawning never touches the OS process/job APIs at all");
+        Assert.Equal("Verify command cancelled before it was launched.", outcome.Tail);
     }
 
     [Fact]
