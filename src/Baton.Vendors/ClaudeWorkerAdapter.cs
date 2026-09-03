@@ -102,6 +102,12 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
+        // #1166: decision 0004's project ceiling (ProjectCeilingGate's own doc has the rule). Applied
+        // first so every channel below derived from invocation.PermissionGrant (--allowedTools,
+        // --disallowedTools, the hook-denied-tools env var, the shell-pattern env vars) reflects the
+        // capped grant rather than the role's uncapped one.
+        invocation = ProjectCeilingGate.Apply(invocation, contract, WithheldWritesReachTheOutbox);
+
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
         var permissionScope = ResolvePermissionScope(invocation);
@@ -949,9 +955,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// <para>
     /// <b>Boundary:</b> denial here is by <em>enumeration</em>, not default-deny. It covers the tools a
     /// grant category names; it does not cover tools outside the grant's four categories (<c>Task</c>,
-    /// MCP server tools, or a tool a future CLI adds). Genuine fail-closed across the whole tool surface
-    /// is the broader change decision 0004 tracks (the project ceiling); this closes the reported,
-    /// category-mapped holes. Returns <see cref="string.Empty"/> when there is no structured grant (the
+    /// MCP server tools, or a tool a future CLI adds). Decision 0004's project ceiling
+    /// (<see cref="ProjectCeilingGate"/>, #1166) narrows the same four categories this method already
+    /// enumerates before <c>Resolve</c> ever reaches here — it does not widen this method's boundary,
+    /// which is unchanged: still category-mapped, still silent on a tool outside the four. Returns
+    /// <see cref="string.Empty"/> when there is no structured grant (the
     /// raw <see cref="WorkerInvocation.PermissionScope"/> escape hatch carries no category to deny) or
     /// when nothing is withheld.
     /// </para>

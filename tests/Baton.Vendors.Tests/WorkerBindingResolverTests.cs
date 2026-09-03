@@ -723,6 +723,10 @@ public class WorkerBindingResolverTests
         var adapters = new Dictionary<string, IWorkerAdapter> { ["agy"] = new AgyWorkerAdapter() };
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
 
+        // #1166: both arms below target Path.GetFullPath(".") as WorkingDirectory -- trust it
+        // unrestricted so this test's own concern (worktree provisioning) is what decides the outcome.
+        ProjectCeilingStore.Set(Path.GetFullPath("."), ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var provisioned = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["review"] = new WorkerBindingConfigEntry(
