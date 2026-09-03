@@ -15,6 +15,7 @@ jobs:
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -43,6 +44,7 @@ jobs:
     # does not skip this job on push.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
     name: test (${{ matrix.name }})
+    timeout-minutes: 17
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +178,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success' }}
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 5
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -262,6 +265,7 @@ jobs:
   # regressing it, but it is a real loss of precision worth naming rather than leaving silent.
   gates:
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -316,6 +320,7 @@ jobs:
     needs: [changes, test, gates]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Verify no required job failed
         env:
