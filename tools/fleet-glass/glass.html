@@ -516,6 +516,9 @@ function chipsHtml(room, running, focusStep){
   if(pc) chips.push(pc);
   const uc = unverifiedChip(focusStep);
   if(uc) chips.push(uc);
+  // #1155: pusher.py's `pruned` field -- see spec/baton.md §6 for the shape/rationale. Idle
+  // grey, informational only, no restore verb here.
+  if(room.pruned && room.pruned.count) chips.push([`${room.pruned.count} PRUNED`,"c-idle"]);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 

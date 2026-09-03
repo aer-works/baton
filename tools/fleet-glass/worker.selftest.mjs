@@ -134,6 +134,25 @@ check("valid JSON missing 'id' decodes to null", decodeDeliverablesCursor(btoa(J
         computeFleetStatusPage(archive, 0, 0).limit === 50 && computeFleetStatusPage(archive, 0, undefined).limit === 50);
 }
 
+// -- #1155: pusher.py's own `pruned` field (see pusher.py's pruned_info_for_room/attach_pruned_info
+// selftest) rides through computeFleetStatusPage untouched -- this function only slices the archive,
+// it never allowlists per-room fields, so a room carrying `pruned` keeps it on every page. This is
+// the "room drill-in exposes the item list" half of #1155: fleet_status (and the paged archive) hand
+// back the whole room object, `pruned` included, with no separate pass-through code needed.
+{
+  const prunedRoom = {
+    path: "/r/pruned-room",
+    pruned: { count: 25, items: [{ name: "execution_24", bytes: 19, prunedAt: "2026-09-01T00:00:00Z" }] },
+  };
+  const plainRoom = { path: "/r/plain-room" };
+  const archive = [prunedRoom, plainRoom];
+  const page = computeFleetStatusPage(archive, 0, 40);
+  check("computeFleetStatusPage passes a room's `pruned` field through untouched",
+        JSON.stringify(page.rooms[0].pruned) === JSON.stringify(prunedRoom.pruned));
+  check("computeFleetStatusPage never fabricates a `pruned` field on a room that has none",
+        !("pruned" in page.rooms[1]));
+}
+
 // -- fleet_status page/limit bad-input degrades to default (isValidFleetStatusPage gate) --
 check("isValidFleetStatusPage rejects a missing page", isValidFleetStatusPage(undefined) === false);
 check("isValidFleetStatusPage rejects a non-number page", isValidFleetStatusPage("0") === false);

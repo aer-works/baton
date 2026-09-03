@@ -1194,6 +1194,95 @@ def prune_live_telemetry_cache(live_cache: dict, room_list: list) -> dict:
     return {k: v for k, v in live_cache.items() if k in live_keys}
 
 
+PRUNED_ITEMS_CAP = 20  # #1155: newest N pruned execution dirs surfaced per room -- keeps the KV payload bounded.
+
+
+def pruned_info_for_room(room: dict, pruned_cache: dict | None = None) -> dict | None:
+    """`rooms[].pruned` -- shape and rationale are canonical in spec/baton.md §6 (#1155), not
+    restated here. `None` when there is nothing to report (no directory, or an unreadable one),
+    so an old consumer of the pushed snapshot sees no change. `items` caps at `PRUNED_ITEMS_CAP`,
+    newest-`prunedAt`-first; `count` is the true total.
+
+    `pruned_cache` is the caller-owned per-room cache (#1756 review F2) keyed on `room_path`,
+    storing the `(pruned/ dir mtime, child count)` this result was computed for -- a `rglob` walk
+    over a `pruned/` directory holding thousands of files is skipped whenever neither has changed
+    since the last call, mirroring `live_telemetry_cache`'s own incremental-avoids-rework shape. A
+    rename into `pruned/` changes the directory's own mtime, so the key still invalidates on a new
+    entry even though `rglob` never runs to notice it directly. Defaults to a fresh, single-call
+    dict when omitted (tests, and any caller that genuinely wants a one-shot walk)."""
+    if pruned_cache is None:
+        pruned_cache = {}
+    room_path = room.get("path")
+    if not isinstance(room_path, str) or not room_path:
+        return None
+    pruned_root = Path(room_path) / "artifacts" / "pruned"
+    if not pruned_root.is_dir():
+        return None
+
+    try:
+        dir_stat = pruned_root.stat()
+        children = list(pruned_root.iterdir())
+    except OSError:
+        return None
+
+    cache_key = (dir_stat.st_mtime, len(children))
+    cached = pruned_cache.get(room_path)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    entries = []
+    for child in children:
+        try:
+            stat = child.stat()
+            size = (sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+                    if child.is_dir() else stat.st_size)
+        except OSError:
+            continue
+        entries.append({
+            "name": child.name,
+            "bytes": size,
+            "prunedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+
+    if not entries:
+        result = None
+    else:
+        entries.sort(key=lambda e: e["prunedAt"], reverse=True)
+        result = {"count": len(entries), "items": entries[:PRUNED_ITEMS_CAP]}
+
+    pruned_cache[room_path] = (cache_key, result)
+    return result
+
+
+def attach_pruned_info(room_list: list, pruned_cache: dict) -> None:
+    """Mutates each room in `room_list` in place, adding a `pruned` field (see
+    `pruned_info_for_room`) when its `artifacts/pruned/` directory has anything in it. Mirrors
+    `attach_live_telemetry`'s own in-place-mutation shape; called after `drop_stale_rooms` in
+    main()'s loop for the same reason `attach_live_telemetry` is -- `prunedAt` is a real file
+    mtime, not a manufactured "now" stamp, so it plays no part in the staleness decision.
+    `pruned_cache` is main()'s own persisted dict (#1756 review F2), REQUIRED here for the same
+    reason `live_cache` is required by `attach_live_telemetry` -- a fresh dict every call would
+    defeat the whole point of caching across polls."""
+    if not isinstance(room_list, list):
+        return
+    for room in room_list:
+        if not isinstance(room, dict):
+            continue
+        pruned = pruned_info_for_room(room, pruned_cache)
+        if pruned is not None:
+            room["pruned"] = pruned
+
+
+def prune_pruned_info_cache(pruned_cache: dict, room_list: list) -> dict:
+    """New dict carrying forward only the cache entries for rooms still present in `room_list` --
+    a room dropped by `drop_stale_rooms` (or one whose path simply moved) must not linger forever
+    in a long-lived pusher process. Mirrors `prune_live_telemetry_cache`'s own per-cycle prune in
+    main()."""
+    room_paths = {r.get("path") for r in (room_list or [])
+                  if isinstance(r, dict) and isinstance(r.get("path"), str)}
+    return {k: v for k, v in pruned_cache.items() if k in room_paths}
+
+
 LIVE_TELEMETRY_HASH_BUCKET_SECONDS = 300  # #1690 item 3: telemetry churn gate -- spec/baton.md §6.
 LIVE_TELEMETRY_TOOLCALLS_GRAIN = 5      # F6 (2026-09-02 review): coarsen toolCalls to this grain.
 LIVE_TELEMETRY_TOKENS_GRAIN = 10_000    # F6: coarsen outputTokens to this grain.
@@ -2522,6 +2611,11 @@ def main() -> None:
     # live telemetry -- see live_telemetry_for_room's own doc. In-memory only, same self-heals-on-
     # restart posture as terminal_timeline_cache above.
     live_telemetry_cache: dict = {}
+    # #1756 review F2: per-room (pruned/ dir mtime, child count) -> computed `pruned` result, so an
+    # uncached rglob walk isn't repeated every poll for a room whose pruned/ tree hasn't changed --
+    # see pruned_info_for_room's own doc. Same in-memory-only, self-heals-on-restart posture as
+    # live_telemetry_cache above.
+    pruned_info_cache: dict = {}
     # #1613 item 2: the wall-clock instant this process's OWN most recent `derive_snapshot_and_
     # timelines` call last completed successfully -- None until the first cycle succeeds. Carried
     # into the heartbeat/derived-ping section below regardless of whether THIS cycle's content
@@ -2575,6 +2669,11 @@ def main() -> None:
                 # gate (load_secret_patterns' own None sentinel).
                 stdout_tail_patterns = load_secret_patterns(patterns_path)
                 attach_live_telemetry(room_list, live_telemetry_cache, stdout_tail_patterns)
+                # #1155: same post-drop_stale_rooms placement as attach_live_telemetry above, for
+                # the same reason -- prunedAt is a real mtime, so it never enters the staleness scan.
+                # #1756 review F2: prune the cache first, same ordering as live_telemetry_cache above.
+                pruned_info_cache = prune_pruned_info_cache(pruned_info_cache, room_list)
+                attach_pruned_info(room_list, pruned_info_cache)
                 # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
                 # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
                 # with it rather than riding along as orphaned payload.
@@ -3603,6 +3702,103 @@ def _selftest() -> int:
     check("attach_live_telemetry gates on the DISPLAYED state, never touching a Stalled room "
           "(#1513 confirmed-dead) even though its raw step still reads Running",
           "live" not in stalled_room)
+
+    # #1155: pruned_info_for_room / attach_pruned_info -- red first, the two selftest arms the
+    # issue asked for: directory absent -> no field; directory present with 25 -> count 25, 20 newest.
+    with tempfile.TemporaryDirectory() as tmp:
+        no_pruned_room_dir = Path(tmp) / "no-pruned-room"
+        (no_pruned_room_dir / "artifacts").mkdir(parents=True)
+        check("pruned_info_for_room is None when artifacts/pruned/ does not exist",
+              pruned_info_for_room({"path": str(no_pruned_room_dir)}) is None)
+
+        no_pruned_room = {"path": str(no_pruned_room_dir)}
+        attach_pruned_info([no_pruned_room], {})
+        check("attach_pruned_info never adds a `pruned` key it cannot back (no pruned/ dir)",
+              "pruned" not in no_pruned_room)
+
+        many_pruned_room_dir = Path(tmp) / "many-pruned-room"
+        pruned_root = many_pruned_room_dir / "artifacts" / "pruned"
+        pruned_root.mkdir(parents=True)
+        for i in range(25):
+            exec_dir = pruned_root / f"execution_{i:02d}"
+            exec_dir.mkdir()
+            (exec_dir / "report.md").write_text(f"pruned artifact {i}", encoding="utf-8")
+            mtime = time.time() - (25 - i)  # execution_00 oldest, execution_24 newest
+            os.utime(exec_dir, (mtime, mtime))
+
+        pruned_info = pruned_info_for_room({"path": str(many_pruned_room_dir)})
+        check("pruned_info_for_room reports the true total count (25), not just the capped list",
+              pruned_info is not None and pruned_info["count"] == 25)
+        check("pruned_info_for_room caps `items` at PRUNED_ITEMS_CAP (20)",
+              pruned_info is not None and len(pruned_info["items"]) == 20)
+        check("pruned_info_for_room's `items` are the 20 NEWEST by prunedAt, not the first 20 found",
+              pruned_info is not None
+              and {i["name"] for i in pruned_info["items"]}
+              == {f"execution_{n:02d}" for n in range(5, 25)})
+        check("pruned_info_for_room's items carry name/bytes/prunedAt",
+              pruned_info is not None
+              and all(isinstance(i["name"], str) and isinstance(i["bytes"], int)
+                      and isinstance(i["prunedAt"], str) and "T" in i["prunedAt"]
+                      for i in pruned_info["items"]))
+        check("pruned_info_for_room sums a pruned execution dir's bytes from its files",
+              pruned_info is not None
+              and next(i for i in pruned_info["items"] if i["name"] == "execution_24")["bytes"]
+              == len("pruned artifact 24"))
+
+        many_pruned_room = {"path": str(many_pruned_room_dir)}
+        attach_pruned_info([many_pruned_room], {})
+        check("attach_pruned_info attaches the same `pruned` shape in place",
+              many_pruned_room.get("pruned", {}).get("count") == 25)
+
+        empty_subdirs_room_dir = Path(tmp) / "empty-subdirs-room"
+        empty_pruned_root = empty_subdirs_room_dir / "artifacts" / "pruned"
+        empty_pruned_root.mkdir(parents=True)
+        (empty_pruned_root / "execution_empty-1").mkdir()
+        (empty_pruned_root / "execution_empty-2").mkdir()
+        empty_pruned_info = pruned_info_for_room({"path": str(empty_subdirs_room_dir)})
+        check("pruned_info_for_room attaches entries with bytes: 0 for pruned dirs holding only "
+              "empty subdirectories, rather than treating them as absent (#1756 review F3)",
+              empty_pruned_info is not None and empty_pruned_info["count"] == 2
+              and all(i["bytes"] == 0 for i in empty_pruned_info["items"]))
+
+    # #1756 review F2: pruned_info_cache -- a second call with an unchanged pruned/ dir hits the
+    # cache (no rglob walk); a new pruned entry changes the dir's (mtime, child count) key and
+    # invalidates it.
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_room_dir = Path(tmp) / "cache-room"
+        cache_pruned_root = cache_room_dir / "artifacts" / "pruned"
+        cache_pruned_root.mkdir(parents=True)
+        (cache_pruned_root / "execution_cache-1").mkdir()
+
+        rglob_calls = {"n": 0}
+        real_rglob = Path.rglob
+
+        def counting_rglob(self, pattern):
+            rglob_calls["n"] += 1
+            return real_rglob(self, pattern)
+
+        pruned_cache: dict = {}
+        cache_room = {"path": str(cache_room_dir)}
+        Path.rglob = counting_rglob
+        try:
+            first = pruned_info_for_room(cache_room, pruned_cache)
+            calls_after_first = rglob_calls["n"]
+            check("pruned_info_for_room walks the tree on the first call",
+                  first is not None and calls_after_first > 0)
+
+            second = pruned_info_for_room(cache_room, pruned_cache)
+            check("pruned_info_for_room's second call over an UNCHANGED pruned/ dir hits the "
+                  "cache -- no additional rglob walk (#1756 review F2)",
+                  second == first and rglob_calls["n"] == calls_after_first)
+
+            (cache_pruned_root / "execution_cache-2").mkdir()
+            third = pruned_info_for_room(cache_room, pruned_cache)
+            check("pruned_info_for_room's cache invalidates when a new pruned entry appears "
+                  "(child count changes the cache key)",
+                  third is not None and third["count"] == 2
+                  and rglob_calls["n"] > calls_after_first)
+        finally:
+            Path.rglob = real_rglob
 
     # -- this review, finding 4: incremental reading -- a second cycle over an UNCHANGED cache only
     # counts newly-appended bytes, never re-parses the whole file. --

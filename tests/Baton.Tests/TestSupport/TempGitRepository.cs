@@ -36,7 +36,25 @@ public static class TempGitRepository
     public static void SetReviewedBaselineAtHead(string path) =>
         Run(path, "update-ref", "refs/remotes/origin/main", "HEAD");
 
-    private static void Run(string workingDirectory, params string[] args)
+    /// <summary>
+    /// #1718: tags <c>HEAD</c> with a ref name equal to its own full 40-hex object id, which makes real
+    /// git print <c>warning: refname '&lt;sha&gt;' is ambiguous.</c> (<c>advice.objectNameWarning</c>) to
+    /// stderr on any later <c>&lt;sha&gt;:&lt;path&gt;</c> revision spec resolving that same string — while
+    /// still exiting 0; measured on this machine's git 2.54.0.windows.1. What this fixture is FOR is
+    /// <see cref="Baton.Tests.Mutation.VerifyCommandResolverTests.ReadCommittedRepoDeclarationAsync_ignores_a_stderr_warning_from_a_git_that_exits_zero"/>'s
+    /// own doc comment, not restated here. Returns the sha so a caller can build the same revision string.
+    /// </summary>
+    public static string TagHeadWithItsOwnSha(string path)
+    {
+        var sha = RunCapturingOutput(path, "rev-parse", "HEAD").Trim();
+        Run(path, "tag", sha);
+        return sha;
+    }
+
+    private static void Run(string workingDirectory, params string[] args) =>
+        RunCapturingOutput(workingDirectory, args);
+
+    private static string RunCapturingOutput(string workingDirectory, params string[] args)
     {
         var startInfo = new ProcessStartInfo("git")
         {
@@ -52,6 +70,7 @@ public static class TempGitRepository
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Could not spawn git {string.Join(' ', args)}.");
+        var stdout = process.StandardOutput.ReadToEnd();
         process.WaitForExit();
         if (process.ExitCode != 0)
         {
@@ -60,5 +79,7 @@ public static class TempGitRepository
             throw new InvalidOperationException(
                 $"git {string.Join(' ', args)} exited {process.ExitCode}: {process.StandardError.ReadToEnd()}");
         }
+
+        return stdout;
     }
 }

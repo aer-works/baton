@@ -1347,14 +1347,21 @@ not the three carrying a token budget, because #1686 review F1 was exactly a fou
 an unmeasured cap while three documents said it held none. Second, the mechanism ships anyway, complete
 and tested, because it is what makes a future calibration possible: `TokenBudgetMonitor` now takes an
 injected `TimeProvider` and keeps a trailing-window Σ of the SAME deduped per-turn billed samples
-#1682's total already takes, exposes the largest window it ever held
-(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed), and records that peak plus
-the armed limit onto `FlowEvent.ExecutionArrested`. **Scoped precisely, because an earlier draft of this
-paragraph over-claimed it (#1707 review): that record is written on an ARREST, and a normally-completed
-execution journals no `ExecutionArrested`, so the ledger carries no peak for exactly the lanes whose
-peaks a false-positive calibration needs.** Nothing is lost — every completed room keeps its own
-`.stdout.log`, which is what the sweep reads — but #1686 review F14's phase 1 is only half landed here:
-the live measurement exists and is exposed, and persisting it for a non-arrested execution is #1709.
+#1682's total already takes, and exposes the largest window it ever held
+(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed). **Corrected 2026-09-03
+(#1709): an earlier draft of this paragraph said that reading was recorded only onto
+`FlowEvent.ExecutionArrested`, which inverted the population the calibration actually needs — a
+normally-completed execution journalled no `ExecutionArrested` at all, so the ledger carried a peak for
+exactly the lanes that DIDN'T need one and none for the false-positive side that does.** The peak is now
+journalled once on whichever terminal outcome event an execution actually reaches:
+`FlowEvent.ExecutionSucceeded`/`FlowEvent.ExecutionFailed` carry the identical `PeakBilledInWindow`
+field `ExecutionArrested` already did — `FlowEvent.cs`'s own doc comment on the field states exactly
+when it is stamped versus left null. `ExecutionUsageProjector` surfaces it as `peakBilledInWindow` in
+`terminal.json`/`status --json`'s per-execution usage object — `ExecutionUsageView.cs`'s own doc
+comment on that field states how it differs from the same view's `liveBilledTokens`. #1686 review F14's
+phase 1 is fully landed by this: the live measurement exists, is exposed, and now reaches every terminal
+outcome, not only an arrest — a sweep can read journalled measurements across a normal-room population
+instead of reconstructing per-line arrival times from `.stdout.log`.
 
 Mechanics, stated once. The window is fixed at 5 minutes (`TokenBudgetMonitor.BilledRateWindow`) and
 only the ceiling is configurable, so two roles' limits stay comparable; it is closed at both ends, so a
@@ -2082,8 +2089,9 @@ exactly the fields it enumerates as KEPT (now `type`/`timestamp`/`stepId`/`exitC
 `room_detail` entry and nothing else — a future `room_detail` field still never leaks through by
 accident of that function failing to name it.
 
-**The pushed mailbox payload carries two fields `fleet_status`/`room_detail` do not (#1613 items 1
-and 2) — pusher-computed, not part of either MCP tool's own C# output above.** Both are read
+**The pushed mailbox payload carries three fields `fleet_status`/`room_detail` do not (#1613 items 1
+and 2, plus #1155's `rooms[].pruned` below) — pusher-computed, not part of either MCP tool's own C#
+output above.** The first two are read
 directly off the room's already-captured `.stdout.log` or wall-clock, python-side
 (`tools/fleet-glass/pusher.py`), because `Status.ExecutionUsageProjector`'s engine-side seam only
 ever populates an execution that has recorded BOTH a `CoreEvent.ExecutionStarted` AND
@@ -2142,6 +2150,15 @@ definition has no exit event yet and needs every line scanned, not just the last
   not excluded the way `derived_at` is excluded below: a prose-only turn with no tool call in it
   would leave every OTHER field in `live` unchanged too, so excluding this one as well would freeze
   glass's rendered age on an old instant while the lane is, in fact, still going.
+- **`rooms[].pruned` (#1155)**, present only for a room whose `artifacts/pruned/` directory (`ArtifactPruner.PruneAsync`'s grace-window destination, #1027 Option B/#1041) is non-empty:
+  `{ "count": number, "items": [{ "name": string, "bytes": number, "prunedAt": string }, capped at the 20 newest by `prunedAt`] }`.
+  This is the observability half of the grace window's own design rationale (#1027 Option B: prune,
+  don't delete, so an operator can still find what moved) — before this, nothing read `pruned/` at
+  all, so a completed run's artifacts silently vanished from every surface the moment the retention
+  sweep ran. `prunedAt` is the pruned directory's own filesystem mtime (`ArtifactPruner` leaves no
+  manifest — `RetryingFileMove.MoveDirectory` is a bare rename), the same real-timestamp-not-`now()`
+  convention `live.lastActivityAt` above already follows. Read-only: Fleet Glass shows what moved,
+  it does not restore it.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
@@ -3076,15 +3093,12 @@ honest cost of not declining both vendors to keep their capability artificially 
 what closed that gap on the agy side, so the two vendors converge on the same grant shape rather than
 staying deliberately unequal.
 
-**`tools/baton-agy-loop/dispatch.py`'s own grant model is extended to match.** That tool reads the
-same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`, the #836 shared-source
-pattern) but has its own `grant_refusal()` coherence check and its own `build_bindings()`
-permission-grant construction. All three scoped-shell fields are exported on
-`BuiltInWorkflowTemplates.RoleTemplateExport` (so `baton templates --json` carries them),
-`grant_refusal()` mirrors `ShellCommandsAreReadOnly`'s exact exemption (WriteFiles/NetworkAccess
-only, never ReadFiles), and `build_bindings()` threads the fields into the `PermissionGrant` it
-actually sends — without that last step the tool would have dispatched `review` with an UNSCOPED
-shell grant, the silent hole the whole design refuses elsewhere.
+Until #1759 retired it, `tools/baton-agy-loop/dispatch.py` mirrored this same coherence rule in its
+own `grant_refusal()`/`build_bindings()` rather than calling the engine's. #1759 ported the one
+assertion that mirror still carried — that every catalog role actually dispatches, on every real
+adapter — onto the production path itself (`RoleDispatch.ToBinding` /
+`WorkerBindingResolver`, `tests/Baton.Vendors.Tests/TemplateDispatchabilityTests.cs`), so there is now
+exactly one implementation of this rule rather than two kept in step by hand.
 
 ---
 
@@ -3207,7 +3221,11 @@ Neither is a fallback for the other.
 **Why the mailbox cannot carry drill-down — the constraint that forced a second plane.** Two hard
 walls, not taste. The secret gate: the deliverables path exists to guarantee the mailbox never
 carries `prompt.txt` or `.stdout.log` — only declared outputs through a fail-closed denylist — and a
-live stdout tail is precisely the uncurated stream that design refuses, on a public repo. The write
+live stdout tail is precisely the uncurated stream that design refuses, on a public repo. (#1351: the
+invariant this rests on holds fleet-wide, not just at this denylist — a room's file list is what the
+worker produced, and engine capture files such as `ExecutionStreamLogger`'s stream logs are filtered
+at the single listing seam, never restated per consumer; `ExecutionOutputDirectoryListingTests` pins
+that no second, unfiltered listing seam exists in `src/`.) The write
 quota: Cloudflare's free KV tier caps at 1,000 writes/day; a live tail at the pusher's cadence is
 ~3,456/day — the #1457 change-gate exists because even the *fleet row* brushes this ceiling. On the
 operator's own tailnet both walls vanish: the bytes never leave the network, and no third-party
@@ -3364,12 +3382,12 @@ something is actively running. §6's "Board + detail-pane IA" and "Telemetry on 
 are this decision's full technical contract (schema, field provenance, the `—` no-fabrication rule);
 this entry records only the decision itself and why it deviates from the mock it was ruled from.
 
-<!-- record-once-ok: #1603 tools/diff-shape/diff_shape.py -->
 ### C-15 — Diff-shape CI gate: test-only PR self-weakening and protected tooling (#1603)
 
+<!-- record-once-ok: #1744 tools/diff-shape/diff_shape.py -->
 Ratified design (operator, 2026-09-01) — closes the "a conductor can relax the bounds on its own authority" hole. A required CI check (`diff-shape`, `.github/workflows/diff-shape.yml`, `tools/diff-shape/diff_shape.py`) that fails when either holds:
 1. **Test-only PR weakening:** the PR touches no `src/` code AND the diff contains a deleted or changed line in a pre-existing test file (pure additions of new test files or appended lines pass; mixed engine+test PRs touching `src/` are exempt). Line-level, no parsing: renames and mechanical refactors of test files in a test-only PR are expected to trip this, and the label is the intended answer, not a defect to fix.
-2. **Protected tooling edit:** any file under the protected-tooling set (`tools/gates/`, `pixi.toml`, `.github/workflows/`, and the whole `tools/diff-shape/` directory) is edited (additions included). `.githooks/` is deliberately excluded — ruled local convenience, not enforcement. `pixi.toml` is protected in full, wider than #1603's original "the gates task definitions in `pixi.toml`" — accepted as cost rather than narrowed, since line-level parsing of a TOML file is the complexity #1603 refused; recorded here pending an operator ruling on whether to narrow it.
+2. **Protected tooling edit:** any file under the protected-tooling set is edited (additions included). Record-once: `tools/diff-shape/diff_shape.py`'s `PROTECTED_TOOLING_PATHS` tuple is the sole enumeration of the whole-file/directory half, and `PIXI_PROTECTED_TASK_RULE` the sole enumeration of the pixi.toml task-name patterns below — this paragraph states the rule, never the list. Widened from #1603's original four-member set by #1744 (ruled 2026-09-03), then corrected by #1754: #1744's ruling had excluded `tools/tool-refresh/`, `tools/fleet-glass/`, and `tools/baton-agy-loop/` as "not enforcement", which `tools/gates/gates.py`'s own `OVERLAP`/`AFTER_BUILD_FAST` membership contradicted — each hosts a gates-wired selftest body (plus `tests/Launcher.Tests.ps1`, missed from #1744's candidate list entirely, and `vendor-check`'s actual body under `tools/Baton.VendorProbe/`). #1754 protects those specific files rather than the whole directories, so a genuinely unwired sibling in the same directory (e.g. `tools/fleet-glass/pusher.py`, deliberately UNWIRED from `pixi run gates` per that task's own pixi.toml comment) stays unprotected. `pixi.toml` is protected at LINE level, not whole-file (#1744 narrowing of #1603's original whole-file rule): a hunk trips the gate only when it touches a `gates*`, `gate-sabotage`, `diff-shape*`, `audit-*`, `*-selftest`, `vendor-check`, `vendor-verify`, `lint`, `fmt-check`, or `test-no-build` task's own definition, parsed by `[tasks]` key/sub-table boundaries rather than fixed line numbers — an ordinary pixi task addition or edit elsewhere in the file passes. `.githooks/` is deliberately excluded — ruled local convenience, not enforcement (#1744).
 
 Both failures are lifted by the `operator-merge` PR label, applied by the operator. Self-application — a conductor or worker adding the label to its own PR — is a forbidden act; the mechanism does not prevent it (both PR author and label-applier can be the same shared operator credential), but it is permanently visible in PR history, which is the property the design relies on instead of a technical block.
 

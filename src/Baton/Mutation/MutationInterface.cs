@@ -1154,6 +1154,9 @@ public static class MutationInterface
                             changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
                             hookVerdictCount: hookVerdictCount);
 
+                        // #1709: no TokenBudgetMonitor in scope on this path -- this classifies a
+                        // RECORDED exit from a possibly-defunct workspace, never a live process, so
+                        // ToOutcomeEvent's peakBilledInWindow stays at its null default.
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
                         await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, executionId, classification, ioCancellationToken)
@@ -1980,7 +1983,13 @@ public static class MutationInterface
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
             // dispatch has returned.
-            await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
+            //
+            // #1709: budgetMonitor is in scope here (never for the crash-recovery caller below), so a
+            // live dispatch's Succeeded/Failed outcome carries the same peak an arrest would have --
+            // the false-positive-side lanes spec/baton.md §3's calibration needs.
+            await eventLogWriter.AppendAsync(
+                    ToOutcomeEvent(prepared.Request.ExecutionId, classification, budgetMonitor?.SnapshotPeakBilledInWindow()),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -2027,14 +2036,22 @@ public static class MutationInterface
     /// a fresh dispatch's own completion (<see cref="DispatchAndRecordOutcomeAsync"/>) and M10 Phase
     /// 3's from-the-log classification of a recorded exit — the same mapping either way.
     /// </summary>
-    private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
+    /// <param name="peakBilledInWindow">
+    /// #1709: <see cref="FlowEvent.ExecutionSucceeded.PeakBilledInWindow"/>/
+    /// <see cref="FlowEvent.ExecutionFailed.PeakBilledInWindow"/>'s reading. Only the live-dispatch
+    /// caller has a <c>TokenBudgetMonitor</c> in scope to pass one; the crash-recovery caller classifies
+    /// a recorded exit with no live monitor and always passes null.
+    /// </param>
+    private static FlowEvent ToOutcomeEvent(
+        ExecutionId executionId, OutcomeClassification classification, long? peakBilledInWindow = null) =>
         classification.Verdict switch
         {
             OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(
-                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason),
+                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason,
+                peakBilledInWindow),
             OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
-                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
+                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames, peakBilledInWindow),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             OutcomeVerdict.Indeterminate => new FlowEvent.ExecutionIndeterminate(
                 executionId, classification.Reason, classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),

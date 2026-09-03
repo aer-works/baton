@@ -13,27 +13,26 @@ with no control is itself a failure here, which is what stops this file from qui
 
 WHY THIS IS A SEPARATE FILE, AND WHY IT IS IN THE REPO
 The arms that verified the previous two rounds of fixes lived in a scratch directory, were reported
-in a commit message as verification, and were preserved nowhere. That is exactly the failure
-`dispatch.py`'s own header exists to stop -- "established once, in a temp directory, then thrown away
-with the session" -- reproduced while fixing the file written to prevent it. The consequence was
-concrete rather than theoretical: the fix for the over-strict permission guard was protected only by
-a throwaway script, so the defect could be restored and `audit-selfcheck` stayed green.
+in a commit message as verification, and were preserved nowhere -- "established once, in a temp
+directory, then thrown away with the session", the failure `tools/baton-agy-loop/dispatch.py`'s own
+header existed to stop before #1759 retired it, reproduced while fixing the file written to prevent
+it. The consequence was concrete rather than theoretical: the fix for the over-strict permission
+guard was protected only by a throwaway script, so the defect could be restored and `audit-selfcheck`
+stayed green.
 
 It is separate from `selfcheck.py` because the two answer different questions. `selfcheck.py` asks
 "is the tooling correct?" and belongs in CI's `audit` job on every PR. This asks "would we know if it
 were not?" -- it mutates copies, spawns subprocesses, and is slower.
 
 NOTHING HERE MUTATES A TRACKED FILE. Faults are injected in-process, or into a copy of the tree in a
-temp directory. A control that edited `dispatch.py` in place would, if interrupted, leave behind
-precisely the fault it was injecting -- a change that makes a checker pass.
+temp directory. A control that edited a tracked file like `completeness.py` in place would, if
+interrupted, leave behind precisely the fault it was injecting -- a change that makes a checker pass.
 """
 from __future__ import annotations
 
 import contextlib
-import io
 import os
 import re
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -85,215 +84,11 @@ def env_override(name: str, value: str):
             os.environ[name] = prior
 
 
-@contextlib.contextmanager
-def mutated_tree(relative: str, edit):
-    """A copy of the repo's tools/ at the same depth, with one file edited. Yields the new path.
-
-    Same depth because `dispatch.py` derives its repo root from `__file__.parents[2]` -- a copy at
-    the wrong depth silently reads a different tree, which is the exact harness fault that once made
-    three control arms fail identically for a reason unrelated to the injected fault.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        dest_root = Path(tmp) / "repo"
-        shutil.copytree(ROOT / "tools", dest_root / "tools")
-        shutil.copy2(ROOT / "CLAUDE.md", dest_root / "CLAUDE.md")
-        target = dest_root / relative
-        original = target.read_text(encoding="utf-8")
-        edited = edit(original)
-        assert edited != original, f"the edit to {relative} did not apply -- this arm measures nothing"
-        target.write_text(edited, encoding="utf-8")
-        yield target
-
-
 # ---------------------------------------------------------------------------------------------
 # The faults. Each is the defect its check was written for, or one the check must be able to see.
 # ---------------------------------------------------------------------------------------------
 
-# Assembled rather than written as a literal, and this is not cosmetic: step 9 of
-# `audit-completeness` walks tools/ TEXTUALLY for anything in a `"model":` position, so a bad pin
-# spelled out here would be read as a real pin in a real file and fail that step. The fixture would
-# break the checker it is meant to exercise. Verified: with the literal in place, step 9 went red.
-BAD_PIN = "gemini-3.1-" + "pro"  # a real prefix, not an accepted value -- the #547 near-miss
-PLANTED_COUNT = 42               # deliberately not the number of steps in completeness.py
-
-
-@control("every gemini template pins a model `agy models` lists",
-         "a template pins a name the register does not list (#547's class)")
-def _bad_pin():
-    broken = {**selfcheck.dispatch.TEMPLATES,
-              "control": {"adapter": "agy", "model": BAD_PIN, "write_files": True}}
-    with swap(selfcheck.dispatch, "TEMPLATES", broken):
-        yield
-
-
-@control("workspace truth renders probe failures loudly, never as a clean tree",
-         "git errors are discarded again (#780's shape), so a failed probe falls through to (none)")
-def _truth_discards_errors():
-    orig = selfcheck.dispatch._git_cmd
-
-    def discards_err(workdir, *argv, **kwargs):
-        value, _err = orig(workdir, *argv, **kwargs)
-        return value, None
-
-    with swap(selfcheck.dispatch, "_git_cmd", discards_err):
-        yield
-
-
-@control("workspace truth renders probe failures loudly, never as a clean tree",
-         "a failed HEAD check returns before the status probe, so uncommitted work goes unreported")
-def _truth_head_failure_skips_status():
-    orig = selfcheck.dispatch._print_workspace_truth
-
-    def early_return(workdir, head_before, head_before_err=None):
-        if head_before_err or head_before is None:
-            print(f"\n[dispatch.py] workspace truth ({workdir}):", file=sys.stderr)
-            print("  truth unavailable: initial HEAD check failed", file=sys.stderr)
-            return False
-        return orig(workdir, head_before, head_before_err)
-
-    with swap(selfcheck.dispatch, "_print_workspace_truth", early_return):
-        yield
-
-
-@control("no template is refused, and every grant the shell would over-reach is",
-         "the coherence rule is dropped, so a withheld write dispatches whenever the shell is granted")
-def _no_coherence_rule():
-    # The pre-#529 guard, verbatim. Every template is coherent, so the loop over templates cannot see
-    # this -- only the explicit refusal arms can.
-    def pre_529(grant):
-        if grant["run_shell_commands"] and not grant["network_access"]:
-            return "shell without network"
-        if not grant["write_files"] and not grant["run_shell_commands"]:
-            return "nothing here can write the output"
-        return None
-    with swap(selfcheck.dispatch, "grant_refusal", pre_529):
-        yield
-
-
-@control("no template is refused, and every grant the shell would over-reach is",
-         "the coherence rule keeps writes but drops reads, which no template would notice")
-def _coherence_rule_forgets_reads():
-    # Reads are the arm with nothing behind them: every template either grants read or withholds the
-    # shell. Written as its own arm because the check must fail on the CATEGORY being dropped, not
-    # only on the rule vanishing.
-    def writes_only(grant):
-        if grant["run_shell_commands"] and not grant["network_access"]:
-            return "shell without network"
-        if grant["run_shell_commands"] and not grant["write_files"]:
-            return "reaches both anyway"
-        if not grant["write_files"] and not grant["run_shell_commands"]:
-            return "nothing here can write the output"
-        return None
-    with swap(selfcheck.dispatch, "grant_refusal", writes_only):
-        yield
-
-
-@control("no template is refused, and every grant the shell would over-reach is",
-         "the network condition is deleted, which no template and no other arm would notice")
-def _no_network_arm():
-    # Walked before it was written: with only the read/write coherence rule and the unsatisfiable
-    # rule left, every template stays coherent, the write arms still fire on write_files, and the
-    # read arm still fires on read_files. Nothing reddens -- so `--run-shell-commands` without
-    # `--network-access` would dispatch a bindings.json the engine refuses at bind time, which is
-    # exactly the failure moving the rule to the caller was meant to prevent.
-    def no_network(grant):
-        if grant["run_shell_commands"] and not (grant["read_files"] and grant["write_files"]):
-            return "reaches both anyway"
-        if not grant["write_files"] and not grant["run_shell_commands"]:
-            return "nothing here can write the output"
-        return None
-    with swap(selfcheck.dispatch, "grant_refusal", no_network):
-        yield
-
-
-@control("no template is refused, and every grant the shell would over-reach is",
-         "the rule over-corrects and refuses every grant carrying a shell")
-def _refuses_all_shell():
-    # The opposite defect, and the one a refusal-only check cannot see without its control arm: this
-    # makes `implement` -- the only template exercising the write path -- undispatchable.
-    def any_shell(grant):
-        return "reaches both anyway" if grant["run_shell_commands"] else None
-    with swap(selfcheck.dispatch, "grant_refusal", any_shell):
-        yield
-
-
-@control("no template is refused, and every grant the shell would over-reach is",
-         "the guard stops refusing anything at all")
-def _no_guard():
-    with swap(selfcheck.dispatch, "grant_refusal", lambda grant: None):
-        yield
-
-
-@control("every template dry-runs clean through the real command line",
-         "--dry-run stops reporting, so a real dispatch would be indistinguishable")
-def _dry_run_unmarked():
-    # Removes only the marker line, leaving the early return in place: the check must not rely on
-    # exit 0 plus a written bindings.json, both of which a REAL dispatch also produces.
-    with mutated_tree(
-        "tools/baton-agy-loop/dispatch.py",
-        lambda s: s.replace('print("[dispatch.py] DRY RUN -- nothing was dispatched and nothing was spent.")',
-                            'pass')
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control("every template dry-runs clean through the real command line",
-         "precedence stops carrying the template into the generated bindings")
-def _precedence_dropped():
-    with mutated_tree(
-        "tools/baton-agy-loop/dispatch.py",
-        lambda s: s.replace("for key, value in resolve(TEMPLATES.get(args.template, {})).items():",
-                            "for key, value in resolve({}).items():")
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control("--lane wires the review's branch diff to the janitor's output, and refuses a non-git tree",
-         "the review step stops declaring the janitor's diff as an input, so it reviews HEAD again (#789)")
-def _lane_review_input_dropped():
-    # The exact #789 regression: drop the one line threading branch.diff into the review step and the
-    # reviewer is back to auditing HEAD with no diff -- the state the whole issue is about. The check
-    # must go red on review's empty Inputs/RequiredInputs.
-    with mutated_tree(
-        "tools/baton-agy-loop/dispatch.py",
-        lambda s: s.replace('"inputs": [LANE_DIFF_OUTPUT_NAME],', '"inputs": [],')
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control("--lane wires the review's branch diff to the janitor's output, and refuses a non-git tree",
-         "the head_before guard stops firing, so a lane in a non-git tree no longer refuses (#789 finding 4d)")
-def _lane_head_guard_neutered():
-    # Neuter only the guard, leaving everything else: a non-git --lane then builds a diff command
-    # with no real base SHA and dry-runs clean instead of exiting 2. The check's non-git polarity arm
-    # must catch that it stopped refusing.
-    with mutated_tree(
-        "tools/baton-agy-loop/dispatch.py",
-        lambda s: s.replace("if head_before is None:", "if head_before is None and False:")
-    ) as path:
-        with swap(selfcheck, "DISPATCH_PY", path):
-            yield
-
-
-@control("every permission boolean can be turned OFF from the command line",
-         "the --no- arm is declared FIRST, so argparse takes the default from it")
-def _flag_order_swapped():
-    real = selfcheck.dispatch.build_parser
-
-    def swapped(argv=None):
-        parser = real(argv)
-        # Re-register write_files with the negative arm first, reproducing the argparse trap: a
-        # dest's default comes from the FIRST action registered for it, so this collapses the
-        # tri-state to False while both flag strings remain present in the source.
-        for action in parser._actions:
-            if action.dest == "write_files":
-                action.default = False
-        return parser
-    with swap(selfcheck.dispatch, "build_parser", swapped):
-        yield
+PLANTED_COUNT = 42  # deliberately not the number of steps in completeness.py
 
 
 @control("both shapes accept known pins, and PIN_SHAPE rejects English",
@@ -454,10 +249,10 @@ def _step9_always_true():
 def _planted_wrong_count():
     with tempfile.TemporaryDirectory() as tmp:
         planted = Path(tmp) / "planted.py"
-        # Interpolated for the same reason BAD_PIN is assembled: this file sits IN the lint's own
-        # population, so a fixture spelled out as a literal is read as a real claim in a real file.
-        # It was, and the lint fired on controls.py itself. Every fixture here has to be invisible to
-        # the checker it feeds.
+        # Interpolated rather than written as a literal: this file sits IN the lint's own population,
+        # so a fixture spelled out as a literal is read as a real claim in a real file. It was, and
+        # the lint fired on controls.py itself. Every fixture here has to be invisible to the checker
+        # it feeds.
         planted.write_text(f'"""This runs all {PLANTED_COUNT} steps of the audit."""\n',
                            encoding="utf-8")
         with swap(selfcheck, "LINT_DIRS", (*selfcheck.LINT_DIRS, Path(tmp))):
@@ -509,43 +304,6 @@ def replacing(mod, name, value):
         f"control tried to replace {mod.__name__}.{name}, which does not exist -- renamed? "
         "A mutation of an attribute nothing reads is not a control.")
     setattr(mod, name, value)
-
-
-BUDGET = "every dispatch tells the worker the budget it is actually given"
-
-
-@control(BUDGET, "the preamble is dropped, so every worker is timed without being told")
-def _dispatch_says_nothing():
-    with swap(selfcheck.dispatch, "budget_preamble", lambda minutes, output: ""):
-        yield
-
-
-@control(BUDGET, "the preamble names a fixed number instead of the budget the binding carries")
-def _dispatch_states_the_wrong_budget():
-    # The direction a "does it mention minutes?" test cannot see. Every template but one would still
-    # read correctly, and the worker that is misinformed is the one with the longest run to lose.
-    with swap(selfcheck.dispatch, "budget_preamble",
-              lambda minutes, output: f"BUDGET: you have 25 minutes. Write {output} early.\n\n"):
-        yield
-
-
-NEVER_KILL = "a shell grant carries the never-kill rule, and a read-only brief does not"
-
-
-@control(NEVER_KILL, "the rule is dropped, so a shell-granted worker is briefed like a read-only one")
-def _shell_rules_say_nothing():
-    with swap(selfcheck.dispatch, "shell_rules_preamble", lambda run_shell_commands: ""):
-        yield
-
-
-@control(NEVER_KILL, "the rule leaks into every brief, shell-granted or not")
-def _shell_rules_leak_everywhere():
-    # The polarity a "does the string appear?" test cannot see on its own: a preamble attached
-    # unconditionally still satisfies the shell-granted half while briefing read-only workers
-    # about a capability they do not have.
-    with swap(selfcheck.dispatch, "shell_rules_preamble",
-              lambda run_shell_commands: "SHELL RULES: never kill anything.\n\n"):
-        yield
 
 
 RECORDONCE = "the record-once checker fires on restated prose, not on text the register prescribes"

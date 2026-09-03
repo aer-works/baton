@@ -15,8 +15,8 @@ namespace Baton.Vendors;
 /// <para>
 /// <b>The base ref rides in <see cref="WorkerInvocation.PromptTemplate"/></b> — the field
 /// <see cref="CommandWorkerAdapter"/> also repurposes for non-prose per-step data — injected by the
-/// run entrypoint at workflow start (the git-aware place, mirroring <c>dispatch.py</c>'s
-/// <c>head_before</c>). It is diffed against the working tree, not <c>base..HEAD</c> — decision 0047 §4
+/// run entrypoint at workflow start — <c>Baton.Cli.WorkspaceHead</c>'s own doc has the history of
+/// what that captures and mirrors. It is diffed against the working tree, not <c>base..HEAD</c> — decision 0047 §4
 /// has the why (committed and uncommitted work both captured, so no worker is forced to commit).
 /// </para>
 /// <para>

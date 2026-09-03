@@ -51,6 +51,4 @@ src/Baton.Vendors/CHANGELOG.md
 src/Baton.Cli/CHANGELOG.md
 src/Baton.Daemon/CHANGELOG.md
 src/Baton/CHANGELOG.md
-tools/baton-agy-loop/README.md
-tools/baton-agy-loop/janitor-prompt.md
 tools/vendor-verify/README.md

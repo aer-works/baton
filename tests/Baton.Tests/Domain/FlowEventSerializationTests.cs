@@ -58,7 +58,10 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.ExecutionRequestRejected(ExecutionId, "concurrency cap reached")];
 
         yield return [new FlowEvent.ExecutionSucceeded(ExecutionId)];
+        // #1709: the peak reaches ExecutionSucceeded/ExecutionFailed too now, not only ExecutionArrested.
+        yield return [new FlowEvent.ExecutionSucceeded(ExecutionId, PeakBilledInWindow: 344_225)];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable)];
+        yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable, PeakBilledInWindow: 228_536)];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification: null)];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable, "Worker process exited with code 1")];
         yield return [new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification: null, "Missing required output file 'plan.md'")];
@@ -299,6 +302,93 @@ public class FlowEventSerializationTests
 
         var cancellationRequested = Assert.IsType<FlowEvent.CancellationRequested>(deserialized);
         Assert.Equal(CancellationOrigin.HostStop, cancellationRequested.Origin);
+    }
+
+    /// <summary>
+    /// #1709: a <c>flow.jsonl</c> line written before this issue's <c>PeakBilledInWindow</c> field
+    /// existed, derived the same way <see cref="LegacyExecutionFailedJson"/> derives its own fixture —
+    /// see that method's remarks for why deriving beats hand-typing.
+    /// </summary>
+    private static string LegacyExecutionSucceededJsonWithoutPeakBilledInWindow()
+    {
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionSucceeded(ExecutionId, PeakBilledInWindow: 500_000),
+            typeof(FlowEvent));
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.ExecutionSucceeded.PeakBilledInWindow)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_ExecutionSucceeded_without_PeakBilledInWindow_property_deserializes_with_null_PeakBilledInWindow()
+    {
+        // #1709 added PeakBilledInWindow as a trailing defaulted member specifically so lines already
+        // on disk stay readable -- the same "= null default is load-bearing" rule FlowEvent.cs's own
+        // remarks state, pinned here the same way #597's Reason field already is above.
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyExecutionSucceededJsonWithoutPeakBilledInWindow(), FlowEventLogJson.Options);
+
+        var succeeded = Assert.IsType<FlowEvent.ExecutionSucceeded>(deserialized);
+        Assert.Equal(ExecutionId, succeeded.ExecutionId);
+        Assert.Null(succeeded.PeakBilledInWindow);
+    }
+
+    [Fact]
+    public void Deserializing_current_ExecutionSucceeded_with_PeakBilledInWindow_property_sets_PeakBilledInWindow()
+    {
+        // The polarity control for the test above: same event shape, PeakBilledInWindow present rather
+        // than stripped. Without this arm, an implementation that never read the property at all would
+        // pass the legacy test -- null is what it asserts.
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionSucceeded(ExecutionId, PeakBilledInWindow: 500_000),
+            typeof(FlowEvent));
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var succeeded = Assert.IsType<FlowEvent.ExecutionSucceeded>(deserialized);
+        Assert.Equal(500_000, succeeded.PeakBilledInWindow);
+    }
+
+    /// <summary>#1709: ExecutionFailed's own PeakBilledInWindow legacy fixture, same shape as ExecutionSucceeded's above.</summary>
+    private static string LegacyExecutionFailedJsonWithoutPeakBilledInWindow()
+    {
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable, PeakBilledInWindow: 500_000),
+            typeof(FlowEvent));
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.ExecutionFailed.PeakBilledInWindow)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_ExecutionFailed_without_PeakBilledInWindow_property_deserializes_with_null_PeakBilledInWindow()
+    {
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyExecutionFailedJsonWithoutPeakBilledInWindow(), FlowEventLogJson.Options);
+
+        var failed = Assert.IsType<FlowEvent.ExecutionFailed>(deserialized);
+        Assert.Equal(ExecutionId, failed.ExecutionId);
+        Assert.Null(failed.PeakBilledInWindow);
+    }
+
+    [Fact]
+    public void Deserializing_current_ExecutionFailed_with_PeakBilledInWindow_property_sets_PeakBilledInWindow()
+    {
+        // The polarity control for the test above -- see the ExecutionSucceeded pair's own remarks.
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.ExecutionFailed(ExecutionId, FailureClassification.Retryable, PeakBilledInWindow: 500_000),
+            typeof(FlowEvent));
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var failed = Assert.IsType<FlowEvent.ExecutionFailed>(deserialized);
+        Assert.Equal(500_000, failed.PeakBilledInWindow);
     }
 
     private static string LegacyExecutionRequestAcceptedJson()

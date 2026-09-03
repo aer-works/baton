@@ -1719,8 +1719,9 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     }
 
     /// <summary>
-    /// Recognizes agy auto-denied-tool errors from stderr prose (issue #914) mirroring dispatch.py's
-    /// canonical twin markers: "auto-denied" AND "permission".
+    /// Recognizes agy auto-denied-tool errors from stderr prose (issue #914) mirroring what was
+    /// <c>tools/baton-agy-loop/dispatch.py</c>'s canonical twin markers before #1759 retired it:
+    /// "auto-denied" AND "permission".
     /// </summary>
     public static bool TryClassifyAutoDeniedTool(
         string? stderrOrReason,

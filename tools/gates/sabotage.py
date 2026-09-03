@@ -314,15 +314,21 @@ def _sabotage_audit_selfcheck() -> None:
         tools_dir = dest / "tools" / "audit-completeness"
         tools_dir.mkdir(parents=True)
         shutil.copy2(ROOT / "tools" / "audit-completeness" / "selfcheck.py", tools_dir / "selfcheck.py")
-        shutil.copy2(ROOT / "tools" / "audit-completeness" / "completeness.py", tools_dir / "completeness.py")
         shutil.copy2(ROOT / "tools" / "audit-completeness" / "recordonce.py", tools_dir / "recordonce.py")
 
-        dispatch_dir = dest / "tools" / "baton-agy-loop"
-        dispatch_dir.mkdir(parents=True)
-        # Empty TEMPLATES triggers assert in selfcheck
-        dispatch_src = (ROOT / "tools" / "baton-agy-loop" / "dispatch.py").read_text(encoding="utf-8")
-        mutated = dispatch_src.replace('TEMPLATES: dict[str, dict] = {', 'TEMPLATES: dict[str, dict] = {} # {')
-        (dispatch_dir / "dispatch.py").write_text(mutated, encoding="utf-8")
+        # #1759: this used to break the dispatch.py TEMPLATES population selfcheck.py's own
+        # _templates_are_dispatchable read; that check (and dispatch.py) is gone. An empty
+        # register_models() population trips the same "TEMPLATES is empty -- this compared
+        # nothing"-shaped assert on the surviving checks that still call it (_shapes_discriminate,
+        # _no_transcribed_counts) -- register_models() itself asserts `accepted is not None`.
+        completeness_src = (ROOT / "tools" / "audit-completeness" / "completeness.py").read_text(encoding="utf-8")
+        mutated = completeness_src.replace(
+            "def register_models():\n",
+            'def register_models():\n    return None, "sabotage: register_models neutered"\n',
+            1,
+        )
+        assert mutated != completeness_src, "register_models mutation target not found in completeness.py"
+        (tools_dir / "completeness.py").write_text(mutated, encoding="utf-8")
 
         proc = subprocess.run(
             [sys.executable, "-u", str(tools_dir / "selfcheck.py")],
@@ -332,7 +338,7 @@ def _sabotage_audit_selfcheck() -> None:
             env=_clean_git_env(),
         )
         assert proc.returncode != 0, (
-            f"audit-selfcheck exited {proc.returncode} on mutated dispatch.py; expected non-zero"
+            f"audit-selfcheck exited {proc.returncode} on a neutered register_models(); expected non-zero"
         )
 
 
@@ -344,13 +350,17 @@ def _sabotage_diff_shape_selftest() -> None:
         tools_dir.mkdir(parents=True)
         src = (ROOT / "tools" / "diff-shape" / "diff_shape.py").read_text(encoding="utf-8")
         # Mutate is_protected_tooling to always report nothing protected -- the selftest's own
-        # (d) arm asserts a protected-tooling edit fails, so a neutered predicate must go red.
+        # widened-path arms (l)-(p) and (s)-(w) assert those protected-tooling edits fail, so a
+        # neutered predicate must go red (#1744: pixi.toml itself no longer routes through this
+        # function, so those arms -- not (d) -- are what a neutered predicate now flips).
         mutated = src.replace(
             "def is_protected_tooling(path: str) -> bool:\n"
-            '    """Check if path belongs to the protected-tooling set."""\n'
+            '    """Check if path belongs to the protected-tooling set (whole-file/directory half -- pixi.toml\n'
+            '    is handled separately, at line level, by _pixi_toml_protected_hunk_touched)."""\n'
             "    p = path.replace(\"\\\\\", \"/\")",
             "def is_protected_tooling(path: str) -> bool:\n"
-            '    """Check if path belongs to the protected-tooling set."""\n'
+            '    """Check if path belongs to the protected-tooling set (whole-file/directory half -- pixi.toml\n'
+            '    is handled separately, at line level, by _pixi_toml_protected_hunk_touched)."""\n'
             "    return False\n"
             "    p = path.replace(\"\\\\\", \"/\")",
         )
@@ -380,16 +390,15 @@ def _sabotage_audit_controls() -> None:
         shutil.copy2(ROOT / "tools" / "audit-completeness" / "completeness.py", tools_dir / "completeness.py")
         shutil.copy2(ROOT / "tools" / "audit-completeness" / "recordonce.py", tools_dir / "recordonce.py")
 
-        dispatch_dir = dest / "tools" / "baton-agy-loop"
-        dispatch_dir.mkdir(parents=True)
-        shutil.copy2(ROOT / "tools" / "baton-agy-loop" / "dispatch.py", dispatch_dir / "dispatch.py")
-
-        # Mutate controls.py to remove a control decorator, tripping the uncontrolled-check check
+        # Mutate controls.py to remove a control decorator, tripping the uncontrolled-check check.
+        # #1759: retargeted off the dispatch.py-backed "every gemini template pins..." check (gone
+        # along with dispatch.py) onto a surviving single-control check.
         controls_src = (ROOT / "tools" / "audit-completeness" / "controls.py").read_text(encoding="utf-8")
         mutated = controls_src.replace(
-            '@control("every gemini template pins a model `agy models` lists",',
-            '# @control("every gemini template pins a model `agy models` lists",',
+            '@control("step 9\'s probe-input exemption excuses a marked line and nothing else",',
+            '# @control("step 9\'s probe-input exemption excuses a marked line and nothing else",',
         )
+        assert mutated != controls_src, "control decorator mutation target not found in controls.py"
         (tools_dir / "controls.py").write_text(mutated, encoding="utf-8")
 
         proc = subprocess.run(
@@ -416,7 +425,6 @@ ALLOWLIST: dict[str, str] = {
     "flake-watch-selftest": "pure synthetic selftest exercising 5 flake disagreement discrimination arms",
     "buildlock-selftest": "pure synthetic selftest exercising subprocess serialization, crash safety, and timeouts",
     "tool-refresh-selftest": "pure synthetic selftest exercising drain-predicate classification, version-compare, fail-loud-on-failure, and --dry-run discrimination arms, each against injected fakes",
-    "baton-dispatch-selftest": "pure synthetic selftest exercising denied-tool guard, catalog names, and loader failure modes",
     "gates-selftest": "pure synthetic selftest exercising aggregation polarity plus the #1636 gate-receipt and pre-push-hook discrimination arms",
     "fmt-check": "MSBuild-driven code format verification where sabotage requires compiling the .NET solution",
     "lint": "MSBuild compiler warning-as-error gate where sabotage requires compiling the .NET solution",
