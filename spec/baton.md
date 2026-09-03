@@ -2041,8 +2041,9 @@ exactly the fields it enumerates as KEPT (now `type`/`timestamp`/`stepId`/`exitC
 `room_detail` entry and nothing else — a future `room_detail` field still never leaks through by
 accident of that function failing to name it.
 
-**The pushed mailbox payload carries two fields `fleet_status`/`room_detail` do not (#1613 items 1
-and 2) — pusher-computed, not part of either MCP tool's own C# output above.** Both are read
+**The pushed mailbox payload carries three fields `fleet_status`/`room_detail` do not (#1613 items 1
+and 2, plus #1155's `rooms[].pruned` below) — pusher-computed, not part of either MCP tool's own C#
+output above.** The first two are read
 directly off the room's already-captured `.stdout.log` or wall-clock, python-side
 (`tools/fleet-glass/pusher.py`), because `Status.ExecutionUsageProjector`'s engine-side seam only
 ever populates an execution that has recorded BOTH a `CoreEvent.ExecutionStarted` AND
@@ -2101,6 +2102,15 @@ definition has no exit event yet and needs every line scanned, not just the last
   not excluded the way `derived_at` is excluded below: a prose-only turn with no tool call in it
   would leave every OTHER field in `live` unchanged too, so excluding this one as well would freeze
   glass's rendered age on an old instant while the lane is, in fact, still going.
+- **`rooms[].pruned` (#1155)**, present only for a room whose `artifacts/pruned/` directory (`ArtifactPruner.PruneAsync`'s grace-window destination, #1027 Option B/#1041) is non-empty:
+  `{ "count": number, "items": [{ "name": string, "bytes": number, "prunedAt": string }, capped at the 20 newest by `prunedAt`] }`.
+  This is the observability half of the grace window's own design rationale (#1027 Option B: prune,
+  don't delete, so an operator can still find what moved) — before this, nothing read `pruned/` at
+  all, so a completed run's artifacts silently vanished from every surface the moment the retention
+  sweep ran. `prunedAt` is the pruned directory's own filesystem mtime (`ArtifactPruner` leaves no
+  manifest — `RetryingFileMove.MoveDirectory` is a bare rename), the same real-timestamp-not-`now()`
+  convention `live.lastActivityAt` above already follows. Read-only: Fleet Glass shows what moved,
+  it does not restore it.
 - **`derived_at` (item 2)**, beside `heartbeat_at` (#1486) at the top level of the pushed snapshot:
   when this pusher process's OWN `derive_snapshot_and_timelines` call last completed successfully,
   regardless of whether that cycle's content changed enough to push. `pushed_at` (worker.js's own
