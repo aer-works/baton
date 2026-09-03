@@ -68,7 +68,7 @@ $action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$pusherScrip
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
 $taskSettings = New-ScheduledTaskSettingsSet `
-    -MultipleInstances IgnoreNew -DisallowStartIfOnBatteries -StopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `

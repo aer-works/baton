@@ -80,6 +80,13 @@ public sealed class TokenBudgetMonitor
     private long? _tokensOut;
     private long? _billedTokens;
     private long? _cacheReadSum;
+    // #1557: additive the same way _billedTokens is -- one per usage-bearing line that contributed a
+    // billed delta, so a caller can tell "how many turns" from "how many tokens" independently. Never a
+    // fabricated 0, same convention as every other Σ on this type. WorkerUsage.Turns is now populated
+    // (previously always null); the only live consumer whose output changes is the arrest event's Usage
+    // (MutationInterface's ExecutionArrested), and its current readers (StateProjector's arrest
+    // descriptions) do not consume Turns today -- benign until something reads it.
+    private int? _turns;
     // #1706: sticky. Set the first time any reading declares itself a floor (claude, always) and never
     // cleared -- a Σ over a stream where one component was structurally unreadable stays a floor no
     // matter how many complete readings follow it.
@@ -240,6 +247,7 @@ public sealed class TokenBudgetMonitor
                     {
                         var billedDelta = (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
                         _billedTokens = (_billedTokens ?? 0) + billedDelta;
+                        _turns = (_turns ?? 0) + 1;
                         // #1691: the SAME deduped per-turn billed delta the running Σ above takes, admitted a
                         // second time into the trailing window -- deliberately reusing #1682's accounting
                         // rather than re-deriving a rate-specific one, so the two triggers can never disagree
@@ -336,6 +344,7 @@ public sealed class TokenBudgetMonitor
             return new WorkerUsage(
                 TokensIn: _latestTokensIn,
                 TokensOut: _tokensOut,
+                Turns: _turns,
                 CacheReadTokens: _cacheReadSum,
                 CacheCreationTokens: _latestCacheCreation,
                 ContextLevelTokens: _inputLevel,

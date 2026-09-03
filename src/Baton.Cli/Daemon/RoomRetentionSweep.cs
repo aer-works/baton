@@ -3,6 +3,7 @@ using Baton.Artifacts;
 using Baton.Cli;
 using Baton.Projection;
 using Baton.Status;
+using Baton.Store;
 using Microsoft.Extensions.Hosting;
 
 namespace Baton.Cli.Daemon;
@@ -228,22 +229,111 @@ public sealed class RoomRetentionSweep : BackgroundService
         return await RoomJournalCompactor.CompactAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// #1157: rooms already warned about a legacy (pre-#745) journal, so the fallback below says so
+    /// once per room rather than once per sweep iteration — at the placeholder five-minute cadence
+    /// that is 288 identical lines a day, per room, which is how a real signal becomes noise nobody
+    /// reads. Process-lifetime only: a daemon restart re-warns, deliberately, since the operator who
+    /// reads the new process's stderr has not necessarily seen the old one's.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> LegacyTerminalInstantWarnedRooms =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Prunes <paramref name="roomDirectoryPath"/>'s artifacts once its run has been terminal for at
+    /// least <paramref name="grace"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// #1157 retired the <c>flow.jsonl</c>-mtime proxy this used to key on. The grace window now reads
+    /// the run's real terminal instant (<see cref="WorkflowProbeResult.TerminalAtUtc"/>), so a journal
+    /// touched after the run ended — a late settlement line, a Core lifecycle line, a file copy that
+    /// moved the mtime without adding a byte — no longer silently restarts the window and leaves a
+    /// finished room's artifacts unswept indefinitely.
+    /// </para>
+    /// <para>
+    /// <b>Behaviour change worth naming: a non-terminal room is now never pruned here.</b> The old
+    /// gate admitted any room whose journal was quiet for <paramref name="grace"/>, terminal or not,
+    /// and leaned on <see cref="ArtifactPruner.PruneAsync"/>'s own terminality probe to refuse. That is
+    /// still the authoritative refusal (it runs under the room's <see cref="Baton.Concurrency.ConcurrencyGuard"/>, where
+    /// this pre-filter cannot); what changes is that the answer is now reached honestly rather than by
+    /// two gates disagreeing about what the mtime meant. A room with no terminal instant has not ended,
+    /// and per spec/baton.md §3 nothing may invent one for it.
+    /// </para>
+    /// <para>
+    /// The cost is one journal read per room per sweep that the mtime stat did not pay, plus
+    /// <see cref="ArtifactPruner"/>'s own second read under the lock for the rooms that pass. Not
+    /// deduplicated into one read on purpose: the two probes answer at different moments and the
+    /// second one is the one holding the lock, which is exactly the property #973's second reader
+    /// added it for.
+    /// </para>
+    /// </remarks>
+    /// <param name="warningSink">
+    /// Where the legacy-journal warning goes; <c>null</c> means <see cref="Console.Error"/>, which is
+    /// what the daemon uses. A parameter rather than a swap of the process-global
+    /// <see cref="Console.Error"/>, because a test asserting "exactly one line" against a stream every
+    /// other test class in this assembly also writes to is asserting about scheduling, not about this
+    /// gate (the defect <c>Baton.Tests</c>' own <c>ConsoleErrorCaptureCollection</c> exists for).
+    /// </param>
     internal static async Task<bool> PruneRoomAsync(
         string roomDirectoryPath,
         TimeSpan grace,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TextWriter? warningSink = null)
     {
-        // Localized terminal-time proxy: flow.jsonl last-write time (mtime).
-        // This proxy is acceptable because the grace window is observability-only and pruning is fully
-        // recoverable + idempotent (artifacts move to pruned/, not deleted).
         var flowLogPath = Path.Combine(roomDirectoryPath, BatonPaths.FlowLogFileName);
         if (!File.Exists(flowLogPath))
         {
             return false;
         }
 
-        var lastWriteTimeUtc = File.GetLastWriteTimeUtc(flowLogPath);
-        if (DateTime.UtcNow - lastWriteTimeUtc < grace)
+        var probe = await WorkflowTerminalProbe.ProbeAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
+        if (!probe.IsTerminal)
+        {
+            return false;
+        }
+
+        DateTime terminalAtUtc;
+        if (probe.TerminalAtUtc is { } instant)
+        {
+            terminalAtUtc = instant;
+        }
+        else
+        {
+            // The ONLY surviving use of the mtime here, for the two terminal-but-no-instant shapes:
+            // refusing to prune such a room forever would be a worse answer than the proxy that has
+            // been deciding it all along. Announced once per room (see LegacyTerminalInstantWarnedRooms)
+            // so the population still on old journals is visible rather than inferred -- and announced
+            // with the RIGHT cause, which is why the resolver reports one. Attributing every absent
+            // instant to #745 made the census this warning exists to produce simply wrong: a zero-step
+            // snapshot projects terminal off an empty prefix, so a room whose journal was written
+            // minutes ago reaches this branch too, and blaming its age on a five-versions-old writer is
+            // a false diagnostic an operator would act on.
+            var cause = probe.TerminalAtAbsence switch
+            {
+                TerminalInstantAbsence.TransitionEntryUnstamped =>
+                    "its journal predates writer timestamps (#745)",
+                TerminalInstantAbsence.NoTransitionEntry =>
+                    "no journal line ever transitioned it to terminal (a zero-step workflow projects " +
+                    "terminal off its empty journal)",
+                // Unreachable: this branch runs only under probe.IsTerminal, and the probe reports
+                // NotTerminal/None only outside it. Named rather than defaulted so a future absence
+                // reason cannot silently inherit one of the sentences above.
+                var other => $"its terminal instant is unavailable ({other})",
+            };
+
+            if (LegacyTerminalInstantWarnedRooms.TryAdd(roomDirectoryPath, 0))
+            {
+                (warningSink ?? Console.Error).WriteLine(
+                    $"RoomRetentionSweep: '{roomDirectoryPath}' is terminal but {cause}, so the retention " +
+                    $"grace window is falling back to {BatonPaths.FlowLogFileName}'s mtime for this room. " +
+                    "Reported once per room per daemon process.");
+            }
+
+            terminalAtUtc = File.GetLastWriteTimeUtc(flowLogPath);
+        }
+
+        if (DateTime.UtcNow - terminalAtUtc < grace)
         {
             return false;
         }

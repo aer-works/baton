@@ -189,6 +189,21 @@ public static class BatonPaths
     public const string QuotaLedgerFileName = "quota-ledger.jsonl";
 
     /// <summary>
+    /// <c>{Root}/fleet/projection.json</c> — the daemon-written fleet projection file (#1557,
+    /// spec/baton.md §7's fourth kept responsibility): the same <c>fleet_status</c> room array
+    /// (spec/baton.md §6) plus per-room <c>live</c>/<c>pruned</c> and the top-level <c>derived_at</c>,
+    /// rewritten atomically roughly every 30s so a local reader (a janitor sweep, the pusher once
+    /// #1557 PR-B lands) never has to re-derive it by scanning every room itself.
+    /// </summary>
+    public static string FleetProjectionFile => Path.Combine(Root, FleetDirectoryName, FleetProjectionFileName);
+
+    /// <summary>Directory name <see cref="FleetProjectionFile"/> lives under, relative to a root.</summary>
+    public const string FleetDirectoryName = "fleet";
+
+    /// <summary>Filename of <see cref="FleetProjectionFile"/> relative to <see cref="FleetDirectoryName"/>.</summary>
+    public const string FleetProjectionFileName = "projection.json";
+
+    /// <summary>
     /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
     /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
     /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.

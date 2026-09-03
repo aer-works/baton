@@ -26,19 +26,21 @@ $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument '-NoProfile -WindowStyle Hidden -Command "& { baton daemon *>> ''daemon.log'' }"' `
     -WorkingDirectory $batonHome
 
-# At logon and at machine startup -- the daemon has no other trigger that would bring it back
-# after a reboot or a sign-out/sign-in cycle.
-$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
-$triggerBoot = New-ScheduledTaskTrigger -AtStartup
+# This script registers unelevated, as the operator (#1770): a boot (`-AtStartup`) trigger runs
+# before any logon and is denied to a standard user, and an unscoped `-AtLogOn` trigger is an
+# any-user trigger, also denied. The daemon needs the interactive user's PATH and `~/.baton`
+# regardless, so a logon trigger scoped to that same user is both the only trigger a standard user
+# can register here and the only one that makes sense for what the daemon needs to run.
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 
 # Same shape as fleet-glass-pusher's settings (deploy.ps1 step 5): IgnoreNew means a due trigger
 # is skipped outright while a launched instance is still alive, so a healthy daemon never sees a
 # second launch; RestartCount/RestartInterval is the self-heal against a daemon that exited (crash
 # or an operator's `taskkill`) without a fresh trigger due yet.
 $taskSettings = New-ScheduledTaskSettingsSet `
-    -MultipleInstances IgnoreNew -DisallowStartIfOnBatteries -StopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($triggerLogon, $triggerBoot) `
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggerLogon `
     -Settings $taskSettings -Force | Out-Null

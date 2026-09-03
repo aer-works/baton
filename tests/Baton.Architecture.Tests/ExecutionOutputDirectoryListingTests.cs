@@ -54,6 +54,12 @@ public class ExecutionOutputDirectoryListingTests
         // #1488: lists {BATON_HOME}/watches -- the baton watch registry directory -- never an
         // execution's own output directory.
         ["Baton.Cli/WatchStore.cs"] = "lists watchesDirectoryPath (the baton watch registry), not an execution output directory",
+        // #1557: GetFileSystemEntries lists artifacts/pruned/ itself (the room-level pruned root, not
+        // an execution's own output directory) to find pruned execution dirs. The nested
+        // EnumerateFiles DOES walk into a pruned execution's own former output directory, but sums it
+        // unfiltered on purpose -- see that call site's own comment in FleetProjectionWriter.cs for why.
+        ["Baton.Cli/Daemon/FleetProjectionWriter.cs"] =
+            "GetFileSystemEntries lists the pruned room root, not an execution output directory; the nested EnumerateFiles walks a pruned execution's own former output directory but deliberately does not filter ExecutionStreamLogger.IsStreamLogFileName -- see #1557 comment above",
     };
 
     [Fact]
