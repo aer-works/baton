@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
@@ -42,21 +43,32 @@ public sealed class WatchNotifier : IWatchNotifier
     public const string NotifyEventEnvironmentVariable = "BATON_WATCH_EVENT";
 
     /// <summary>How long a spawned notify command is given to exit before this stops waiting on it
-    /// (and reports that on stderr) — it is not killed, since "spawned once" (spec/baton.md §2) means
-    /// exactly that: the command still runs to completion on its own, this process just stops
-    /// blocking on it. Generous: a webhook-posting script or an ntfy curl call is the expected shape,
-    /// never a long-running watcher of its own.</summary>
+    /// (and reports that on stderr) — it is not killed on THIS path, since "spawned once" (spec/baton.md
+    /// §2) means exactly that: a command that exits on its own within the budget still runs to
+    /// completion, this process just stops blocking on it. Generous: a webhook-posting script or an
+    /// ntfy curl call is the expected shape, never a long-running watcher of its own. The SAME budget
+    /// also bounds the stdin write below (spec/baton.md §2) — there the command IS killed, because a
+    /// write that has not drained by the deadline means the command is never going to read the rest of
+    /// stdin at all, so there is nothing left to "let finish".</summary>
     public static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
 
     private static readonly JsonSerializerOptions PayloadJsonOptions = new() { WriteIndented = false };
 
-    private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
+    /// <summary><c>AllowAutoRedirect = false</c>: a 3xx on the URL arm's POST must be logged as the
+    /// non-success it is, not silently re-issued by <see cref="HttpClient"/> as a bodyless GET whose
+    /// eventual 200 would read as delivery succeeding when the payload never arrived.</summary>
+    private static readonly HttpClient SharedHttpClient = new(new HttpClientHandler { AllowAutoRedirect = false })
+    {
+        Timeout = TimeSpan.FromSeconds(15),
+    };
 
     private readonly HttpClient _httpClient;
+    private readonly TimeSpan _commandTimeout;
 
-    public WatchNotifier(HttpClient? httpClient = null)
+    public WatchNotifier(HttpClient? httpClient = null, TimeSpan? commandTimeout = null)
     {
         _httpClient = httpClient ?? SharedHttpClient;
+        _commandTimeout = commandTimeout ?? CommandTimeout;
     }
 
     public async Task NotifyAsync(string target, WatchNotifyPayload payload, CancellationToken cancellationToken)
@@ -72,7 +84,7 @@ public sealed class WatchNotifier : IWatchNotifier
             return;
         }
 
-        await SpawnCommandAsync(target, json, cancellationToken).ConfigureAwait(false);
+        await SpawnCommandAsync(target, json, _commandTimeout, cancellationToken).ConfigureAwait(false);
     }
 
     internal static bool IsHttpUrl(string target) =>
@@ -89,7 +101,8 @@ public sealed class WatchNotifier : IWatchNotifier
         }
     }
 
-    private static async Task SpawnCommandAsync(string command, string json, CancellationToken cancellationToken)
+    private static async Task SpawnCommandAsync(
+        string command, string json, TimeSpan commandTimeout, CancellationToken cancellationToken)
     {
         var psi = new ProcessStartInfo
         {
@@ -125,11 +138,42 @@ public sealed class WatchNotifier : IWatchNotifier
             return;
         }
 
-        await process.StandardInput.WriteAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
+        // spec/baton.md §2: the timeout is armed BEFORE the stdin write starts, and the write itself is
+        // bounded by it (`.WaitAsync`) -- arming it only around WaitForExitAsync below, as this used to,
+        // guards nothing, because a command that never reads stdin (the documented `curl -X POST ...`
+        // shape) blocks the write in the OS pipe once the payload exceeds the pipe buffer (~4 KB on
+        // Windows) well before WaitForExitAsync is ever reached. `cancellationToken` itself cannot
+        // cancel that blocked write either -- `StandardInput` wraps a synchronous `FileStream` over the
+        // pipe handle, and the token is only checked before the write begins.
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(commandTimeout);
+
+        var stdinTimedOut = false;
+        try
+        {
+            await process.StandardInput.WriteAsync(json.AsMemory(), cancellationToken)
+                .WaitAsync(timeoutSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            stdinTimedOut = true;
+            Console.Error.WriteLine(
+                $"baton watch: notify command '{command}' did not drain stdin within {commandTimeout} " +
+                "— killing it.");
+            TryKillProcessTree(process);
+        }
+
+        if (stdinTimedOut)
+        {
+            return;
+        }
+
+        // Only reached once the write itself completed -- closing here (rather than in a `finally`
+        // above) is deliberate: the write task above is still running against a blocked OS call on
+        // timeout, and closing the stream out from under it is not a safe way to unblock it, which is
+        // why the timeout branch kills the process tree instead.
         process.StandardInput.Close();
 
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(CommandTimeout);
         try
         {
             await process.WaitForExitAsync(timeoutSource.Token).ConfigureAwait(false);
@@ -141,7 +185,24 @@ public sealed class WatchNotifier : IWatchNotifier
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine(
-                $"baton watch: notify command '{command}' did not exit within {CommandTimeout} — leaving it running.");
+                $"baton watch: notify command '{command}' did not exit within {commandTimeout} — leaving it running.");
+        }
+    }
+
+    /// <summary>Best-effort: the stdin-drain timeout means the command is never going to finish reading
+    /// input it was supposed to consume, so there is nothing left to wait on — unlike the exit-timeout
+    /// branch above, which leaves a command that DID see EOF free to keep running on its own.</summary>
+    private static void TryKillProcessTree(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+        {
+            // Already exited (race between the timeout firing and the command finishing on its own) or
+            // the OS refused -- either way, the stderr message above already told the operator what
+            // happened; there is nothing more this notifier can do.
         }
     }
 }

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Net.Http;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Status;
 
@@ -10,8 +12,11 @@ namespace Baton.Cli.Tests;
 /// scope's fire-once test; the actual red-first proof for the exactly-once guard lives in
 /// <c>WatchStoreTests.TryClaimAsync_ManyConcurrentCallers_ExactlyOneWins</c> (a sequential
 /// call-twice test cannot go red against a missing guard, since the second call already observes the
-/// first call's write — only genuine concurrency exercises the race) — see <c>changes.md</c> for the
-/// captured red output.
+/// first call's write — only genuine concurrency exercises the race). That test itself IS the durable
+/// red-first record (per the <c>record-once</c> gate, a passing test in the tree, not a citation to a
+/// file outside it): with <c>WatchStore.TryClaimAsync</c>'s <c>FiredAt is not null</c> guard removed,
+/// 20 concurrent claims against one fresh watch returned <c>true</c> 20 times instead of once — the
+/// same assertion that test still runs today, guard restored.
 /// </summary>
 public sealed class WatchFireServiceTests
 {
@@ -115,6 +120,48 @@ public sealed class WatchFireServiceTests
         Assert.Equal(1, firstSweepFiredCount);
         Assert.Equal(0, secondSweepFiredCount);
         Assert.Single(notifier.Calls); // the positive-polarity control: exactly one notify, not zero
+    }
+
+    /// <summary>
+    /// H1 at the sweep level (fix round): before the fix, <c>WatchFireService.SweepAsync</c>'s
+    /// sequential <c>foreach</c> awaited each watch's notify in turn with no bound on a stdin write, so
+    /// one <c>--notify</c> command that never drained stdin stopped every OTHER watch in the same pass
+    /// from ever firing — "every other watch on the machine", per the review that found this. Uses the
+    /// real <see cref="WatchNotifier"/> (not <see cref="RecordingWatchNotifier"/>) with a short
+    /// <c>commandTimeout</c> so the wedge is genuinely exercised, and a second watch on a fake HTTP
+    /// handler to prove the loop actually reached it.
+    /// </summary>
+    [Fact]
+    public async Task SweepAsync_OneWatchsNotifyNeverDrainsStdin_StillFiresTheRemainingWatchInTheSamePass()
+    {
+        using var home = new IsolatedBatonHome();
+        var watchesDir = Path.Combine(home.Path, "watches");
+        var wedgedRoom = CreateRoomDirectory(home.Path, "room-wedged");
+        var okRoom = CreateRoomDirectory(home.Path, "room-ok");
+        var largeOutputs = Enumerable.Range(0, 2000).Select(i => $"out-{i}.md").ToArray();
+        await WriteTerminalSentinelAsync(wedgedRoom, WorkflowOutcome.Succeeded, largeOutputs, TestContext.Current.CancellationToken);
+        await WriteTerminalSentinelAsync(okRoom, WorkflowOutcome.Succeeded, null, TestContext.Current.CancellationToken);
+
+        await WatchStore.WriteAsync(
+            SampleWatch(wedgedRoom, "wedged") with { NotifyTarget = "cmd /c ping -n 30 127.0.0.1 >nul" },
+            watchesDir, TestContext.Current.CancellationToken);
+        await WatchStore.WriteAsync(
+            SampleWatch(okRoom, "ok") with { NotifyTarget = "https://example.invalid/hook" },
+            watchesDir, TestContext.Current.CancellationToken);
+
+        var handler = new RecordingHttpMessageHandler();
+        using var httpClient = new HttpClient(handler);
+        var notifier = new WatchNotifier(httpClient, commandTimeout: TimeSpan.FromMilliseconds(500));
+
+        var stopwatch = Stopwatch.StartNew();
+        var firedCount = await WatchFireService.SweepAsync(watchesDir, notifier, TestContext.Current.CancellationToken);
+        stopwatch.Stop();
+
+        Assert.Equal(2, firedCount); // TryClaimAsync succeeds for both -- the claim lands before notify.
+        Assert.Single(handler.Requests); // the second watch's URL notify actually went out.
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+            $"SweepAsync took {stopwatch.Elapsed} — the wedged watch's notify should not have blocked the rest of the pass.");
     }
 
     [Fact]
