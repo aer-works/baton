@@ -559,6 +559,14 @@ public class DispatchOptionsParserTests
     }
 
     [Fact]
+    public void A_repeated_spec_text_flag_is_last_wins()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec-text", "first", "--spec-text", "second"]);
+
+        Assert.Equal("second", options.SpecText);
+    }
+
+    [Fact]
     public void The_usage_line_advertises_spec_text_and_the_dash_stdin_form()
     {
         Assert.Contains("--spec-text <text>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
