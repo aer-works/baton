@@ -190,14 +190,14 @@ def is_protected_tooling(path: str) -> bool:
 
 # record-once (#1758): the sole enumeration of rule (A)'s assertion/test-declaration pattern
 # list -- spec/baton.md C-15 cites this file rather than restating the patterns. Applied to every
-# deleted line regardless of extension.
+# deleted line regardless of extension. `Should`/`Expect(` were dropped by #1758 F4: a repo-wide
+# grep of tests/ and tools/ found no real usage of either as an assertion idiom -- pure dead
+# weight in what C-15 now calls "the sole enumeration."
 _ASSERTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Assert.", re.compile(r"Assert\.")),
     ("[Fact", re.compile(r"\[Fact")),
     ("[Theory", re.compile(r"\[Theory")),
     ("[InlineData", re.compile(r"\[InlineData")),
-    ("Should", re.compile(r"Should")),
-    ("Expect(", re.compile(r"Expect\(")),
 )
 
 # Only checked against .mjs files (the selftest-in-JS shape, e.g. worker.selftest.mjs).
@@ -216,6 +216,28 @@ _PY_ASSERTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # plumbing-code control flow (see TestSupport/TempGitRepository.cs's Run()) everywhere else, and
 # would false-positive on every helper that raises on failure.
 _THROW_PATTERN: tuple[str, re.Pattern[str]] = ("throw", re.compile(r"\bthrow\b"))
+
+# record-once (#1758 F1): the sole enumeration of criterion 4's added-line neutering pattern
+# list -- catches a test disabled by pure ADDITION (zero deleted lines), which criteria 1-3 can
+# never see since all three are deletion-triggered. Applied to every added line in a test file
+# regardless of extension.
+_NEUTERING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("Skip=", re.compile(r"Skip\s*=")),
+    ("#if false", re.compile(r"#if\s+false")),
+    ("#if <ALWAYS-FALSE>NEVER", re.compile(r"#if\s+[A-Z_]*NEVER")),
+    ("Assert.Skip", re.compile(r"Assert\.Skip")),
+    (".Skip(", re.compile(r"\.Skip\(")),
+)
+
+# Only checked against .mjs files.
+_MJS_NEUTERING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("it.skip(/test.skip(/xit(/xtest(", re.compile(r"\b(?:it\.skip|test\.skip|xit|xtest)\(")),
+)
+
+# Only checked against .py files.
+_PY_NEUTERING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("@pytest.mark.skip/pytest.skip(", re.compile(r"@pytest\.mark\.skip|pytest\.skip\(")),
+)
 
 
 def _assertion_patterns_for(path: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -238,6 +260,27 @@ def _match_assertion_pattern(deleted_line: str, path: str) -> str | None:
     leading '-'), or None."""
     content = deleted_line[1:] if deleted_line.startswith("-") else deleted_line
     for name, pattern in _assertion_patterns_for(path):
+        if pattern.search(content):
+            return name
+    return None
+
+
+def _neutering_patterns_for(path: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Which criterion-4 neutering patterns apply to an added line in this file (#1758 F1)."""
+    p = path.replace("\\", "/")
+    patterns = _NEUTERING_PATTERNS
+    if p.endswith(".mjs"):
+        patterns += _MJS_NEUTERING_PATTERNS
+    if p.endswith(".py"):
+        patterns += _PY_NEUTERING_PATTERNS
+    return patterns
+
+
+def _match_neutering_pattern(added_line: str, path: str) -> str | None:
+    """Return the pattern name matching this added line's content (the line still carries its
+    leading '+'), or None."""
+    content = added_line[1:] if added_line.startswith("+") else added_line
+    for name, pattern in _neutering_patterns_for(path):
         if pattern.search(content):
             return name
     return None
@@ -325,11 +368,15 @@ def check_diff_shape(
         if is_protected_tooling(path):
             protected_edits.append(path)
 
-    # Check test files for the three narrowed criteria (#1758): an assertion/test-declaration
-    # line removed, a test file deleted (or renamed away -- see --no-renames above), or a file's
-    # tests/ diff going net-negative. A helper/fixture refactor that trips none of these (the
-    # #1757 shape: a private method's signature changed, net-additive, no assertion touched)
-    # passes -- narrower than #1603's original "any deleted line in a test file" rule.
+    # Check test files for the four narrowed criteria (#1758, F1): an assertion/test-declaration
+    # line removed, a test file deleted (or renamed away -- see --no-renames above), a file's
+    # tests/ diff going net-negative, or a test disabled by pure ADDITION (a neutering pattern in
+    # an added line, criterion 4 -- see _NEUTERING_PATTERNS). A helper/fixture refactor that trips
+    # none of these (the #1757 shape: a private method's signature changed, net-additive, no
+    # assertion touched) passes -- narrower than #1603's original "any deleted line in a test
+    # file" rule. Criterion 4 is checked even when a file has zero deleted lines, since criteria
+    # 1-3 are all deletion-triggered and would otherwise never see a pure-addition neutering diff
+    # (e.g. a `Skip = "..."` inserted into an already-parenthesized multi-line `[Fact(...)]`).
     weakened_tests: list[tuple[str, list[tuple[str, str | None]]]] = []
     for status, path in touched_files:
         # Pure additions of test files (status starting with 'A') pass; only pre-existing files count
@@ -358,39 +405,73 @@ def check_diff_shape(
         # Only lines inside a hunk (after its `@@ ... @@` marker) are added/deleted content; the
         # `--- a/path` / `+++ b/path` file headers precede the first hunk and are skipped by
         # position (in_hunk gate), not by content -- a deleted source line whose own text starts
-        # with `--` (e.g. `--counter;`) must still count.
+        # with `--` (e.g. `--counter;`) must still count. hunk_index (#1758 F3) tags each line
+        # with which `@@` block it came from, so criterion 1's pairing can be restricted to the
+        # same hunk for assertion-matching lines below.
         deleted_lines: list[str] = []
         added_lines: list[str] = []
+        deleted_hunks: list[int] = []
+        added_hunks: list[int] = []
         in_hunk = False
+        hunk_index = -1
         for dline in diff_proc.stdout.splitlines():
             if dline.startswith("@@"):
                 in_hunk = True
+                hunk_index += 1
                 continue
             if not in_hunk:
                 continue
             if dline.startswith("-"):
                 deleted_lines.append(dline)
+                deleted_hunks.append(hunk_index)
             elif dline.startswith("+"):
                 added_lines.append(dline)
+                added_hunks.append(hunk_index)
 
-        if not deleted_lines:
+        hits: list[tuple[str, str | None]] = []
+
+        # Criterion 4 (#1758 F1): an added line matches a neutering pattern, independent of what
+        # was deleted -- runs even on a file with zero deleted lines.
+        for al in added_lines:
+            match = _match_neutering_pattern(al, path)
+            if match:
+                quoted = al[1:] if al.startswith("+") else al
+                hits.append((f"added test-neutering line (criterion 4: {match})", quoted))
+
+        if not deleted_lines and not hits:
             continue
 
         # Criterion 1: a removed line not paired with an added line of the same content modulo
         # whitespace (a moved/reindented line isn't a real removal) matches an assertion pattern.
+        # Pairing is whole-file for a non-assertion-matching deleted line (tolerates a
+        # moved/reindented line anywhere in the file), but same-hunk-only for an
+        # assertion-matching one (#1758 F3) -- otherwise a deleted assertion pairs away against an
+        # unrelated added line with identical text in a different hunk, evading detection even
+        # though nothing was actually moved.
         added_pool: dict[str, int] = {}
         for al in added_lines:
             norm = _normalize_diff_line(al)
             added_pool[norm] = added_pool.get(norm, 0) + 1
+        added_pool_by_hunk: dict[int, dict[str, int]] = {}
+        for al, ah in zip(added_lines, added_hunks):
+            norm = _normalize_diff_line(al)
+            bucket = added_pool_by_hunk.setdefault(ah, {})
+            bucket[norm] = bucket.get(norm, 0) + 1
+
         unpaired_deleted: list[str] = []
-        for dl in deleted_lines:
+        for dl, dh in zip(deleted_lines, deleted_hunks):
             norm = _normalize_diff_line(dl)
-            if added_pool.get(norm, 0) > 0:
-                added_pool[norm] -= 1
-                continue
+            if _match_assertion_pattern(dl, path) is not None:
+                bucket = added_pool_by_hunk.get(dh, {})
+                if bucket.get(norm, 0) > 0:
+                    bucket[norm] -= 1
+                    continue
+            else:
+                if added_pool.get(norm, 0) > 0:
+                    added_pool[norm] -= 1
+                    continue
             unpaired_deleted.append(dl)
 
-        hits: list[tuple[str, str | None]] = []
         for dl in unpaired_deleted:
             match = _match_assertion_pattern(dl, path)
             if match:
@@ -753,7 +834,10 @@ def selftest() -> int:
             print("  OK (x) helper-only refactor (net-additive, no assertion removed) -> PASS")
 
         # (y) A helper file that itself contains an assertion, with that assertion line removed
-        # -> FAIL (criterion 1: assertion pattern in an unpaired deleted line).
+        # and two ordinary lines added elsewhere (net-positive, 1 removed vs 2 added) -> FAIL
+        # (criterion 1 in isolation: criterion 3's net-negative check cannot fire here since
+        # added > deleted -- #1758 F2. See the mutation check below arm (ac), which confirms this
+        # empirically rather than just by line-count arithmetic).
         subprocess.run(["git", "checkout", "-q", "-b", "branch-y", base_sha], cwd=repo, check=True, env=env)
         assert_helper_dir = repo / "tests" / "TestSupport"
         assert_helper_dir.mkdir(parents=True, exist_ok=True)
@@ -774,6 +858,8 @@ def selftest() -> int:
             "public static class AssertingHelper\n{\n"
             "    public static void Check(int actual)\n"
             "    {\n"
+            "        // no-op\n"
+            "        var unused = 1;\n"
             "    }\n}\n",
             encoding="utf-8",
         )
@@ -784,9 +870,11 @@ def selftest() -> int:
         if passed_y:
             failures.append("(y) removed Assert. line inside a TestSupport/ file did not fail as expected")
         else:
-            print("  OK (y) removed Assert. line inside TestSupport/ -> FAIL")
+            print("  OK (y) removed Assert. line inside TestSupport/ (net-positive) -> FAIL")
 
-        # (z) A [Fact] attribute removed (test disabled by deletion, method body kept) -> FAIL.
+        # (z) A [Fact] attribute removed (test disabled by deletion, method body kept), plus two
+        # ordinary lines added elsewhere (net-positive, 1 removed vs 2 added) -> FAIL (criterion 1
+        # in isolation -- #1758 F2).
         subprocess.run(["git", "checkout", "-q", "-b", "branch-z", base_sha], cwd=repo, check=True, env=env)
         fact_test_file = repo / "tests" / "FactTests.cs"
         fact_test_file.write_text(
@@ -798,7 +886,7 @@ def selftest() -> int:
         z_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
 
         fact_test_file.write_text(
-            "public class FactTests\n{\n    public void Works() {}\n}\n",
+            "public class FactTests\n{\n    public void Works() {}\n    // note a\n    // note b\n}\n",
             encoding="utf-8",
         )
         subprocess.run(["git", "commit", "-q", "-a", "-m", "disable test by removing [Fact]"], cwd=repo, check=True, env=env)
@@ -808,7 +896,7 @@ def selftest() -> int:
         if passed_z:
             failures.append("(z) removed [Fact] attribute did not fail as expected")
         else:
-            print("  OK (z) removed [Fact] attribute -> FAIL")
+            print("  OK (z) removed [Fact] attribute (net-positive) -> FAIL")
 
         # (aa) A whole test file deleted -> FAIL (criterion 2).
         subprocess.run(["git", "checkout", "-q", "-b", "branch-aa", base_sha], cwd=repo, check=True, env=env)
@@ -853,8 +941,9 @@ def selftest() -> int:
         else:
             print("  OK (ab) net-negative diff, no assertion pattern removed -> FAIL")
 
-        # (ac) .mjs selftest: a `throw new Error(` line removed -> FAIL (criterion 1, the
-        # selftest-only throw pattern).
+        # (ac) .mjs selftest: a `throw new Error(` line removed, plus two ordinary lines added
+        # elsewhere (net-positive, 1 removed vs 2 added) -> FAIL (criterion 1 in isolation, the
+        # selftest-only throw pattern -- #1758 F2).
         subprocess.run(["git", "checkout", "-q", "-b", "branch-ac", base_sha], cwd=repo, check=True, env=env)
         mjs_file = repo / "tests" / "worker.selftest.mjs"
         mjs_file.write_text(
@@ -866,7 +955,7 @@ def selftest() -> int:
         ac_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
 
         mjs_file.write_text(
-            "function check(ok) {\n  if (!ok) {\n  }\n}\n",
+            "function check(ok) {\n  if (!ok) {\n    // no-op a\n    // no-op b\n  }\n}\n",
             encoding="utf-8",
         )
         subprocess.run(["git", "commit", "-q", "-a", "-m", "remove throw from mjs selftest"], cwd=repo, check=True, env=env)
@@ -876,7 +965,235 @@ def selftest() -> int:
         if passed_ac:
             failures.append("(ac) removed throw in .mjs selftest did not fail as expected")
         else:
-            print("  OK (ac) .mjs selftest throw removal -> FAIL")
+            print("  OK (ac) .mjs selftest throw removal (net-positive) -> FAIL")
+
+        # Mutation check (#1758 F2): confirm arms (y)/(z)/(ac) fail *because* criterion 1 fires,
+        # not incidentally via criterion 3 (their line counts, 1 removed vs 2 added, already keep
+        # criterion 3 silent -- this proves it empirically instead of just by arithmetic).
+        # _match_assertion_pattern is a module-global looked up by name at call time inside
+        # check_diff_shape, so replacing it in this module's namespace neuters criterion 1 for
+        # every call made while it's replaced.
+        original_match_assertion_pattern = globals()["_match_assertion_pattern"]
+        globals()["_match_assertion_pattern"] = lambda *_a, **_kw: None
+        try:
+            passed_y_neutered, _ = check_diff_shape(y_base, head_y, labels=[], cwd=repo)
+            passed_z_neutered, _ = check_diff_shape(z_base, head_z, labels=[], cwd=repo)
+            passed_ac_neutered, _ = check_diff_shape(ac_base, head_ac, labels=[], cwd=repo)
+        finally:
+            globals()["_match_assertion_pattern"] = original_match_assertion_pattern
+
+        if not (passed_y_neutered and passed_z_neutered and passed_ac_neutered):
+            failures.append(
+                "(y)/(z)/(ac) mutation check: did not PASS with criterion 1 disabled -- "
+                f"isolation is not real (passed: y={passed_y_neutered}, z={passed_z_neutered}, ac={passed_ac_neutered})"
+            )
+        else:
+            print("  OK (y)/(z)/(ac) mutation check: criterion 1 disabled -> all three PASS (isolation confirmed)")
+
+        passed_y_restored, _ = check_diff_shape(y_base, head_y, labels=[], cwd=repo)
+        passed_z_restored, _ = check_diff_shape(z_base, head_z, labels=[], cwd=repo)
+        passed_ac_restored, _ = check_diff_shape(ac_base, head_ac, labels=[], cwd=repo)
+        if passed_y_restored or passed_z_restored or passed_ac_restored:
+            failures.append("(y)/(z)/(ac) mutation check: did not FAIL again after criterion 1 restored")
+        else:
+            print("  OK (y)/(z)/(ac) mutation check: criterion 1 restored -> all three FAIL again")
+
+        # (ad) Criterion 4: adding `Skip = "..."` inside an already-parenthesized multi-line
+        # [Fact(...)] attribute -- pure addition (zero deleted lines), so criteria 1-3 (all
+        # deletion-triggered) would otherwise never see it -> FAIL.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ad", base_sha], cwd=repo, check=True, env=env)
+        skip_fact_file = repo / "tests" / "SkipFactTests.cs"
+        skip_fact_file.write_text(
+            "public class SkipFactTests\n{\n"
+            "    [Fact(\n"
+            "        DisplayName = \"Foo\")]\n"
+            "    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add fact with display name"], cwd=repo, check=True, env=env)
+        ad_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        skip_fact_file.write_text(
+            "public class SkipFactTests\n{\n"
+            "    [Fact(\n"
+            "        Skip = \"flaky\",\n"
+            "        DisplayName = \"Foo\")]\n"
+            "    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add Skip to fact attribute"], cwd=repo, check=True, env=env)
+        head_ad = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ad, msgs_ad = check_diff_shape(ad_base, head_ad, labels=[], cwd=repo)
+        if passed_ad:
+            failures.append("(ad) added Skip= inside [Fact(...)] did not fail as expected")
+        else:
+            print("  OK (ad) added Skip= inside [Fact(...)] (pure addition) -> FAIL (criterion 4)")
+
+        # (ae) Criterion 4: wrapping an existing, untouched assertion in `#if false ... #endif` --
+        # pure addition (the assertion line itself is context, not part of the -U0 diff) -> FAIL.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ae", base_sha], cwd=repo, check=True, env=env)
+        iffalse_file = repo / "tests" / "IfFalseTests.cs"
+        iffalse_file.write_text(
+            "public class IfFalseTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        Assert.True(true);\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add assertion"], cwd=repo, check=True, env=env)
+        ae_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        iffalse_file.write_text(
+            "public class IfFalseTests\n{\n"
+            "    public void Works()\n    {\n"
+            "#if false\n"
+            "        Assert.True(true);\n"
+            "#endif\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "wrap assertion in #if false"], cwd=repo, check=True, env=env)
+        head_ae = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ae, msgs_ae = check_diff_shape(ae_base, head_ae, labels=[], cwd=repo)
+        if passed_ae:
+            failures.append("(ae) added #if false around assertion did not fail as expected")
+        else:
+            print("  OK (ae) added #if false around assertion (pure addition) -> FAIL (criterion 4)")
+
+        # (af) Criterion 4: a new `it.skip(...)` block added to a .mjs selftest -- pure addition
+        # -> FAIL. Deliberately does NOT touch the existing `it(...)` call (which would confound
+        # with criterion 1's own _MJS_ASSERTION_PATTERNS `it(` match on a deleted line).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-af", base_sha], cwd=repo, check=True, env=env)
+        skip_mjs_file = repo / "tests" / "skip.selftest.mjs"
+        skip_mjs_file.write_text(
+            "it('does the thing', () => {\n  check(true);\n});\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add mjs it()"], cwd=repo, check=True, env=env)
+        af_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        skip_mjs_file.write_text(
+            "it('does the thing', () => {\n  check(true);\n});\n"
+            "it.skip('does the other thing', () => {\n  check(true);\n});\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add skipped mjs test"], cwd=repo, check=True, env=env)
+        head_af = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_af, msgs_af = check_diff_shape(af_base, head_af, labels=[], cwd=repo)
+        if passed_af:
+            failures.append("(af) added it.skip( in .mjs selftest did not fail as expected")
+        else:
+            print("  OK (af) added it.skip( in .mjs selftest (pure addition) -> FAIL (criterion 4)")
+
+        # Criterion 4 control: an added comment containing the word "skip" in ordinary prose
+        # -> PASS. Proves criterion 4's patterns are structural (Skip=, #if false, etc.), not a
+        # bare substring match on the word "skip".
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-skip-word", base_sha], cwd=repo, check=True, env=env)
+        skip_word_file = repo / "tests" / "SkipWordTests.cs"
+        skip_word_file.write_text(
+            "public class SkipWordTests\n{\n    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add control test"], cwd=repo, check=True, env=env)
+        skip_word_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        skip_word_file.write_text(
+            "public class SkipWordTests\n{\n"
+            "    // we might skip this later if it gets flaky\n"
+            "    public void Works() {}\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "add comment mentioning skip"], cwd=repo, check=True, env=env)
+        head_skip_word = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_skip_word, msgs_skip_word = check_diff_shape(skip_word_base, head_skip_word, labels=[], cwd=repo)
+        if not passed_skip_word:
+            failures.append(f"(criterion-4 control) added prose comment mentioning 'skip' failed unexpectedly: {msgs_skip_word}")
+        else:
+            print("  OK (criterion-4 control) added prose comment mentioning 'skip' -> PASS")
+
+        # (ag) Criterion 1, F3: an assertion deleted in one hunk and the identical line added in a
+        # different hunk of the same file -- whole-file counts come out equal (1 deleted, 1
+        # added), but same-hunk pairing (#1758 F3) means they don't pair away -> FAIL.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ag", base_sha], cwd=repo, check=True, env=env)
+        hunk_pair_file = repo / "tests" / "HunkPairTests.cs"
+        hunk_pair_file.write_text(
+            "public class HunkPairTests\n{\n"
+            "    public void ChecksThreshold()\n    {\n"
+            "        var result = Compute();\n"
+            "        Assert.True(result > 0);\n"
+            "    }\n\n"
+            "    public void ChecksOtherThing()\n    {\n"
+            "        var result = ComputeOther();\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add hunk pair fixture"], cwd=repo, check=True, env=env)
+        ag_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        hunk_pair_file.write_text(
+            "public class HunkPairTests\n{\n"
+            "    public void ChecksThreshold()\n    {\n"
+            "        var result = Compute();\n"
+            "    }\n\n"
+            "    public void ChecksOtherThing()\n    {\n"
+            "        var result = ComputeOther();\n"
+            "        Assert.True(result > 0);\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "move assertion to a different hunk"], cwd=repo, check=True, env=env)
+        head_ag = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ag, msgs_ag = check_diff_shape(ag_base, head_ag, labels=[], cwd=repo)
+        if passed_ag:
+            failures.append("(ag) assertion moved across hunks (whole-file counts equal) did not fail as expected")
+        else:
+            print("  OK (ag) assertion deleted in one hunk, added in another -> FAIL (criterion 1, same-hunk pairing)")
+
+        # (ah) Criterion 1, F3 control: the same assertion line reindented within one hunk --
+        # still pairs and PASSes, proving same-hunk pairing didn't regress the original
+        # moved/reindented-line tolerance.
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-ah", base_sha], cwd=repo, check=True, env=env)
+        reindent_file = repo / "tests" / "ReindentTests.cs"
+        reindent_file.write_text(
+            "public class ReindentTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        var result = Compute();\n"
+            "        Assert.True(result > 0);\n"
+            "        Cleanup();\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-q", "-m", "add reindent fixture"], cwd=repo, check=True, env=env)
+        ah_base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        reindent_file.write_text(
+            "public class ReindentTests\n{\n"
+            "    public void Works()\n    {\n"
+            "        var result = Compute();\n"
+            "            Assert.True(result > 0);\n"
+            "        Cleanup();\n"
+            "    }\n}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "reindent assertion line"], cwd=repo, check=True, env=env)
+        head_ah = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_ah, msgs_ah = check_diff_shape(ah_base, head_ah, labels=[], cwd=repo)
+        if not passed_ah:
+            failures.append(f"(ah) reindented assertion within one hunk failed unexpectedly: {msgs_ah}")
+        else:
+            print("  OK (ah) assertion reindented within one hunk -> PASS (same-hunk pairing still tolerates moves)")
 
         # (h) main()'s GITHUB_EVENT_PATH fallback, with no --labels passed -- the actual channel
         # CI uses. A synthetic event payload carries two labels including operator-merge; the
@@ -918,7 +1235,7 @@ def selftest() -> int:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 29 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 38 discrimination arms passed)")
     return 0
 
 
