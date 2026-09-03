@@ -122,11 +122,8 @@ public sealed class StdoutTailRendererTests : IDisposable
     }
 
     /// <summary>
-    /// #1723's blob-elision threshold counts CODEPOINTS, matching Python's <c>len()</c> on a str — a
-    /// whitespace-free run of 150 astral-plane characters (emoji here) is 150 codepoints in Python
-    /// (under the 200 threshold, never elided) but would be 300 UTF-16 code units if a naive
-    /// <c>char</c>-based .NET <see cref="Regex"/> quantifier counted it, over the threshold and wrongly
-    /// elided. Second-reader review finding, pinned against a real pusher.py run.
+    /// Pins <see cref="StdoutTailRenderer.ElideBlobTokens"/>'s codepoint-vs-UTF-16-unit distinction
+    /// (see that method's doc comment) against a real pusher.py run. Second-reader review finding.
     /// </summary>
     [Fact]
     public void ComputeTail_CountsBlobThresholdByCodepoint_NotByUtf16Unit()

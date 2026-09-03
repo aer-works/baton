@@ -137,8 +137,7 @@ internal static class StdoutTailRenderer
     /// Port of pusher.py's <c>_elide_blob_tokens</c> (#1723): replaces any whitespace-free run of at
     /// least <see cref="BlobElisionThreshold"/> characters with a byte-count marker. Applies to every
     /// surviving tail line, JSON-rendered or plain-text alike.
-    /// </summary>
-    /// <summary>
+    ///
     /// Scans <paramref name="text"/> rune by rune (not UTF-16 code unit by code unit) so a
     /// whitespace-free run is counted the same way Python's <c>\S{200,}</c> counts it: by codepoint.
     /// A .NET <see cref="Regex"/> quantifier over <c>char</c> counts UTF-16 code UNITS, which
