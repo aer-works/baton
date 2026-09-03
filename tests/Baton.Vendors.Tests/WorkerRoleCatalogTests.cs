@@ -110,6 +110,14 @@ public class WorkerRoleCatalogTests
         Assert.False(factCheck.Grant.NetworkAccess);
         Assert.False(factCheck.Grant.RunShellCommands);
 
+        // #1386: advise is the third read lane the issue named, narrowed to write_files: false once
+        // #1765 retired dispatch.py's grant_refusal and #901's audited-write widening was confirmed to
+        // un-refuse a withheld-write role once a worktree is provisioned.
+        var advise = WorkerRoleCatalog.For("advise");
+        Assert.False(advise.Grant.WriteFiles);
+        Assert.False(advise.Grant.NetworkAccess);
+        Assert.False(advise.Grant.RunShellCommands);
+
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);

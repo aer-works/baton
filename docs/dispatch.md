@@ -156,12 +156,12 @@ pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTransl
 reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)
 rather than falling back to its old no-shell shape.
 
-`advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
-mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
-`WorkerRoles.json` for why — narrowing it broke `tools/baton-agy-loop/dispatch.py`'s grant_refusal()
-coherence check on its default `agy` tier, before #1759 retired that dispatcher; #1386 tracks the
-now-unblocked narrowing), and `patch` never grants a write in the first place —
-its whole point is proposing a diff without mutating the workspace.
+`advise` and `patch` are the same shape by outcome (no unscoped shell or network, `write_files:
+false`) but not by mechanism: `advise` (#1386) withholds the write and, on its default `agy` tier,
+relies on #901's audited-write widening (`GrantAuditMode.AuditedNotEnforced`) to un-refuse once a
+worktree is provisioned — the same shape `review`/`fact-check` take when forced onto `agy`. `patch`
+never grants a write in the first place — its whole point is proposing a diff without mutating the
+workspace.
 
 ### The printed skill roster
 
