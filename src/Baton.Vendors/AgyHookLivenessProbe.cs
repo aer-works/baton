@@ -20,10 +20,11 @@ namespace Baton.Vendors;
 public interface IAgyHookLivenessProbe
 {
     /// <summary>
-    /// Runs the hook assembly at <paramref name="hookAssemblyPath"/> the same way agy would (as a
-    /// <c>dotnet &lt;assembly&gt; agy-hook-check</c> subprocess) against a synthetic payload that
-    /// must be denied, and reports whether a <c>deny</c> decision came back on stdout within
-    /// <paramref name="timeout"/>.
+    /// Runs the hook assembly at <paramref name="hookAssemblyPath"/> the same way agy would --
+    /// <c>cmd /c</c>/<c>sh -c</c> over the identical command STRING <c>AgyWorkerAdapter.BuildHooksJson</c>
+    /// writes into <c>hooks.json</c>, not a structural respawn of its parts (#1732 review F6) --
+    /// against a synthetic payload that must be denied, and reports whether a <c>deny</c> decision
+    /// came back on stdout within <paramref name="timeout"/>.
     /// </summary>
     AgyHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout);
 }
@@ -37,11 +38,16 @@ public interface IAgyHookLivenessProbe
 public sealed record AgyHookLivenessResult(bool IsLive, string Detail);
 
 /// <summary>
-/// The production <see cref="IAgyHookLivenessProbe"/>: spawns the hook assembly directly via
-/// <c>dotnet</c> rather than through <c>cmd</c>/<c>sh</c> the way agy's own <c>hooks.json</c> command
-/// string does — <see cref="AgyWorkerAdapter.HookAssemblyToken"/>'s escaping rules exist to survive
-/// <i>agy's</i> shell hop, which this probe (spawning the process itself, with an explicit
-/// <see cref="ProcessStartInfo.ArgumentList"/>) never takes. The unescaped, real path is used here.
+/// The production <see cref="IAgyHookLivenessProbe"/>. #1732 review F6: this used to spawn the hook
+/// assembly directly via <c>dotnet</c> with an explicit <see cref="ProcessStartInfo.ArgumentList"/>,
+/// sidestepping the shell hop entirely -- sound for a path-with-space, but structurally incapable of
+/// reproducing #710, the measured incident (a command-STRING spelling defect: the binary was fine, the
+/// shell could not resolve the command, and agy read the silence as an ALLOW) that is this probe's own
+/// stated motivation. Now spawns <c>cmd /c</c> (Windows) / <c>sh -c</c> (Unix) over the IDENTICAL
+/// command string <see cref="AgyWorkerAdapter.BuildHooksJson"/> writes into <c>hooks.json</c> --
+/// <c>dotnet {AgyWorkerAdapter.HookAssemblyToken(path)} agy-hook-check</c> -- so the same shell,
+/// parsing the same string, is what answers. <see cref="AgyWorkerAdapter.HookAssemblyToken"/>'s
+/// escaping rules exist to survive exactly this hop, and now the probe takes it too.
 /// </summary>
 internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
 {
@@ -62,6 +68,12 @@ internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
         AgyWorkerAdapter.ShellPatternsVariable,
         AgyWorkerAdapter.DeniedShellPatternsVariable,
         AgyWorkerAdapter.DeniedShellOptionTokensVariable,
+        // #1732 review F7: a dogfooding outer lane's own hook may have BATON_HOOK_VERDICT_LEDGER set
+        // in this process's environment (this probe's subprocess inherits it by default) -- without
+        // this the probe's own guaranteed-deny verdict would append a line to the OUTER lane's ledger,
+        // inflating that lane's hookVerdictCount with a verdict its own hook never produced. A
+        // liveness probe's verdict is not a worker's verdict and does not belong in a worker's ledger.
+        AgyWorkerAdapter.VerdictLedgerVariable,
     ];
 
     public AgyHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout)
@@ -71,9 +83,25 @@ internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
             return new AgyHookLivenessResult(false, $"'{hookAssemblyPath}' does not exist");
         }
 
+        string command;
         try
         {
-            var startInfo = new ProcessStartInfo("dotnet")
+            // Identical to the string BuildHooksJson writes into hooks.json -- the whole point of F6.
+            command = $"dotnet {AgyWorkerAdapter.HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
+        }
+        catch (InvalidOperationException ex)
+        {
+            // HookAssemblyToken's own refusal (no clean token reachable, e.g. a spaced path with no
+            // directory to 8.3-shorten) -- surfacing it as a dead probe rather than letting the
+            // exception escape keeps this method's contract ("always returns a result") intact, and a
+            // refused token IS a dead gate: agy would refuse to write a usable command either.
+            return new AgyHookLivenessResult(false, $"the hook command could not be built: {ex.Message}");
+        }
+
+        try
+        {
+            var isWindows = OperatingSystem.IsWindows();
+            var startInfo = new ProcessStartInfo(isWindows ? "cmd" : "sh")
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -83,8 +111,8 @@ internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
                 StandardOutputEncoding = System.Text.Encoding.UTF8,
                 StandardErrorEncoding = System.Text.Encoding.UTF8,
             };
-            startInfo.ArgumentList.Add(hookAssemblyPath);
-            startInfo.ArgumentList.Add("agy-hook-check");
+            startInfo.ArgumentList.Add(isWindows ? "/c" : "-c");
+            startInfo.ArgumentList.Add(command);
             foreach (var name in EnvironmentVariablesToStrip)
             {
                 startInfo.Environment.Remove(name);

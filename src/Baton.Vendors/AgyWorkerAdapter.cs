@@ -168,9 +168,14 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <summary>
     /// The environment variable naming the file <see cref="AgyHookVerdictLedger"/> counts (#1680) —
     /// the hook subprocess (<c>AgyHookCheckCommand</c>, via <c>baton agy-hook-check</c>) appends one
-    /// line to this path every time it reaches a verdict. Room-local (<see cref="Resolve"/> derives
-    /// it from the invocation's own session/working directory) so concurrent workers never share a
-    /// ledger.
+    /// line to this path every time it reaches a verdict. Per-EXECUTION (#1732 review F2):
+    /// <see cref="Resolve"/> emits an unresolved <c>BATON_OUTPUT_DIR</c> reference rather than a
+    /// resolved directory, because <see cref="Resolve"/> itself runs once per binding-config entry and
+    /// a value it resolves would be shared by every execution and every agy role in the room — the
+    /// prior "room-local" phrasing here described that shared, un-reset scope and asserted the
+    /// opposite of what it produced. <c>BATON_OUTPUT_DIR</c> only resolves per execution, so each
+    /// execution gets its own ledger file and no two executions — concurrent or sequential, same role
+    /// or different — ever share one.
     /// </summary>
     public const string VerdictLedgerVariable = "BATON_HOOK_VERDICT_LEDGER";
 
@@ -312,18 +317,27 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <summary>
     /// #1680: true when a resolved <paramref name="permissionScope"/> of
     /// <c>--dangerously-skip-permissions</c> leaves the <c>PreToolUse</c> hook as the ONLY thing
-    /// narrowing this grant — i.e. writes or network access were withheld, so nothing but the hook's
-    /// own denial stands between the worker and them (this class's own remarks: "the hook only takes
-    /// it back while it runs"). A grant that reaches <c>--dangerously-skip-permissions</c> with both
-    /// <see cref="PermissionGrant.WriteFiles"/> and <see cref="PermissionGrant.NetworkAccess"/> true
-    /// has nothing left for the hook to narrow beyond the tool-category lists it always enforces, so
-    /// this returns false there — the liveness probe exists for the shape #1680 was filed about
-    /// (<c>review</c>'s write-withheld grant), not for every hook-gated dispatch.
+    /// narrowing this grant. That is not only the write/network-withheld shape #1680 was filed about
+    /// (this class's own remarks: "the hook only takes it back while it runs") — even a grant with
+    /// both <see cref="PermissionGrant.WriteFiles"/> and <see cref="PermissionGrant.NetworkAccess"/>
+    /// true still has the hook as sole enforcement for two things (#1732 review F5, correcting a prior
+    /// version of this comment that claimed the opposite): (1) <c>AgyHookCheckCommand</c>'s
+    /// workspace-or-outbox write bound, which applies to every write-family tool call REGARDLESS of
+    /// <see cref="PermissionGrant.WriteFiles"/> — nothing agy itself offers bounds where a write lands
+    /// (<c>agy.plan-mode-does-not-deny-writes</c>); and (2) <see cref="TryTranslatePermissionGrant"/>'s
+    /// shell-pattern-scoped path, which reaches <c>--dangerously-skip-permissions</c> with no
+    /// requirement that <see cref="PermissionGrant.ShellCommandPatterns"/> or
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> be non-empty — so a grant carrying
+    /// either list has the hook as the only thing enforcing it. Probed whenever either applies:
+    /// writes or network withheld, OR a shell/deny pattern list is present.
     /// </summary>
     internal static bool RequiresHookAsSoleNarrowing(string permissionScope, PermissionGrant? grant) =>
         permissionScope == "--dangerously-skip-permissions"
         && grant is { } g
-        && (!g.WriteFiles || !g.NetworkAccess);
+        && (!g.WriteFiles
+            || !g.NetworkAccess
+            || g.ShellCommandPatterns is { Count: > 0 }
+            || g.DeniedShellCommandPatterns is { Count: > 0 });
 
     internal static string BuildShellPatterns(PermissionGrant? grant)
     {
@@ -430,7 +444,12 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         // #1680: for a grant whose only narrowing IS the hook, confirm the hook is actually live
         // before dispatching. Fails closed: any probe outcome other than an explicit `deny` refuses
         // the dispatch -- see AgyHookUnverifiedException for why that is the safe direction here.
-        if (RequiresHookAsSoleNarrowing(permissionScope, invocation.PermissionGrant))
+        // #1732 review WIRING: the SAME predicate result also decides whether the returned
+        // CoreDispatchTarget carries a live CountHookVerdicts delegate below -- the resolve-time probe
+        // and the per-execution canary are the two guards for the identical shape (spec/baton.md §9),
+        // so they share one computation of "does this dispatch need either".
+        var requiresHookAsSoleNarrowing = RequiresHookAsSoleNarrowing(permissionScope, invocation.PermissionGrant);
+        if (requiresHookAsSoleNarrowing)
         {
             var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
             var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
@@ -570,17 +589,23 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 $"{ShellPatternsVendorTag}:{BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
-        // #1680: the first-verdict canary's write side. Room-local -- BindingsFileDirectory (the
-        // session/room directory) when one exists, else the worker's own working directory -- the
-        // same fallback EnsureAgyHomeDirectory-adjacent code below uses for agyHome, so concurrent
-        // workers never share a ledger file. Null (neither directory known) leaves the variable unset
-        // rather than pointing at a made-up path; AgyHookVerdictLedger.CountVerdicts already reads a
-        // missing file as zero verdicts, which is the correct fail-closed answer for "nowhere to look".
-        var verdictLedgerDirectory = invocation.BindingsFileDirectory ?? invocation.WorkingDirectory;
-        if (verdictLedgerDirectory is not null)
-        {
-            environment.Add((VerdictLedgerVariable, Path.Combine(verdictLedgerDirectory, VerdictLedgerFileName)));
-        }
+        // #1680 (F2, #1732 review): the first-verdict canary's write side. Per-EXECUTION, not
+        // per-room: this method (Resolve) runs once per binding-config entry (WorkerInvocation's own
+        // doc, WorkerBindingResolver.cs:146), so a directory computed here -- BindingsFileDirectory or
+        // WorkingDirectory, both room-scoped -- would be shared by every dispatch of this role and
+        // every other agy role in the room, for the whole run. An append-only file at that scope makes
+        // hookVerdictCount == 0 unreachable after the first verdict anywhere in the room, disarming the
+        // canary permanently. Instead this emits an environment-variable REFERENCE
+        // (WorkerInvocation.cs:9-19's sanctioned escape hatch for per-execution dynamism, the same
+        // mechanism BATON_ARTIFACTS_ROOT above uses) pointing at BATON_OUTPUT_DIR -- the per-execution
+        // directory CoreDispatcher only resolves at dispatch time (CoreDispatcher.AssembleChildEnvironment
+        // expands target.Environment values against it) and the same directory OutcomeClassifier.Classify
+        // is already handed as outputDirectory. Unconditional, like BATON_ARTIFACTS_ROOT above: the
+        // Artifact Manager always resolves BATON_OUTPUT_DIR (ArtifactManager.cs:216), so there is no
+        // "neither directory known" case here the way there was for the room-scoped fallback.
+        environment.Add((
+            VerdictLedgerVariable,
+            EnvironmentReference("BATON_OUTPUT_DIR", isWindows) + (isWindows ? @"\" : "/") + VerdictLedgerFileName));
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
         // AER-owned state directory. Shell-granted workers (grant.RunShellCommands == true) are
@@ -653,7 +678,14 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null,
             // F6 (#1593 review): same streaming gate as DetectsTerminalSuccess above, but fires on a
             // terminal `result` event of ANY status — see IsTerminalResultLine.
-            DetectsTerminalResult: invocation.StreamJson ? IsTerminalResultLine : null);
+            DetectsTerminalResult: invocation.StreamJson ? IsTerminalResultLine : null,
+            // #1732 review WIRING: the per-execution canary's read side, wired only when
+            // requiresHookAsSoleNarrowing (computed above, same value the resolve-time probe already
+            // gated on) held. Null otherwise -- see CoreDispatchTarget.CountHookVerdicts's own doc for
+            // which dispatches that covers and what it keeps unchanged.
+            CountHookVerdicts: requiresHookAsSoleNarrowing
+                ? outputDirectory => AgyHookVerdictLedger.CountVerdicts(Path.Combine(outputDirectory, VerdictLedgerFileName))
+                : null);
     }
 
     /// <summary>
@@ -1349,47 +1381,6 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         {
             return false;
         }
-    }
-
-    /// <summary>
-    /// #1680's first-verdict canary, count side: how many completed <c>tool</c> steps
-    /// <paramref name="streamLines"/> reports — the DONE edge <see cref="TryParseProgressEvent"/>
-    /// already recognises as <c>stepType == "tool"</c>. This is a plain count of the worker's own
-    /// self-reported activity, not a verdict signal itself: nothing about the stream says whether the
-    /// <c>PreToolUse</c> hook gating each of these calls actually ran, which is exactly the gap
-    /// <see cref="AgyHookVerdictLedger"/> exists to close from the other side.
-    /// </summary>
-    internal static int CountToolCallLines(IEnumerable<string> streamLines)
-    {
-        var count = 0;
-        foreach (var line in streamLines)
-        {
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            try
-            {
-                using var doc = JsonDocument.Parse(line);
-                var root = doc.RootElement;
-                if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "step_update"
-                    && root.TryGetProperty("step_update", out var step)
-                    && step.TryGetProperty("state", out var stateProp) && stateProp.GetString() == "DONE"
-                    && step.TryGetProperty("step_type", out var stepTypeProp) && stepTypeProp.GetString() == "tool")
-                {
-                    count++;
-                }
-            }
-            catch (JsonException)
-            {
-                // A chunk-split or otherwise unparseable line carries no signal -- TryParseProgressEvent
-                // treats the same shape identically.
-            }
-        }
-
-        return count;
     }
 
     private static IReadOnlyList<string> ParseModelLines(string? stdout) =>

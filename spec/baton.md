@@ -2650,11 +2650,28 @@ fresh config directory or a containerized environment must not assume a hook tha
 announce itself on `agy` — that half is genuinely unmeasured, not merely undocumented.
 
 **#1680: for the one shape where that silent fail-open is a total ungating rather than a partial one** —
-an agy grant whose only narrowing IS the hook (`AgyWorkerAdapter.RequiresHookAsSoleNarrowing`) — a
-resolve-time liveness probe (a synthetic denied call that must come back `deny`) refuses dispatch
-outright when the hook does not answer live, and a first-verdict canary settles a run `Indeterminate`
-rather than `Succeeded` when it reports tool calls but the hook's own verdict ledger recorded none for
-them (the `ContractFailure` producer row in §3); agy's own fail-open behaviour is otherwise unchanged.
+an agy grant whose only narrowing IS the hook (`AgyWorkerAdapter.RequiresHookAsSoleNarrowing`, widened
+by the #1732 review's F5 to also cover a fully-granted role carrying a shell allow/deny pattern list,
+since the hook is the sole enforcer of those too) — two live guards, both wired into
+`OutcomeClassifier.Classify`'s two production call sites (`MutationInterface.cs`'s crash-recovery
+replay and live-dispatch branches), not merely implemented and left unwired. **First**, a resolve-time
+liveness probe (`AgyWorkerAdapter.Resolve`, via `ProcessAgyHookLivenessProbe`): a synthetic denied call,
+sent through the SAME shell hop (`cmd /c`/`sh -c`) and the identical command STRING agy's own
+`hooks.json` carries — not a structural respawn of the assembly, which could not have caught #710's
+actual failure mode — must come back `deny`, or dispatch is refused outright before the worker ever
+starts. **Second**, a first-verdict canary settles a run `Indeterminate` rather than `Succeeded` when a
+naturally-exited, contract-satisfied, non-quota-vetoed execution reports at least one tool call but the
+hook's own **per-execution** verdict ledger recorded none for it (the `ContractFailure` producer row in
+§3) — per-execution, not per-room: the ledger's path is an unresolved `BATON_OUTPUT_DIR` environment
+reference `AgyWorkerAdapter.Resolve` emits (the same per-dispatch-expansion mechanism
+`BATON_ARTIFACTS_ROOT` already uses), only resolving to a real file inside
+`CoreDispatcher.AssembleChildEnvironment` at actual dispatch time, so no two executions — same room,
+same role or not — ever share one; an earlier design that derived the path once per binding entry
+(room-scoped, effectively write-once) would have let a single healthy execution anywhere in a room
+permanently disarm the canary for every later one, which is why this is per-execution rather than
+per-room or per-role. Live-dispatch only: the crash-recovery classification path passes neither count,
+since that branch may be replaying against a defunct workspace and the ledger is not a journaled fact.
+agy's own fail-open behaviour is otherwise unchanged.
 
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),

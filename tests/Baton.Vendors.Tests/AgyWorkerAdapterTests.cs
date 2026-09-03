@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Artifacts;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
@@ -2019,41 +2020,95 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void RequiresHookAsSoleNarrowing_is_true_for_a_fully_granted_grant_carrying_a_shell_allow_pattern()
+    {
+        // #1732 review F5: writes and network both granted, but ShellCommandPatterns is non-empty --
+        // TryTranslatePermissionGrant's pattern-scoped path (#1387) reaches
+        // --dangerously-skip-permissions with no requirement that the pattern list be honoured by
+        // anything but the hook, so this is still sole narrowing.
+        var grant = new PermissionGrant(
+            WriteFiles: true, NetworkAccess: true, RunShellCommands: true,
+            ShellCommandPatterns: ["git *"]);
+
+        Assert.True(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", grant));
+    }
+
+    [Fact]
+    public void RequiresHookAsSoleNarrowing_is_true_for_a_fully_granted_grant_carrying_a_deny_always_pattern()
+    {
+        // #1732 review F5: same shape, but the standing "never" channel (#390) instead of the allow
+        // list -- a write-granted role can still carry a DenyAlways rule (e.g. "never git push
+        // --force") that only the hook enforces.
+        var grant = new PermissionGrant(
+            WriteFiles: true, NetworkAccess: true, RunShellCommands: true,
+            DeniedShellCommandPatterns: ["git push --force"]);
+
+        Assert.True(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", grant));
+    }
+
+    [Fact]
+    public void The_verdict_ledger_path_is_per_execution_so_a_second_executions_hook_never_inherits_the_firsts_verdicts()
+    {
+        // #1732 review F2's acceptance test. Resolve runs ONCE per binding entry (WorkerInvocation's
+        // own doc), so the SAME CoreDispatchTarget below stands in for every execution of this role --
+        // exactly the room-wide sharing the old room-scoped ledger path had. What must differ between
+        // two executions is BATON_OUTPUT_DIR, which only CoreDispatcher.AssembleChildEnvironment
+        // resolves, per dispatch -- so this drives that same expansion twice, with two different
+        // per-execution output directories, the way two real dispatches of one role in one room would.
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        var firstOutputDir = Path.Combine(Path.GetTempPath(), $"agy-ledger-exec1-{Guid.NewGuid():N}");
+        var secondOutputDir = Path.Combine(Path.GetTempPath(), $"agy-ledger-exec2-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(firstOutputDir);
+        Directory.CreateDirectory(secondOutputDir);
+        try
+        {
+            var firstEnvironment = CoreDispatcher.AssembleChildEnvironment(MakeExecutionRequest(firstOutputDir), target);
+            var secondEnvironment = CoreDispatcher.AssembleChildEnvironment(MakeExecutionRequest(secondOutputDir), target);
+
+            var firstLedgerPath = firstEnvironment.Single(e => e.Name == AgyWorkerAdapter.VerdictLedgerVariable).Value;
+            var secondLedgerPath = secondEnvironment.Single(e => e.Name == AgyWorkerAdapter.VerdictLedgerVariable).Value;
+
+            Assert.NotEqual(firstLedgerPath, secondLedgerPath);
+            Assert.StartsWith(firstOutputDir, firstLedgerPath, StringComparison.Ordinal);
+            Assert.StartsWith(secondOutputDir, secondLedgerPath, StringComparison.Ordinal);
+
+            // The first execution's hook is healthy and appends verdicts to ITS OWN path.
+            File.WriteAllLines(firstLedgerPath, ["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"]);
+
+            Assert.Equal(2, AgyHookVerdictLedger.CountVerdicts(firstLedgerPath));
+            // The second execution's hook wrote nothing to ITS OWN, different path -- unlike the prior
+            // room-scoped path, it does not see the first execution's 2 verdicts.
+            Assert.Equal(0, AgyHookVerdictLedger.CountVerdicts(secondLedgerPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(firstOutputDir);
+            DirectoryCleanup.DeleteRecursively(secondOutputDir);
+        }
+    }
+
+    private static ExecutionRequest MakeExecutionRequest(string outputDirectory) => new(
+        new ExecutionId($"exec-{Guid.NewGuid():N}"),
+        new WorkflowId("wf-1"),
+        new StepId("step-1"),
+        "agy",
+        Inputs: [],
+        Outputs: [],
+        Timeout: TimeSpan.FromSeconds(30),
+        Environment: ArtifactManager.BuildEnvironment([], outputDirectory, Path.GetTempPath()),
+        UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+    [Fact]
     public void RequiresHookAsSoleNarrowing_is_false_for_a_null_grant()
     {
         Assert.False(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", null));
     }
 
     // ---- #1680: first-verdict canary primitives ----
-
-    [Fact]
-    public void CountToolCallLines_counts_only_completed_tool_steps()
-    {
-        string[] lines =
-        [
-            """{"event":"init"}""",
-            """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool"}}""",
-            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""",
-            """{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response"}}""",
-            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""",
-            "not json at all",
-            """{"event":"result","result":{"status":"SUCCESS","response":"done"}}""",
-        ];
-
-        Assert.Equal(2, AgyWorkerAdapter.CountToolCallLines(lines));
-    }
-
-    [Fact]
-    public void CountToolCallLines_is_zero_for_a_stream_with_no_tool_steps()
-    {
-        string[] lines =
-        [
-            """{"event":"init"}""",
-            """{"event":"result","result":{"status":"SUCCESS","response":"done"}}""",
-        ];
-
-        Assert.Equal(0, AgyWorkerAdapter.CountToolCallLines(lines));
-    }
+    // #1732 review F4: CountToolCallLines (a DONE-only, no-tool_name-required re-implementation of
+    // IWorkerUsageParser.CountToolSteps) was deleted along with its two tests here -- the wiring uses
+    // the existing, already-in-scope-at-the-call-site usageParser.CountToolSteps instead.
 
     [Fact]
     public void ProcessAgyHookLivenessProbe_reports_dead_for_a_nonexistent_hook_path_without_spawning_a_process()
@@ -2067,6 +2122,24 @@ public class AgyWorkerAdapterTests
 
         Assert.False(result.IsLive);
         Assert.Contains("does not exist", result.Detail);
+    }
+
+    [Fact]
+    public void ProcessAgyHookLivenessProbe_reports_live_against_the_real_built_binary()
+    {
+        // #1732 review F8: the single load-bearing claim of the whole probe -- "with BATON_HOOK_*
+        // stripped, the real shipped binary answers deny" -- executed for real, not merely traced by
+        // reading. Needs only the built Baton.Cli.dll this suite already asserts is present with its
+        // runtimeconfig (The_hook_assembly_carries_its_runtimeconfig_so_dotnet_can_load_it above). With
+        // F6 landed this now also spawns through the real cmd/sh form, so this one test covers both.
+        // No agy, no vendor spend, no live run.
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var probe = new ProcessAgyHookLivenessProbe();
+
+        var result = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsLive, $"expected the real hook to answer deny; got: {result.Detail}");
+        Assert.Equal("deny", result.Detail);
     }
 
     [Theory]

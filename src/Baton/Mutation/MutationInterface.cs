@@ -1094,11 +1094,18 @@ public static class MutationInterface
                             ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
                             : null;
 
+                        // #1732 review WIRING: toolCallCount/hookVerdictCount stay null here,
+                        // deliberately, not merely by omission. This is the crash-recovery replay --
+                        // the workspace this execution ran in may be defunct by the time this runs, and
+                        // the agy hook verdict ledger is a live per-execution artifact, not a journaled
+                        // fact recorded alongside exit/reason/stderr above. Re-reading it now would be
+                        // re-deriving a signal from state this branch has no other business touching,
+                        // for a canary whose whole point is catching a hook that died THIS run.
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
                             usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
-                            changesTreeWorkingDirectory: changesTreeWorkingDirectory);
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: null, hookVerdictCount: null);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1764,10 +1771,38 @@ public static class MutationInterface
             // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
             // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
             var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
+
+            // #1680/#1732 review WIRING: the first-verdict canary's two counts. Both stay null unless
+            // this dispatch's own CoreDispatchTarget carries a live CountHookVerdicts delegate --
+            // AgyWorkerAdapter.Resolve only wires that up for an agy grant whose PreToolUse hook is the
+            // sole narrowing (RequiresHookAsSoleNarrowing), so a claude binding or a fully-granted agy
+            // one keeps passing null/null here exactly like every call site before this PR (Adapter
+            // Isolation: this file never names "agy" -- the vendor decided applicability at resolve
+            // time, this file only asks the target it was handed).
+            int? toolCallCount = null;
+            int? hookVerdictCount = null;
+            if (target.CountHookVerdicts is { } countHookVerdicts)
+            {
+                toolCallCount = 0;
+                if (usageParser is not null)
+                {
+                    var stdoutLogPath = Path.Combine(prepared.OutputDirectory, ExecutionStreamLogger.StdoutLogFileName);
+                    if (File.Exists(stdoutLogPath))
+                    {
+                        foreach (var line in File.ReadLines(stdoutLogPath))
+                        {
+                            toolCallCount += usageParser.CountToolSteps(line);
+                        }
+                    }
+                }
+
+                hookVerdictCount = countHookVerdicts(prepared.OutputDirectory);
+            }
+
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
                 grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
-                changesTreeWorkingDirectory);
+                changesTreeWorkingDirectory, toolCallCount, hookVerdictCount);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append

@@ -2129,5 +2129,65 @@ public class OutcomeClassifierTests
             DirectoryCleanup.DeleteRecursively(directory);
         }
     }
+
+    [Fact]
+    public void A_cancelled_run_is_not_reclassified_by_the_canary()
+    {
+        // #1732 review F3's discriminating control, other direction: CancelRequested is classified by
+        // its own branch ABOVE where the canary now sits (moved past both by this PR), so a cancelled
+        // run with a dead-hook-shaped count pair must still settle Cancelled, never Indeterminate. This
+        // is the arm #1720/#1732's merge moved the canary ahead of with no test pinning it safe.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.CancelRequested), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Cancelled, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_quota_refusal_with_a_dead_hook_count_pair_still_classifies_ExhaustedUntil_not_Indeterminate()
+    {
+        // #1732 review F3: before the move, this exact shape (ExitCode != 0, canary counts present)
+        // returned Indeterminate at the canary guard, which sat ahead of the ExitCode != 0 branch and
+        // swallowed the automatic retry a quota refusal is owed. Red before this PR's fix (asserted
+        // against the pre-move code by hand -- the canary preempted this and returned Indeterminate);
+        // green after, because the canary now only runs after this branch has already returned.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var now = new DateTimeOffset(2026, 7, 30, 15, 0, 0, TimeSpan.Zero);
+            var testTime = new TestTimeProvider(now);
+            var specimenStderr = "Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 28m40s.";
+            var mockClassifier = new TestQuotaClassifier(specimenStderr, FailureClassification.ExhaustedUntil, now.AddMinutes(28).AddSeconds(40));
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural, specimenStderr),
+                contract,
+                directory,
+                mockClassifier,
+                testTime,
+                toolCallCount: 3,
+                hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(now.AddMinutes(28).AddSeconds(40), classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
 }
 

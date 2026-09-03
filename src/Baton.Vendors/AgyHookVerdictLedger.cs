@@ -14,10 +14,15 @@ public static class AgyHookVerdictLedger
 {
     /// <summary>
     /// The number of verdict lines recorded, or 0 when the file does not exist (the hook never ran,
-    /// or no grant asked for the ledger). Read rather than trusted: a concurrent writer mid-append
-    /// could leave a final partial line, so this counts complete, non-empty lines only — an
-    /// undercount on a torn write, never an overcount, which keeps this canary's failure direction
-    /// fail-closed (a torn-line undercount can only push a run toward Indeterminate, not away from it).
+    /// or no grant asked for the ledger). Counts every non-whitespace line, including a torn
+    /// <b>partial</b> one (#1732 review): a mid-append crash cannot produce a line whose content
+    /// exists before the verdict that produced it was reached, so counting a torn line still counts a
+    /// real verdict — correct, not merely harmless. The actual undercount risk is a different
+    /// mechanism: two hook subprocesses appending to the same per-execution file concurrently can each
+    /// lose a whole line to a sharing violation, which <see cref="File.ReadLines"/> and the
+    /// <c>catch (IOException)</c> below both swallow as "count 0 for that read" rather than surface.
+    /// Either way the failure direction stays fail-closed — an undercount can only push a run toward
+    /// Indeterminate, never away from it.
     /// </summary>
     public static int CountVerdicts(string? verdictLedgerPath)
     {

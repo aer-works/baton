@@ -58,4 +58,24 @@ public class AgyHookVerdictLedgerTests
             FileCleanup.Delete(path);
         }
     }
+
+    [Fact]
+    public void A_torn_partial_final_line_is_counted_not_skipped()
+    {
+        // #1732 review: unlike a *blank* trailing line above, a torn *partial* write (the process
+        // killed mid-append, leaving a non-empty fragment) IS counted -- the class doc used to claim
+        // an undercount here, which this pins as false. Correct, not merely harmless: the fragment
+        // cannot exist unless the verdict that produced it was already reached.
+        var path = Path.Combine(Path.GetTempPath(), $"agy-hook-verdicts-{Guid.NewGuid():N}.ndjson");
+        try
+        {
+            File.WriteAllText(path, "2026-01-01T00:00:00Z\n2026-01-0");
+
+            Assert.Equal(2, AgyHookVerdictLedger.CountVerdicts(path));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
 }
