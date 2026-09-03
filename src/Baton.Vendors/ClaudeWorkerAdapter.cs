@@ -256,10 +256,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
-        // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-        // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-        // BatonEnvironmentSnapshot's own remarks.
-        if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
+        // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+        // #1524: folded into BatonEnvironmentSnapshot.
+        if (BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot)
         {
             environment.Add((ClaudeConfigDirVariable, configRoot));
         }
@@ -1210,7 +1209,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // while the adapter redirects the root is defensible in neither reading, so this follows the
         // root when the operator has actually set one, rather than assert a roster for a directory the
         // worker does not use.
-        var configRoot = configRootDirectory ?? Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable);
+        // Read through the snapshot, not the process env: #1524 folded BATON_CLAUDE_CONFIG_ROOT so a
+        // BeginScope override is honoured here exactly as at the launch-config site above.
+        var configRoot = configRootDirectory ?? BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride;
         if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
             skillDirs.Add(Path.Combine(configRoot, "skills"));

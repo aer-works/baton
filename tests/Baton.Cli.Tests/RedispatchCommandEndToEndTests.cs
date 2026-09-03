@@ -14,6 +14,7 @@ namespace Baton.Cli.Tests;
 /// asserted in isolation (that half is <see cref="RedispatchBindingTests"/>). Mirrors
 /// <see cref="DispatchCommandEndToEndTests"/>'s catalog-pinning and fake-adapter setup.
 /// </summary>
+// #1524: kept enrolled solely for Console.Error; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RedispatchCommandEndToEndTests : IDisposable
 {
@@ -26,26 +27,22 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         };
 
     private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
 
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
-
+    // Catalog pinning mirrors DispatchCommandEndToEndTests' own #1524 ctor.
     public RedispatchCommandEndToEndTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _catalogScope.Dispose();
         _batonHome.Dispose();
     }
 
