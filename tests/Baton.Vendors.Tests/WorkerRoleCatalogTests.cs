@@ -2,6 +2,7 @@ using System.Linq;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Domain;
+using Baton.Status;
 using Xunit;
 
 namespace Baton.Vendors.Tests;
@@ -12,29 +13,13 @@ namespace Baton.Vendors.Tests;
 /// rebuild (the env override stands in for the runtime <c>worker-tiers.json</c> the operator drops),
 /// and that a malformed catalog fails loudly rather than dispatching something nobody chose.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: every override below is an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not
+/// a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment and
+/// runs parallel-safe.
+/// </remarks>
 public class WorkerRoleCatalogTests
 {
-    private sealed class EnvScope : IDisposable
-    {
-        private readonly List<(string Key, string? Prior)> _prior = [];
-
-        public EnvScope Set(string key, string? value)
-        {
-            _prior.Add((key, Environment.GetEnvironmentVariable(key)));
-            Environment.SetEnvironmentVariable(key, value);
-            return this;
-        }
-
-        public void Dispose()
-        {
-            foreach (var (key, prior) in _prior)
-            {
-                Environment.SetEnvironmentVariable(key, prior);
-            }
-        }
-    }
-
     private sealed class TempCatalog : IDisposable
     {
         public string Dir { get; } = Path.Combine(Path.GetTempPath(), $"wrc-{Guid.NewGuid():N}");
@@ -64,23 +49,28 @@ public class WorkerRoleCatalogTests
            "timeout_minutes":{{timeout}},"verdict_schema":{{(verdict ? "true" : "false")}},"purpose":"p","outputs":{{outputs}}}
           """;
 
-    private static EnvScope PointAt(TempCatalog cat, string tiersJson, string rolesJson) =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, cat.Write("tiers.json", tiersJson))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, cat.Write("roles.json", rolesJson));
+    private static IDisposable PointAt(TempCatalog cat, string tiersJson, string rolesJson) =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = cat.Write("tiers.json", tiersJson),
+            WorkerRolesPathOverride = cat.Write("roles.json", rolesJson),
+        });
 
     // A test that reads the SHIPPED default must be hermetic against the runtime overrides: with no
-    // env set, ResolvePath falls through {BATON_HOME|~/.baton}/worker-*.json, so on a machine where an
-    // operator has used that documented override the test would silently read their file instead of
-    // the shipped one. Point the catalog's OWN env vars straight at the shipped files under
-    // AppContext.BaseDirectory (copied there by the csproj's CopyToOutputDirectory). Deliberately NOT
-    // via BATON_HOME: that variable is global process state BatonPaths.Root reads, so mutating it here
-    // raced a parallel BatonProfileStore.DefaultPath and red an unrelated test (#893). BATON_WORKER_*_PATH
-    // is read only by WorkerRoleCatalog, so nothing else can see it.
-    private static EnvScope ShippedDefault() =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
+    // override set, ResolvePath falls through {BATON_HOME|~/.baton}/worker-*.json, so on a machine
+    // where an operator has used that documented override the test would silently read their file
+    // instead of the shipped one. Point the catalog's OWN snapshot fields straight at the shipped
+    // files under AppContext.BaseDirectory (copied there by the csproj's CopyToOutputDirectory).
+    // Deliberately NOT via HomeOverride: that field is what BatonPaths.Root reads, so setting it here
+    // would race a parallel BatonProfileStore.DefaultPath read the way mutating BATON_HOME once red an
+    // unrelated test (#893). The two Worker*PathOverride fields are read only by WorkerRoleCatalog, so
+    // nothing else can see them -- and BeginScope's own isolation means nothing else does anyway.
+    private static IDisposable ShippedDefault() =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+        });
 
     [Fact]
     public void The_shipped_catalog_resolves_each_role_against_its_tier()

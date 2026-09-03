@@ -1,3 +1,5 @@
+using Baton.Status;
+
 namespace Baton.Vendors.Tests;
 
 /// <summary>
@@ -8,31 +10,23 @@ namespace Baton.Vendors.Tests;
 /// as a failing build here, not as a runtime error a user hits. The runtime refusal is the belt; this is
 /// the braces.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: pins the shipped catalogs via an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>,
+/// not a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment
+/// and runs parallel-safe.
+/// </remarks>
 public sealed class CatalogNamespaceTests : IDisposable
 {
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
-
     // Pin the shipped catalogs so this reads what ships, not an operator's local override on this
-    // machine. In the serialised catalog collection, so the env edit never bleeds into a parallel reader.
-    public CatalogNamespaceTests()
+    // machine.
+    private readonly IDisposable _scope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
-    }
+        WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+        WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+        WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+    });
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
-    }
+    public void Dispose() => _scope.Dispose();
 
     [Fact]
     public void No_shipped_template_id_collides_with_a_shipped_role_id()

@@ -2,13 +2,18 @@ using Baton.Cli.Daemon;
 using Baton.Artifacts;
 using Baton.Concurrency;
 using Baton.Domain;
+using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 using Xunit;
 
 namespace Baton.Cli.Tests.Daemon;
 
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: every env-override test below isolates its value through an explicit
+/// <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not a process mutation, so this class needs no
+/// <see cref="SerializedEnvironmentCollection"/> enrollment and runs parallel-safe.
+/// </remarks>
 public class RoomRetentionSweepTests
 {
     private static readonly StepId StepA = new("stepA");
@@ -183,36 +188,24 @@ public class RoomRetentionSweepTests
     [Fact]
     public void GetInterval_ClampsPathologicalValue_InsteadOfOverflowing()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable);
-        try
-        {
-            // Pins the clamp (RoomRetentionSweep.MaxInterval documents why it exists): a value whose
-            // seconds would overflow TimeSpan.FromSeconds must collapse to MaxInterval, never throw.
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, "1e300");
-            var interval = RoomRetentionSweep.GetInterval();
-            Assert.Equal(RoomRetentionSweep.MaxInterval, interval);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, prior);
-        }
+        // Pins the clamp (RoomRetentionSweep.MaxInterval documents why it exists): a value whose
+        // seconds would overflow TimeSpan.FromSeconds must collapse to MaxInterval, never throw.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionSweepIntervalSecondsOverride = "1e300" });
+
+        var interval = RoomRetentionSweep.GetInterval();
+        Assert.Equal(RoomRetentionSweep.MaxInterval, interval);
     }
 
     [Fact]
     public void GetInterval_LiftsSubSecondValue_ToMinInterval()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable);
-        try
-        {
-            // Pins the lower clamp (RoomRetentionSweep.MinInterval documents the rationale): a value below
-            // one second must lift to MinInterval rather than pass through near-zero.
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, "1e-9");
-            Assert.Equal(RoomRetentionSweep.MinInterval, RoomRetentionSweep.GetInterval());
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, prior);
-        }
+        // Pins the lower clamp (RoomRetentionSweep.MinInterval documents the rationale): a value below
+        // one second must lift to MinInterval rather than pass through near-zero.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionSweepIntervalSecondsOverride = "1e-9" });
+
+        Assert.Equal(RoomRetentionSweep.MinInterval, RoomRetentionSweep.GetInterval());
     }
 
     [Fact]
@@ -392,63 +385,49 @@ public class RoomRetentionSweepTests
     [Fact]
     public void EnvironmentVariables_PruneDefaultsAndOverrides()
     {
-        var priorEnabled = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable);
-        var priorGrace = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
-
-        try
+        using (BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank))
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, null);
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, null);
-
             Assert.False(RoomRetentionSweep.IsPruneEnabled());
             Assert.Equal(RoomRetentionSweep.PlaceholderDefaultPruneGrace, RoomRetentionSweep.GetPruneGrace());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, "true");
-            Assert.True(RoomRetentionSweep.IsPruneEnabled());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, "1");
-            Assert.True(RoomRetentionSweep.IsPruneEnabled());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1800");
-            Assert.Equal(TimeSpan.FromSeconds(1800), RoomRetentionSweep.GetPruneGrace());
         }
-        finally
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneEnabledOverride = "true" }))
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, priorEnabled);
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, priorGrace);
+            Assert.True(RoomRetentionSweep.IsPruneEnabled());
+        }
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneEnabledOverride = "1" }))
+        {
+            Assert.True(RoomRetentionSweep.IsPruneEnabled());
+        }
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1800" }))
+        {
+            Assert.Equal(TimeSpan.FromSeconds(1800), RoomRetentionSweep.GetPruneGrace());
         }
     }
 
     [Fact]
     public void GetPruneGrace_ClampsPathologicalValue_ToMaxPruneGrace()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1e300");
-            var grace = RoomRetentionSweep.GetPruneGrace();
-            Assert.Equal(RoomRetentionSweep.MaxPruneGrace, grace);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, prior);
-        }
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1e300" });
+
+        var grace = RoomRetentionSweep.GetPruneGrace();
+        Assert.Equal(RoomRetentionSweep.MaxPruneGrace, grace);
     }
 
     [Fact]
     public void GetPruneGrace_LiftsSubSecondValue_ToMinPruneGrace()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1e-9");
-            var grace = RoomRetentionSweep.GetPruneGrace();
-            Assert.Equal(RoomRetentionSweep.MinPruneGrace, grace);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, prior);
-        }
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1e-9" });
+
+        var grace = RoomRetentionSweep.GetPruneGrace();
+        Assert.Equal(RoomRetentionSweep.MinPruneGrace, grace);
     }
 
     // #1659: the retention hook -- RoomRetentionSweep may call `baton rooms prune --terminal` behind

@@ -11,7 +11,17 @@ namespace Baton.Vendors.Tests;
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
 /// <see cref="ClaudeWorkerAdapter"/> resolving.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: the two config-root tests isolate <see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/>
+/// through <see cref="BatonEnvironmentSnapshot.BeginScope"/> rather than mutating process environment,
+/// so this class no longer needs <c>SerializedEnvironmentCollection</c> enrollment for that. It still
+/// needs <see cref="LaunchConfigCollection"/>, unrelated to this fold: this class writes launch config
+/// files (<c>claude-settings.json</c>/<c>claude-mcp.json</c>) under the assembly's shared
+/// <c>BATON_HOME</c>, and <see cref="LaunchConfigCollection"/>'s own remarks record the
+/// <see cref="UnauthorizedAccessException"/> race #667/#682 measured when a launch-config writer runs
+/// in the default parallel pool instead.
+/// </remarks>
+[Collection(LaunchConfigCollection.Name)]
 public class ClaudeWorkerAdapterTests
 {
     private static readonly WorkerContract ArchitectContract = new(
@@ -1111,38 +1121,25 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void Claude_config_root_unset_injects_no_CLAUDE_CONFIG_DIR()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, null);
-            var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { ClaudeConfigRootOverride = null });
 
-            Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
-        }
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
     }
 
     [Fact]
     public void Claude_config_root_set_injects_CLAUDE_CONFIG_DIR_for_batch_and_gate()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
         var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
-        try
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, testPath);
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { ClaudeConfigRootOverride = testPath });
 
-            var target = new ClaudeWorkerAdapter().Resolve(
-                new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
 
-            Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
-        }
+        Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
     }
 
     [Fact]

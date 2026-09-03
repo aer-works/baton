@@ -256,10 +256,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
-        // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-        // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-        // BatonEnvironmentSnapshot's own remarks.
-        if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
+        // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+        // #1524: folded into BatonEnvironmentSnapshot.
+        if (BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot)
         {
             environment.Add((ClaudeConfigDirVariable, configRoot));
         }

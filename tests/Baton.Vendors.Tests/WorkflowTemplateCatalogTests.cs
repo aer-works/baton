@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Baton.Vendors;
+using Baton.Status;
 using Xunit;
 
 namespace Baton.Vendors.Tests;
@@ -9,29 +10,13 @@ namespace Baton.Vendors.Tests;
 /// take precedence, and that load-time validation catches empty catalogs, duplicate ids, zero-phase
 /// templates, unknown role references, duplicate phase names, and invalid input declarations.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: every override below is an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not
+/// a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment and
+/// runs parallel-safe.
+/// </remarks>
 public class WorkflowTemplateCatalogTests
 {
-    private sealed class EnvScope : IDisposable
-    {
-        private readonly List<(string Key, string? Prior)> _prior = [];
-
-        public EnvScope Set(string key, string? value)
-        {
-            _prior.Add((key, Environment.GetEnvironmentVariable(key)));
-            Environment.SetEnvironmentVariable(key, value);
-            return this;
-        }
-
-        public void Dispose()
-        {
-            foreach (var (key, prior) in _prior)
-            {
-                Environment.SetEnvironmentVariable(key, prior);
-            }
-        }
-    }
-
     private sealed class TempCatalog : IDisposable
     {
         public string Dir { get; } = Path.Combine(Path.GetTempPath(), $"wtc-{Guid.NewGuid():N}");
@@ -62,17 +47,21 @@ public class WorkflowTemplateCatalogTests
     private static string Template(string id, string phases) =>
         $$"""{"id":"{{id}}","phases":{{phases}}}""";
 
-    private static EnvScope PointAt(TempCatalog cat, string templatesJson) =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"))
-            .Set(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, cat.Write("templates.json", templatesJson));
+    private static IDisposable PointAt(TempCatalog cat, string templatesJson) =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkflowTemplatesPathOverride = cat.Write("templates.json", templatesJson),
+        });
 
-    private static EnvScope ShippedDefault() =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"))
-            .Set(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+    private static IDisposable ShippedDefault() =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
 
     [Fact]
     public void The_shipped_catalog_resolves_and_roundtrips()
