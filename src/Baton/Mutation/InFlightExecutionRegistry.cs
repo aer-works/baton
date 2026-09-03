@@ -53,7 +53,19 @@ public sealed class InFlightExecutionRegistry
         await eventLogWriter.AppendAsync(
                 new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
-        TryCancel(cancellationTokenSource);
+
+        // #1549: distinct from the CancellationRequested append above, which only records that Flow
+        // forwarded the intent -- this records that the signal actually reached a live token, not
+        // merely that a (possibly since-disposed) entry was found under the lock above. TryCancel's own
+        // remarks explain the disposal race this guards: the dispatch can settle and dispose its token
+        // between the snapshot above and the Cancel() call below, in which case there is nothing left
+        // to deliver to even though a request was genuinely forwarded moments earlier.
+        if (TryCancel(cancellationTokenSource))
+        {
+            await eventLogWriter.AppendAsync(new FlowEvent.CancellationDelivered(targetExecutionId), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         return true;
     }
 
@@ -102,14 +114,17 @@ public sealed class InFlightExecutionRegistry
     /// cancellation being delivered here). A disposed source has already done its job: the execution
     /// it governed is no longer in flight, so there is nothing left to signal.
     /// </summary>
-    private static void TryCancel(CancellationTokenSource cancellationTokenSource)
+    /// <returns><c>true</c> if the signal was actually delivered to a live token; <c>false</c> if the source was already disposed.</returns>
+    private static bool TryCancel(CancellationTokenSource cancellationTokenSource)
     {
         try
         {
             cancellationTokenSource.Cancel();
+            return true;
         }
         catch (ObjectDisposedException)
         {
+            return false;
         }
     }
 
@@ -120,6 +135,32 @@ public sealed class InFlightExecutionRegistry
         {
             _eventLogWriter = eventLogWriter;
         }
+    }
+
+    /// <summary>
+    /// #1549: records that <c>Baton.Cli.CancelRequestPoller</c> gave up delivering a
+    /// <c>cancel.request</c> against <paramref name="targetExecutionId"/> — its bounded retry
+    /// exhausted, the file-channel rejection <c>CancelRequestFile.Reject</c> already writes. Reuses
+    /// this instance's own bound writer (<see cref="Bind"/>) rather than adding a second writer
+    /// parameter to the poller, the same way <see cref="RequestCancellationAsync"/> already does for
+    /// the successful-delivery half of the same flow. A no-op if this instance was never bound (no
+    /// live pump call, e.g. a unit test exercising the poller directly).
+    /// </summary>
+    public async Task RecordCancellationRejectedAsync(ExecutionId targetExecutionId, CancellationToken cancellationToken = default)
+    {
+        IEventLogWriter? eventLogWriter;
+        lock (_lock)
+        {
+            eventLogWriter = _eventLogWriter;
+        }
+
+        if (eventLogWriter is null)
+        {
+            return;
+        }
+
+        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRejected(targetExecutionId), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -452,6 +452,48 @@ public class StateProjectorTests
         Assert.Null(architect.LatestExecutionId);
     }
 
+    /// <summary>
+    /// #1549: the discriminating instrument for "new events are no-ops for state" — a plain
+    /// round-trip through <see cref="StateProjector"/> would pass even if one of these events
+    /// accidentally mutated <see cref="ProjectionCheckpointState"/>, as long as nothing later
+    /// asserted on the mutated field. Comparing the full projected <see cref="FlowState"/> WITH each
+    /// event interleaved against the same sequence WITHOUT it is what actually proves "no state
+    /// consequence" rather than merely "nothing this test happened to check changed."
+    /// </summary>
+    [Fact]
+    public void The_1549_heartbeat_and_cancellation_delivery_events_never_change_projected_state()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var baseline = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+        // FlowState's own record equality is reference-equal on its List<T> members (records don't
+        // get structural collection equality for free), so two independently-projected FlowStates
+        // that are genuinely identical still fail Assert.Equal directly -- serializing both to JSON
+        // is what actually compares the full shape.
+        var baselineJson = JsonSerializer.Serialize(StateProjector.Project(baseline, TwoStepSnapshot()));
+
+        FlowEvent[] Interleaved(FlowEvent noOpEvent) =>
+        [
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            noOpEvent,
+            new FlowEvent.ExecutionSucceeded(executionId),
+        ];
+
+        foreach (var noOpEvent in new FlowEvent[]
+                 {
+                     new FlowEvent.ExecutionProgress(executionId),
+                     new FlowEvent.CancellationDelivered(executionId),
+                     new FlowEvent.CancellationRejected(executionId),
+                 })
+        {
+            var json = JsonSerializer.Serialize(StateProjector.Project(Interleaved(noOpEvent), TwoStepSnapshot()));
+            Assert.Equal(baselineJson, json);
+        }
+    }
+
     [Fact]
     public void A_fail_fail_succeed_sequence_resets_the_consecutive_failure_count_to_zero()
     {

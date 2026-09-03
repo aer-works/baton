@@ -55,6 +55,9 @@ public class FlowEventLogJsonTests
         new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover"),
         new FlowEvent.ExecutionIndeterminate(ExecutionId, "reason", ".captured-response.md", ["advice.md"]),
         new FlowEvent.CaptureResolved(StepId, ExecutionId, Accepted: true, Reason: "capture honestly satisfies advice.md", ResolvedOutputNames: ["advice.md"]),
+        new FlowEvent.ExecutionProgress(ExecutionId),
+        new FlowEvent.CancellationDelivered(ExecutionId),
+        new FlowEvent.CancellationRejected(ExecutionId),
     ];
 
     /// <summary>

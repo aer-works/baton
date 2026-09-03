@@ -369,9 +369,15 @@ public static class StateProjector
             case FlowEvent.ZeroOutputsDespiteSubstantialWork:
             case FlowEvent.VerifyDeclarationIgnored:
             case FlowEvent.VerifyDeclarationUnreviewed:
+            case FlowEvent.ExecutionProgress:
+            case FlowEvent.CancellationDelivered:
+            case FlowEvent.CancellationRejected:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 // The two VerifyDeclaration* events are listed here on purpose rather than by falling off
                 // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
+                // The three #1549 events (progress heartbeat, cancellation delivered/rejected) are the
+                // same shape: durable operator/observability facts that never change what a step's own
+                // state projects to.
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:
