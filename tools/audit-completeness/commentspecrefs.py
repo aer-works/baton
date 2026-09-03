@@ -14,6 +14,13 @@ line names the document it cites and that citation resolves —
 Whether a resolving citation is ABOUT the right thing needed the one-time #1430 sweep; this keeps
 the syntactic floor from regressing, and a renumbering of baton.md fails every citation it broke.
 
+#1589: aptness (is §N the RIGHT section, not just a real one) stays out of this checker's
+population — no automated check can read intent in general. The narrower population that matters
+in practice, operator-facing strings that pair a recovery imperative ("see"/"run"/"read") with a
+spec/baton.md §N citation, is pinned instead in
+tests/Baton.Architecture.Tests/OperatorRecoveryCitationsPinToSpecSectionsTests.cs, which asserts
+each cited section's body still contains the procedure the string sends an operator to go read.
+
 #1431 split-restored only the decision records still cited by live comments; a decision citation
 resolves the same way a `docs/*.md` citation does — by the record actually existing on disk — so a
 number with no restored file behind it fails instead of being waved through.

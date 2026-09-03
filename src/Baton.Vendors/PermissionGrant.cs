@@ -30,7 +30,8 @@ namespace Baton.Vendors;
 /// <see cref="ShellCommandPatterns"/>. A closed "no" is not reopened by a wider later grant. Enforced
 /// next turn on both vendors — claude via <c>--disallowedTools Bash(pattern)</c>
 /// (<c>ClaudeWorkerAdapter.BuildDisallowedTools</c>, which the CLI applies with precedence over
-/// <c>--allowedTools</c>), agy via its <c>PreToolUse</c> hook's <c>IsDenied</c> check (agy has no
+/// <c>--allowedTools</c>), agy via its <c>PreToolUse</c> hook's <c>EvaluateChainedCommand</c> check
+/// (segment-level since #1685; agy has no
 /// vendor flag that can express a command family). Historically written when the operator answered
 /// the DenyAlways rung — that write path (0022's mid-lane ask/answer machinery) was retired in #1417
 /// (spec/baton.md §5); this field remains enforced on both vendors for any grant that already
