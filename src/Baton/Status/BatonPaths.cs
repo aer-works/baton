@@ -188,6 +188,18 @@ public static class BatonPaths
     public const string DeletedRoomsFileName = "deleted-rooms.jsonl";
 
     /// <summary>
+    /// <c>{Root}/watches</c> — one JSON file per <c>baton watch</c> registration (#1488), named
+    /// <c>&lt;watch-id&gt;.json</c>. <c>Baton.Cli</c>'s <c>WatchStore</c> (not referenced from here —
+    /// this project has no <c>Baton.Cli</c> reference) owns what each file holds and how exactly-once
+    /// firing is guaranteed. Operator-trust-level, per spec/baton.md §2's trust-model paragraph (M4,
+    /// fix round) — not restated here.
+    /// </summary>
+    public static string Watches => Path.Combine(Root, WatchesDirectoryName);
+
+    /// <summary>Directory name of <see cref="Watches"/> relative to a root.</summary>
+    public const string WatchesDirectoryName = "watches";
+
+    /// <summary>
     /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what
     /// it means and who refuses under it; this type only names where it lives, the same split
     /// <see cref="RoomRegistryFile"/> has with <see cref="RoomRegistryStore"/>.

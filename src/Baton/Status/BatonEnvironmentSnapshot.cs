@@ -69,7 +69,8 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionSweepIntervalSecondsOverride = null,
     string? RetentionSweepThresholdBytesOverride = null,
     string? RetentionPruneEnabledOverride = null,
-    string? RetentionPruneGraceSecondsOverride = null)
+    string? RetentionPruneGraceSecondsOverride = null,
+    string? WatchReaperRetentionHoursOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -106,7 +107,8 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepIntervalSecondsOverride: null,
         RetentionSweepThresholdBytesOverride: null,
         RetentionPruneEnabledOverride: null,
-        RetentionPruneGraceSecondsOverride: null);
+        RetentionPruneGraceSecondsOverride: null,
+        WatchReaperRetentionHoursOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -146,7 +148,10 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_INTERVAL_SECONDS"),
         RetentionSweepThresholdBytesOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_THRESHOLD_BYTES"),
         RetentionPruneEnabledOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_ENABLED"),
-        RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"));
+        RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"),
+        // "BATON_WATCH_REAPER_RETENTION_HOURS" -- Baton.Cli.Daemon.WatchSweep's own
+        // ReaperRetentionHoursEnvironmentVariable (#1488 fix round, spec/baton.md §2).
+        WatchReaperRetentionHoursOverride: Environment.GetEnvironmentVariable("BATON_WATCH_REAPER_RETENTION_HOURS"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient

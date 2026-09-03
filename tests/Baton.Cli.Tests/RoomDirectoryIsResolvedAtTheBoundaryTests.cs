@@ -56,6 +56,10 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
             RoomDeleteOptionsParser.Parse([Relative]).RoomDirectoryPath,
         [typeof(DeliverOptionsParser)] = () =>
             DeliverOptionsParser.Parse(["file.md", "--room", Relative]).RoomDirectoryPath,
+        // WatchOptions.RoomDirectoryPath is nullable (null for --list/--clear-fired), but the
+        // Register shape driven here always resolves it -- see WatchOptionsParser.
+        [typeof(WatchOptionsParser)] = () =>
+            WatchOptionsParser.Parse([Relative, "--notify", "echo hi"]).RoomDirectoryPath!,
     };
 
     [Fact]
