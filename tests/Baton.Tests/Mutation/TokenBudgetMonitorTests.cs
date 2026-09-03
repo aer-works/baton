@@ -552,6 +552,37 @@ public sealed class TokenBudgetMonitorTests
         Assert.Equal(100_000, monitor.SnapshotPeakBilledInWindow());
     }
 
+    /// <summary>
+    /// #1709 review: a monitor that never sees a usage-bearing line must report null, not the
+    /// fabricated 0 a freshly-constructed <c>long</c> field would default to -- the same
+    /// never-fabricate-a-zero convention <see cref="SnapshotUsage"/>'s own fields already follow.
+    /// </summary>
+    [Fact]
+    public void A_monitor_that_never_admits_a_sample_reports_a_null_peak_not_a_fabricated_zero()
+    {
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
+
+        // A tool-only line: parses, but carries no usage at all, so AdmitRateSample never runs.
+        monitor.OnStdoutLine("""{"event":"tool_call","tool_call":{"name":"Read"}}""");
+
+        Assert.Null(monitor.SnapshotPeakBilledInWindow());
+    }
+
+    /// <summary>
+    /// #1709 review, opposite polarity of the test above: once a sample IS admitted, a genuine
+    /// measured peak of 0 billed tokens is reported as 0, not null -- null means "never watched
+    /// anything", not "watched and saw nothing to bill".
+    /// </summary>
+    [Fact]
+    public void A_monitor_that_admits_a_zero_billed_sample_reports_a_measured_zero_peak()
+    {
+        var monitor = new TokenBudgetMonitor(budget: null, maxToolSteps: null, billedRateLimit: null, new AgyUsageParser());
+
+        monitor.OnStdoutLine(AgyBilledLine(0));
+
+        Assert.Equal(0, monitor.SnapshotPeakBilledInWindow());
+    }
+
     /// <summary>One agy per-turn usage line billing exactly <paramref name="billed"/> (input only).</summary>
     private static string AgyBilledLine(long billed) =>
         "{\"event\":\"step_update\",\"step_update\":{\"state\":\"DONE\",\"step_type\":\"agent_response\",\"usage\":{"
