@@ -30,6 +30,15 @@ PROTECTED_TOOLING_PATHS: tuple[tuple[str, str, str], ...] = (
     ("file", "tools/buildlock.py", "the build lock every gate run goes through"),
     ("dir", "tools/flake-watch/", "the flake ledger CI consults"),
     ("dir", "tests/Baton.Architecture.Tests/", "compiled enforcement: spawn gate, state vocabularies, citation pins"),
+    # #1754: gates.py's own OVERLAP/AFTER_BUILD_FAST comments say each of these is a wired member
+    # (not merely a pixi.toml line), contradicting #1744's "not enforcement" exclusion of their
+    # directories -- protecting the specific file, not the whole directory, so a genuinely unwired
+    # sibling (tools/fleet-glass/pusher.py) stays unprotected.
+    ("file", "tools/fleet-glass/worker.selftest.mjs", "the only thing standing between worker.js's paging/heartbeat-merge logic and a silent revert (gates.py OVERLAP)"),
+    ("file", "tools/tool-refresh/refresh.py", "tool-refresh-selftest's body (gates.py OVERLAP)"),
+    ("file", "tools/baton-agy-loop/dispatch.py", "baton-dispatch-selftest's body (gates.py AFTER_BUILD_FAST)"),
+    ("file", "tests/Launcher.Tests.ps1", "launcher-selftest's body -- exercises baton.cmd/baton.ps1 against a mock exe fixture (gates.py OVERLAP)"),
+    ("dir", "tools/Baton.VendorProbe/", "vendor-check's actual body, the loud half of the drift grace window (gates.py AFTER_BUILD_FAST); a directory because it is a compiled project"),
 )
 
 # pixi.toml is protected at LINE level, not whole-file (#1744 narrowing of #1603's original
@@ -37,7 +46,8 @@ PROTECTED_TOOLING_PATHS: tuple[tuple[str, str, str], ...] = (
 # definition lines protected; everything else in the file (an ordinary task addition/edit) passes.
 PIXI_PROTECTED_TASK_RULE = (
     "pixi.toml task definitions matching gates*, gate-sabotage, diff-shape*, audit-*, "
-    "*-selftest, vendor-check, vendor-verify, lint, or fmt-check (line-level, not the whole file)"
+    "*-selftest, vendor-check, vendor-verify, lint, fmt-check, or test-no-build "
+    "(line-level, not the whole file)"
 )
 
 
@@ -53,7 +63,7 @@ def _is_protected_pixi_task(name: str) -> bool:
         return True
     if name.endswith("-selftest"):
         return True
-    if name in ("vendor-check", "vendor-verify", "lint", "fmt-check"):
+    if name in ("vendor-check", "vendor-verify", "lint", "fmt-check", "test-no-build"):
         return True
     return False
 
@@ -361,14 +371,15 @@ def selftest() -> int:
         src_file.write_text("class Engine {}\n", encoding="utf-8")
 
         # A realistic-shaped pixi.toml: a protected task (gates), a protected audit-* task
-        # (audit-recordonce), and an ordinary task, so the line-level rule has something to
-        # discriminate against (arms i/j/k below).
+        # (audit-recordonce), a protected test-no-build task, and an ordinary task, so the
+        # line-level rule has something to discriminate against (arms i/j/k/r below).
         pixi_file = repo / "pixi.toml"
         pixi_file.write_text(
             "[tasks]\n"
             'build = { cmd = "dotnet build" }\n'
             'gates = { cmd = "python tools/gates/gates.py" }\n'
-            'audit-recordonce = { cmd = "python tools/audit-completeness/recordonce.py" }\n',
+            'audit-recordonce = { cmd = "python tools/audit-completeness/recordonce.py" }\n'
+            'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }\n',
             encoding="utf-8",
         )
 
@@ -418,7 +429,11 @@ def selftest() -> int:
         else:
             print("  OK (c) mixed src+test change -> PASS")
 
-        # (d) Protected tooling edit -> FAIL
+        # (d) Whole-file pixi.toml deletion, through the LINE-level rule -> FAIL. #1744: pixi.toml
+        # itself no longer routes through is_protected_tooling (see sabotage.py's own comment on
+        # its diff-shape-selftest fixture), so this exercises _pixi_toml_protected_hunk_touched's
+        # deletion path instead -- redundant with arms i/j/k's coverage of the same path, kept for
+        # the "whole file gone" shape specifically.
         subprocess.run(["git", "checkout", "-q", "-b", "branch-d", base_sha], cwd=repo, check=True, env=env)
         pixi_file = repo / "pixi.toml"
         pixi_file.write_text("[tasks]\n", encoding="utf-8")
@@ -526,6 +541,26 @@ def selftest() -> int:
         else:
             print("  OK (k) pixi.toml audit-recordonce task edit -> FAIL")
 
+        # (r) pixi.toml: editing the test-no-build task line -> FAIL (#1754 F2 -- test-no-build is
+        # AFTER_BUILD_FULL's test leg in gates.py; a neutered cmd here drops test coverage from
+        # every `pixi run gates` without touching a test file or tripping the old rule).
+        subprocess.run(["git", "checkout", "-q", "-b", "branch-r", base_sha], cwd=repo, check=True, env=env)
+        pixi_file.write_text(
+            pixi_file.read_text(encoding="utf-8").replace(
+                'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }',
+                'test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1 --filter Foo!=Bar" }',
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "edit test-no-build task line"], cwd=repo, check=True, env=env)
+        head_r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+        passed_r, msgs_r = check_diff_shape(base_sha, head_r, labels=[], cwd=repo)
+        if passed_r:
+            failures.append("(r) editing the test-no-build task line did not fail as expected")
+        else:
+            print("  OK (r) pixi.toml test-no-build task edit -> FAIL")
+
         # (l)-(p): the widened protected-tooling directories/files (#1744) -- one arm each, FAIL.
         widened_targets = [
             ("l", "tools/audit-completeness/completeness.py"),
@@ -533,6 +568,13 @@ def selftest() -> int:
             ("n", "tools/buildlock.py"),
             ("o", "tools/flake-watch/summarize.py"),
             ("p", "tests/Baton.Architecture.Tests/SpawnGateTests.cs"),
+            # (s)-(w): the #1754 widening -- the wired selftest bodies #1744's ruling had wrongly
+            # excluded as "not enforcement", plus vendor-check's actual body.
+            ("s", "tools/fleet-glass/worker.selftest.mjs"),
+            ("t", "tools/tool-refresh/refresh.py"),
+            ("u", "tools/baton-agy-loop/dispatch.py"),
+            ("v", "tests/Launcher.Tests.ps1"),
+            ("w", "tools/Baton.VendorProbe/Program.cs"),
         ]
         for label, rel_path in widened_targets:
             subprocess.run(["git", "checkout", "-q", "-b", f"branch-{label}", base_sha], cwd=repo, check=True, env=env)
@@ -549,10 +591,13 @@ def selftest() -> int:
             else:
                 print(f"  OK ({label}) {rel_path} edit -> FAIL")
 
-        # (q) Control: tools/fleet-glass/ and .githooks/ stay unprotected -> PASS.
+        # (q) Control: a genuinely unprotected sibling in a partly-protected directory, plus
+        # .githooks/, stay unprotected -> PASS. tools/fleet-glass/glass.html (not
+        # worker.selftest.mjs, protected by name since #1754) proves the widening protects the
+        # specific wired file rather than the whole tools/fleet-glass/ directory.
         subprocess.run(["git", "checkout", "-q", "-b", "branch-q", base_sha], cwd=repo, check=True, env=env)
         (repo / "tools" / "fleet-glass").mkdir(parents=True, exist_ok=True)
-        (repo / "tools" / "fleet-glass" / "pusher.py").write_text("# x\n", encoding="utf-8")
+        (repo / "tools" / "fleet-glass" / "glass.html").write_text("<!-- x -->\n", encoding="utf-8")
         (repo / ".githooks").mkdir(parents=True, exist_ok=True)
         (repo / ".githooks" / "pre-push").write_text("# x\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
@@ -561,9 +606,9 @@ def selftest() -> int:
 
         passed_q, msgs_q = check_diff_shape(base_sha, head_q, labels=[], cwd=repo)
         if not passed_q:
-            failures.append(f"(q) editing tools/fleet-glass/ and .githooks/ failed unexpectedly: {msgs_q}")
+            failures.append(f"(q) editing tools/fleet-glass/glass.html and .githooks/ failed unexpectedly: {msgs_q}")
         else:
-            print("  OK (q) tools/fleet-glass/ and .githooks/ edits -> PASS")
+            print("  OK (q) tools/fleet-glass/glass.html and .githooks/ edits -> PASS")
 
         # (h) main()'s GITHUB_EVENT_PATH fallback, with no --labels passed -- the actual channel
         # CI uses. A synthetic event payload carries two labels including operator-merge; the
@@ -605,7 +650,7 @@ def selftest() -> int:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 17 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 23 discrimination arms passed)")
     return 0
 
 
