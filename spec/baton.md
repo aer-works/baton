@@ -1553,7 +1553,8 @@ where `ExecutionUsageView` is
 ```
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
   "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number,
-  "billedTokens"?: number, "liveBilledTokens"?: number, "billedUnderReadTokens"?: number }
+  "billedTokens"?: number, "liveBilledTokens"?: number, "billedUnderReadTokens"?: number,
+  "billedReconciliationUnavailable"?: string }
 ```
 (`src/Baton/Status/ExecutionUsageView.cs` declares the C# record; `WorkflowStatusView.cs` projects it). `wallClockMs` is
 always present when the object is present at all — derived from recorded start/exit timestamps. The

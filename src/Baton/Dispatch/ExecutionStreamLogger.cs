@@ -121,6 +121,15 @@ public sealed class ExecutionStreamLogger
 
             _stdoutSize = File.Exists(stdoutPath) ? new FileInfo(stdoutPath).Length : 0;
             _stderrSize = File.Exists(stderrPath) ? new FileInfo(stderrPath).Length : 0;
+
+            // #1724 item 3: `_stdoutRollovers` is otherwise instance state seeded to 0, so a second
+            // logger constructed over a directory that has already rolled once (`.stdout.log.1` or the
+            // truncation marker already on disk) would treat its own first destructive roll as roll #1
+            // and never write the marker -- fail-open. Seeding from disk makes the count agree with
+            // what actually happened to this directory, not just this instance's own history of it.
+            var stdoutRolloverPath = Path.Combine(_outputDirectory, StdoutRolloverFileName);
+            var stdoutMarkerPath = Path.Combine(_outputDirectory, StdoutTruncationMarkerFileName);
+            _stdoutRollovers = File.Exists(stdoutRolloverPath) || File.Exists(stdoutMarkerPath) ? 1 : 0;
         }
         catch (Exception ex)
         {

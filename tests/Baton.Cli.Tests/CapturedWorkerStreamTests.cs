@@ -226,9 +226,52 @@ public class CapturedWorkerStreamTests
             // counted independently.
             Assert.False(File.Exists(Path.Combine(tempDir, ExecutionStreamLogger.StderrTruncationMarkerFileName)));
 
-            // And the marker is one of this logger's own files, so nothing enumerating the output
-            // directory presents it to an operator as a worker deliverable (#1345).
+            // And the marker is one of this logger's own files per the predicate that WOULD filter it
+            // out of a directory read -- #1724 review LOW: see ReservedOutputNames' own doc
+            // (WorkerContract.cs) for why this predicate currently has no production caller. This pins
+            // its membership answer, not a live filtering effect.
             Assert.True(ExecutionStreamLogger.IsStreamLogFileName(ExecutionStreamLogger.StdoutTruncationMarkerFileName));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    [Fact]
+    public void A_logger_constructed_over_an_already_rolled_directory_marks_its_first_destructive_roll()
+    {
+        // #1724 item 3: `_stdoutRollovers` used to seed to 0 unconditionally, so a SECOND logger built
+        // over a directory that had already rolled once (e.g. a resumed/rebound execution reusing the
+        // same output directory) would treat its own first roll as roll #1 and never write the
+        // truncation marker, even though the directory's `.stdout.log.1` was about to be overwritten
+        // for the second time and a segment really was about to be lost. Pre-creating `.stdout.log.1`
+        // here reproduces that already-rolled directory; goes red if the constructor's seeding is
+        // reverted to an unconditional 0.
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-seed-rollover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(tempDir, ExecutionStreamLogger.StdoutRolloverFileName), new byte[60]);
+
+            var logger = new ExecutionStreamLogger(tempDir, maxSizeBytes: 100);
+            var markerPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+
+            static byte[] Chunk(char fill)
+            {
+                var chunk = new byte[60];
+                Array.Fill(chunk, (byte)fill);
+                return chunk;
+            }
+
+            logger.AppendStdout(Chunk('A'));
+            Assert.False(File.Exists(markerPath));
+
+            // This logger's OWN first roll -- but it overwrites the pre-existing `.stdout.log.1`, so
+            // the seeded count must already treat it as roll #2 and write the marker on this call
+            // rather than waiting for a second roll from this instance.
+            logger.AppendStdout(Chunk('B'));
+            Assert.True(File.Exists(markerPath));
         }
         finally
         {

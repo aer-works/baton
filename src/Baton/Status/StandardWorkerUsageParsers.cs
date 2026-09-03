@@ -30,8 +30,9 @@ public static class StandardWorkerUsageParsers
 /// cost and quota" section is the register this reads against). <c>total_cost_usd</c> is real on this
 /// vendor but outside #1569's additive shape, so it is read by nothing here.
 /// <para>
-/// <b>Scope, corrected by #1706: this reads <c>modelUsage</c>, the WHOLE-TREE figure, and falls back
-/// to top-level <c>usage</c> only when the line carries no <c>modelUsage</c> at all.</b> The prior
+/// <b>Scope, corrected by #1706 and again per-field by #1724: this reads <c>modelUsage</c>, the
+/// WHOLE-TREE figure, and falls back to top-level <c>usage</c> PER FIELD -- independently for each of
+/// the five figures, not only when the line carries no <c>modelUsage</c> at all.</b> The prior
 /// reading was top-level-only and this doc recorded that as a known shortfall (docs/vendor-doc-audit.md,
 /// #479: 22% on a single subagent, growing with the tree) while ruling <c>modelUsage</c> unreadable
 /// because "summing it correctly needs a per-model breakdown this shape's scalars cannot carry". That
@@ -76,34 +77,37 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             long? cacheReadTokens = null;
             long? cacheCreationTokens = null;
             long? thinkingTokens = null;
-            // #1706: whole-tree first. Only when the line carries no readable modelUsage at all does
-            // this fall back to the top-level, main-thread-only `usage` object below -- so a capture
-            // predating the field (or a vendor build that stops emitting it) still yields the figures
-            // it always did rather than nothing.
-            var readFromModelUsage = TryReadModelUsageTotals(root, ref tokensIn, ref tokensOut, ref cacheReadTokens, ref cacheCreationTokens, ref thinkingTokens);
-            if (!readFromModelUsage && root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
+            // #1706, corrected per-field by #1724 item 4: whole-tree first. Each of the five figures
+            // that modelUsage did not itself carry falls back independently to the top-level,
+            // main-thread-only `usage` object below -- so a modelUsage entry missing one figure (e.g.
+            // thinkingTokens) still gets it from the top level instead of losing it, and a capture
+            // predating the field (or a vendor build that stops emitting it) still yields every figure
+            // it always did.
+            TryReadModelUsageTotals(root, ref tokensIn, ref tokensOut, ref cacheReadTokens, ref cacheCreationTokens, ref thinkingTokens);
+            if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
             {
-                if (usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
+                if (tokensIn is null && usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
                 {
                     tokensIn = inTokens;
                 }
 
-                if (usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
+                if (tokensOut is null && usageProp.TryGetProperty("output_tokens", out var outProp) && outProp.TryGetInt64(out var outTokens))
                 {
                     tokensOut = outTokens;
                 }
 
-                if (usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
+                if (cacheReadTokens is null && usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue))
                 {
                     cacheReadTokens = cacheReadValue;
                 }
 
-                if (usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue))
+                if (cacheCreationTokens is null && usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue))
                 {
                     cacheCreationTokens = cacheCreationValue;
                 }
 
-                if (usageProp.TryGetProperty("output_tokens_details", out var outputDetailsProp)
+                if (thinkingTokens is null
+                    && usageProp.TryGetProperty("output_tokens_details", out var outputDetailsProp)
                     && outputDetailsProp.ValueKind == JsonValueKind.Object
                     && outputDetailsProp.TryGetProperty("thinking_tokens", out var thinkingProp)
                     && thinkingProp.TryGetInt64(out var thinkingValue))
