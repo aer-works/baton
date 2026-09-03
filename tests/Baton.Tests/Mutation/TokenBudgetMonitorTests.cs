@@ -68,6 +68,64 @@ public sealed class TokenBudgetMonitorTests
     }
 
     [Fact]
+    public void A_sub_agents_smaller_context_never_lowers_the_tracked_level_below_the_parents()
+    {
+        // #1666: parent line (level L1=300) -> sub-agent line (level 40 < L1, marked the way
+        // ClaudeUsageParser.TryParseIncrementalUsage measures one) -> parent line (level L2=350 >=
+        // L1). Red on origin/main: the old replace-on-every-line read let the sub-agent's 40 overwrite
+        // 300, so the level dipped between the first and third assertions instead of holding at 300.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":290}}}""");
+        Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":"toolu_01subagent","message":{"usage":{"cache_creation_input_tokens":5,"cache_read_input_tokens":35}}}""");
+        Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":340}}}""");
+        Assert.Equal(350, monitor.SnapshotUsage().ContextLevelTokens);
+    }
+
+    [Fact]
+    public void A_parent_line_clears_the_sub_agent_bucket_so_a_genuine_same_bucket_drop_still_shows()
+    {
+        // Review F3: parent line (level 300) -> sub-agent line (level 150) -> parent line (level 100,
+        // a genuine drop, e.g. after compaction) asserts 100. The sub-agent reading sits BETWEEN the
+        // two parent readings on purpose: without the clear, Math.Max(100, 150) reports 150, so this
+        // arm is red on the uncleared-bucket code -- a sub-agent reading below 100 would pass either
+        // way and pin nothing.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":290}}}""");
+        Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":"toolu_01subagent","message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":140}}}""");
+        Assert.Equal(300, monitor.SnapshotUsage().ContextLevelTokens);
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":null,"message":{"usage":{"cache_creation_input_tokens":10,"cache_read_input_tokens":90}}}""");
+        Assert.Equal(100, monitor.SnapshotUsage().ContextLevelTokens);
+    }
+
+    [Fact]
+    public void A_sub_agent_line_with_no_parent_reading_yet_still_counts_as_the_level()
+    {
+        // #1666, acceptance's second clause: a fan-out sub-agent turn that arrives before the parent
+        // has ever reported usage must not be dropped -- the level starts from it.
+        var monitor = new TokenBudgetMonitor(budget: 1_000_000, maxToolSteps: null, billedRateLimit: null, new ClaudeUsageParser());
+
+        monitor.OnStdoutLine(
+            """{"type":"assistant","parent_tool_use_id":"toolu_01subagent","message":{"usage":{"cache_creation_input_tokens":5,"cache_read_input_tokens":35}}}""");
+
+        Assert.Equal(40, monitor.SnapshotUsage().ContextLevelTokens);
+    }
+
+    [Fact]
     public void Billed_tokens_include_cache_creation_but_never_thinking()
     {
         // Pins the exclusion StandardWorkerUsageParsersTests' real-line test proves against actual

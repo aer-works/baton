@@ -257,6 +257,10 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             long? cacheReadTokens = usageProp.TryGetProperty("cache_read_input_tokens", out var cacheReadProp) && cacheReadProp.TryGetInt64(out var cacheReadValue) ? cacheReadValue : null;
             long? cacheCreationTokens = usageProp.TryGetProperty("cache_creation_input_tokens", out var cacheCreationProp) && cacheCreationProp.TryGetInt64(out var cacheCreationValue) ? cacheCreationValue : null;
             string? messageId = message.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() : null;
+            // #1666: a sub-agent's own turn carries a parent_tool_use_id field, set and non-null, at
+            // the line's ROOT (not inside "message") -- spec/baton.md §3 has the measured shape.
+            var isSubAgentTurn = root.TryGetProperty("parent_tool_use_id", out var parentToolUseIdProp)
+                && parentToolUseIdProp.ValueKind == JsonValueKind.String;
 
             if (cacheReadTokens is null && cacheCreationTokens is null)
             {
@@ -267,7 +271,8 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 CacheReadTokens: cacheReadTokens,
                 CacheCreationTokens: cacheCreationTokens,
                 MessageId: messageId,
-                BilledIsFloor: true);
+                BilledIsFloor: true,
+                IsSubAgentTurn: isSubAgentTurn);
             return true;
         }
         catch (JsonException)
