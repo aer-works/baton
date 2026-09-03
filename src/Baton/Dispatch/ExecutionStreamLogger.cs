@@ -28,6 +28,15 @@ public sealed class ExecutionStreamLogger
     public const string StdoutTruncationMarkerFileName = ".stdout.log.truncated";
     public const string StderrTruncationMarkerFileName = ".stderr.log.truncated";
 
+    /// <summary>
+    /// The literal value of <c>Baton.Vendors.AgyWorkerAdapter.VerdictLedgerFileName</c>, duplicated
+    /// rather than referenced (#1732 review sub-threshold): Architecture Rule 2 keeps this core layer
+    /// from taking a project reference on <c>Baton.Vendors</c>, and from naming a vendor at all, so
+    /// the one place record-once would normally point is unreachable from here. If that value ever
+    /// changes, this constant is the other place it must change too.
+    /// </summary>
+    private const string AgyHookVerdictLedgerFileName = ".agy-hook-verdicts.ndjson";
+
     /// <summary>The truncation marker that belongs beside <paramref name="logFileName"/>.</summary>
     private static string TruncationMarkerFileNameFor(string logFileName) =>
         string.Equals(logFileName, StdoutLogFileName, StringComparison.Ordinal)
@@ -36,8 +45,11 @@ public sealed class ExecutionStreamLogger
 
     /// <summary>
     /// True when <paramref name="fileName"/> is one of this logger's own stream files — the four
-    /// names declared above, and nothing else. This is the one place that question is answered
-    /// (#1345); callers filter with it rather than restating which names are the engine's.
+    /// names declared above — or the agy hook verdict ledger's file name (#1732 review sub-threshold:
+    /// same rationale, a different engine-owned mechanism artifact written into the same output
+    /// directory by <c>Baton.Vendors.AgyWorkerAdapter</c>, not by this logger). This is the one place
+    /// that question is answered (#1345); callers filter with it rather than restating which names
+    /// are the engine's.
     /// <para>
     /// Why it exists: these files land in the execution's <em>output</em> directory, so anything
     /// enumerating that directory picks them up and presents AER's own capture of a run as though a
@@ -61,6 +73,7 @@ public sealed class ExecutionStreamLogger
         || string.Equals(fileName, StdoutRolloverFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StderrLogFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StderrRolloverFileName, StringComparison.Ordinal)
+        || string.Equals(fileName, AgyHookVerdictLedgerFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StdoutTruncationMarkerFileName, StringComparison.Ordinal)
         || string.Equals(fileName, StderrTruncationMarkerFileName, StringComparison.Ordinal);
 

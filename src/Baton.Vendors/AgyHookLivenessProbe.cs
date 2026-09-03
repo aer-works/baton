@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading;
 
 namespace Baton.Vendors;
 
@@ -43,21 +45,38 @@ public sealed record AgyHookLivenessResult(bool IsLive, string Detail);
 /// sidestepping the shell hop entirely -- sound for a path-with-space, but structurally incapable of
 /// reproducing #710, the measured incident (a command-STRING spelling defect: the binary was fine, the
 /// shell could not resolve the command, and agy read the silence as an ALLOW) that is this probe's own
-/// stated motivation. Now spawns <c>cmd /c</c> (Windows) / <c>sh -c</c> (Unix) over the IDENTICAL
-/// command string <see cref="AgyWorkerAdapter.BuildHooksJson"/> writes into <c>hooks.json</c> --
-/// <c>dotnet {AgyWorkerAdapter.HookAssemblyToken(path)} agy-hook-check</c> -- so the same shell,
-/// parsing the same string, is what answers. <see cref="AgyWorkerAdapter.HookAssemblyToken"/>'s
-/// escaping rules exist to survive exactly this hop, and now the probe takes it too.
+/// stated motivation. Now spawns <c>cmd /c</c> (Windows) / <c>sh -c</c> (Unix) over
+/// <see cref="AgyWorkerAdapter.BuildHookCommand"/> -- the SAME function <see
+/// cref="AgyWorkerAdapter.BuildHooksJson"/> calls to write <c>hooks.json</c> (#1732 review N1: no
+/// longer two independent interpolations of the same string) -- so the same shell, parsing the same
+/// string, is what answers. <see cref="AgyWorkerAdapter.HookAssemblyToken"/>'s escaping rules exist
+/// to survive exactly this hop, and now the probe takes it too.
 /// </summary>
 internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
 {
     /// <summary>
+    /// #1732 review "Probe cost" (ruled ahead of #1731): a live result for a given
+    /// <paramref name="hookAssemblyPath"/> cannot meaningfully change within one short-lived CLI
+    /// invocation, so a second resolve in the same process (e.g. two agy roles under one <c>baton
+    /// run</c> once #1731 widens the eager-resolve population) reuses the first spawn instead of
+    /// paying for another cold <c>cmd /c dotnet …</c> start. A failed probe is deliberately NOT
+    /// cached -- a transient failure (a slow machine, a momentary timeout) must not permanently wedge
+    /// every later resolve in the same process into refusing dispatch.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, AgyHookLivenessResult> LiveResultCache = new();
+
+    /// <summary>
     /// A <c>run_command</c> call that must be denied. Deliberately sent with <b>no</b>
-    /// <c>BATON_HOOK_*</c> environment variables present (see <see cref="Probe"/>): with the
-    /// denied-tool list channel absent, <c>AgyHookCheckCommand.Decide</c> denies unconditionally
-    /// ("did not receive its denied-tool list") — a guaranteed deny that depends only on the hook
-    /// process starting and answering, not on this invocation's real grant or shell patterns. The
-    /// <c>git push</c> command line is illustrative payload shape, not what drives the verdict.
+    /// <c>BATON_HOOK_*</c> environment variables present (see <see cref="Probe"/>) -- #1732 review
+    /// N7: with all four channels stripped, three independent guards in
+    /// <c>AgyHookCheckCommand.Decide</c> each force the deny on their own -- the denied-tool list
+    /// being absent, the shell-pattern list being absent, and the denied-shell-pattern list being
+    /// absent -- so the deny is deliberately over-determined rather than resting on any single one.
+    /// That is what lets this payload measure process liveness through the real shell (did the binary
+    /// start and answer at all) rather than any one channel's own logic; the real-binary test this
+    /// drives pins the deny happening at all, not the denied-tool guard specifically -- removing or
+    /// reordering that one guard alone leaves the other two still denying. The <c>git push</c> command
+    /// line is illustrative payload shape, not what drives the verdict.
     /// </summary>
     private const string SyntheticDeniedToolCall =
         """{"toolCall":{"name":"run_command","args":{"CommandLine":"git push"}}}""";
@@ -76,8 +95,45 @@ internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
         AgyWorkerAdapter.VerdictLedgerVariable,
     ];
 
+    /// <summary>
+    /// Test-only counter of <see cref="ProbeUncached"/> invocations -- incremented before the
+    /// existence check, so it also counts a probe that never actually spawns a process (a
+    /// nonexistent path). What it lets a test assert is the thing the cache is FOR: a second
+    /// <see cref="Probe"/> call for an already-live path does not re-enter this method at all.
+    /// </summary>
+    internal static int SpawnCountForTesting;
+
+    /// <summary>
+    /// Test-only: <see cref="LiveResultCache"/> is process-wide and persists across every test in
+    /// the same run, so a test asserting "the first call spawns, the second doesn't" needs a known-
+    /// empty starting point rather than whatever an earlier, unrelated test already warmed for the
+    /// same real assembly path.
+    /// </summary>
+    internal static void ResetCacheForTesting()
+    {
+        LiveResultCache.Clear();
+        SpawnCountForTesting = 0;
+    }
+
     public AgyHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout)
     {
+        if (LiveResultCache.TryGetValue(hookAssemblyPath, out var cached))
+        {
+            return cached;
+        }
+
+        var result = ProbeUncached(hookAssemblyPath, timeout);
+        if (result.IsLive)
+        {
+            LiveResultCache[hookAssemblyPath] = result;
+        }
+
+        return result;
+    }
+
+    private static AgyHookLivenessResult ProbeUncached(string hookAssemblyPath, TimeSpan timeout)
+    {
+        Interlocked.Increment(ref SpawnCountForTesting);
         if (!File.Exists(hookAssemblyPath))
         {
             return new AgyHookLivenessResult(false, $"'{hookAssemblyPath}' does not exist");
@@ -86,8 +142,10 @@ internal sealed class ProcessAgyHookLivenessProbe : IAgyHookLivenessProbe
         string command;
         try
         {
-            // Identical to the string BuildHooksJson writes into hooks.json -- the whole point of F6.
-            command = $"dotnet {AgyWorkerAdapter.HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
+            // #1732 review N1: shares AgyWorkerAdapter.BuildHookCommand with BuildHooksJson rather
+            // than re-interpolating -- the whole point of F6 was spawning the identical string, and a
+            // second independent interpolation is a place that identity could silently drift.
+            command = AgyWorkerAdapter.BuildHookCommand(hookAssemblyPath);
         }
         catch (InvalidOperationException ex)
         {

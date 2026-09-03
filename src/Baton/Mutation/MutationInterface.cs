@@ -1046,6 +1046,7 @@ public static class MutationInterface
                         IWorkerResponseParser? responseParser = null;
                         var changesTree = false;
                         string? changesTreeWorkingDirectory = null;
+                        Func<string, int>? countHookVerdicts = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
@@ -1074,6 +1075,12 @@ public static class MutationInterface
                                 // tree-changing role never gets an auto-provisioned worktree, so that gate
                                 // would leave this permanently null for every real run.
                                 changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
+                                // #1732 review N3 (ruled: close the gap): the same CoreDispatchTarget
+                                // already resolved above for worktreePath/changesTree carries
+                                // CountHookVerdicts when this binding is an agy grant under sole-hook
+                                // narrowing (AgyWorkerAdapter.Resolve) -- captured here so the canary
+                                // also covers the crash-recovery replay, not only live dispatch.
+                                countHookVerdicts = p.Target.CountHookVerdicts;
                             }
                         }
                         catch (BatonFlowException)
@@ -1094,18 +1101,27 @@ public static class MutationInterface
                             ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
                             : null;
 
-                        // #1732 review WIRING: toolCallCount/hookVerdictCount stay null here,
-                        // deliberately, not merely by omission. This is the crash-recovery replay --
-                        // the workspace this execution ran in may be defunct by the time this runs, and
-                        // the agy hook verdict ledger is a live per-execution artifact, not a journaled
-                        // fact recorded alongside exit/reason/stderr above. Re-reading it now would be
-                        // re-deriving a signal from state this branch has no other business touching,
-                        // for a canary whose whole point is catching a hook that died THIS run.
+                        // #1732 review N3 (ruled: close the gap, option a): mirrors the live-dispatch
+                        // site's counting rather than passing null/null. The ledger lives in the
+                        // artifacts output directory resolved above at :1038 -- not the workspace,
+                        // which is the only thing this branch's "may be defunct" reasoning ever
+                        // applied to -- and usageParser is already resolved above; countHookVerdicts
+                        // is the already-resolved CoreDispatchTarget's own delegate, captured in the
+                        // try block above, so this spawns no extra probe.
+                        int? toolCallCount = null;
+                        int? hookVerdictCount = null;
+                        if (countHookVerdicts is not null)
+                        {
+                            toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
+                            hookVerdictCount = countHookVerdicts(outputDirectory);
+                        }
+
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
                             usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
-                            changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: null, hookVerdictCount: null);
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
+                            hookVerdictCount: hookVerdictCount);
 
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
@@ -1783,19 +1799,7 @@ public static class MutationInterface
             int? hookVerdictCount = null;
             if (target.CountHookVerdicts is { } countHookVerdicts)
             {
-                toolCallCount = 0;
-                if (usageParser is not null)
-                {
-                    var stdoutLogPath = Path.Combine(prepared.OutputDirectory, ExecutionStreamLogger.StdoutLogFileName);
-                    if (File.Exists(stdoutLogPath))
-                    {
-                        foreach (var line in File.ReadLines(stdoutLogPath))
-                        {
-                            toolCallCount += usageParser.CountToolSteps(line);
-                        }
-                    }
-                }
-
+                toolCallCount = CountToolCallsFromStdoutLog(usageParser, prepared.OutputDirectory);
                 hookVerdictCount = countHookVerdicts(prepared.OutputDirectory);
             }
 
@@ -2233,5 +2237,40 @@ public static class MutationInterface
             RequiredInputs: [],
             ProducedOutputs: [.. request.Outputs.Select(o => new ProducedOutput(o))],
             OptionalMetadata: []);
+    }
+
+    /// <summary>
+    /// The first-verdict canary's tool-call count, shared by the live-dispatch and crash-recovery
+    /// replay call sites (#1732 review N4). Reads <see cref="ExecutionStreamLogger.StdoutRolloverFileName"/>
+    /// first, when it exists, before <see cref="ExecutionStreamLogger.StdoutLogFileName"/> --
+    /// <c>ExecutionStreamLogger</c> performs a single 8 MiB rollover per stream, so a long run's
+    /// earliest segment (the rolled-out <c>.stdout.log.1</c>) and its current tail (<c>.stdout.log</c>)
+    /// are two separate files, and skipping the first would undercount a run whose terminal tool
+    /// steps happened to land before the roll. The canary only needs "&gt; 0", so summing both
+    /// segments in file order is sufficient without reconstructing one contiguous stream.
+    /// </summary>
+    private static int CountToolCallsFromStdoutLog(IWorkerUsageParser? usageParser, string outputDirectory)
+    {
+        var toolCallCount = 0;
+        if (usageParser is null)
+        {
+            return toolCallCount;
+        }
+
+        foreach (var fileName in new[] { ExecutionStreamLogger.StdoutRolloverFileName, ExecutionStreamLogger.StdoutLogFileName })
+        {
+            var path = Path.Combine(outputDirectory, fileName);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (var line in File.ReadLines(path))
+            {
+                toolCallCount += usageParser.CountToolSteps(line);
+            }
+        }
+
+        return toolCallCount;
     }
 }

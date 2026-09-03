@@ -2133,10 +2133,12 @@ public class OutcomeClassifierTests
     [Fact]
     public void A_cancelled_run_is_not_reclassified_by_the_canary()
     {
-        // #1732 review F3's discriminating control, other direction: CancelRequested is classified by
-        // its own branch ABOVE where the canary now sits (moved past both by this PR), so a cancelled
-        // run with a dead-hook-shaped count pair must still settle Cancelled, never Indeterminate. This
-        // is the arm #1720/#1732's merge moved the canary ahead of with no test pinning it safe.
+        // #1732 review F3's discriminating control, other direction, corrected by N6: this pins
+        // ORDERING only -- CancelRequested returns from its own branch far above where the canary now
+        // sits (:362), so control never reaches the canary at all on a cancelled result, and this test
+        // passes even if the canary's own `Reason == Natural` guard were deleted outright. It would go
+        // red if the canary were hoisted back above the CancelRequested return, which is the regression
+        // worth having a control for; it does not, and cannot, discriminate the `Natural` guard itself.
         var directory = CreateTempDirectory();
         try
         {

@@ -179,8 +179,13 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// </summary>
     public const string VerdictLedgerVariable = "BATON_HOOK_VERDICT_LEDGER";
 
-    /// <summary>The file name under the ledger directory <see cref="VerdictLedgerVariable"/> names.</summary>
-    internal const string VerdictLedgerFileName = "agy-hook-verdicts.ndjson";
+    /// <summary>
+    /// The file name under the ledger directory <see cref="VerdictLedgerVariable"/> names.
+    /// Dot-prefixed (#1732 review sub-threshold) so <see cref="Baton.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/>
+    /// can filter it out of a future deliverable listing the same way it already filters the engine's
+    /// own stream-log files — this is an engine-owned mechanism artifact, not a worker deliverable.
+    /// </summary>
+    internal const string VerdictLedgerFileName = ".agy-hook-verdicts.ndjson";
 
 
     /// <summary>
@@ -451,6 +456,17 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         var requiresHookAsSoleNarrowing = RequiresHookAsSoleNarrowing(permissionScope, invocation.PermissionGrant);
         if (requiresHookAsSoleNarrowing)
         {
+            // #1732 review N5, ruled fail closed: the per-execution canary (CountHookVerdicts below)
+            // derives toolCallCount entirely from stream-json step_update lines -- a StreamJson:false
+            // binding emits none, so a hook that dies after this probe would be caught by nothing for
+            // that role's whole lifetime, silently, for as long as the binding exists. Refused here the
+            // same way WorkerBindingResolver refuses other incoherent grant shapes, rather than shipping
+            // a hole the operator has no way to see.
+            if (!invocation.StreamJson)
+            {
+                throw new AgyCanaryRequiresStreamJsonException();
+            }
+
             var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
             var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
             if (!probeResult.IsLive)
@@ -869,7 +885,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 "before any worker is dispatched.");
         }
 
-        var command = $"dotnet {HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
+        var command = BuildHookCommand(hookAssemblyPath);
         var hooks = new Dictionary<string, object>
         {
             ["baton-permission-gate"] = new
@@ -890,6 +906,17 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         return JsonSerializer.Serialize(hooks);
     }
+
+    /// <summary>
+    /// The hook command string, shared by <see cref="BuildHooksJson"/> (what's written into
+    /// <c>hooks.json</c>) and <see cref="IAgyHookLivenessProbe"/> (what the resolve-time probe
+    /// spawns) -- #1732 review N1: previously interpolated independently in both places, with only
+    /// <see cref="HookAssemblyToken"/>'s escaping shared, so a change to one could drift from the
+    /// other with nothing to notice. A probe spawning a stale command would keep reporting the hook
+    /// live while <c>hooks.json</c>'s real command silently changed underneath it.
+    /// </summary>
+    internal static string BuildHookCommand(string hookAssemblyPath) =>
+        $"dotnet {HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
 
     /// <summary>
     /// How the assembly path is spelled inside the hook command string, so agy's shell resolves it.
