@@ -517,7 +517,7 @@ wrote `Indeterminate` from that slice alone. What writes it now:
 | Producer | Event | `Domain.IndeterminateProducer` | Landed |
 |---|---|---|---|
 | `OutcomeClassifier.Classify`'s #1594 captured-response arm — declared output(s) missing, but a terminal response was recoverable | `FlowEvent.ExecutionIndeterminate` (non-null `CapturedResponseFile`) | `CapturedResponse` | #1608 |
-| `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593 |
+| `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture; also #1680's first-verdict canary (a natural, contract-satisfied exit whose caller reports ≥1 tool call and zero agy `PreToolUse` hook verdicts — the hook may never have run, and this vendor reads that silence as an ALLOW rather than an error) | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593, #1680 |
 | The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | `VerifyFailed` | #1623 |
 | A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | `Arrested` | #1623 |
 
@@ -2538,6 +2538,13 @@ open loudly" (detectable at startup) from "fails open silently" (not). Its `agy`
 plainly: *"whether agy REPORTS the failure is not claimed."* A harness author dispatching into a
 fresh config directory or a containerized environment must not assume a hook that failed to load will
 announce itself on `agy` — that half is genuinely unmeasured, not merely undocumented.
+
+**#1680: for the one shape where that silent fail-open is a total ungating rather than a partial one** —
+an agy grant whose only narrowing IS the hook (`AgyWorkerAdapter.RequiresHookAsSoleNarrowing`) — a
+resolve-time liveness probe (a synthetic denied call that must come back `deny`) refuses dispatch
+outright when the hook does not answer live, and a first-verdict canary settles a run `Indeterminate`
+rather than `Succeeded` when it reports tool calls but the hook's own verdict ledger recorded none for
+them (the `ContractFailure` producer row in §3); agy's own fail-open behaviour is otherwise unchanged.
 
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),

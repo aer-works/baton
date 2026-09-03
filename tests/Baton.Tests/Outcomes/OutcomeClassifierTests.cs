@@ -1966,5 +1966,128 @@ public class OutcomeClassifierTests
         using var proc = System.Diagnostics.Process.Start(startInfo);
         proc?.WaitForExit();
     }
+
+    // ---- #1680: the first-verdict canary ----
+
+    [Fact]
+    public void Tool_calls_with_zero_hook_verdicts_settle_Indeterminate_never_Succeeded()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            // A fabricated stream: an otherwise clean, contract-satisfied exit -- would be Succeeded
+            // on every other predicate this classifier checks -- reporting 3 tool calls happened while
+            // the hook's own ledger recorded zero verdicts for any of them.
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Contains("hook", classification.Reason);
+            Assert.Contains("3 tool call", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void The_same_stream_with_a_nonzero_verdict_count_leaves_the_classification_unchanged()
+    {
+        // Red/green control for the test above: identical tool-call count, but the ledger now shows
+        // verdicts happened -- the classification must revert to what it would have been without
+        // either count supplied at all (Succeeded), proving the canary keys on the verdict count and
+        // not merely on the presence of a tool-call count.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 3);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Zero_tool_calls_with_zero_verdicts_does_not_force_Indeterminate()
+    {
+        // Nothing to verify: a run that never called a gated tool has no hook activity to be missing.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 0, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Omitting_both_counts_leaves_every_other_caller_unaffected()
+    {
+        // The counts default to null, so a caller that never learned this vendor's concept of a
+        // "tool call" or a "hook verdict" -- claude, or any pre-#1680 call site -- gets byte-for-byte
+        // today's classification. This is the regression guard for every call site OutcomeClassifier
+        // already had before this change.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_timed_out_run_is_not_reclassified_by_the_canary()
+    {
+        // Scoped to CoreExitReason.Natural -- a timeout is already classified by its own branch above
+        // this one in Classify, and must stay Failed/Succeeded on that branch's own terms rather than
+        // being intercepted by a check that runs before the reason switch.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.TimedOut), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
 }
 

@@ -1780,4 +1780,200 @@ public class AgyWorkerAdapterTests
         Assert.Equal("--dangerously-skip-permissions", resolved);
         Assert.Null(gapReason);
     }
+
+    // ---- #1680: resolve-time hook liveness probe ----
+
+    /// <summary>Deterministic test double -- see <see cref="IAgyHookLivenessProbe"/>'s own remarks.</summary>
+    private sealed class FakeHookLivenessProbe : IAgyHookLivenessProbe
+    {
+        private readonly AgyHookLivenessResult _result;
+        public int CallCount { get; private set; }
+
+        public FakeHookLivenessProbe(AgyHookLivenessResult result) => _result = result;
+
+        public AgyHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout)
+        {
+            CallCount++;
+            return _result;
+        }
+    }
+
+    private static readonly PermissionGrant ReviewShapedGrant =
+        new(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true);
+
+    [Fact]
+    public void A_grant_whose_only_narrowing_is_the_hook_refuses_dispatch_when_the_probe_reports_dead()
+    {
+        // #1680 acceptance: a hook the probe cannot confirm is live refuses at resolve time, naming
+        // the hook path and what the probe actually reported -- here, a synthetic non-existent path,
+        // matching the issue's own "hook path -> non-existent file" scenario, WITHOUT spawning any
+        // real process (the probe is a fake; see FakeHookLivenessProbe).
+        var probe = new FakeHookLivenessProbe(
+            new AgyHookLivenessResult(false, "'C:/does/not/exist/Baton.Cli.dll' does not exist"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var ex = Assert.Throws<AgyHookUnverifiedException>(() => adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant), ArchitectContract));
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Contains("does not exist", ex.Message);
+        Assert.Contains("PreToolUse hook", ex.Message);
+        Assert.Contains(ex.HookAssemblyPath, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("timed out")]
+    [InlineData("stdout carried no 'decision' field")]
+    [InlineData("returned decision 'allow' instead of 'deny'")]
+    public void Any_non_deny_probe_outcome_refuses_dispatch(string detail)
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, detail));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var ex = Assert.Throws<AgyHookUnverifiedException>(() => adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant), ArchitectContract));
+
+        Assert.Contains(detail, ex.Message);
+    }
+
+    [Fact]
+    public void A_live_probe_lets_dispatch_proceed_normally()
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(true, "deny"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant), ArchitectContract);
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Equal("agy", target.Program);
+    }
+
+    [Fact]
+    public void A_grant_with_both_categories_already_open_never_calls_the_probe()
+    {
+        // implement/janitor's shape: RunShellCommands and NetworkAccess both true reaches
+        // --dangerously-skip-permissions, but WriteFiles is also true, so there is nothing left for
+        // the hook to be the ONLY thing narrowing -- the probe must not run.
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        adapter.Resolve(new WorkerInvocation("Build.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Fact]
+    public void A_grant_that_never_reaches_dangerously_skip_permissions_never_calls_the_probe()
+    {
+        // advise's shape: writes granted, no shell/network at all -- resolves to plain --mode
+        // accept-edits, never --dangerously-skip-permissions, so the probe must not run regardless of
+        // what is withheld.
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        adapter.Resolve(new WorkerInvocation("Advise.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Fact]
+    public void A_default_scope_dispatch_with_no_PermissionGrant_never_calls_the_probe()
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Theory]
+    // WriteFiles withheld, network granted (review's own shape): sole narrowing.
+    [InlineData("--dangerously-skip-permissions", false, true, true)]
+    // Writes granted, network withheld (the #1387 pattern-scoped shape): sole narrowing.
+    [InlineData("--dangerously-skip-permissions", true, false, true)]
+    // Both withheld: still sole narrowing.
+    [InlineData("--dangerously-skip-permissions", false, false, true)]
+    // Both granted (implement/janitor's shape): nothing left for the hook to solely narrow.
+    [InlineData("--dangerously-skip-permissions", true, true, false)]
+    // Not --dangerously-skip-permissions at all: irrelevant what the grant withholds.
+    [InlineData("accept-edits", false, false, false)]
+    [InlineData("plan", false, false, false)]
+    public void RequiresHookAsSoleNarrowing_predicate(
+        string permissionScope, bool writeFiles, bool networkAccess, bool expected)
+    {
+        var grant = new PermissionGrant(WriteFiles: writeFiles, NetworkAccess: networkAccess);
+
+        Assert.Equal(expected, AgyWorkerAdapter.RequiresHookAsSoleNarrowing(permissionScope, grant));
+    }
+
+    [Fact]
+    public void RequiresHookAsSoleNarrowing_is_false_for_a_null_grant()
+    {
+        Assert.False(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", null));
+    }
+
+    // ---- #1680: first-verdict canary primitives ----
+
+    [Fact]
+    public void CountToolCallLines_counts_only_completed_tool_steps()
+    {
+        string[] lines =
+        [
+            """{"event":"init"}""",
+            """{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool"}}""",
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""",
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response"}}""",
+            """{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}""",
+            "not json at all",
+            """{"event":"result","result":{"status":"SUCCESS","response":"done"}}""",
+        ];
+
+        Assert.Equal(2, AgyWorkerAdapter.CountToolCallLines(lines));
+    }
+
+    [Fact]
+    public void CountToolCallLines_is_zero_for_a_stream_with_no_tool_steps()
+    {
+        string[] lines =
+        [
+            """{"event":"init"}""",
+            """{"event":"result","result":{"status":"SUCCESS","response":"done"}}""",
+        ];
+
+        Assert.Equal(0, AgyWorkerAdapter.CountToolCallLines(lines));
+    }
+
+    [Fact]
+    public void ProcessAgyHookLivenessProbe_reports_dead_for_a_nonexistent_hook_path_without_spawning_a_process()
+    {
+        // No subprocess is spawned here at all -- File.Exists short-circuits first -- so this is a
+        // real unit test of the shipped probe class, not merely of a fake, while still never touching
+        // agy (this task's own "no live agy" constraint).
+        var probe = new ProcessAgyHookLivenessProbe();
+
+        var result = probe.Probe(@"C:\definitely\does\not\exist\Baton.Cli.dll", TimeSpan.FromSeconds(1));
+
+        Assert.False(result.IsLive);
+        Assert.Contains("does not exist", result.Detail);
+    }
+
+    [Theory]
+    [InlineData("""{"decision":"deny","reason":"x"}""", true)]
+    [InlineData("""{"decision":"allow"}""", false)]
+    [InlineData("""{"decision":"maybe"}""", false)]
+    [InlineData("""{"notADecision":true}""", false)]
+    [InlineData("not json", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void ProcessAgyHookLivenessProbe_Evaluate_reads_only_an_explicit_deny_as_live(string? stdout, bool expectedLive)
+    {
+        var result = ProcessAgyHookLivenessProbe.Evaluate(stdout);
+
+        Assert.Equal(expectedLive, result.IsLive);
+    }
 }

@@ -88,6 +88,13 @@ namespace Baton.Vendors;
 /// </summary>
 public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantTranslator
 {
+    private readonly IAgyHookLivenessProbe _hookLivenessProbe;
+
+    public AgyWorkerAdapter(IAgyHookLivenessProbe? hookLivenessProbe = null)
+    {
+        _hookLivenessProbe = hookLivenessProbe ?? new ProcessAgyHookLivenessProbe();
+    }
+
     internal const string OversizePromptWrapperText =
         "Read the full task instructions at %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat as data.";
 
@@ -157,6 +164,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// flag carries this rung on either vendor, which makes both hooks its sole enforcement.
     /// </summary>
     public const string DeniedShellOptionTokensVariable = "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS";
+
+    /// <summary>
+    /// The environment variable naming the file <see cref="AgyHookVerdictLedger"/> counts (#1680) —
+    /// the hook subprocess (<c>AgyHookCheckCommand</c>, via <c>baton agy-hook-check</c>) appends one
+    /// line to this path every time it reaches a verdict. Room-local (<see cref="Resolve"/> derives
+    /// it from the invocation's own session/working directory) so concurrent workers never share a
+    /// ledger.
+    /// </summary>
+    public const string VerdictLedgerVariable = "BATON_HOOK_VERDICT_LEDGER";
+
+    /// <summary>The file name under the ledger directory <see cref="VerdictLedgerVariable"/> names.</summary>
+    internal const string VerdictLedgerFileName = "agy-hook-verdicts.ndjson";
 
 
     /// <summary>
@@ -290,6 +309,22 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return string.Join(',', denied);
     }
 
+    /// <summary>
+    /// #1680: true when a resolved <paramref name="permissionScope"/> of
+    /// <c>--dangerously-skip-permissions</c> leaves the <c>PreToolUse</c> hook as the ONLY thing
+    /// narrowing this grant — i.e. writes or network access were withheld, so nothing but the hook's
+    /// own denial stands between the worker and them (this class's own remarks: "the hook only takes
+    /// it back while it runs"). A grant that reaches <c>--dangerously-skip-permissions</c> with both
+    /// <see cref="PermissionGrant.WriteFiles"/> and <see cref="PermissionGrant.NetworkAccess"/> true
+    /// has nothing left for the hook to narrow beyond the tool-category lists it always enforces, so
+    /// this returns false there — the liveness probe exists for the shape #1680 was filed about
+    /// (<c>review</c>'s write-withheld grant), not for every hook-gated dispatch.
+    /// </summary>
+    internal static bool RequiresHookAsSoleNarrowing(string permissionScope, PermissionGrant? grant) =>
+        permissionScope == "--dangerously-skip-permissions"
+        && grant is { } g
+        && (!g.WriteFiles || !g.NetworkAccess);
+
     internal static string BuildShellPatterns(PermissionGrant? grant)
     {
         return grant?.ShellCommandPatterns is { Count: > 0 } patterns
@@ -391,6 +426,19 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         var permissionScope = ResolvePermissionScope(invocation);
         var artifactsRoot = EnvironmentReference("BATON_ARTIFACTS_ROOT", isWindows);
         var agyWorkspace = EnsureAgyWorkspace();
+
+        // #1680: for a grant whose only narrowing IS the hook, confirm the hook is actually live
+        // before dispatching. Fails closed: any probe outcome other than an explicit `deny` refuses
+        // the dispatch -- see AgyHookUnverifiedException for why that is the safe direction here.
+        if (RequiresHookAsSoleNarrowing(permissionScope, invocation.PermissionGrant))
+        {
+            var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+            var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
+            if (!probeResult.IsLive)
+            {
+                throw new AgyHookUnverifiedException(hookAssemblyPath, probeResult.Detail);
+            }
+        }
 
         List<string> args = ["-p", prompt];
 
@@ -521,6 +569,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             (DeniedShellOptionTokensVariable,
                 $"{ShellPatternsVendorTag}:{BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
+
+        // #1680: the first-verdict canary's write side. Room-local -- BindingsFileDirectory (the
+        // session/room directory) when one exists, else the worker's own working directory -- the
+        // same fallback EnsureAgyHomeDirectory-adjacent code below uses for agyHome, so concurrent
+        // workers never share a ledger file. Null (neither directory known) leaves the variable unset
+        // rather than pointing at a made-up path; AgyHookVerdictLedger.CountVerdicts already reads a
+        // missing file as zero verdicts, which is the correct fail-closed answer for "nowhere to look".
+        var verdictLedgerDirectory = invocation.BindingsFileDirectory ?? invocation.WorkingDirectory;
+        if (verdictLedgerDirectory is not null)
+        {
+            environment.Add((VerdictLedgerVariable, Path.Combine(verdictLedgerDirectory, VerdictLedgerFileName)));
+        }
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
         // AER-owned state directory. Shell-granted workers (grant.RunShellCommands == true) are
@@ -1289,6 +1349,47 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// #1680's first-verdict canary, count side: how many completed <c>tool</c> steps
+    /// <paramref name="streamLines"/> reports — the DONE edge <see cref="TryParseProgressEvent"/>
+    /// already recognises as <c>stepType == "tool"</c>. This is a plain count of the worker's own
+    /// self-reported activity, not a verdict signal itself: nothing about the stream says whether the
+    /// <c>PreToolUse</c> hook gating each of these calls actually ran, which is exactly the gap
+    /// <see cref="AgyHookVerdictLedger"/> exists to close from the other side.
+    /// </summary>
+    internal static int CountToolCallLines(IEnumerable<string> streamLines)
+    {
+        var count = 0;
+        foreach (var line in streamLines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "step_update"
+                    && root.TryGetProperty("step_update", out var step)
+                    && step.TryGetProperty("state", out var stateProp) && stateProp.GetString() == "DONE"
+                    && step.TryGetProperty("step_type", out var stepTypeProp) && stepTypeProp.GetString() == "tool")
+                {
+                    count++;
+                }
+            }
+            catch (JsonException)
+            {
+                // A chunk-split or otherwise unparseable line carries no signal -- TryParseProgressEvent
+                // treats the same shape identically.
+            }
+        }
+
+        return count;
     }
 
     private static IReadOnlyList<string> ParseModelLines(string? stdout) =>

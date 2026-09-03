@@ -151,11 +151,38 @@ public static class OutcomeClassifier
         string? worktreePath = null,
         IWorkerResponseParser? responseParser = null,
         IWorkerUsageParser? usageParser = null,
-        string? worktreeBaseRef = null)
+        string? worktreeBaseRef = null,
+        int? toolCallCount = null,
+        int? hookVerdictCount = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentException.ThrowIfNullOrEmpty(outputDirectory);
+
+        // #1680's first-verdict canary. Vendor-neutral by construction: this class never parses a
+        // vendor's own stream (Architecture Rule 1, CLAUDE.md), so both counts arrive pre-computed --
+        // today only agy's caller supplies them (AgyWorkerAdapter.CountToolCallLines and
+        // AgyHookVerdictLedger.CountVerdicts), which is why both default to null and every other
+        // caller's classification is unchanged. A worker that issued at least one tool call while its
+        // PreToolUse hook recorded zero verdicts means the hook may never have run at all -- on agy an
+        // absent hook response reads as an ALLOW rather than an error
+        // (agy.hook-malformed-stdout-fails-open), so a naturally-exited, contract-satisfied run is not
+        // trustworthy as Succeeded; it settles Indeterminate (Domain.IndeterminateProducer.ContractFailure
+        // -- CapturedResponseFile stays null, since there is nothing to capture here) pending conductor
+        // resolution, exactly like the #1608 disagreement shape. Scoped to CoreExitReason.Natural: a
+        // cancelled or timed-out run is classified by those paths above regardless of this signal.
+        if (result.Reason == CoreExitReason.Natural && toolCallCount is { } calls && calls > 0 && hookVerdictCount == 0)
+        {
+            return new OutcomeClassification(
+                OutcomeVerdict.Indeterminate,
+                FailureClassification: null,
+                WithStderr(
+                    $"The agy PreToolUse hook recorded zero verdicts across {calls} tool call(s) -- it " +
+                    "may never have run, which on this vendor is a silent allow rather than an error " +
+                    "(agy.hook-malformed-stdout-fails-open). Settling Indeterminate pending conductor " +
+                    "resolution ('baton resolve').",
+                    result.StderrTail));
+        }
 
         if (result.Reason == CoreExitReason.CancelRequested)
         {

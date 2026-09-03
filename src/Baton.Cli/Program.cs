@@ -62,9 +62,13 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
     // #1683 F2: the option-token deny rung, read like the two channels above.
     var agyDeniedShellOptionTokens = Environment.GetEnvironmentVariable(
         AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
+    // #1680: the first-verdict canary's write side -- naming the file this invocation appends one
+    // line to, so AgyWorkerAdapter's caller can later confirm the hook fired at all.
+    var agyVerdictLedgerPath = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.VerdictLedgerEnvironmentVariable);
     return AgyHookCheckCommand.Execute(
         Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns,
-        agyDeniedShellOptionTokens);
+        agyDeniedShellOptionTokens, agyVerdictLedgerPath);
 }
 
 // #1458: folded from the standalone Baton.Mcp.Host executable -- a stdio MCP server (vendor CLIs

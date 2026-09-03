@@ -93,6 +93,14 @@ public static class AgyHookCheckCommand
         Baton.Vendors.AgyWorkerAdapter.DeniedShellOptionTokensVariable;
 
     /// <summary>
+    /// Mirror-name for <see cref="Baton.Vendors.AgyWorkerAdapter.VerdictLedgerVariable"/> (#1680) —
+    /// owned there because that adapter emits it, read here. See it and
+    /// <see cref="Baton.Vendors.AgyHookVerdictLedger"/> for what the ledger is for.
+    /// </summary>
+    public const string VerdictLedgerEnvironmentVariable =
+        Baton.Vendors.AgyWorkerAdapter.VerdictLedgerVariable;
+
+    /// <summary>
     /// agy reads the verdict from stdout and the process exit code carries no gating meaning — a
     /// denial and an allow both exit 0. Compare <see cref="HookCheckCommand.DeniedExitCode"/>, where
     /// the exit code <i>is</i> the signal.
@@ -126,7 +134,8 @@ public static class AgyHookCheckCommand
     public static int Execute(
         TextReader stdin, TextWriter stdout, string? deniedToolsRaw, string? shellPatternsRaw = null,
         string? outboxDirectory = null, string? workspaceDirectory = null,
-        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null)
+        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null,
+        string? verdictLedgerPath = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
@@ -153,8 +162,46 @@ public static class AgyHookCheckCommand
             // exists to prevent.
             stdout.Write(FallbackDenyJson);
         }
+        finally
+        {
+            // #1680's first-verdict canary: one line per verdict this process actually reached stdout
+            // for, allow or deny (including the fallback deny above -- it is still a verdict, just an
+            // internally-forced one). Deliberately in `finally`, not inside the try above: a ledger
+            // write must never compete with the stdout write for the same exception handling, and its
+            // own failure (below) is swallowed rather than risking a SECOND exception mid-handler.
+            AppendVerdictLedgerLine(verdictLedgerPath);
+        }
 
         return ExitCode;
+    }
+
+    /// <summary>
+    /// Best-effort and silently so: a ledger write that throws must never turn an already-written
+    /// stdout verdict into a process that also crashes, and its failure mode (the canary undercounts
+    /// verdicts) is fail-closed on the read side — see <c>AgyHookVerdictLedger</c>'s own remarks.
+    /// </summary>
+    private static void AppendVerdictLedgerLine(string? verdictLedgerPath)
+    {
+        if (string.IsNullOrWhiteSpace(verdictLedgerPath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.AppendAllText(verdictLedgerPath, DateTimeOffset.UtcNow.ToString("O") + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        catch (ArgumentException)
+        {
+            // e.g. a path with characters this filesystem rejects -- unreachable with AER's own
+            // ledger path today, but this method must never throw, whatever the input.
+        }
     }
 
     private static string Decide(
