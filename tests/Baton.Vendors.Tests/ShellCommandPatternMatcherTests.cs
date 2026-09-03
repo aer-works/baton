@@ -366,9 +366,8 @@ public class ShellCommandPatternMatcherTests
     [Fact]
     public void An_embedded_newline_ahead_of_a_denied_command_is_denied_not_folded_past()
     {
-        // #1748 F1: the #1731 incident command with one ordinary line in front of it -- see
-        // spec/baton.md §9 for why this is cooperative-worker drift rather than adversarial evasion,
-        // and for the boundary mechanism that now catches it.
+        // #1748 F1: the #1731 incident command with one ordinary line in front of it. The reasoning
+        // and the segment-boundary mechanism that now catches it are recorded once at spec/baton.md §9.
         var implement = WorkerRoleCatalog.For("implement");
 
         var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
