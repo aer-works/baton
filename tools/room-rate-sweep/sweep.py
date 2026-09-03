@@ -469,6 +469,15 @@ def _selftest_claude_bills_cache_creation_alone_against_the_shared_gate():
     with open(gate_path, encoding="utf-8") as handle:
         gate = json.load(handle)
 
+    # #1724 item 6: guard the instrument first, matching the C# gate's `The_fixture_discriminates_
+    # absent_from_zero` and pusher.py's own "discriminates an ABSENT billed figure from a measured 0"
+    # check -- without both an absent case and a measured-zero case in the shared fixture, an edit that
+    # removed the explicit-0 arm would weaken all three consumers' guards while this one kept passing.
+    assert any(case["expectedBilledTokens"] is None for case in gate["cases"]), (
+        "shared fixture must carry a case with expectedBilledTokens: null")
+    assert any(case["expectedBilledTokens"] == 0 for case in gate["cases"]), (
+        "shared fixture must carry a case with expectedBilledTokens: 0 (measured, not absent)")
+
     checked = 0
     for case in gate["cases"]:
         expected = case["expectedBilledTokens"]

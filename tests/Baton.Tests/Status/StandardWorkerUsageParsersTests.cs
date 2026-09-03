@@ -331,4 +331,46 @@ public sealed class StandardWorkerUsageParsersTests
         Assert.Equal(30, usage.CacheReadTokens);
         Assert.Equal(40, usage.CacheCreationTokens);
     }
+
+    [Fact]
+    public void Claude_parser_TryParseFinalUsage_falls_back_PER_FIELD_when_modelUsage_is_missing_one_figure()
+    {
+        // #1724 item 4: modelUsage carries every figure except thinkingTokens (a real, measured shape --
+        // both captures underlying spec/baton.md §3 carry all five keys together, but the whole-tree
+        // read must not assume every future one will). Before the fix, ANY figure present in modelUsage
+        // short-circuited the whole top-level fallback, so the top-level usage object's own
+        // output_tokens_details.thinking_tokens:5 was silently dropped instead of filling the gap. This
+        // goes red on the prior all-or-nothing read, which reports a null ThinkingTokens here.
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"result","num_turns":7,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40,"output_tokens_details":{"thinking_tokens":5}},"modelUsage":{"claude-opus-5":{"inputTokens":100,"outputTokens":200,"cacheReadInputTokens":300,"cacheCreationInputTokens":400}}}
+            """;
+
+        Assert.True(parser.TryParseFinalUsage(line, out var usage));
+        // The four figures modelUsage DID carry win over the top-level object, same as the whole-tree test above.
+        Assert.Equal(100, usage!.TokensIn);
+        Assert.Equal(200, usage.TokensOut);
+        Assert.Equal(300, usage.CacheReadTokens);
+        Assert.Equal(400, usage.CacheCreationTokens);
+        // The one figure modelUsage did NOT carry falls back to the top-level object instead of staying null.
+        Assert.Equal(5, usage.ThinkingTokens);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseFinalUsage_keeps_a_measured_zero_in_modelUsage_over_the_top_level_figure()
+    {
+        // #1724 item 4, the other half of the per-field rule: a figure modelUsage carries as an explicit
+        // 0 is MEASURED, not absent, so it must win over a non-zero top-level value -- the fallback is
+        // keyed on null, never on zero (the repo's absent-vs-zero discipline). Goes red if the fallback
+        // ever tests `<= 0` or truthiness instead of `is null`.
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"result","num_turns":1,"usage":{"input_tokens":999,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40,"output_tokens_details":{"thinking_tokens":5}},"modelUsage":{"claude-opus-5":{"inputTokens":0,"outputTokens":200,"cacheReadInputTokens":300,"cacheCreationInputTokens":400,"thinkingTokens":0}}}
+            """;
+
+        Assert.True(parser.TryParseFinalUsage(line, out var usage));
+        Assert.Equal(0, usage!.TokensIn);
+        Assert.Equal(0, usage.ThinkingTokens);
+        Assert.Equal(200, usage.TokensOut);
+    }
 }

@@ -842,6 +842,86 @@ public sealed class ExecutionUsageProjectorTests
         }
     }
 
+    [Fact]
+    public void An_execution_with_no_stdout_log_at_all_reports_no_reconciliation_and_no_reason()
+    {
+        // #1724 item 2a: the `reading is not null` guard on ExecutionUsageView.cs -- goes red if that
+        // guard is removed (i.e. changed to fire whenever `!reconciled`), since a stream that was never
+        // captured at all would then wrongly acquire a "no-terminal-billed-figure" reason it never
+        // earned. "No stream" and "stream read but unreconcilable" are different states, and only the
+        // second one gets a reason string -- spec/baton.md §3's own "absent like the triple itself".
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1724-nostream-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-no-stream-at-all");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+            };
+
+            // No ExecutionRequestAccepted, no bindings.json, no output directory: TryReadWorkerUsage
+            // returns null before ever touching a stream file.
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+            Assert.Null(view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void An_unreadable_rollover_segment_reports_rollover_segment_unreadable()
+    {
+        // #1724 item 2b: pins ExecutionUsageProjector's `rollover-segment-unreadable` arm
+        // (ExecutionUsageProjector.cs ~430). Goes red if that catch's reason string is removed or
+        // changed, or if the guard folded this case into "no-live-billed-figure" instead -- a consumer
+        // needs to tell "the replay found nothing" from "the replay could not even read its own input"
+        // apart, since only the second is retryable by fixing the file's sharing state.
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare.None is only OS-enforced on Windows; CI is Windows-only (#1405)");
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1724-unreadable-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1724-unreadable");
+            var start = DateTime.UtcNow;
+            WriteBindings(testRoot, ("plan", "claude"));
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId, "plan"))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllLines(Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName), [ClaudeTerminalLine]);
+            var rolloverPath = Path.Combine(outputDir, ExecutionStreamLogger.StdoutRolloverFileName);
+            File.WriteAllText(rolloverPath, "unused");
+
+            using (new FileStream(rolloverPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default, testRoot);
+
+                var view = Assert.Single(usage).Value;
+                Assert.Equal("rollover-segment-unreadable", view.BilledReconciliationUnavailable);
+                Assert.Null(view.BilledTokens);
+                Assert.Null(view.LiveBilledTokens);
+                Assert.Null(view.BilledUnderReadTokens);
+            }
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter = null) => new(
         executionId,
         new WorkflowId("wf-usage-test"),
