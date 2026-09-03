@@ -1,0 +1,66 @@
+{
+  "_about": [
+    "#1706 review M5. ONE fixture, two consumers: tests/Baton.Tests/Status/ClaudeEngineAndPusherBillingGateTests.cs",
+    "and tools/fleet-glass/pusher.py's `_selftest_claude_billing_gate`. The claude billing rule now has",
+    "three implementations (C# TokenBudgetMonitor + ClaudeUsageParser, pusher.py's extract_live_counts,",
+    "tools/room-rate-sweep/sweep.py) and #1686 review F4 already caught two of them disagreeing on the agy",
+    "side, in a code comment rather than a test. This file is the discriminating instrument: a rule change",
+    "on either side that does not land on the other fails HERE, on both, rather than drifting silently.",
+    "",
+    "`expectedBilledTokens` is the running billed sum after feeding `lines` in order, and null means NO",
+    "READING -- absent, never a fabricated 0 (the disagreement this file was created to settle: on a",
+    "cache_read-only line the engine reported null and the pusher reported 0).",
+    "`expectedBilledIsFloor` is whether the accumulated figure is a lower bound: true on any accepted",
+    "claude reading, because the mid-stream input/output columns are placeholders and cannot be billed.",
+    "spec/baton.md §3 rules on both; docs/vendor-capabilities.md carries the vendor measurement."
+  ],
+  "cases": [
+    {
+      "name": "the real captured line -- billed is cache_creation ALONE, and it is a floor",
+      "why": "Verbatim the envelope shape from dispatch-implement-3dc5e21a's real .stdout.log. Neither the placeholder input_tokens (2) nor output_tokens (4) contributes; cache_read is display-only.",
+      "lines": [
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_real_1\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":12066,\"cache_read_input_tokens\":15092,\"output_tokens\":4,\"service_tier\":\"standard\"}}}"
+      ],
+      "expectedBilledTokens": 12066,
+      "expectedBilledIsFloor": true
+    },
+    {
+      "name": "a cache_read-only line is a usage line with NO billed component",
+      "why": "#1706 review M5's live divergence. The reading is accepted (so the floor mark is set) but nothing is billable on it, so the billed figure stays ABSENT rather than becoming 0.",
+      "lines": [
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_read_only\",\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":15092,\"output_tokens\":4}}}"
+      ],
+      "expectedBilledTokens": null,
+      "expectedBilledIsFloor": true
+    },
+    {
+      "name": "an explicit cache_creation of 0 is a MEASURED zero and does report",
+      "why": "Polarity against the case above: absent and zero are different answers, and the field being present is what tells them apart.",
+      "lines": [
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_zero_creation\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":15092,\"output_tokens\":4}}}"
+      ],
+      "expectedBilledTokens": 0,
+      "expectedBilledIsFloor": true
+    },
+    {
+      "name": "a repeated message.id is counted once",
+      "why": "#1686 review F6's first-sighting dedupe, measured in docs/vendor-capabilities.md: claude splits one API response across consecutive assistant lines carrying a byte-identical usage object.",
+      "lines": [
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_dup\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":500,\"cache_read_input_tokens\":0,\"output_tokens\":3}}}",
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_dup\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":500,\"cache_read_input_tokens\":0,\"output_tokens\":3}}}",
+        "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_other\",\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":700,\"cache_read_input_tokens\":0,\"output_tokens\":3}}}"
+      ],
+      "expectedBilledTokens": 1200,
+      "expectedBilledIsFloor": true
+    },
+    {
+      "name": "a non-usage line contributes nothing and marks no floor",
+      "why": "The control. Without it a reader that marked every line a floor, or billed every line, would pass every arm above.",
+      "lines": [
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\"}"
+      ],
+      "expectedBilledTokens": null,
+      "expectedBilledIsFloor": false
+    }
+  ]
+}

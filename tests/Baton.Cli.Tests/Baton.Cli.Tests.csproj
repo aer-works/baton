@@ -23,6 +23,11 @@
 
   <ItemGroup>
     <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- #1706 review M4: the SAME real agy capture Baton.Tests reads, linked rather than copied, so the
+         zero-under-read control here and the vendor-semantics measurement there cannot diverge. -->
+    <None Include="..\Baton.Tests\Fixtures\agy-38c24d11-agent-response-usage.jsonl"
+          Link="Fixtures\agy-38c24d11-agent-response-usage.jsonl"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

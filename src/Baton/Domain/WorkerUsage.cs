@@ -40,6 +40,18 @@ namespace Baton.Domain;
 /// reading, which is never summed. <see cref="Mutation.TokenBudgetMonitor"/> is the sole consumer —
 /// it dedupes its own running Σ by this field rather than exposing it as a general-purpose identity.
 /// </param>
+/// <param name="BilledIsFloor">
+/// #1706: <see langword="true"/> when the reading this belongs to is a LOWER BOUND on the execution's
+/// real billed tokens rather than a measurement of it — some billed component the vendor charges for is
+/// not present anywhere in the live stream, so no accumulation over that stream can recover it.
+/// Set by <c>ClaudeUsageParser.TryParseIncrementalUsage</c> on every mid-stream reading it produces
+/// (that method's own doc has the measurement) and carried forward, sticky, onto
+/// <see cref="Mutation.TokenBudgetMonitor"/>'s snapshot: once ANY line on a stream was a floor, the
+/// running Σ is a floor. False on agy's incremental reading and on both vendors' terminal reading,
+/// which are measurements. Never inverts a comparison — a floor crossing a budget is still a real
+/// crossing; what it cannot do is prove a budget was NOT crossed, which is exactly what the arrest
+/// text and the glass now say rather than leaving to inference.
+/// </param>
 public sealed record WorkerUsage(
     long? TokensIn = null,
     long? TokensOut = null,
@@ -49,4 +61,5 @@ public sealed record WorkerUsage(
     long? ThinkingTokens = null,
     long? ContextLevelTokens = null,
     long? BilledTokens = null,
-    string? MessageId = null);
+    string? MessageId = null,
+    bool BilledIsFloor = false);

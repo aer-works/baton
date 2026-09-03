@@ -102,8 +102,13 @@ public sealed class StandardWorkerUsageParsersTests
         var parsed = parser.TryParseIncrementalUsage(line, out var usage);
 
         Assert.True(parsed);
-        Assert.Equal(24619, usage!.TokensIn);
-        Assert.Equal(3, usage.TokensOut);
+        // #1706: the two cache columns are the only real figures on this line (docs/vendor-capabilities.md
+        // has the measurement). Note this fixture's `input_tokens` happens to equal its
+        // cache_creation_input_tokens, which reads as a plausible real input count -- exactly the trap
+        // the measurement caught, kept here on purpose.
+        Assert.Null(usage!.TokensIn);
+        Assert.Null(usage.TokensOut);
+        Assert.True(usage.BilledIsFloor);
         Assert.Equal(24619, usage.CacheCreationTokens);
         Assert.Equal(0, usage.CacheReadTokens);
         Assert.Null(usage.Turns);
@@ -272,7 +277,7 @@ public sealed class StandardWorkerUsageParsersTests
         // #1686 review F6: the caller (TokenBudgetMonitor) needs this to dedupe a repeated message.id
         // rather than summing the same message's usage twice.
         var parser = new ClaudeUsageParser();
-        const string line = """{"type":"assistant","message":{"id":"msg_abc123","usage":{"input_tokens":2,"output_tokens":3}}}""";
+        const string line = """{"type":"assistant","message":{"id":"msg_abc123","usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}""";
 
         Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
         Assert.Equal("msg_abc123", usage!.MessageId);
@@ -282,9 +287,48 @@ public sealed class StandardWorkerUsageParsersTests
     public void Claude_parser_TryParseIncrementalUsage_leaves_message_id_null_when_absent()
     {
         var parser = new ClaudeUsageParser();
-        const string line = """{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3}}}""";
+        const string line = """{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}""";
 
         Assert.True(parser.TryParseIncrementalUsage(line, out var usage));
         Assert.Null(usage!.MessageId);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseFinalUsage_sums_the_whole_tree_modelUsage_over_the_top_level_usage()
+    {
+        // #1706: the terminal read is whole-tree now. Two models here, neither of them the shape a
+        // single-model room produces -- summing across the map is the behaviour, and the top-level
+        // `usage` object present on the SAME line (main-thread only) is what it must NOT return.
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"result","num_turns":7,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40,"output_tokens_details":{"thinking_tokens":5}},"modelUsage":{"claude-opus-5":{"inputTokens":100,"outputTokens":200,"cacheReadInputTokens":300,"cacheCreationInputTokens":400,"thinkingTokens":50},"claude-haiku-4-5":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4,"thinkingTokens":5}}}
+            """;
+
+        Assert.True(parser.TryParseFinalUsage(line, out var usage));
+        Assert.Equal(101, usage!.TokensIn);
+        Assert.Equal(202, usage.TokensOut);
+        Assert.Equal(303, usage.CacheReadTokens);
+        Assert.Equal(404, usage.CacheCreationTokens);
+        Assert.Equal(55, usage.ThinkingTokens);
+        // num_turns has no modelUsage analogue and stays a top-level read.
+        Assert.Equal(7, usage.Turns);
+        // A terminal reading is a measurement, never a floor -- the polarity opposite of every
+        // incremental claude reading above.
+        Assert.False(usage.BilledIsFloor);
+    }
+
+    [Fact]
+    public void Claude_parser_TryParseFinalUsage_falls_back_to_top_level_usage_when_modelUsage_is_absent()
+    {
+        // #1706: the fallback arm TryParseFinalUsage's own doc comment describes -- pinned so a later
+        // simplification cannot quietly turn a modelUsage-less capture into no reading at all.
+        var parser = new ClaudeUsageParser();
+        const string line = """{"type":"result","num_turns":7,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}}""";
+
+        Assert.True(parser.TryParseFinalUsage(line, out var usage));
+        Assert.Equal(10, usage!.TokensIn);
+        Assert.Equal(20, usage.TokensOut);
+        Assert.Equal(30, usage.CacheReadTokens);
+        Assert.Equal(40, usage.CacheCreationTokens);
     }
 }

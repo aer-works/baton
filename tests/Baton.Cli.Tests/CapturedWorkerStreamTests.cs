@@ -188,6 +188,55 @@ public class CapturedWorkerStreamTests
     }
 
     [Fact]
+    public void Rollover_MarksTheStreamTruncatedOnlyOnceASegmentIsActuallyDiscarded()
+    {
+        // #1706 review M3. chunk1 survives a single rollover (it is still `.stdout.log.1`), so a reader
+        // can replay the whole stream and there is nothing to mark; the SECOND rollover overwrites it.
+        // `ExecutionStreamLogger.StdoutTruncationMarkerFileName`'s own doc has why the marker exists and
+        // who reads it -- this pins WHEN it is written, which is the half a reader cannot verify.
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-truncation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var logger = new ExecutionStreamLogger(tempDir, maxSizeBytes: 100);
+            var markerPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+
+            static byte[] Chunk(char fill)
+            {
+                var chunk = new byte[60];
+                Array.Fill(chunk, (byte)fill);
+                return chunk;
+            }
+
+            logger.AppendStdout(Chunk('A'));
+            Assert.False(File.Exists(markerPath));
+
+            // First rollover: `.stdout.log.1` now holds chunk A. Nothing lost, so no marker -- the
+            // polarity arm without which "always mark" would pass the assertion below.
+            logger.AppendStdout(Chunk('B'));
+            Assert.True(File.Exists(Path.Combine(tempDir, ExecutionStreamLogger.StdoutRolloverFileName)));
+            Assert.False(File.Exists(markerPath));
+
+            // Second rollover: chunk A is overwritten and gone.
+            logger.AppendStdout(Chunk('C'));
+            Assert.True(File.Exists(markerPath));
+            Assert.Equal(0, new FileInfo(markerPath).Length);
+
+            // stderr rolled zero times and must not be marked by stdout's loss -- the streams are
+            // counted independently.
+            Assert.False(File.Exists(Path.Combine(tempDir, ExecutionStreamLogger.StderrTruncationMarkerFileName)));
+
+            // And the marker is one of this logger's own files, so nothing enumerating the output
+            // directory presents it to an operator as a worker deliverable (#1345).
+            Assert.True(ExecutionStreamLogger.IsStreamLogFileName(ExecutionStreamLogger.StdoutTruncationMarkerFileName));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    [Fact]
     public async Task RoundTrip_And_RenderEscaping_BothPolarities()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"stream-roundtrip-{Guid.NewGuid():N}");
