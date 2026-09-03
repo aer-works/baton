@@ -191,9 +191,8 @@ public static class BatonPaths
     /// <c>{Root}/watches</c> — one JSON file per <c>baton watch</c> registration (#1488), named
     /// <c>&lt;watch-id&gt;.json</c>. <c>Baton.Cli</c>'s <c>WatchStore</c> (not referenced from here —
     /// this project has no <c>Baton.Cli</c> reference) owns what each file holds and how exactly-once
-    /// firing is guaranteed; spec/baton.md §2 has the full contract. Operator-trust-level: a file here
-    /// is an unauthenticated instruction to run its <c>--notify</c> target under the daemon's identity
-    /// (spec/baton.md §2) — reachable today only by a role that already holds an unscoped shell grant.
+    /// firing is guaranteed. Operator-trust-level, per spec/baton.md §2's trust-model paragraph (M4,
+    /// fix round) — not restated here.
     /// </summary>
     public static string Watches => Path.Combine(Root, WatchesDirectoryName);
 

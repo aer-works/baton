@@ -138,13 +138,11 @@ public sealed class WatchNotifier : IWatchNotifier
             return;
         }
 
-        // spec/baton.md §2: the timeout is armed BEFORE the stdin write starts, and the write itself is
-        // bounded by it (`.WaitAsync`) -- arming it only around WaitForExitAsync below, as this used to,
-        // guards nothing, because a command that never reads stdin (the documented `curl -X POST ...`
-        // shape) blocks the write in the OS pipe once the payload exceeds the pipe buffer (~4 KB on
-        // Windows) well before WaitForExitAsync is ever reached. `cancellationToken` itself cannot
-        // cancel that blocked write either -- `StandardInput` wraps a synchronous `FileStream` over the
-        // pipe handle, and the token is only checked before the write begins.
+        // The timeout is armed BEFORE the stdin write starts, and the write itself runs under it
+        // (`.WaitAsync`) -- arming it only around WaitForExitAsync below, as this used to, guards
+        // nothing (spec/baton.md §2 has the failure mode and why this is the fix, H1). `cancellationToken`
+        // alone cannot cancel a blocked write: `StandardInput` wraps a synchronous `FileStream`, and the
+        // token is only checked before the write begins.
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(commandTimeout);
 
