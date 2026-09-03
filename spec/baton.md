@@ -284,6 +284,39 @@ time is the only case this feature guarantees without one; `baton watch`'s own r
 stderr when no daemon mutex (`Global\BatonDaemonMutex_{user}`) is found for the current user, though a
 daemon started with `--no-mutex` is invisible to that check and reads as running regardless.
 
+**The stdin write is bounded by the same 30 s timeout as the command's own exit** (fix round,
+`WatchNotifier.cs`): the timeout is armed *before* the write starts and the write runs under it, so a
+command that never reads stdin — the documented `curl -X POST …` shape above is exactly this — cannot
+wedge the sweep once the payload exceeds the OS pipe buffer (~4 KB on Windows). A write that has not
+drained by the deadline gets the process tree killed and the failure logged, since a command that never
+consumed the first byte was never going to finish reading the rest; a command that exits after its own
+work is left to keep running past the timeout unkilled, as before. This is a deliberate decision *not*
+to gate the stdin write on payload size or fall back to a temp file: `BATON_WATCH_EVENT` already
+carries the identical payload with no blocking risk (set at spawn time, not written to a stream), so a
+command that only wants the common case can read from there and skip stdin entirely — the timeout is
+what makes attempting the stdin write unconditionally safe rather than something that needs a size
+threshold to avoid.
+
+**The watches directory is reaped, not just fired-in-place.** `WatchSweep`'s sweep pass also deletes a
+fired watch whose `firedAt` is older than a retention window (default 24 h,
+`BATON_WATCH_REAPER_RETENTION_HOURS`-configurable, the same env-override shape `RoomRetentionSweep`'s
+own intervals use) and any watch — fired or still pending — whose room directory no longer exists,
+logged once at the moment of removal. Without this the directory only ever grows: `baton watch
+--clear-fired` remains the manual, immediate path, but nothing previously reclaimed a watch an operator
+forgot to clear, and `WatchStore.ListAsync`'s per-sweep scan is O(n) in whatever accumulated there.
+
+**Trust model.** A watch file is an unauthenticated instruction to run its `--notify` target under the
+daemon's own identity, at an arbitrary later time, outside any lane's Job Object containment and after
+the lane that registered it is gone. That is acceptable only because nothing narrower can reach
+`{BatonPaths.Watches}` today: a write-granted worker's `Edit`/`Write`/`NotebookEdit` calls are bounded
+to its workspace or outbox by the `PreToolUse` hook (`HookCheckCommand.cs`,
+`AgyHookCheckCommand.cs`, `OutboxPath.cs`), so only a role already holding an unscoped shell grant
+(`run_shell_commands: true` with no pattern list, e.g. `implement` in `WorkerRoles.json`) can write a
+watch file directly — and that grant already defeats every withheld category (#529,
+`PermissionGrant.cs`'s `CategoriesDefeatedByTheShell`), so a watch adds deferred, post-lane execution
+rather than new privilege. If a narrower write path into `~/.baton` is ever added, or `OutboxPath`'s
+containment loosened, this paragraph is what it would be breaking.
+
 **`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
 exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
 (`RunningExecutionResolver.cs`). A candidate is a currently-`Running` step, or (#1607) a quota-parked
