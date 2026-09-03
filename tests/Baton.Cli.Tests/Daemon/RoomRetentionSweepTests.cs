@@ -496,10 +496,10 @@ public class RoomRetentionSweepTests
     }
 
     /// <summary>
-    /// #1157, second reader: the warning above must name the CAUSE, not merely appear. A zero-step
-    /// workflow projects terminal off its empty journal, so it also reaches the mtime fallback — and
-    /// the first version of this code told the operator that room's journal predated #745, about a
-    /// journal written seconds earlier — a wrong census in the one place that reports it.
+    /// #1157, second reader: the warning above must name the CAUSE, not merely appear. The second of
+    /// spec/baton.md §3's absence cases also reaches the mtime fallback, and the first version of this
+    /// code told the operator such a room predated #745 — about a journal written seconds earlier, a
+    /// wrong census in the one place that reports it.
     /// <para>
     /// This is the discriminating arm for
     /// <see cref="PruneRoomAsync_LegacyJournalWithNoWriterStamps_FallsBackToMtimeAndWarnsOncePerRoom"/>:

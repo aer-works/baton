@@ -34,8 +34,8 @@ public sealed record RoomWake(HeldWorkRef Ref, RoomWakeKind Kind);
 /// </param>
 /// <param name="TerminalAtAbsence">
 /// #1157: why <paramref name="TerminalAtUtc"/> is null, carried alongside rather than left for the
-/// caller to guess. Only <see cref="TerminalInstantAbsence.TransitionEntryUnstamped"/> says anything
-/// about a room's journal being old, so only it justifies telling an operator so.
+/// caller to guess — see <see cref="TerminalInstantAbsence"/> for what each member licenses a caller
+/// to do.
 /// </param>
 public readonly record struct WorkflowProbeResult(
     bool JournalExists,
