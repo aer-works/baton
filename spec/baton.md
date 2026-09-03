@@ -1655,9 +1655,71 @@ code is the only signal a lane is even still going, and it is unreliable for tha
   "error": string | null,
   "try": string | null,                // corrected-invocation text; only set on a pre-ledger refusal
   "rejected": boolean,                 // #1377, widened by #1622 (c) and re-scoped by F11 (#1720 review): true iff some step settled via `DecisionType.Reject` OR `baton resolve --reject` -- NOT `--close`, which is an administrative settlement rather than a refusal
-  "resolvedBy"?: string                // #1622 (d)/#1700: "conductor" when some step settled via a non-accepting `baton resolve` ruling (--reject OR --close); omitted otherwise. The signal for a `--close`, which sets this without setting `rejected`
+  "resolvedBy"?: string,               // #1622 (d)/#1700: "conductor" when some step settled via a non-accepting `baton resolve` ruling (--reject OR --close); omitted otherwise. The signal for a `--close`, which sets this without setting `rejected`
+  "terminalAt"?: string                // #1157: when this run ENDED (ISO-8601, UTC) -- absence rules in "The terminal instant" below
 }
 ```
+
+**The terminal instant (#1157).** `terminalAt` is when the run ended, and it is a real record rather
+than a stand-in for one: it is the writer timestamp already stamped onto the terminal event's own
+journal envelope (`LogEntry.FlowLogEntry.WriterUtcTimestamp`, written by `FlowEventLogWriter`).
+No `FlowEvent` field was added for it and no workflow-terminal event exists to add one to —
+`FlowEvent`'s own remarks say why workflow-level status is a projection and never a stored event.
+`Projection.TerminalInstantResolver` is the sole derivation; `Store.WorkflowTerminalProbe` (the
+terminal authority) and `Status.WorkflowStatusProjector` (the view) both call it rather than each
+answering for themselves.
+
+Specifically it is the **last** transition into `WorkflowStatus.Terminal`, not the last line's stamp
+and not `flow.jsonl`'s mtime. Both of those move when anything is appended after a run ended — a
+`captureResolved` settlement, a late Core lifecycle line, a copy that touches the file — and a grace
+window keyed on a value a later append can move is the defect this closes, not a smaller version of
+it. Last rather than first because terminality is not monotone: `baton resolve --reject` re-admits a
+step to `RetryEngine.MayRetry`'s ordinary predicate and a fresh `executionRequestAccepted` reopens a
+foreclosed or indeterminate one, so a room can end, be re-driven, and end again.
+
+**What a restart may assume, and what it may not.** A room whose `flow.jsonl` carries no terminal
+event **is not terminal** — that is the whole of the crash-window rule, and nothing may synthesise an
+instant for such a room from what did land. Concretely: the retention sweep does not prune it
+(`RoomRetentionSweep.PruneRoomAsync`), and `fleet_status` omits `terminalAt` rather than substituting
+a file's mtime. A terminal event that was only half-written is the same case and needs no rule of its
+own — `FlowEventLogWriter` writes each entry as one complete newline-terminated line and
+`FlowEventLogReader` returns only `\n`-terminated ones, so a torn final line is not yet observable
+and the journal simply reads as one event shorter.
+
+`terminalAt` is **absent, never fabricated**, in four cases, which a reader must not collapse — the
+first three are `TerminalInstantAbsence`'s own members, carried on the resolver's answer rather than
+left to a caller to infer:
+
+1. `NotTerminal` — the run has not ended, including the crash window above.
+2. `NoTransitionEntry` — the run is terminal but no line made it so. A zero-step workflow projects
+   terminal off its empty journal, so this is a real shape and not a defensive branch.
+3. `TransitionEntryUnstamped` — the transition line predates writer stamping (#745). **The only one
+   of the four that says anything about a room's journal being old**, which is why it is the only one
+   an operator is told about by name.
+4. The pre-ledger sentinel — `TerminalSentinelWriter.WriteValidationRefusedAsync` writes a
+   `terminal.json` for a refusal that happened before `flow.jsonl` existed, so there is no journal to
+   resolve an instant from at all. Not a `TerminalInstantAbsence` member because the resolver is never
+   reached on that path.
+
+The two consumers answer the terminal-but-no-instant cases differently, on purpose. The retention
+sweep has a destructive decision to make, so it falls back to `flow.jsonl`'s mtime and names which
+cause it is falling back for, once per room per daemon process. `fleet_status` only displays, so it
+omits the field — including for a `terminal.json` frozen before this field existed, which
+`TerminalSentinelWriter` never re-derives (#1522 review finding 4).
+
+**One durability consequence worth stating.** `Program.cs` writes the sentinel from a
+`WorkflowStatusView` projected against a fresh full journal read, and a sentinel is never re-derived
+once written — so whatever `terminalAt` that projection produced is what the room carries forever. It
+rests on a `ProjectionCheckpoint` being a faithful prefix fold of an append-only journal, which is a
+property this engine already depends on everywhere; #1157 is the first time it decides a *durable*
+field rather than a recomputed one.
+
+Two nearby timestamps are deliberately **not** this one. `baton status`'s own `Log updated at` is
+`flow.jsonl`'s mtime at the whole-log grain — "when the last event landed", which is a different
+question and its own honest answer (`StatusCommand.ResolveLogUpdatedAt`). And `baton rooms prune
+--older-than` still ages a room by `terminal.json`'s mtime (`RoomsPruneCommand`), a proxy against a
+different file with a different weakness (a copy or restore moves it); #1157 scoped itself to the
+`flow.jsonl`-mtime chain and left that one standing.
 
 **`workspaceChanged`/`hollow`/`hollowReason` (#1622 (b), the engine-side half of #1390).** A worker
 whose contract is "change the tree" can exit 0 with a satisfied — often zero-output — contract and
@@ -1955,7 +2017,8 @@ Output: a JSON array of
   "label"?: string,       // #1499: the room's --label, WorkerBindingConfigEntry.Label
   "workstream"?: string,  // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
   "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
-  "parentExecutionId"?: string // #1441/#1620: the parent room's own execution id at redispatch time
+  "parentExecutionId"?: string, // #1441/#1620: the parent room's own execution id at redispatch time
+  "terminalAt"?: string        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
 }
 ```
 (`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
