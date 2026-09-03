@@ -331,4 +331,28 @@ public sealed class StandardWorkerUsageParsersTests
         Assert.Equal(30, usage.CacheReadTokens);
         Assert.Equal(40, usage.CacheCreationTokens);
     }
+
+    [Fact]
+    public void Claude_parser_TryParseFinalUsage_falls_back_PER_FIELD_when_modelUsage_is_missing_one_figure()
+    {
+        // #1724 item 4: modelUsage carries every figure except thinkingTokens (a real, measured shape --
+        // both captures underlying spec/baton.md §3 carry all five keys together, but the whole-tree
+        // read must not assume every future one will). Before the fix, ANY figure present in modelUsage
+        // short-circuited the whole top-level fallback, so the top-level usage object's own
+        // output_tokens_details.thinking_tokens:5 was silently dropped instead of filling the gap. This
+        // goes red on the prior all-or-nothing read, which reports a null ThinkingTokens here.
+        var parser = new ClaudeUsageParser();
+        const string line = """
+            {"type":"result","num_turns":7,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40,"output_tokens_details":{"thinking_tokens":5}},"modelUsage":{"claude-opus-5":{"inputTokens":100,"outputTokens":200,"cacheReadInputTokens":300,"cacheCreationInputTokens":400}}}
+            """;
+
+        Assert.True(parser.TryParseFinalUsage(line, out var usage));
+        // The four figures modelUsage DID carry win over the top-level object, same as the whole-tree test above.
+        Assert.Equal(100, usage!.TokensIn);
+        Assert.Equal(200, usage.TokensOut);
+        Assert.Equal(300, usage.CacheReadTokens);
+        Assert.Equal(400, usage.CacheCreationTokens);
+        // The one figure modelUsage did NOT carry falls back to the top-level object instead of staying null.
+        Assert.Equal(5, usage.ThinkingTokens);
+    }
 }

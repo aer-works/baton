@@ -31,6 +31,12 @@ public sealed record WorkerContract(
 /// dot-named file into its output directory, and that file is a document like any other — which is
 /// why the stream-log filter is four exact names rather than a prefix test.
 /// </para>
+/// <para>
+/// #1724 review LOW: <see cref="Baton.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/> itself has
+/// no production caller today — it is declared for the directory-read surfaces that would need to
+/// filter it out and do not exist yet, since nothing in <c>src/</c> enumerates an execution's output
+/// directory today (<c>deliverables_list</c> is a pushed index, not a directory read).
+/// </para>
 /// </summary>
 public static class ReservedOutputNames
 {
