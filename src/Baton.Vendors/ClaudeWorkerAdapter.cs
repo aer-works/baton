@@ -1209,7 +1209,9 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // while the adapter redirects the root is defensible in neither reading, so this follows the
         // root when the operator has actually set one, rather than assert a roster for a directory the
         // worker does not use.
-        var configRoot = configRootDirectory ?? Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable);
+        // Read through the snapshot, not the process env: #1524 folded BATON_CLAUDE_CONFIG_ROOT so a
+        // BeginScope override is honoured here exactly as at the launch-config site above.
+        var configRoot = configRootDirectory ?? BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride;
         if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
             skillDirs.Add(Path.Combine(configRoot, "skills"));

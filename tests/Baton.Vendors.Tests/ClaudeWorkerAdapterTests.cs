@@ -1162,6 +1162,15 @@ public class ClaudeWorkerAdapterTests
     {
         var overrideHome = Path.Combine(Path.GetTempPath(), $"claude-launch-config-tripwire-{Guid.NewGuid():N}");
         Directory.CreateDirectory(overrideHome);
+        // The negative half of the name: the real ~/.baton/worker-launch must not be rewritten. A leaked
+        // write stamps THIS test process's AppContext.BaseDirectory into the hook path (that is how the
+        // CI pollution check's diff read), so the real files must not mention it afterwards. Content, not
+        // mtime: on the operator's machine a legitimate dispatch can rewrite these files mid-test.
+        var realLaunchDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".baton", "worker-launch");
+        var realSettings = Path.Combine(realLaunchDir, "claude-settings.json");
+        var realMcp = Path.Combine(realLaunchDir, "claude-mcp.json");
+        var thisProcessMarker = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         try
         {
             using var scope = BatonEnvironmentSnapshot.BeginScope(
@@ -1171,6 +1180,15 @@ public class ClaudeWorkerAdapterTests
 
             Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-settings.json")));
             Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-mcp.json")));
+            foreach (var realFile in new[] { realSettings, realMcp })
+            {
+                if (File.Exists(realFile))
+                {
+                    // JSON doubles backslashes; unescape before comparing so a Windows path can match at all.
+                    var unescaped = File.ReadAllText(realFile).Replace("\\\\", "\\");
+                    Assert.DoesNotContain(thisProcessMarker, unescaped, StringComparison.OrdinalIgnoreCase);
+                }
+            }
         }
         finally
         {
