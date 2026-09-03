@@ -144,10 +144,10 @@ public sealed class DeliveryPoller : BackgroundService
             return;
         }
 
-        // A full PR URL (what `gh pr create` itself prints) pins its own repo, so `gh pr view <url>`
-        // needs no working directory inside that repo's checkout at all. A bare number does -- `gh`
-        // resolves the repo from the cwd it runs in, so that shape falls back to the room's own §8
-        // registry project root, and is skipped (logged once per room) when the room has none.
+        // A URL reference pins its own repo (spec/baton.md §2), so `gh pr view <url>` needs no cwd
+        // inside that repo's checkout. A bare number relies on `gh` resolving the repo from the cwd it
+        // runs in, so that shape falls back to the room's own §8 registry project root, and is skipped
+        // (logged once per room) when the room has none.
         var isUrlReference = prArgument.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             || prArgument.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
         var workingDirectory = isUrlReference ? room.RoomDir : room.Project;

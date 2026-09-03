@@ -29,9 +29,8 @@ public sealed record DeliveryReference(int? PullRequestNumber, string? PullReque
 /// </summary>
 public static class DeliveryReferenceResolver
 {
-    // A worker writing a PR reference reaches for what `gh pr create` itself prints -- a full URL --
-    // at least as often as a bare number, and might write "#123" by hand. All three read the same
-    // trailing digits.
+    // spec/baton.md §2 names the two shapes a worker plausibly writes here (a bare number, a full
+    // URL) plus the hand-typed "#123" case; all three read off the same trailing digits.
     private static readonly Regex TrailingNumber = new(@"(\d+)\s*$", RegexOptions.Compiled);
 
     public static DeliveryReference? Resolve(IReadOnlyList<string>? outputs)

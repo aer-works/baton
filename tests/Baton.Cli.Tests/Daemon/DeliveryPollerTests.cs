@@ -327,10 +327,7 @@ public sealed class DeliveryPollerTests : IDisposable
         Assert.Single(lines);
     }
 
-    /// <summary>
-    /// #734 review finding: a full PR URL (what `gh pr create` itself prints) pins its own repo, so it
-    /// needs no registered project root at all -- unlike a bare number, which the test above covers.
-    /// </summary>
+    /// <summary>#734 review finding: a URL reference needs no registered project root -- unlike a bare number, which the test above covers.</summary>
     [Fact]
     public async Task A_full_pr_url_reference_polls_successfully_with_no_registered_project_root()
     {

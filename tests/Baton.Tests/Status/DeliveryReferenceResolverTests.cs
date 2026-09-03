@@ -47,9 +47,9 @@ public sealed class DeliveryReferenceResolverTests : IDisposable
     }
 
     /// <summary>
-    /// #734 review: a worker writing what `gh pr create` itself prints (a full URL) must resolve the
-    /// same as a bare number -- and the URL is preserved verbatim as `PullRequestReference`, since
-    /// `DeliveryPoller` hands it straight to `gh pr view` rather than reconstructing one.
+    /// #734 review: a declared URL must resolve a PR number the same as a bare number does -- and the
+    /// URL survives verbatim as `PullRequestReference`, since `DeliveryPoller` hands it straight to
+    /// `gh pr view` rather than reconstructing one.
     /// </summary>
     [Fact]
     public void A_full_pr_url_resolves_the_trailing_number_and_preserves_the_url_as_the_reference()
