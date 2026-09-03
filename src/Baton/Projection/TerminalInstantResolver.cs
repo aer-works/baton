@@ -18,21 +18,15 @@ namespace Baton.Projection;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The instant is the LAST transition into <see cref="WorkflowStatus.Terminal"/>, not the last
-/// line's timestamp.</b> Those two differ, and only the former is a terminal instant rather than a
-/// fresher proxy: anything appended after the run ended — a <see cref="FlowEvent.CaptureResolved"/>
-/// settlement, a late Core lifecycle line, a diagnostic — moves the last line's timestamp without the
-/// run having ended any later. The retention grace window keying on a value a later append can move is
-/// exactly the defect #1157 exists to close, so a definition that merely swaps <c>flow.jsonl</c>'s
-/// mtime for its last line's stamp would leave that defect in place wearing a new hat.
-/// </para>
-/// <para>
-/// <b>Why LAST and not first.</b> Terminality is not monotone: a
-/// <see cref="FlowEvent.CaptureResolved"/> rejection re-admits the step to
-/// <see cref="Scheduling.RetryEngine.MayRetry"/>'s ordinary predicate, and a fresh
-/// <see cref="FlowEvent.ExecutionRequestAccepted"/> reopens a foreclosed or indeterminate step
-/// outright (<see cref="StateProjector"/>). A room can therefore go terminal, be reopened, and go
-/// terminal again — the answer a reader wants is when it ended <em>this</em> time.
+/// <b>The instant is the LAST transition into <see cref="WorkflowStatus.Terminal"/>.</b> Why that,
+/// rather than the last line's stamp or the file's mtime, is stated once in spec/baton.md §3 and
+/// deliberately not restated here — this is the code implementing that ruling, not a second copy of
+/// it. What the code needs on the page is the mechanics: the two events that make terminality
+/// non-monotone, and so make "last" a different answer from "first", are
+/// <see cref="FlowEvent.CaptureResolved"/> (a rejection re-admits the step to
+/// <see cref="Scheduling.RetryEngine.MayRetry"/>'s ordinary predicate) and
+/// <see cref="FlowEvent.ExecutionRequestAccepted"/> (a fresh dispatch reopens a foreclosed or
+/// indeterminate step outright) — both in <see cref="StateProjector"/>.
 /// </para>
 /// <para>
 /// <b>Cost.</b> One projection to establish terminality, then one more per journal line that follows
