@@ -1927,6 +1927,63 @@ same reflected-hook-config approach) is that narrowing's acceptance test for the
 channel, not for the tool surface as a whole. Scratch directory deleted after the run; nothing
 persists outside the `#1387` issue comment recording the same table.
 
+### agy's sub-agent turns leave NO usage-bearing line in the parent's stream at all (#1742, capture `dispatch-implement-2807af38`, 2026-09-03)
+
+Measured against a real agy lane's already-captured `.stdout.log` (copied into a second worktree as
+`CAPTURE-agy-fanout.stdout.log.tmp`; read-only, no new run — agy was quota-exhausted at measurement
+time). The lane's own prompt asked it to invoke a sub-agent (`invoke_subagent`) to count
+`README.md`'s lines. 22 lines total, by `step_type`:
+
+- `user_input` (×1, no usage) — `agent_response` (×7, at `step_index` 1, 3, 5, 7, 9, 11, 14; six of
+  those (all but 9, the one immediately after the `write_to_file` `ERROR`) carry a `usage` object) —
+  `tool` (×4: `find_by_name`, `view_file`, one `write_to_file` that errored, one `run_command`) —
+  `subagent` (×1) — `error_message` (×1) — `system_message` (×1) — terminal `result` (×1, cumulative
+  usage for the whole lane).
+
+The verbatim `tool`/`subagent` pair for the `invoke_subagent` call (redacted: none of these fields are
+secrets, so nothing is elided):
+
+```
+{"event":"step_update","step_update":{"conversation_id":"ce9f959c-81eb-4b84-8293-216eef7ebc6d","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"invoke_subagent","tool_info":{"name":"invoke_subagent","parameters":{"Subagents":[{"Model":"inherit","Prompt":"Please count the total number of lines in README.md in the repository and report the exact number back to me.","Role":"Line Counter","TypeName":"research"}]}}}}
+{"event":"step_update","step_update":{"conversation_id":"ce9f959c-81eb-4b84-8293-216eef7ebc6d","step_index":2,"state":"DONE","step_type":"subagent","tool_name":"invoke_subagent","duration_seconds":0.1586236,"subagent_info":{"subagents":[{"type_name":"research","role":"Line Counter","initial_prompt":"Please count the total number of lines in README.md in the repository and report the exact number back to me.","conversation_id":"57868f17-abb7-4ffa-99a9-1c1bda8d9929","log_uri":"file:///C:/Users/pbree/.gemini/antigravity-cli/brain/57868f17-abb7-4ffa-99a9-1c1bda8d9929/.system_generated/logs/transcript.jsonl","workspace_uris":["file:///C:/Users/pbree/.baton/rooms/dispatch-implement-2807af38/artifacts","file:///C:/Users/pbree/.baton/worker-launch/agy-workspace","file:///C:/Users/pbree/source/repos/w1742"]}]}}}
+```
+
+and the parent's next `agent_response`, which does carry ordinary usage:
+
+```
+{"event":"step_update","step_update":{"conversation_id":"ce9f959c-81eb-4b84-8293-216eef7ebc6d","step_index":3,"state":"DONE","step_type":"agent_response","duration_seconds":0.6402331,"usage":{"input_tokens":3979,"output_tokens":63,"thinking_tokens":0,"cache_read_tokens":12223,"total_tokens":4042}}}
+```
+
+The terminal `subagent` line carries a `subagent_info` object (its own `conversation_id`
+`57868f17-…`, a `log_uri` pointing at a *separate* transcript file this lane's `.stdout.log` never
+includes, and the sub-agent's prompt/role) but **no `usage` key at all** — not a smaller or aggregated
+figure, absent. The sub-agent's actual turns (it went on to call `find_by_name`/`view_file` per the
+lane's final answer) are written entirely to that other transcript, under a different
+`conversation_id`, which this dispatch never captures.
+
+**Conclusion: NO SEPARATE LINES, and more precisely than #1666's own two-way framing anticipated — the
+sub-agent's usage is not folded into the parent's stream with an unmarked line; it never reaches the
+parent's stream as a usage-bearing line at all.** `AgyUsageParser.TryParseIncrementalUsage`
+(`src/Baton/Status/StandardWorkerUsageParsers.cs`) only reads usage off a `state:"DONE"`,
+`step_type:"agent_response"` line; the `subagent` step_type line it would need to discriminate has no
+`usage` object for that reader to ever see, marked or not. `AgyWorkerAdapter.TryParseProgressEvent`
+and `tools/fleet-glass/pusher.py`'s `extract_live_counts` agree: both gate agy's `step_update` usage
+read on `step_type == "agent_response"` (`AgyWorkerAdapter.cs` line ~1292; `pusher.py`'s `elif
+isinstance(step, dict) and step.get("state") == "DONE": if step.get("step_type") ==
+"agent_response"`), so neither treats a `subagent` step_type line as usage-bearing either.
+
+**Consequence for #1666: the level-dip that fix closes on claude cannot occur on agy through this
+path, because there is nothing for it to occur on.** #1666's claude fix exists because a sub-agent's
+own smaller context WAS visible mid-stream and could replace the parent's tracked level; on agy, per
+this capture, the sub-agent's context is never visible mid-stream in the first place — one
+`step_type: "subagent"` line with zero usage fields is the entirety of what the parent's stream shows
+for the whole sub-agent call. `IsSubAgentTurn` therefore has no line to key off on this vendor: not
+because the marker is unmeasured, but because the shape that fix marks (a usage-bearing line
+attributable to a sub-agent) does not exist in agy's parent-stream envelope. A single fan-out capture
+cannot rule out some *other* agy shape (e.g. a future CLI version streaming a sub-agent's turns
+inline) — this measurement is scoped to the one `invoke_subagent` capture available while agy is
+quota-exhausted, not to every agy build.
+
 ### Still not settled — recorded as untested, not refuted
 
 - **`defer`'s single-tool-call limit.** Three attempts failed to make the model batch tool calls

@@ -61,8 +61,13 @@ namespace Baton.Domain;
 /// #1666: <see langword="true"/> when this reading's raw line was a sub-agent's own turn rather than
 /// the parent conversation's — spec/baton.md §3 has the measured shape that marks one and why
 /// <see cref="Mutation.TokenBudgetMonitor"/> tracks this bucket's level separately rather than letting
-/// it replace the parent's larger one. False for every agy reading (review F4: unmeasured on that
-/// vendor, not structurally absent — spec/baton.md §3 has the fuller statement and what's owed).
+/// it replace the parent's larger one. Always false on agy: #1742 measured (a real
+/// <c>invoke_subagent</c> capture, docs/vendor-doc-audit.md) that agy's parent stream carries no
+/// usage-bearing line for a sub-agent's own turns at all — the one <c>step_type:"subagent"</c> line
+/// the parent sees has no <c>usage</c> object, and <see cref="Status.AgyUsageParser.TryParseIncrementalUsage"/>
+/// only reads usage off a <c>step_type:"agent_response"</c> line, which a sub-agent's turns never
+/// produce in this stream — so every agy reading this field could apply to is structurally a
+/// parent-conversation line, not an unmarked one (spec/baton.md §3 has the fuller statement).
 /// True/false for claude's own sub-agent vs. non-sub-agent turns.
 /// </param>
 public sealed record WorkerUsage(
