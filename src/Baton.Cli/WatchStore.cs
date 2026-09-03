@@ -48,9 +48,9 @@ public sealed record WatchRecord(
 /// way <see cref="WatchRecord.FiredAt"/> is ever set: it returns <c>true</c> (the caller may now
 /// notify) only when the watch was unclaimed at the moment it acquired the lock, and atomically
 /// marks it claimed in the same critical section. A caller that loses the race gets <c>false</c> and
-/// must not notify. A process that crashes after a successful claim but before the notify send
-/// completes loses that notification rather than risking a second, duplicate one — the watch is
-/// already marked fired and no later sweep will retry it.
+/// must not notify. Dying between that mark landing on disk and the actual notify going out drops
+/// the one notification on the floor instead of ever risking two — nothing revisits an already-
+/// claimed file.
 /// </para>
 /// </remarks>
 public static class WatchStore

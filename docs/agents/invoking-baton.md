@@ -221,9 +221,9 @@ dispatch → `baton watch --notify <wake command>` → end-turn pattern: a harne
 after registering rather than blocking on `baton status --follow` or a hand-rolled sentinel-file/poll
 loop, and gets woken back up by the notify command instead. **Firing after registration depends on
 `baton daemon` running** — it is what actually polls pending watches; `baton watch` warns on stderr at
-registration if it can't find one for the current user. `baton watch --list` prints every registered
-watch, pending and fired; `baton watch --clear-fired` deletes the fired ones. Full contract:
-`spec/baton.md` §2.
+registration if it can't find one for the current user. `baton watch --list` /
+`baton watch --clear-fired` are the visibility/cleanup pair — full contract, including what each
+prints, is `spec/baton.md` §2, not restated here.
 
 **A path in `outputs` IS the worker's own write (#1594/#1608, conductor-writes shape).** Baton never
 writes into a declared output itself except through the one verb below. That step's own **room**

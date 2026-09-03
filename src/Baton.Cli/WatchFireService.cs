@@ -17,9 +17,8 @@ public static class WatchFireService
 {
     /// <summary>
     /// Terminal detection reuses <see cref="TerminalSentinelWriter.TryReadAsync"/> exactly —
-    /// <c>terminal.json</c> present and parseable — the same predicate <c>FleetStatusTool</c>,
-    /// <c>baton rooms prune --terminal</c>, and <c>baton room delete</c> already read a room's
-    /// terminal state through; never a second definition.
+    /// <c>terminal.json</c> present and parseable — never a second definition; spec/baton.md §2 names
+    /// every other consumer this same primitive already answers "is this room done" for.
     /// </summary>
     /// <returns><c>true</c> only when this call actually fired the notification (claimed the watch
     /// and sent it). <c>false</c> covers three distinct cases the caller does not need to

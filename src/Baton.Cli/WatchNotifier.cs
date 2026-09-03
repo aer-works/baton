@@ -32,10 +32,10 @@ public interface IWatchNotifier
 /// <summary>
 /// <c>--notify &lt;target&gt;</c>'s two shapes (spec/baton.md §2): an absolute <c>http(s)</c> URL is
 /// POSTed the payload as its JSON body; anything else is a command line, spawned once through the
-/// platform shell with the payload written to its stdin and carried in the
-/// <see cref="NotifyEventEnvironmentVariable"/> environment variable — never interpolated into the
-/// command string itself, so a payload containing shell metacharacters (a room path with a space, an
-/// error message with a quote) cannot reinterpret the command the operator typed.
+/// platform shell with the payload delivered only via its stdin stream and the
+/// <see cref="NotifyEventEnvironmentVariable"/> variable — kept out of the argv/command text
+/// entirely, so a room path with a space or an error message with a quote cannot reshape what the
+/// operator's own command actually runs.
 /// </summary>
 public sealed class WatchNotifier : IWatchNotifier
 {
