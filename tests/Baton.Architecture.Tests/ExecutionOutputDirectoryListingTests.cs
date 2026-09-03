@@ -54,9 +54,7 @@ public class ExecutionOutputDirectoryListingTests
         // #1557: GetFileSystemEntries lists artifacts/pruned/ itself (the room-level pruned root, not
         // an execution's own output directory) to find pruned execution dirs. The nested
         // EnumerateFiles DOES walk into a pruned execution's own former output directory, but sums it
-        // unfiltered on purpose: pruned[].bytes answers "how much did pruning reclaim", and stream logs
-        // were reclaimed too, so the #1351 listing filter (about hiding stream logs from artifact
-        // LISTINGS) does not apply to this reclaimed-bytes total. Matches pusher.py's own unfiltered sum.
+        // unfiltered on purpose -- see that call site's own comment in FleetProjectionWriter.cs for why.
         ["Baton.Cli/Daemon/FleetProjectionWriter.cs"] =
             "GetFileSystemEntries lists the pruned room root, not an execution output directory; the nested EnumerateFiles walks a pruned execution's own former output directory but deliberately does not filter ExecutionStreamLogger.IsStreamLogFileName -- see #1557 comment above",
     };
