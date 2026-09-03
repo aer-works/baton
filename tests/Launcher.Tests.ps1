@@ -196,6 +196,32 @@ try {
         throw "Assertion failed: baton.cmd still ran the OLD target after the pointer flip. Got:`n$out5"
     }
 
+    # 6. register-daemon-task.ps1 never calls New-ScheduledTaskSettingsSet with a parameter name
+    # that cmdlet doesn't actually have (#1770: -DisallowStartIfOnBatteries/-StopIfGoingOnBatteries
+    # don't exist on it and blew up the register call with NamedParameterNotFound before either
+    # script reached Register-ScheduledTask).
+    Write-Host "Test 6: register-daemon-task.ps1 only passes real New-ScheduledTaskSettingsSet parameters..."
+    $registerScript = [System.IO.Path]::Combine($repoRoot, "tools", "tool-refresh", "register-daemon-task.ps1")
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($registerScript, [ref]$null, [ref]$null)
+    $realParams = (Get-Command New-ScheduledTaskSettingsSet).Parameters.Keys
+    $calls = $ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq "New-ScheduledTaskSettingsSet"
+    }, $true)
+    if ($calls.Count -eq 0) {
+        throw "Assertion failed: no New-ScheduledTaskSettingsSet call found in $registerScript"
+    }
+    foreach ($call in $calls) {
+        $usedParams = $call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } | ForEach-Object { $_.ParameterName }
+        foreach ($p in $usedParams) {
+            $match = $realParams | Where-Object { $_ -like "$p*" }
+            if (-not $match) {
+                throw "Assertion failed: New-ScheduledTaskSettingsSet call in $registerScript passes unknown parameter '-$p'"
+            }
+        }
+    }
+
     Write-Host "All launcher tests PASSED!"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

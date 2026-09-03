@@ -2561,7 +2561,9 @@ and the **quota-runway ledger** (below). Two more live responsibilities need a s
 than silently dropping out with the rest of the deleted daemon surface. All of the above assumes
 `baton daemon` is actually running persistently; it is kept running by the `baton-daemon` scheduled
 task (`tools/tool-refresh/register-daemon-task.ps1`, #1557), cycled onto each newly refreshed tool
-head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`.
+head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`. That script
+registers unelevated, so its only trigger is a logon trigger scoped to the registering user; a boot
+trigger is not registrable by a standard user and is not used (#1770).
 
 - **`RoomRetentionSweep`** (`Program.cs`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
