@@ -495,6 +495,65 @@ public class RoomRetentionSweepTests
         }
     }
 
+    /// <summary>
+    /// #1157, second reader: the warning above must name the CAUSE, not merely appear. A zero-step
+    /// workflow projects terminal off its empty journal, so it also reaches the mtime fallback — and
+    /// the first version of this code told the operator that room's journal predated #745, about a
+    /// journal written seconds earlier. That is a false diagnostic an operator would act on, and it
+    /// wrecks the census the warning exists to produce.
+    /// <para>
+    /// This is the discriminating arm for
+    /// <see cref="PruneRoomAsync_LegacyJournalWithNoWriterStamps_FallsBackToMtimeAndWarnsOncePerRoom"/>:
+    /// that test asserts the #745 sentence, and without this one nothing would notice it being said
+    /// about every absent instant rather than about a legacy journal specifically.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PruneRoomAsync_ZeroStepWorkflow_FallsBackWithoutBlamingTheLegacyJournalCause()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_prune_zerostep_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var roomDir = Path.Combine(tempRoot, "room-zero-step");
+            Directory.CreateDirectory(roomDir);
+
+            var zeroStepSnapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-empty"),
+                new WorkflowTemplateId("zero-step"),
+                WorkflowTemplateVersion: 1,
+                Steps: []);
+            await SnapshotBinder.PersistAsync(
+                zeroStepSnapshot,
+                Path.Combine(roomDir, "snapshot.json"),
+                TestContext.Current.CancellationToken);
+
+            // The shape RunCommand leaves behind: FlowEventLogWriter creates the journal on construction,
+            // so the file exists and is empty. A zero-step snapshot projects terminal off that.
+            var flowLogPath = Path.Combine(roomDir, "flow.jsonl");
+            await File.WriteAllTextAsync(flowLogPath, string.Empty, TestContext.Current.CancellationToken);
+            File.SetLastWriteTimeUtc(flowLogPath, DateTime.UtcNow.AddHours(-2));
+
+            var warnings = new StringWriter();
+            await RoomRetentionSweep.PruneRoomAsync(
+                roomDir, TimeSpan.FromHours(1), TestContext.Current.CancellationToken, warnings);
+
+            var line = Assert.Single(warnings.ToString()
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            Assert.Contains(roomDir, line, StringComparison.Ordinal);
+            Assert.DoesNotContain("predates writer timestamps", line, StringComparison.Ordinal);
+            Assert.Contains("no journal line ever transitioned it to terminal", line, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
     [Fact]
     public async Task PruneRoomAsync_KeepMarkedRoom_IsNotPruned()
     {

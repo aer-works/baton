@@ -39,20 +39,17 @@ public static class TerminalInstantResolver
 {
     /// <summary>
     /// The instant <paramref name="entries"/> last transitioned to <see cref="WorkflowStatus.Terminal"/>,
-    /// or <c>null</c> when there is no honest answer. <c>null</c> means one of three things, and a
-    /// caller must never collapse them into a fabricated instant (spec/baton.md §3):
-    /// <list type="bullet">
-    /// <item><description>the run is <b>not terminal</b> — including the crash window, where a journal
-    /// whose terminal event was never written is simply a room that has not ended;</description></item>
-    /// <item><description>the run is terminal but no line ever made it so (a zero-step snapshot, whose
-    /// empty journal already projects terminal);</description></item>
-    /// <item><description>the transition line predates writer stamping (#745) and carries no
-    /// <see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/> — the legacy-journal arm each caller
-    /// falls back for on its own terms.</description></item>
-    /// </list>
+    /// paired with <see cref="TerminalInstantAbsence"/> naming why when there is none. The pairing is
+    /// the point: a caller must never fabricate an instant (spec/baton.md §3), and the three ways of
+    /// having none call for three different responses — so returning a bare <c>null</c> would leave
+    /// every caller to guess which one it was holding. The first version of this method did exactly
+    /// that, and its one caller attributed all three to the legacy-journal case, printing a false
+    /// operator diagnostic on a room whose journal had been written minutes earlier.
+    /// <para>
     /// A truncated final line is not a case here at all: <see cref="Baton.Store.FlowEventLogReader"/>
     /// hands back only <c>\n</c>-terminated lines, so a half-written terminal event is not yet
-    /// observable and this reads exactly like the first case above.
+    /// observable and this reads exactly like <see cref="TerminalInstantAbsence.NotTerminal"/>.
+    /// </para>
     /// </summary>
     /// <param name="entries">
     /// The room's journal entries in append order, timestamps included
@@ -61,7 +58,7 @@ public static class TerminalInstantResolver
     /// a Flow line can be the transition.
     /// </param>
     /// <param name="snapshot">The same bound definition the caller projected against.</param>
-    public static DateTime? Resolve(IReadOnlyList<LogEntry> entries, WorkflowDefinitionSnapshot snapshot)
+    public static TerminalInstant Resolve(IReadOnlyList<LogEntry> entries, WorkflowDefinitionSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -86,7 +83,7 @@ public static class TerminalInstantResolver
         // prefix probed. The projections here are already prefix replays by construction.
         if (!IsTerminal(events, events.Length, snapshot))
         {
-            return null;
+            return new TerminalInstant(null, TerminalInstantAbsence.NotTerminal);
         }
 
         var transitionIndex = events.Length;
@@ -95,33 +92,59 @@ public static class TerminalInstantResolver
             transitionIndex--;
         }
 
-        // Zero-step snapshots project terminal on an empty journal, so no line ever transitioned it.
-        // Absent, never fabricated.
         if (transitionIndex == 0)
         {
-            return null;
+            return new TerminalInstant(null, TerminalInstantAbsence.NoTransitionEntry);
         }
 
-        return Normalize(stamps[transitionIndex - 1]);
+        // Kind: the writer stamps DateTime.UtcNow and FlowEventLogJson round-trips that back as Utc, so
+        // this is a no-op on every line the engine wrote. It exists for a hand-built entry carrying
+        // Unspecified -- read as UTC, which is the only thing the journal ever means. Deliberately NOT
+        // ToUniversalTime: on an Unspecified value that reinterprets it as local time and shifts it by
+        // the host's offset. There is no Local arm to go with this one, because a Local stamp cannot
+        // reach here and a branch whose only guard would pass on a UTC host (which CI is) is a branch
+        // with no instrument.
+        return stamps[transitionIndex - 1] is { } stamp
+            ? new TerminalInstant(DateTime.SpecifyKind(stamp, DateTimeKind.Utc), TerminalInstantAbsence.None)
+            : new TerminalInstant(null, TerminalInstantAbsence.TransitionEntryUnstamped);
     }
 
     private static bool IsTerminal(FlowEvent[] events, int prefixLength, WorkflowDefinitionSnapshot snapshot) =>
         StateProjector.Project(new ArraySegment<FlowEvent>(events, 0, prefixLength), snapshot).Status
             == WorkflowStatus.Terminal;
+}
+
+/// <summary>#1157: <see cref="TerminalInstantResolver.Resolve"/>'s answer, and why it is absent when it is.</summary>
+/// <param name="AtUtc">Non-null exactly when <paramref name="Absence"/> is <see cref="TerminalInstantAbsence.None"/>.</param>
+public readonly record struct TerminalInstant(DateTime? AtUtc, TerminalInstantAbsence Absence);
+
+/// <summary>
+/// #1157: why a run has no terminal instant. Never collapsed into a single "unknown" — the retention
+/// sweep responds differently to each, and telling an operator their journal predates #745 when it
+/// does not is worse than saying nothing (spec/baton.md §3).
+/// </summary>
+public enum TerminalInstantAbsence
+{
+    /// <summary>An instant was resolved; there is no absence.</summary>
+    None,
 
     /// <summary>
-    /// The writer stamps <c>DateTime.UtcNow</c>, so a line round-tripped through
-    /// <see cref="Baton.Store.FlowEventLogJson"/> comes back <see cref="DateTimeKind.Utc"/> already.
-    /// A hand-built entry (a test, a fixture) can carry <see cref="DateTimeKind.Unspecified"/>; read it
-    /// as UTC rather than letting a later <c>ToUniversalTime</c> silently shift it by the host's
-    /// offset. Never <c>ToUniversalTime</c> on an Unspecified value: that treats it as local time,
-    /// which is the one interpretation the journal never means.
+    /// The run has not ended. Includes the crash window: a journal whose terminal event was never
+    /// written, or was written only as a torn final line, is a room that has not ended.
     /// </summary>
-    private static DateTime? Normalize(DateTime? stamp) => stamp switch
-    {
-        null => null,
-        { Kind: DateTimeKind.Unspecified } value => DateTime.SpecifyKind(value, DateTimeKind.Utc),
-        { Kind: DateTimeKind.Local } value => value.ToUniversalTime(),
-        var value => value,
-    };
+    NotTerminal,
+
+    /// <summary>
+    /// The run is terminal but no journal line made it so — a zero-step snapshot, whose empty prefix
+    /// already projects terminal. Nothing was mis-recorded here; there is genuinely no transition to
+    /// date.
+    /// </summary>
+    NoTransitionEntry,
+
+    /// <summary>
+    /// The transition line predates writer stamping (#745) and carries no
+    /// <see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/>. The only case that says anything about
+    /// the age of a room's journal, and so the only one worth telling an operator about.
+    /// </summary>
+    TransitionEntryUnstamped,
 }

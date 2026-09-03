@@ -392,7 +392,7 @@ public static class WorkflowStatusProjector
         string? terminalAt = null;
         if (state.Status == WorkflowStatus.Terminal && entries is { Count: > 0 })
         {
-            terminalAt = TerminalInstantResolver.Resolve(entries, snapshot)?.ToString("O");
+            terminalAt = TerminalInstantResolver.Resolve(entries, snapshot).AtUtc?.ToString("O");
         }
 
         return new WorkflowStatusView(

@@ -29,15 +29,19 @@ public sealed record RoomWake(HeldWorkRef Ref, RoomWakeKind Kind);
 /// </summary>
 /// <param name="TerminalAtUtc">
 /// #1157: when the run ended — <see cref="TerminalInstantResolver.Resolve"/>'s answer, never
-/// <c>flow.jsonl</c>'s mtime. Always <c>null</c> when <paramref name="IsTerminal"/> is <c>false</c>
-/// (nothing may invent a terminal instant for a room that has not ended, spec/baton.md §3), and
-/// <c>null</c> on a terminal room whose transition line predates writer stamping — see that
-/// method's own remarks for all three null cases, which it is the caller's job to tell apart.
+/// <c>flow.jsonl</c>'s mtime. Always <c>null</c> when <paramref name="IsTerminal"/> is <c>false</c>:
+/// nothing may invent a terminal instant for a room that has not ended (spec/baton.md §3).
+/// </param>
+/// <param name="TerminalAtAbsence">
+/// #1157: why <paramref name="TerminalAtUtc"/> is null, carried alongside rather than left for the
+/// caller to guess. Only <see cref="TerminalInstantAbsence.TransitionEntryUnstamped"/> says anything
+/// about a room's journal being old, so only it justifies telling an operator so.
 /// </param>
 public readonly record struct WorkflowProbeResult(
     bool JournalExists,
     bool IsTerminal,
-    DateTime? TerminalAtUtc = null);
+    DateTime? TerminalAtUtc = null,
+    TerminalInstantAbsence TerminalAtAbsence = TerminalInstantAbsence.NotTerminal);
 
 /// <summary>
 /// Wake set = f(<see cref="RoomState"/>, workflow probes) — pure, synchronous, no wall-clock, no I/O.

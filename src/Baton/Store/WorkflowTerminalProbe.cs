@@ -58,12 +58,23 @@ public static class WorkflowTerminalProbe
         var state = StateProjector.Project(events, snapshot, checkpoint);
         var isTerminal = state.Status == WorkflowStatus.Terminal;
 
+        // Gated on isTerminal rather than left to the resolver's own gate, so the "never invent an
+        // instant for a room that has not ended" rule is visible at the field's construction site and
+        // not only inside the thing it calls. Note the projections can in principle disagree -- this one
+        // uses the room's ProjectionCheckpoint, the resolver's is a checkpoint-free full replay -- but
+        // they cannot in practice: flow.jsonl is append-only (nothing in src/ rewrites or truncates it;
+        // RoomJournalCompactor compacts room.jsonl), so a checkpoint is always a valid prefix fold of
+        // the same events, and StateProjector already forces a loud full replay when its EventOffset
+        // exceeds the log. If that ever stops holding, this reads NoTransitionEntry rather than
+        // TransitionEntryUnstamped, so it cannot masquerade as a legacy journal.
+        var instant = isTerminal
+            ? TerminalInstantResolver.Resolve(entries, snapshot)
+            : new TerminalInstant(null, TerminalInstantAbsence.NotTerminal);
+
         return new WorkflowProbeResult(
             JournalExists: true,
             IsTerminal: isTerminal,
-            // Gated on isTerminal rather than left to the resolver's own gate, so the "never invent an
-            // instant for a room that has not ended" rule is visible at the field's construction site
-            // and not only inside the thing it calls.
-            TerminalAtUtc: isTerminal ? TerminalInstantResolver.Resolve(entries, snapshot) : null);
+            TerminalAtUtc: instant.AtUtc,
+            TerminalAtAbsence: instant.Absence);
     }
 }

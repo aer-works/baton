@@ -8,7 +8,8 @@ namespace Baton.Tests.Projection;
 /// the instant is the LAST transition into <see cref="WorkflowStatus.Terminal"/>, which is what
 /// distinguishes it from the two cheaper answers it replaces (<c>flow.jsonl</c>'s mtime, and the last
 /// journal line's own stamp). Both of those move when something is appended after a run ended; this
-/// must not.
+/// must not. Every absence arm also asserts its <see cref="TerminalInstantAbsence"/>, because a caller
+/// acts on which one it got.
 /// </summary>
 public class TerminalInstantResolverTests
 {
@@ -24,6 +25,12 @@ public class TerminalInstantResolverTests
         [
             new WorkflowStepDefinition(StepA, "worker", [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1)),
         ]);
+
+    private static WorkflowDefinitionSnapshot ZeroStepSnapshot() => new(
+        new WorkflowDefinitionSnapshotId("snapshot-empty"),
+        new WorkflowTemplateId("zero-step"),
+        WorkflowTemplateVersion: 1,
+        Steps: []);
 
     private static ExecutionRequest Request(ExecutionId executionId) => new(
         executionId,
@@ -51,7 +58,8 @@ public class TerminalInstantResolverTests
             ],
             SingleStepSnapshot());
 
-        Assert.Equal(Ended, resolved);
+        Assert.Equal(Ended, resolved.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.None, resolved.Absence);
     }
 
     /// <summary>
@@ -72,11 +80,11 @@ public class TerminalInstantResolverTests
 
         // Control arm read first: without the late append the answer is Ended, so a passing assertion
         // below is about the append being ignored and not about the fixture never having been terminal.
-        Assert.Equal(Ended, TerminalInstantResolver.Resolve(entries, SingleStepSnapshot()));
+        Assert.Equal(Ended, TerminalInstantResolver.Resolve(entries, SingleStepSnapshot()).AtUtc);
 
         entries.Add(Flow(new FlowEvent.ZeroOutputsDespiteSubstantialWork(exec, "diagnostic"), Later));
 
-        Assert.Equal(Ended, TerminalInstantResolver.Resolve(entries, SingleStepSnapshot()));
+        Assert.Equal(Ended, TerminalInstantResolver.Resolve(entries, SingleStepSnapshot()).AtUtc);
     }
 
     /// <summary>
@@ -97,11 +105,11 @@ public class TerminalInstantResolverTests
             ],
             SingleStepSnapshot());
 
-        Assert.Equal(Ended, resolved);
+        Assert.Equal(Ended, resolved.AtUtc);
     }
 
     [Fact]
-    public void Resolve_RunThatIsNotTerminal_IsNull()
+    public void Resolve_RunThatIsNotTerminal_IsAbsentAsNotTerminal()
     {
         var exec = new ExecutionId("exec-1");
 
@@ -109,7 +117,8 @@ public class TerminalInstantResolverTests
             [Flow(new FlowEvent.ExecutionRequestAccepted(Request(exec)), Ended)],
             SingleStepSnapshot());
 
-        Assert.Null(resolved);
+        Assert.Null(resolved.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.NotTerminal, resolved.Absence);
     }
 
     /// <summary>
@@ -129,19 +138,23 @@ public class TerminalInstantResolverTests
                 Flow(new FlowEvent.ExecutionRequestAccepted(Request(exec)), Ended.AddMinutes(-5)),
                 Flow(new FlowEvent.ExecutionSucceeded(exec), Ended),
             ],
-            snapshot));
+            snapshot).AtUtc);
 
-        Assert.Null(TerminalInstantResolver.Resolve(
+        var truncated = TerminalInstantResolver.Resolve(
             [Flow(new FlowEvent.ExecutionRequestAccepted(Request(exec)), Ended.AddMinutes(-5))],
-            snapshot));
+            snapshot);
+
+        Assert.Null(truncated.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.NotTerminal, truncated.Absence);
     }
 
     /// <summary>
-    /// A pre-#745 journal carries no writer stamps at all. Absent, never fabricated — the caller's
-    /// legacy arm (<c>RoomRetentionSweep.PruneRoomAsync</c>) is what decides what to do about it.
+    /// A pre-#745 journal carries no writer stamps at all. Absent, never fabricated — and the ONLY
+    /// absence that says anything about a room's journal being old, which is what makes the retention
+    /// sweep's operator-facing warning honest.
     /// </summary>
     [Fact]
-    public void Resolve_TerminalRunOnAJournalWithNoWriterStamps_IsNull()
+    public void Resolve_TerminalRunOnAJournalWithNoWriterStamps_IsAbsentAsUnstamped()
     {
         var exec = new ExecutionId("exec-1");
 
@@ -152,7 +165,49 @@ public class TerminalInstantResolverTests
             ],
             SingleStepSnapshot());
 
-        Assert.Null(resolved);
+        Assert.Null(resolved.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.TransitionEntryUnstamped, resolved.Absence);
+    }
+
+    /// <summary>
+    /// The <c>transitionIndex == 0</c> guard, which is reachable rather than defensive: a zero-step
+    /// snapshot projects terminal off its EMPTY prefix, so no line ever transitioned it. Without the
+    /// guard this indexes <c>stamps[-1]</c>, and the throw would surface as the retention sweep's
+    /// per-room catch — pruning silently ceasing for that room forever rather than crashing. Reported
+    /// as its own absence, never as the legacy-journal one.
+    /// </summary>
+    [Fact]
+    public void Resolve_ZeroStepSnapshot_IsAbsentAsNoTransitionEntry_AndDoesNotThrow()
+    {
+        var resolved = TerminalInstantResolver.Resolve([], ZeroStepSnapshot());
+
+        Assert.Null(resolved.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.NoTransitionEntry, resolved.Absence);
+    }
+
+    /// <summary>
+    /// The same guard with lines actually in the journal: a step-less execution against a zero-step
+    /// snapshot leaves every prefix terminal, including the empty one, so the backwards walk runs all
+    /// the way down rather than stopping at the first entry.
+    /// </summary>
+    [Fact]
+    public void Resolve_ZeroStepSnapshotWithJournalLines_StillHasNoTransitionEntry()
+    {
+        var exec = new ExecutionId("exec-stepless");
+        var steplessRequest = new ExecutionRequest(
+            exec, new WorkflowId("wf-1"), StepId: null, "human",
+            Inputs: [], Outputs: [], Timeout: null, Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+        var resolved = TerminalInstantResolver.Resolve(
+            [
+                Flow(new FlowEvent.ExecutionRequestAccepted(steplessRequest), Ended.AddMinutes(-5)),
+                Flow(new FlowEvent.ExecutionSucceeded(exec), Ended),
+            ],
+            ZeroStepSnapshot());
+
+        Assert.Null(resolved.AtUtc);
+        Assert.Equal(TerminalInstantAbsence.NoTransitionEntry, resolved.Absence);
     }
 
     /// <summary>
@@ -175,16 +230,22 @@ public class TerminalInstantResolverTests
             ],
             SingleStepSnapshot());
 
-        Assert.Equal(Later, resolved);
+        Assert.Equal(Later, resolved.AtUtc);
     }
 
     /// <summary>
     /// A hand-built entry can carry <see cref="DateTimeKind.Unspecified"/> where the writer's own
-    /// <c>DateTime.UtcNow</c> would not. Read as UTC, never through the host's local offset — a silent
-    /// hours-wide shift is exactly the kind of wrong-but-plausible answer a grace window would act on.
+    /// <c>DateTime.UtcNow</c> would not: read as UTC, with the ticks untouched.
+    /// <para>
+    /// <b>Scope, stated because it is easy to over-read.</b> This asserts the ticks are not shifted and
+    /// the Kind is Utc. It does NOT discriminate a <c>ToUniversalTime()</c> regression on a UTC host —
+    /// where Local and UTC coincide, that mutation is a no-op — and CI is UTC, so no test could. The
+    /// resolver's answer is instead structural: <c>SpecifyKind</c> is the only operation on the value,
+    /// and there is no Local arm for a mutation to hide in.
+    /// </para>
     /// </summary>
     [Fact]
-    public void Resolve_UnspecifiedKindStamp_IsReadAsUtcNotLocal()
+    public void Resolve_UnspecifiedKindStamp_KeepsItsTicksAndReadsAsUtc()
     {
         var exec = new ExecutionId("exec-1");
         var unspecified = new DateTime(2026, 9, 1, 10, 0, 0, DateTimeKind.Unspecified);
@@ -196,7 +257,7 @@ public class TerminalInstantResolverTests
             ],
             SingleStepSnapshot());
 
-        Assert.Equal(Ended, resolved);
-        Assert.Equal(DateTimeKind.Utc, resolved!.Value.Kind);
+        Assert.Equal(unspecified.Ticks, resolved.AtUtc!.Value.Ticks);
+        Assert.Equal(DateTimeKind.Utc, resolved.AtUtc!.Value.Kind);
     }
 }

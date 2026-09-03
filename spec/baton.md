@@ -1624,13 +1624,33 @@ own — `FlowEventLogWriter` writes each entry as one complete newline-terminate
 `FlowEventLogReader` returns only `\n`-terminated ones, so a torn final line is not yet observable
 and the journal simply reads as one event shorter.
 
-`terminalAt` is **absent, never fabricated**, in three cases, which a reader must not collapse: the
-run is not terminal; the run is terminal but no line made it so (a zero-step snapshot); or the
-transition line predates writer stamping (#745) and carries none. The two consumers answer that last
-case differently, on purpose. The retention sweep has a destructive decision to make, so it falls back
-to `flow.jsonl`'s mtime for exactly that population and says so once per room per daemon process.
-`fleet_status` only displays, so it omits the field — including for a `terminal.json` frozen before
-this field existed, which `TerminalSentinelWriter` never re-derives (#1522 review finding 4).
+`terminalAt` is **absent, never fabricated**, in four cases, which a reader must not collapse — the
+first three are `TerminalInstantAbsence`'s own members, carried on the resolver's answer rather than
+left to a caller to infer:
+
+1. `NotTerminal` — the run has not ended, including the crash window above.
+2. `NoTransitionEntry` — the run is terminal but no line made it so. A zero-step workflow projects
+   terminal off its empty journal, so this is a real shape and not a defensive branch.
+3. `TransitionEntryUnstamped` — the transition line predates writer stamping (#745). **The only one
+   of the four that says anything about a room's journal being old**, which is why it is the only one
+   an operator is told about by name.
+4. The pre-ledger sentinel — `TerminalSentinelWriter.WriteValidationRefusedAsync` writes a
+   `terminal.json` for a refusal that happened before `flow.jsonl` existed, so there is no journal to
+   resolve an instant from at all. Not a `TerminalInstantAbsence` member because the resolver is never
+   reached on that path.
+
+The two consumers answer the terminal-but-no-instant cases differently, on purpose. The retention
+sweep has a destructive decision to make, so it falls back to `flow.jsonl`'s mtime and names which
+cause it is falling back for, once per room per daemon process. `fleet_status` only displays, so it
+omits the field — including for a `terminal.json` frozen before this field existed, which
+`TerminalSentinelWriter` never re-derives (#1522 review finding 4).
+
+**One durability consequence worth stating.** `Program.cs` writes the sentinel from a
+`WorkflowStatusView` projected against a fresh full journal read, and a sentinel is never re-derived
+once written — so whatever `terminalAt` that projection produced is what the room carries forever. It
+rests on a `ProjectionCheckpoint` being a faithful prefix fold of an append-only journal, which is a
+property this engine already depends on everywhere; #1157 is the first time it decides a *durable*
+field rather than a recomputed one.
 
 Two nearby timestamps are deliberately **not** this one. `baton status`'s own `Log updated at` is
 `flow.jsonl`'s mtime at the whole-log grain — "when the last event landed", which is a different

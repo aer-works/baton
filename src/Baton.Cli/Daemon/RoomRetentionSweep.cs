@@ -300,17 +300,34 @@ public sealed class RoomRetentionSweep : BackgroundService
         }
         else
         {
-            // The legacy arm, and the ONLY surviving use of the mtime here: a journal whose terminal
-            // line predates writer stamping (#745) carries no instant to read, and refusing to prune
-            // such a room forever would be a worse answer than the proxy that has been deciding it all
-            // along. Announced once per room (see LegacyTerminalInstantWarnedRooms) so the population
-            // still on old journals is visible rather than inferred.
+            // The ONLY surviving use of the mtime here, for the two terminal-but-no-instant shapes:
+            // refusing to prune such a room forever would be a worse answer than the proxy that has
+            // been deciding it all along. Announced once per room (see LegacyTerminalInstantWarnedRooms)
+            // so the population still on old journals is visible rather than inferred -- and announced
+            // with the RIGHT cause, which is why the resolver reports one. Attributing every absent
+            // instant to #745 made the census this warning exists to produce simply wrong: a zero-step
+            // snapshot projects terminal off an empty prefix, so a room whose journal was written
+            // minutes ago reaches this branch too, and blaming its age on a five-versions-old writer is
+            // a false diagnostic an operator would act on.
+            var cause = probe.TerminalAtAbsence switch
+            {
+                TerminalInstantAbsence.TransitionEntryUnstamped =>
+                    "its journal predates writer timestamps (#745)",
+                TerminalInstantAbsence.NoTransitionEntry =>
+                    "no journal line ever transitioned it to terminal (a zero-step workflow projects " +
+                    "terminal off its empty journal)",
+                // Unreachable: this branch runs only under probe.IsTerminal, and the probe reports
+                // NotTerminal/None only outside it. Named rather than defaulted so a future absence
+                // reason cannot silently inherit one of the sentences above.
+                var other => $"its terminal instant is unavailable ({other})",
+            };
+
             if (LegacyTerminalInstantWarnedRooms.TryAdd(roomDirectoryPath, 0))
             {
                 (warningSink ?? Console.Error).WriteLine(
-                    $"RoomRetentionSweep: '{roomDirectoryPath}' is terminal but its journal predates writer " +
-                    $"timestamps (#745), so the retention grace window is falling back to " +
-                    $"{BatonPaths.FlowLogFileName}'s mtime for this room. Reported once per room per daemon process.");
+                    $"RoomRetentionSweep: '{roomDirectoryPath}' is terminal but {cause}, so the retention " +
+                    $"grace window is falling back to {BatonPaths.FlowLogFileName}'s mtime for this room. " +
+                    "Reported once per room per daemon process.");
             }
 
             terminalAtUtc = File.GetLastWriteTimeUtc(flowLogPath);
