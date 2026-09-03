@@ -2070,15 +2070,21 @@ definition has no exit event yet and needs every line scanned, not just the last
   derivation-stuck check above, independent of whether any room is Running (a failing push is not
   scoped to active lanes the way the derivation-stuck check is).
 
-  **`stdoutTail` (#1710).** A bounded live tail of the Running execution's own `.stdout.log`: the
-  last ~40 lines (`STDOUT_TAIL_MAX_LINES`), hard-capped at ~4 KB per room
-  (`STDOUT_TAIL_MAX_BYTES`, `pusher.py`'s `stdout_tail_for_room`), read straight off disk the same
-  bounded-tail-window way `live`'s other fields are — no engine change, no on-demand path, since the
-  glass's `baton` MCP connector is the Cloudflare worker serving KV, not the fleet machine (the
-  constraint that decides this design, #1710's own issue body). Over-cap content drops the OLDEST
-  lines first (`stdout_tail_for_room`'s own docstring is the canonical record of the truncation
-  direction and its leading `…` marker, not restated here). Every line passes the SAME secret-gate
-  patterns the deliverables path uses
+  **`stdoutTail` (#1710, rendered as prose and blob-elided by #1723).** A bounded live tail of the
+  Running execution's own `.stdout.log`: the last ~40 lines (`STDOUT_TAIL_MAX_LINES`), hard-capped at
+  ~4 KB per room (`STDOUT_TAIL_MAX_BYTES`, `pusher.py`'s `stdout_tail_for_room`), read straight off
+  disk the same bounded-tail-window way `live`'s other fields are — no engine change, no on-demand
+  path, since the glass's `baton` MCP connector is the Cloudflare worker serving KV, not the fleet
+  machine (the constraint that decides this design, #1710's own issue body). Over-cap content drops
+  the OLDEST lines first, on a real line boundary — never mid-character (`stdout_tail_for_room`'s own
+  docstring is the canonical record of the truncation direction and its leading `…` marker, not
+  restated here). Each raw line is rendered before it ships: a stream-json object becomes one short
+  prose line (`_render_stream_json_prose`, a Python sibling of `Baton.Cli`'s
+  `WorkerStreamLineRenderer`/`RunCommand.EchoStreamJsonLine`) or is dropped as noise, a whitespace-free
+  token of 200+ characters (base64, a data URI, a hex dump) is elided to a byte-count marker
+  (`_elide_blob_tokens`), and a non-JSON line passes through unchanged — see those functions' own
+  docstrings for the field-by-field rules, not restated here. Every surviving line then passes the
+  SAME secret-gate patterns the deliverables path uses
   (`secret_hit_index`) — a matching line becomes `[withheld]`, never dropping the whole tail the way
   a deliverable's whole-content withholding does; `_gate_tail_lines`'s own docstring in `pusher.py`
   is the canonical record of the missing-patterns-file fallback, not restated here. Absent, never a
