@@ -1,0 +1,44 @@
+# Registers the `baton-daemon` scheduled task that keeps `baton daemon` running persistently
+# (#1557 side item). `RoomRetentionSweep` and the fleet-wide concurrency-cap apply (spec/baton.md
+# §7) are both hosted services inside `baton daemon` -- they only do anything while some process
+# is actually running that verb, and nothing before this script registered one. This is the
+# `baton-daemon` sibling of the `fleet-glass-pusher` task `tools/fleet-glass/deploy.ps1` (step 5)
+# registers -- same convention (idempotent `Register-ScheduledTask -Force`, restart-on-failure,
+# `IgnoreNew` against overlap), different action.
+#
+# One-time, run manually by the operator (or by the deploy conductor after a PR that touches this
+# script merges) -- not invoked by CI or by any lane. Re-running is safe: `-Force` overwrites the
+# existing task definition in place rather than erroring or duplicating it.
+$ErrorActionPreference = "Stop"
+
+$taskName = "baton-daemon"
+$batonHome = if ($env:BATON_HOME) { $env:BATON_HOME } else { Join-Path $HOME ".baton" }
+
+# The action runs `baton daemon` through the launcher on PATH (`~/.dotnet/tools/baton.cmd`,
+# installed by `tools/tool-refresh/refresh.py`'s `install_launcher`) rather than a fixed exe path,
+# so every restart re-resolves `~/.baton/tools/current` and picks up whatever tool-refresh most
+# recently flipped the pointer to. `baton daemon` itself only logs via the default console
+# provider (`DaemonHost.cs` builds a plain `Host.CreateApplicationBuilder`, no file sink) -- run
+# through `powershell.exe -WindowStyle Hidden` so no console window appears, and `*>>` all output
+# streams to `daemon.log` under the working directory so the daemon's own output survives a
+# session with nobody watching it.
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument '-NoProfile -WindowStyle Hidden -Command "& { baton daemon *>> ''daemon.log'' }"' `
+    -WorkingDirectory $batonHome
+
+# At logon and at machine startup -- the daemon has no other trigger that would bring it back
+# after a reboot or a sign-out/sign-in cycle.
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+$triggerBoot = New-ScheduledTaskTrigger -AtStartup
+
+# Same shape as fleet-glass-pusher's settings (deploy.ps1 step 5): IgnoreNew means a due trigger
+# is skipped outright while a launched instance is still alive, so a healthy daemon never sees a
+# second launch; RestartCount/RestartInterval is the self-heal against a daemon that exited (crash
+# or an operator's `taskkill`) without a fresh trigger due yet.
+$taskSettings = New-ScheduledTaskSettingsSet `
+    -MultipleInstances IgnoreNew -DisallowStartIfOnBatteries -StopIfGoingOnBatteries `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -StartWhenAvailable `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
+
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($triggerLogon, $triggerBoot) `
+    -Settings $taskSettings -Force | Out-Null

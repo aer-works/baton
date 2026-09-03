@@ -3,14 +3,14 @@
     "id": "advise",
     "tier": "standard",
     "read_files": true,
-    "write_files": true,
+    "write_files": false,
     "run_shell_commands": false,
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
     "token_budget": 150000,
     "billed_rate_limit": null,
-    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1386 for the follow-up.",
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which was not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refused a withheld-write role on a non-outbox-capable adapter outright by design rather than auto-granting the audited write the C# engine's RoleDispatch now does. #1759 retired dispatch.py; #1386 redid the narrowing under the real production sequence (RoleDispatch.ToBinding -> WorktreeWorkspaces.Provision -> WorkerBindingResolver.Resolve) where #901's audited-write widening un-refuses a withheld-write role once a worktree is provisioned, so no tier move is needed either.",
     "outputs": [
       {
         "name": "advice.md",
@@ -132,7 +132,7 @@
     "denied_shell_option_tokens": ["--add-label", "--remove-label", "--label"],
     "timeout_minutes": 15,
     "verdict_schema": false,
-    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
+    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). Until #1759 retired it, the canonical brief was janitor-prompt.md next to tools/baton-agy-loop/dispatch.py, passed via --prompt-file; baton dispatch janitor has no equivalent standing brief file today -- the operator supplies the checkers to run via --spec/--spec-text each time. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
     "outputs": [
       {
         "name": "janitor.md",

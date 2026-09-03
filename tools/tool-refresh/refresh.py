@@ -7,7 +7,9 @@ Replaces the single-global-tool drain cycle (#1645) with isolated side-by-side i
 - Atomically flip `~/.baton/tools/current` pointer file (temp file + rename).
 - Ensure launcher scripts (`baton.cmd`, `baton.ps1`, `baton`) are installed in `~/.dotnet/tools` on PATH,
 - Build Debug CLI for the pusher task.
-- Restart the `fleet-glass-pusher` scheduled task.
+- Restart the `fleet-glass-pusher` and `baton-daemon` scheduled tasks (#1557), so both a daemon
+  restart via `dotnet tool install` and a plain re-refresh at the same head cycle the daemon onto
+  the launcher's `current` pointer the same way the pusher already does.
 - Prune unreferenced versions older than the top 3 installs.
 - No drain wait; no `draining.json` write. Keep `draining.json` honoured by dispatch as an operator-invoked stop only.
 
@@ -536,7 +538,8 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
     else:
         print_fn("tool-refresh: rebuilt Baton.Cli Debug for fleet-glass pusher")
 
-    # Restart scheduled task
+    # Restart scheduled tasks -- both are long-running processes that only pick up a newly
+    # flipped `current` pointer by being restarted; neither re-resolves it on its own mid-run.
     if sys.platform == "win32" or os.name == "nt":
         restart_cmd = [
             "powershell", "-NoProfile", "-Command",
@@ -545,6 +548,16 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
         ]
         run_step(deps, restart_cmd, dry_run, print_fn)
         print_fn("tool-refresh: restarted fleet-glass-pusher scheduled task")
+
+        # #1557: the daemon has no HTTP listener or other external signal to poll for a new tool
+        # head, so it needs the same restart-on-refresh treatment the pusher already gets.
+        daemon_restart_cmd = [
+            "powershell", "-NoProfile", "-Command",
+            "Stop-ScheduledTask -TaskName baton-daemon -ErrorAction SilentlyContinue; "
+            "Start-ScheduledTask -TaskName baton-daemon -ErrorAction SilentlyContinue",
+        ]
+        run_step(deps, daemon_restart_cmd, dry_run, print_fn)
+        print_fn("tool-refresh: restarted baton-daemon scheduled task")
 
     # Prune old tool installations
     prune_tools(deps, dry_run, print_fn, keep_count=3)
@@ -896,6 +909,16 @@ def _selftest_refresh_end_to_end_mocked() -> bool:
         # Global tool uninstall was run
         if not any("uninstall" in " ".join(c) for c in commands_run):
             print("  FAILED: dotnet tool uninstall --global baton was not executed")
+            ok = False
+
+        # Both scheduled tasks are restarted on every refresh (#1557: baton-daemon mirrors the
+        # pusher's own restart so it also cycles onto the newly flipped tool head).
+        powershell_cmds = [" ".join(c) for c in commands_run if c and c[0] == "powershell"]
+        if not any("fleet-glass-pusher" in c for c in powershell_cmds):
+            print(f"  FAILED: fleet-glass-pusher scheduled task was not restarted. powershell commands: {powershell_cmds}")
+            ok = False
+        if not any("baton-daemon" in c for c in powershell_cmds):
+            print(f"  FAILED: baton-daemon scheduled task was not restarted. powershell commands: {powershell_cmds}")
             ok = False
 
     return ok

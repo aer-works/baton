@@ -648,7 +648,8 @@ public static class MutationInterface
         // The write-sequence discipline: recorded and fsync'd before anything else, whether the
         // target turns out to be a live process, a pending non-process execution, or already
         // terminal (the record itself is the too-late outcome; nothing else changes).
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
 
         return await PumpToFixedPointAsync(
@@ -939,6 +940,14 @@ public static class MutationInterface
         // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
         DateTimeOffset? lastQuotaParkNotified = null;
 
+        // #1634/#1762: this pump's own view of the ledger's Origin: Operator CancellationRequested
+        // targets, re-accumulated every round the same way lastQuotaParkNotified above persists
+        // across rounds. Scope (checkpoint-window, not "this call's own writes"), why
+        // FlowState.CancellationRequestedExecutionIds/ProjectionCheckpoint.State's equivalent were
+        // passed over, and why Origin had to become a durable field rather than staying an in-memory
+        // gate: spec/baton.md §2.
+        var cancellationRequestedExecutionIds = new HashSet<ExecutionId>();
+
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
         // host stop is detected below (M10 Phase 2): every read/write this loop performs to reach
         // its fixed point must keep completing even after the ambient token has fired, or the pump
@@ -976,6 +985,18 @@ public static class MutationInterface
                 state = projection.State;
                 latestCheckpoint = projection.Checkpoint;
                 currentCheckpoint = latestCheckpoint;
+
+                // #1634/#1762: this round's slice of the raw ledger, Origin: Operator only — a
+                // HostStop or legacy (null-Origin) line is never added, which is what makes the block
+                // below correct without also needing !hostStopRequested's help across a process
+                // boundary. spec/baton.md §2.
+                foreach (var flowEvent in events)
+                {
+                    if (flowEvent is FlowEvent.CancellationRequested { Origin: CancellationOrigin.Operator } cancellationRequested)
+                    {
+                        cancellationRequestedExecutionIds.Add(cancellationRequested.ExecutionId);
+                    }
+                }
 
                 var acceptedRequestByExecutionId = latestCheckpoint.State.AcceptedRequestByExecutionId;
 
@@ -1115,7 +1136,9 @@ public static class MutationInterface
                             if (armed)
                             {
                                 toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
-                                hookVerdictCount = CountHookVerdictLedgerLines(outputDirectory, request.HookVerdictLedgerFileName);
+                                hookVerdictCount = request.HookVerdictLedgerFileName is { } ledgerFileName
+                                    ? HookVerdictLedger.CountLines(Path.Combine(outputDirectory, ledgerFileName))
+                                    : 0;
                             }
                         }
                         else if (countHookVerdicts is not null)
@@ -1133,6 +1156,9 @@ public static class MutationInterface
                             changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
                             hookVerdictCount: hookVerdictCount);
 
+                        // #1709: no TokenBudgetMonitor in scope on this path -- this classifies a
+                        // RECORDED exit from a possibly-defunct workspace, never a live process, so
+                        // ToOutcomeEvent's peakBilledInWindow stays at its null default.
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
                         await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, executionId, classification, ioCancellationToken)
@@ -1229,6 +1255,39 @@ public static class MutationInterface
                     foreach (var (stepId, executionId) in pauseObligations)
                     {
                         await eventLogWriter.AppendAsync(new FlowEvent.WorkflowPaused(executionId, stepId), ioCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
+                // #1634/#1762: a poller-less pump (e.g. CancelCommand's DIRECT path) never delivers a
+                // parked step's cancel through MarkParkedCancelIntent/SettleParkedCancelIntentsAsync,
+                // so read the ledger directly here, before GetRetryObligations/
+                // DependencyResolver.GetReadySteps get a chance to redispatch it instead. Sourced from
+                // cancellationRequestedExecutionIds -- already Origin: Operator only, see its own
+                // remarks -- filtered through IsParkedRetryTarget, the same terminal
+                // SettleParkedCancelIntentsAsync would produce. Also gated on !hostStopRequested, same
+                // guard readyStepIds uses below -- why both this gate AND Origin: spec/baton.md §2.
+                // Filters state.Steps directly
+                // rather than the accumulator's own HashSet -- state.Steps is itself built by
+                // iterating snapshot.Steps in order (StateProjector), so this gives the
+                // ExecutionCancelled appends below the same deterministic-emission discipline the
+                // ready-step loop further down uses, with no separate join back through
+                // snapshot.Steps that could silently drop a match if that 1:1 shape ever changed.
+                var parkedCancelExecutionIds = hostStopRequested
+                    ? []
+                    : state.Steps
+                        .Where(s => s.LatestExecutionId is { } latestExecutionId
+                            && cancellationRequestedExecutionIds.Contains(latestExecutionId)
+                            && IsParkedRetryTarget(state, latestExecutionId))
+                        .Select(s => s.LatestExecutionId!.Value)
+                        .ToList();
+                if (parkedCancelExecutionIds.Count > 0)
+                {
+                    foreach (var executionId in parkedCancelExecutionIds)
+                    {
+                        await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
                             .ConfigureAwait(false);
                     }
 
@@ -1926,7 +1985,13 @@ public static class MutationInterface
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
             // dispatch has returned.
-            await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
+            //
+            // #1709: budgetMonitor is in scope here (never for the crash-recovery caller below), so a
+            // live dispatch's Succeeded/Failed outcome carries the same peak an arrest would have --
+            // the false-positive-side lanes spec/baton.md §3's calibration needs.
+            await eventLogWriter.AppendAsync(
+                    ToOutcomeEvent(prepared.Request.ExecutionId, classification, budgetMonitor?.SnapshotPeakBilledInWindow()),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -1973,14 +2038,22 @@ public static class MutationInterface
     /// a fresh dispatch's own completion (<see cref="DispatchAndRecordOutcomeAsync"/>) and M10 Phase
     /// 3's from-the-log classification of a recorded exit — the same mapping either way.
     /// </summary>
-    private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
+    /// <param name="peakBilledInWindow">
+    /// #1709: <see cref="FlowEvent.ExecutionSucceeded.PeakBilledInWindow"/>/
+    /// <see cref="FlowEvent.ExecutionFailed.PeakBilledInWindow"/>'s reading. Only the live-dispatch
+    /// caller has a <c>TokenBudgetMonitor</c> in scope to pass one; the crash-recovery caller classifies
+    /// a recorded exit with no live monitor and always passes null.
+    /// </param>
+    private static FlowEvent ToOutcomeEvent(
+        ExecutionId executionId, OutcomeClassification classification, long? peakBilledInWindow = null) =>
         classification.Verdict switch
         {
             OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(
-                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason),
+                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason,
+                peakBilledInWindow),
             OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
-                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
+                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames, peakBilledInWindow),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
             OutcomeVerdict.Indeterminate => new FlowEvent.ExecutionIndeterminate(
                 executionId, classification.Reason, classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
@@ -2080,7 +2153,8 @@ public static class MutationInterface
                 continue;
             }
 
-            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), ioCancellationToken)
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CancellationRequested(executionId, CancellationOrigin.Operator), ioCancellationToken)
                 .ConfigureAwait(false);
             await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
                 .ConfigureAwait(false);
@@ -2302,38 +2376,4 @@ public static class MutationInterface
         return toolCallCount;
     }
 
-    /// <summary>
-    /// The first-verdict canary's hook-verdict count for the crash-recovery replay ONLY (#1741) --
-    /// the live-dispatch site keeps reading <see cref="CoreDispatchTarget.CountHookVerdicts"/> directly,
-    /// since it always has a freshly-resolved binding. This counts the same way
-    /// <c>Baton.Vendors.AgyHookVerdictLedger.CountVerdicts</c> does -- every non-whitespace line, 0 when
-    /// the file is absent or the name is null -- duplicated rather than referenced (same
-    /// sub-threshold call <see cref="ExecutionStreamLogger"/>'s own duplicated ledger file-name constant
-    /// already makes): Architecture Rule 2 keeps this core layer from taking a project reference on
-    /// <c>Baton.Vendors</c>, and from naming a vendor at all, so the one place record-once would
-    /// normally point is unreachable from here. If that method's counting rule ever changes, this is
-    /// the other place it must change too.
-    /// </summary>
-    private static int CountHookVerdictLedgerLines(string outputDirectory, string? ledgerFileName)
-    {
-        if (string.IsNullOrWhiteSpace(ledgerFileName))
-        {
-            return 0;
-        }
-
-        var path = Path.Combine(outputDirectory, ledgerFileName);
-        if (!File.Exists(path))
-        {
-            return 0;
-        }
-
-        try
-        {
-            return File.ReadLines(path).Count(line => line.Trim().Length > 0);
-        }
-        catch (IOException)
-        {
-            return 0;
-        }
-    }
 }

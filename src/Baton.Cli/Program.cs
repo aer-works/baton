@@ -87,7 +87,7 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "deliver", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "room", "rooms", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
@@ -106,6 +106,7 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
         "--bindings <bindings-file> [--workflow-id <id>]");
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {WatchOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {DeliverOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
     Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
@@ -152,6 +153,14 @@ try
         var statusOptions = StatusOptionsParser.Parse(args[1..]);
         await StatusCommand.ExecuteAsync(statusOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
         return 0;
+    }
+
+    // #1488: block-free, produces no CommandResult (there is nothing to pump) -- joins status/deliver
+    // above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "watch")
+    {
+        var watchOptions = WatchOptionsParser.Parse(args[1..]);
+        return await WatchCommand.ExecuteAsync(watchOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
     }
 
     if (args[0] == "deliver")

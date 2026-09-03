@@ -70,6 +70,7 @@ public sealed record BatonEnvironmentSnapshot(
     string? RetentionSweepThresholdBytesOverride = null,
     string? RetentionPruneEnabledOverride = null,
     string? RetentionPruneGraceSecondsOverride = null,
+    string? WatchReaperRetentionHoursOverride = null,
     string? FleetProjectionIntervalSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
@@ -108,6 +109,7 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepThresholdBytesOverride: null,
         RetentionPruneEnabledOverride: null,
         RetentionPruneGraceSecondsOverride: null,
+        WatchReaperRetentionHoursOverride: null,
         FleetProjectionIntervalSecondsOverride: null);
 
     /// <summary>
@@ -149,9 +151,12 @@ public sealed record BatonEnvironmentSnapshot(
         RetentionSweepThresholdBytesOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_THRESHOLD_BYTES"),
         RetentionPruneEnabledOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_ENABLED"),
         RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"),
+        // "BATON_WATCH_REAPER_RETENTION_HOURS" -- Baton.Cli.Daemon.WatchSweep's own
+        // ReaperRetentionHoursEnvironmentVariable (#1488 fix round, spec/baton.md §2).
+        WatchReaperRetentionHoursOverride: Environment.GetEnvironmentVariable("BATON_WATCH_REAPER_RETENTION_HOURS"),
         // "BATON_FLEET_PROJECTION_INTERVAL_SECONDS" -- Baton.Cli.Daemon.FleetProjectionWriter's own
         // IntervalSecondsEnvironmentVariable (#1557), same fold reason as the five BATON_RETENTION_*
-        // fields immediately above.
+        // fields above.
         FleetProjectionIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_FLEET_PROJECTION_INTERVAL_SECONDS"));
 
     /// <summary>

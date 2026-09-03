@@ -246,6 +246,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `supply` | `baton supply <room-dir> --worker <role> --output <name> --file <source-path> --bindings <bindings-file> [--workflow-id <id>]` | `SupplyOptionsParser.cs` |
 | `cancel` | `baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]` | `CancelOptionsParser.cs` |
 | `status` | `baton status <room-dir> [--follow] [--json] [--repo <checkout-dir>]` | `StatusOptionsParser.cs` |
+| `watch` | `baton watch <room-dir> --notify <command\|url>` \| `baton watch --list` \| `baton watch --clear-fired` | `WatchOptionsParser.cs` |
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
 | `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
@@ -254,6 +255,67 @@ through `RoleDispatch.Materialize` against the real role catalog.
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
 old numbering — dropped here, since there is no longer a separate register to number rulings
 against).
+
+**`watch` (#1488): one-shot, block-free registration, never a poll loop.** `baton status --follow`
+(above) blocks its own process until the room reaches Terminal; `watch` is the opposite shape a
+harness needs to end its turn immediately after dispatch — it writes one file under
+`{BatonPaths.Watches}` (`{BATON_HOME}/watches/<watch-id>.json`, `WatchStore.cs`) and returns. Terminal
+detection is the identical predicate `FleetStatusTool`, `rooms prune --terminal`, and `room delete`
+already read a room's terminal state through — `TerminalSentinelWriter.TryReadAsync(room-dir)` returns
+non-null — never a second definition. An already-terminal room at registration fires immediately, in
+the registering process, before it returns (no lost wake-up); a room that reaches Terminal afterward
+fires from `WatchSweep`, a `baton daemon`-hosted `BackgroundService` (§7) polling every pending watch
+on a 15-second cadence — the same host `RoomRetentionSweep` already runs on, not a second long-running
+process. **Firing is exactly-once-or-lost, never double.** `WatchStore.TryClaimAsync` marks a watch's
+`firedAt` under a per-file named `Mutex` every access to that file takes (mirroring
+`RoomRegistryStore`'s own `RunUnderLock`, §8), atomically checking-and-setting in one critical section
+— so a registration's own immediate check and a concurrent `WatchSweep` iteration can never both
+observe an unclaimed watch and both notify: exactly one claims, the other is a no-op. A process that
+crashes after a successful claim but before the notify send completes loses that notification rather
+than risking a duplicate — nothing re-tries a claimed watch. `--notify <target>` is either an absolute
+`http`/`https` URL (POSTed the notification as its JSON body) or a command line, spawned once with the
+identical JSON on stdin and in the `BATON_WATCH_EVENT` environment variable — never interpolated into
+the command string itself. The JSON carries `{room, state, verdict, outputs, terminalAt}`: `verdict` is
+the parsed content of a file literally named `verdict.json` among the room's declared outputs, when one
+exists (omitted otherwise — most workflows have none). `baton watch --list` prints every registered
+watch, pending and fired; `baton watch --clear-fired` deletes the fired ones. **Depends on `baton
+daemon` running for any transition after registration** — an already-terminal room at registration
+time is the only case this feature guarantees without one; `baton watch`'s own registration warns on
+stderr when no daemon mutex (`Global\BatonDaemonMutex_{user}`) is found for the current user, though a
+daemon started with `--no-mutex` is invisible to that check and reads as running regardless.
+
+**The stdin write is bounded by the same 30 s timeout as the command's own exit** (fix round,
+`WatchNotifier.cs`): the timeout is armed *before* the write starts and the write runs under it, so a
+command that never reads stdin — the documented `curl -X POST …` shape above is exactly this — cannot
+wedge the sweep once the payload exceeds the OS pipe buffer (~4 KB on Windows). A write that has not
+drained by the deadline gets the process tree killed and the failure logged, since a command that never
+consumed the first byte was never going to finish reading the rest; a command that exits after its own
+work is left to keep running past the timeout unkilled, as before. This is a deliberate decision *not*
+to gate the stdin write on payload size or fall back to a temp file: `BATON_WATCH_EVENT` already
+carries the identical payload with no blocking risk (set at spawn time, not written to a stream), so a
+command that only wants the common case can read from there and skip stdin entirely — the timeout is
+what makes attempting the stdin write unconditionally safe rather than something that needs a size
+threshold to avoid.
+
+**The watches directory is reaped, not just fired-in-place.** `WatchSweep`'s sweep pass also deletes a
+fired watch whose `firedAt` is older than a retention window (default 24 h,
+`BATON_WATCH_REAPER_RETENTION_HOURS`-configurable, the same env-override shape `RoomRetentionSweep`'s
+own intervals use) and any watch — fired or still pending — whose room directory no longer exists,
+logged once at the moment of removal. Without this the directory only ever grows: `baton watch
+--clear-fired` remains the manual, immediate path, but nothing previously reclaimed a watch an operator
+forgot to clear, and `WatchStore.ListAsync`'s per-sweep scan is O(n) in whatever accumulated there.
+
+**Trust model.** A watch file is an unauthenticated instruction to run its `--notify` target under the
+daemon's own identity, at an arbitrary later time, outside any lane's Job Object containment and after
+the lane that registered it is gone. That is acceptable only because nothing narrower can reach
+`{BatonPaths.Watches}` today: a write-granted worker's `Edit`/`Write`/`NotebookEdit` calls are bounded
+to its workspace or outbox by the `PreToolUse` hook (`HookCheckCommand.cs`,
+`AgyHookCheckCommand.cs`, `OutboxPath.cs`), so only a role already holding an unscoped shell grant
+(`run_shell_commands: true` with no pattern list, e.g. `implement` in `WorkerRoles.json`) can write a
+watch file directly — and that grant already defeats every withheld category (#529,
+`PermissionGrant.cs`'s `CategoriesDefeatedByTheShell`), so a watch adds deferred, post-lane execution
+rather than new privilege. If a narrower write path into `~/.baton` is ever added, or `OutboxPath`'s
+containment loosened, this paragraph is what it would be breaking.
 
 **`cancel`'s `--execution` is now optional** (#1495): omitted, it targets "the target lane" —
 exactly one candidate's latest execution, refused (naming every candidate) on zero or more than one
@@ -294,11 +356,52 @@ ever runs, since that check scans every step for a future deferral, not just the
 That check itself was widened in the same change (#1607) from firing only on a confirmed-`Dead`
 holder to firing on anything but a confirmed-`Alive` one — see `CancelCommand.cs`'s own dead-holder
 gate comment for which `EngineLivenessProbe.Unknown` cases motivate this and why leaving it at
-`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park
-raced against a confirmed-live pump loses to `MutationInterface`'s own retry-obligation check, which
-redispatches it before a poller-less pump's parked-cancel-intent wait is ever reached — the same
-outcome explicit `--execution` targeting an overdue park already had (tracked separately, #1634);
-#1607 did not introduce it and does not close it.
+`Dead`-only would have reopened #1586's hang from a new entry point. An already-overdue park raced
+against a poller-less pump used to lose to `MutationInterface`'s own retry-obligation check, which
+redispatched it before the parked-cancel-intent wait (armed only by `CancelRequestPoller.TickAsync`,
+which a poller-less pump never runs) was ever reached — the same outcome explicit `--execution`
+targeting an overdue park already had; #1607 did not introduce it. **Fixed by #1634**: before
+`GetRetryObligations` can schedule, or `DependencyResolver.GetReadySteps` can redispatch, a parked
+step's retry, `MutationInterface`'s pump loop now checks the raw ledger — every `ExecutionId` a
+`CancellationRequested` has named in a round this pump call has read, accumulated across the call's
+own rounds — not `FlowState.CancellationRequestedExecutionIds`, which excludes a target with a
+terminal event, and a parked target's `Failed` outcome is exactly that — for the step's
+`LatestExecutionId` and, if found, appends `ExecutionCancelled` instead of letting either mechanism
+redispatch: the ledger-read rule.
+
+**The scope of "a round this pump call has read" is the checkpoint window, not this call's own
+writes.** `ReadSnapshotFromOffsetAsync` reads from the loaded `ProjectionCheckpoint`'s byte offset
+forward; with no checkpoint — a fresh pump, a corrupt or pre-v4 checkpoint file, or a full replay —
+that window is the *entire ledger from byte 0*, including every `CancellationRequested` any prior
+process ever journalled to this room. A `CancellationRequested` a *previous* process wrote is
+therefore just as visible to this rule as one this call wrote itself.
+
+That mattered because `InFlightExecutionRegistry.RequestStopAsync` (a Ctrl-C wind-down) journals
+`CancellationRequested` for *every* still-registered execution, unconditionally — not an operator
+naming that step. Gating the ledger-read rule on the pump's own `!hostStopRequested` flag stops that
+misread only *within* the process that received the stop: the flag lives in memory, but the window
+the rule reads from spans process boundaries. A step that failed and re-parked in the same round a
+host stop landed, with no clean checkpoint saved past that point (a second Ctrl-C, a kill, a crash, a
+closed terminal), would replay `CancellationRequested` on the *next* `baton run` — in a process where
+`hostStopRequested` starts `false` — and read as an operator cancel, settling the step terminally
+`Cancelled` and out of `RetryWithRevision`'s reach.
+
+**Fixed by #1762, before #1634 ever shipped separately — the two land in one PR, never released
+apart.** The distinction is made durable, not a flag: `FlowEvent.CancellationRequested` carries
+`Origin` (`CancellationOrigin`: `Operator` or `HostStop`), nullable, defaulting to `null` on replay of
+any line written before this field existed. `RequestStopAsync` writes `HostStop`. Every other
+appender — `CancelCommand`'s direct path (`MutationInterface.RequestCancellationAsync`), the poller's
+in-process live delivery (`InFlightExecutionRegistry.RequestCancellationAsync`), and the poller's
+parked-intent settle (`SettleParkedCancelIntentsAsync`) — writes `Operator`. The ledger-read rule now
+accumulates only `Origin == Operator` lines, so a `HostStop` line is excluded regardless of which
+process, or how many rounds later, reads it. A `null` `Origin` (a line written before #1762 shipped)
+is likewise never accumulated. Because the `Origin` field and the ledger-read rule that consults it
+ship in the same PR, no released build ever ran the rule without `Origin` — there is no window in
+which a real, already-deployed ledger's `HostStop` line was ever read as an operator cancel by this
+mechanism, so this addition cannot make any existing ledger *worse*; it simply closes the
+cross-process leak before the rule that has the leak ever reaches an operator. The `!hostStopRequested` gate
+stays too, alongside the `Origin` filter — cheap, and it stops the same-process case one round
+earlier than waiting for the accumulator to simply never contain a `HostStop` id.
 
 **The dead-holder gate applies to both targeting modes, deliberately, with a real cost on the
 explicit one.** The gate runs before `--execution` is even inspected, so `cancel <room> --execution
@@ -1306,14 +1409,21 @@ not the three carrying a token budget, because #1686 review F1 was exactly a fou
 an unmeasured cap while three documents said it held none. Second, the mechanism ships anyway, complete
 and tested, because it is what makes a future calibration possible: `TokenBudgetMonitor` now takes an
 injected `TimeProvider` and keeps a trailing-window Σ of the SAME deduped per-turn billed samples
-#1682's total already takes, exposes the largest window it ever held
-(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed), and records that peak plus
-the armed limit onto `FlowEvent.ExecutionArrested`. **Scoped precisely, because an earlier draft of this
-paragraph over-claimed it (#1707 review): that record is written on an ARREST, and a normally-completed
-execution journals no `ExecutionArrested`, so the ledger carries no peak for exactly the lanes whose
-peaks a false-positive calibration needs.** Nothing is lost — every completed room keeps its own
-`.stdout.log`, which is what the sweep reads — but #1686 review F14's phase 1 is only half landed here:
-the live measurement exists and is exposed, and persisting it for a non-arrested execution is #1709.
+#1682's total already takes, and exposes the largest window it ever held
+(`SnapshotPeakBilledInWindow`, accumulated whether or not a limit is armed). **Corrected 2026-09-03
+(#1709): an earlier draft of this paragraph said that reading was recorded only onto
+`FlowEvent.ExecutionArrested`, which inverted the population the calibration actually needs — a
+normally-completed execution journalled no `ExecutionArrested` at all, so the ledger carried a peak for
+exactly the lanes that DIDN'T need one and none for the false-positive side that does.** The peak is now
+journalled once on whichever terminal outcome event an execution actually reaches:
+`FlowEvent.ExecutionSucceeded`/`FlowEvent.ExecutionFailed` carry the identical `PeakBilledInWindow`
+field `ExecutionArrested` already did — `FlowEvent.cs`'s own doc comment on the field states exactly
+when it is stamped versus left null. `ExecutionUsageProjector` surfaces it as `peakBilledInWindow` in
+`terminal.json`/`status --json`'s per-execution usage object — `ExecutionUsageView.cs`'s own doc
+comment on that field states how it differs from the same view's `liveBilledTokens`. #1686 review F14's
+phase 1 is fully landed by this: the live measurement exists, is exposed, and now reaches every terminal
+outcome, not only an arrest — a sweep can read journalled measurements across a normal-room population
+instead of reconstructing per-line arrival times from `.stdout.log`.
 
 Mechanics, stated once. The window is fixed at 5 minutes (`TokenBudgetMonitor.BilledRateWindow`) and
 only the ceiling is configurable, so two roles' limits stay comparable; it is closed at both ends, so a
@@ -2539,12 +2649,18 @@ What the daemon narrows **to**: a **room-watcher serving the §8 registry** (`fl
 needs no daemon, §6 — the watcher serves the registry the tool will consult, never the tool's own
 file reads), the **snapshot push loop** feeding the mailbox (§6),
 and the **quota-runway ledger** (below). Two more live responsibilities need a stated home rather
-than silently dropping out with the rest of the deleted daemon surface:
+than silently dropping out with the rest of the deleted daemon surface. All of the above assumes
+`baton daemon` is actually running persistently; it is kept running by the `baton-daemon` scheduled
+task (`tools/tool-refresh/register-daemon-task.ps1`, #1557), cycled onto each newly refreshed tool
+head the same way `tools/tool-refresh/refresh.py` already cycles `fleet-glass-pusher`.
 
 - **`RoomRetentionSweep`** (`Program.cs`, a hosted service) — it prunes execution directories, and
   `ExecutionUsageProjector` has an explicit pruned-path fallback specifically because the sweep moves
   them (`src/Baton/Status/ExecutionUsageView.cs`). It is engine-adjacent housekeeping, not a UI
   concern, and belongs in the narrowed daemon's kept surface alongside the room-watcher.
+- **`WatchSweep`** (`Program.cs`, a hosted service, #1488) — fires pending `baton watch`
+  registrations once their room reaches Terminal; the full contract (exactly-once claim, notify
+  shapes, the daemon dependency) is §2's, under `watch`, not restated here.
 - **Fleet-wide concurrency caps** — `DaemonSettingsStore` (`src/Baton.Vendors/DaemonSettingsStore.cs`,
   reading/writing `BatonPaths.SettingsFile`, i.e. `{Root}/settings.json`) plus `ConcurrencySlotGate.SetCaps`,
   applied at daemon startup (`Program.cs`). At HEAD this settings file holds only
@@ -2812,8 +2928,9 @@ recorded request rather than from today's binding (#1741): `ExecutionRequest.Hoo
 `HookVerdictLedgerFileName` are journaled at dispatch time, from the same `CoreDispatchTarget
 .CountHookVerdicts != null` fact the live-dispatch site already reads, so the replay counts tool
 calls (the recorded adapter's stream parser) and verdicts (the ledger file the recorded execution
-wrote into the artifacts output directory, read directly, mirroring `AgyHookVerdictLedger
-.CountVerdicts`) from that recorded fact alone — never by re-resolving today's `bindings.json`. A
+wrote into the artifacts output directory, read directly through `Baton.Dispatch.HookVerdictLedger
+.CountLines` — the one reader `AgyHookVerdictLedger.CountVerdicts` also delegates to, since #1760)
+from that recorded fact alone — never by re-resolving today's `bindings.json`. A
 binding that refuses to resolve on restart (the probe finds the hook dead now — the persistent #710
 shape, not a transient one — or the entry was widened or moved off agy since the crash) no longer
 disarms a canary the dispatch-time fact says was actually live. A pre-#1741 journal line carries
@@ -3083,15 +3200,12 @@ honest cost of not declining both vendors to keep their capability artificially 
 what closed that gap on the agy side, so the two vendors converge on the same grant shape rather than
 staying deliberately unequal.
 
-**`tools/baton-agy-loop/dispatch.py`'s own grant model is extended to match.** That tool reads the
-same `WorkerRoles.json`/`WorkerTiers.json` catalog (`_load_worker_catalog`, the #836 shared-source
-pattern) but has its own `grant_refusal()` coherence check and its own `build_bindings()`
-permission-grant construction. All three scoped-shell fields are exported on
-`BuiltInWorkflowTemplates.RoleTemplateExport` (so `baton templates --json` carries them),
-`grant_refusal()` mirrors `ShellCommandsAreReadOnly`'s exact exemption (WriteFiles/NetworkAccess
-only, never ReadFiles), and `build_bindings()` threads the fields into the `PermissionGrant` it
-actually sends — without that last step the tool would have dispatched `review` with an UNSCOPED
-shell grant, the silent hole the whole design refuses elsewhere.
+Until #1759 retired it, `tools/baton-agy-loop/dispatch.py` mirrored this same coherence rule in its
+own `grant_refusal()`/`build_bindings()` rather than calling the engine's. #1759 ported the one
+assertion that mirror still carried — that every catalog role actually dispatches, on every real
+adapter — onto the production path itself (`RoleDispatch.ToBinding` /
+`WorkerBindingResolver`, `tests/Baton.Vendors.Tests/TemplateDispatchabilityTests.cs`), so there is now
+exactly one implementation of this rule rather than two kept in step by hand.
 
 ---
 
@@ -3379,7 +3493,7 @@ this entry records only the decision itself and why it deviates from the mock it
 
 <!-- record-once-ok: #1744 tools/diff-shape/diff_shape.py -->
 Ratified design (operator, 2026-09-01) — closes the "a conductor can relax the bounds on its own authority" hole. A required CI check (`diff-shape`, `.github/workflows/diff-shape.yml`, `tools/diff-shape/diff_shape.py`) that fails when either holds:
-1. **Test-only PR weakening:** the PR touches no `src/` code AND the diff contains a deleted or changed line in a pre-existing test file (pure additions of new test files or appended lines pass; mixed engine+test PRs touching `src/` are exempt). Line-level, no parsing: renames and mechanical refactors of test files in a test-only PR are expected to trip this, and the label is the intended answer, not a defect to fix.
+1. **Test-only PR weakening:** the PR touches no `src/` code AND a pre-existing test file's diff hits at least one of four criteria: (a) an unpaired removed line matches an assertion/test-declaration pattern — paired against added lines in the *same hunk only* when the deleted line itself matches the pattern (#1758 F3; a non-assertion-matching deleted line still pairs whole-file, tolerating a moved/reindented line anywhere in the file); (b) a test file is deleted (including renamed away, since the check reads `--no-renames`); (c) a single file's diff goes net-negative in lines, regardless of pairing; (d) an ADDED line matches a test-neutering pattern, independent of what was deleted (#1758 F1) — criteria (a)-(c) are all deletion-triggered and would otherwise never see a test disabled by pure addition (e.g. a `Skip = "..."` inserted into an already-parenthesized multi-line `[Fact(...)]`, or an assertion wrapped in `#if false ... #endif`). Mixed engine+test PRs touching `src/` are exempt from all four. Narrowed by #1758 (operator ruling, 2026-09-03) from #1603's original "any deleted or changed line in a test file" after that wider rule false-positived on net-additive helper/fixture refactors (#1757's shape: a private method's signature changed, no assertion touched); `tools/diff-shape/diff_shape.py`'s `_ASSERTION_PATTERNS`/`_MJS_ASSERTION_PATTERNS`/`_PY_ASSERTION_PATTERNS`/`_THROW_PATTERN` (criteria a/b/c's patterns) and `_NEUTERING_PATTERNS`/`_MJS_NEUTERING_PATTERNS`/`_PY_NEUTERING_PATTERNS` (criterion d's patterns) are the sole enumeration of the pattern lists, not restated here. `Should`/`Expect(` were dropped from the universal assertion table by #1758 F4 (a repo-wide grep of `tests/` and `tools/` found no real usage of either as an assertion idiom); conversely no `.mjs` or `.py` file exists anywhere under a `tests/` directory in this repo today, so both the `.mjs`/`.py` assertion tables and the `.mjs`/`.py` neutering tables are forward-looking, exercised only by the selftest's synthetic arms rather than by real content. **Accepted gap (#1758):** an added bare `return;` as the first statement of a `[Fact]`/`[Theory]` method's body — disabling the test without touching its attribute, an assertion, or matching any criterion-(d) pattern — is not detected. Catching it needs tracking which lines precede a changed line (this gate reads `git diff -U0`, zero context, precisely so unrelated unchanged lines never enter the deleted/added sets), which was judged not worth building alongside the rest of this narrowing; a `[Fact(Skip = ...)]` addition, an `#if false` wrap, or an outright attribute/assertion deletion — the more common real-world neutering shapes — all still catch. **Criterion (d)'s trip surface, fixed round 2 (#1758, operator ruling, 2026-09-03):** a brand-new `[Fact(Skip = ...)]` method added to an existing, otherwise-unchanged test file trips (d) the same as an existing test being newly skipped — every skip addition gets a human look, deliberately not distinguished from the file's other status — and `Assert\.Skip\(` fires on the call form while `Assert.SkipUnless(...)`/`Assert.SkipWhen(...)` (xUnit v3's sanctioned conditional-skip API, already used across this repo's test suite) do not; a bare `.Skip(` entry was tried and dropped after it false-positived on this repo's own LINQ `Enumerable.Skip(n)` idiom (`ChannelPopulationTests`, `ConcurrencySlotGateTests`, `ModelAndEffortValidationTests`, `AgyWorkerAdapterTests`), which needs no denylist entry of its own since `Skip\s*=` and `Assert\.Skip\(` already cover the real neutering shapes.
 2. **Protected tooling edit:** any file under the protected-tooling set is edited (additions included). Record-once: `tools/diff-shape/diff_shape.py`'s `PROTECTED_TOOLING_PATHS` tuple is the sole enumeration of the whole-file/directory half, and `PIXI_PROTECTED_TASK_RULE` the sole enumeration of the pixi.toml task-name patterns below — this paragraph states the rule, never the list. Widened from #1603's original four-member set by #1744 (ruled 2026-09-03), then corrected by #1754: #1744's ruling had excluded `tools/tool-refresh/`, `tools/fleet-glass/`, and `tools/baton-agy-loop/` as "not enforcement", which `tools/gates/gates.py`'s own `OVERLAP`/`AFTER_BUILD_FAST` membership contradicted — each hosts a gates-wired selftest body (plus `tests/Launcher.Tests.ps1`, missed from #1744's candidate list entirely, and `vendor-check`'s actual body under `tools/Baton.VendorProbe/`). #1754 protects those specific files rather than the whole directories, so a genuinely unwired sibling in the same directory (e.g. `tools/fleet-glass/pusher.py`, deliberately UNWIRED from `pixi run gates` per that task's own pixi.toml comment) stays unprotected. `pixi.toml` is protected at LINE level, not whole-file (#1744 narrowing of #1603's original whole-file rule): a hunk trips the gate only when it touches a `gates*`, `gate-sabotage`, `diff-shape*`, `audit-*`, `*-selftest`, `vendor-check`, `vendor-verify`, `lint`, `fmt-check`, or `test-no-build` task's own definition, parsed by `[tasks]` key/sub-table boundaries rather than fixed line numbers — an ordinary pixi task addition or edit elsewhere in the file passes. `.githooks/` is deliberately excluded — ruled local convenience, not enforcement (#1744).
 
 Both failures are lifted by the `operator-merge` PR label, applied by the operator. Self-application — a conductor or worker adding the label to its own PR — is a forbidden act; the mechanism does not prevent it (both PR author and label-applier can be the same shared operator credential), but it is permanently visible in PR history, which is the property the design relies on instead of a technical block.

@@ -73,7 +73,18 @@ public sealed record ExecutionUsageView(
     /// </summary>
     [property: JsonPropertyName("billedReconciliationUnavailable")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? BilledReconciliationUnavailable = null);
+    string? BilledReconciliationUnavailable = null,
+    /// <summary>
+    /// #1709: <c>FlowEvent.ExecutionSucceeded.PeakBilledInWindow</c>/<c>FlowEvent.ExecutionFailed.PeakBilledInWindow</c>
+    /// off this execution's own terminal outcome event, read back verbatim — see that field's own doc
+    /// comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
+    /// this one is a JOURNALLED measurement from the live execution itself, where <see cref="LiveBilledTokens"/>
+    /// is this projector's own REPLAY over the captured stream (this type's own remarks, above, state
+    /// that distinction for the whole reconciliation triple).
+    /// </summary>
+    [property: JsonPropertyName("peakBilledInWindow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? PeakBilledInWindow = null);
 
 /// <summary>
 /// Builds one <see cref="ExecutionUsageView"/> per <see cref="ExecutionId"/> that has both a recorded
@@ -115,6 +126,10 @@ public static class ExecutionUsageProjector
         var exitedTimestamps = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         var workerNameByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
         var recordedAdapterByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
+        // #1709: FlowEvent.ExecutionSucceeded/ExecutionFailed's own PeakBilledInWindow -- see
+        // ExecutionUsageView.PeakBilledInWindow's own doc comment for what this is and is not the same
+        // figure as.
+        var peakBilledInWindowByExecutionId = new Dictionary<string, long>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
@@ -137,6 +152,20 @@ public static class ExecutionUsageProjector
                 else
                 {
                     recordedAdapterByExecutionId.Remove(rebound.ForExecutionId.Value);
+                }
+            }
+
+            if (entry is LogEntry.FlowLogEntry flowEntry)
+            {
+                (ExecutionId, long)? peak = flowEntry.Event switch
+                {
+                    FlowEvent.ExecutionSucceeded { PeakBilledInWindow: { } p } succeeded => (succeeded.ExecutionId, p),
+                    FlowEvent.ExecutionFailed { PeakBilledInWindow: { } p } failed => (failed.ExecutionId, p),
+                    _ => null,
+                };
+                if (peak is { } recorded)
+                {
+                    peakBilledInWindowByExecutionId[recorded.Item1.Value] = recorded.Item2;
                 }
             }
 
@@ -202,6 +231,10 @@ public static class ExecutionUsageProjector
                     ?? (billed is null ? "no-terminal-billed-figure" : "no-live-billed-figure");
             }
 
+            long? peakBilledInWindow = peakBilledInWindowByExecutionId.TryGetValue(executionId, out var recordedPeak)
+                ? recordedPeak
+                : null;
+
             result[executionId] = new ExecutionUsageView(
                 wallClockMs,
                 usage?.TokensIn,
@@ -213,7 +246,8 @@ public static class ExecutionUsageProjector
                 reconciled ? billed : null,
                 reconciled ? liveBilled : null,
                 reconciled ? billed!.Value - liveBilled!.Value : null,
-                unavailable);
+                unavailable,
+                peakBilledInWindow);
         }
 
         return result;

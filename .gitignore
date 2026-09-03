@@ -54,10 +54,6 @@ bld/
 # Nothing flags that today -- tracked in #620 alongside the rest of the check-that-a-check-runs work.
 !.vendor-survey/ledger.tsv
 
-# tools/baton-agy-loop/dispatch.py's generated workflow/bindings/task-dir per run -- transient
-# per-invocation scaffolding, never the deliverable.
-/baton-agy-loop-scratch/
-
 # `baton dispatch` per-run room dirs (artifacts, redirected .gemini_home, flow log) -- transient
 # per-invocation working state, never the deliverable.
 /.baton/

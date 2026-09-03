@@ -110,6 +110,14 @@ public class WorkerRoleCatalogTests
         Assert.False(factCheck.Grant.NetworkAccess);
         Assert.False(factCheck.Grant.RunShellCommands);
 
+        // #1386: advise is the third read lane the issue named, narrowed to write_files: false once
+        // #1765 retired dispatch.py's grant_refusal and #901's audited-write widening was confirmed to
+        // un-refuse a withheld-write role once a worktree is provisioned.
+        var advise = WorkerRoleCatalog.For("advise");
+        Assert.False(advise.Grant.WriteFiles);
+        Assert.False(advise.Grant.NetworkAccess);
+        Assert.False(advise.Grant.RunShellCommands);
+
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);
@@ -221,9 +229,10 @@ public class WorkerRoleCatalogTests
     public void A_catalog_file_with_comments_fails_loudly_so_both_readers_agree()
     {
         using var cat = new TempCatalog();
-        // dispatch.py reads the same files through stdlib json.loads, which rejects comments. The C#
-        // reader must reject them too, or an operator's inline // WHY loads in the engine and breaks
-        // every dispatch.
+        // tools/audit-completeness/completeness.py reads WorkerTiers.json through stdlib json.load,
+        // which rejects comments (tools/baton-agy-loop/dispatch.py did too, before #1759 retired it).
+        // The C# reader must reject them too, or an operator's inline // WHY loads in the engine and
+        // breaks every dispatch.
         using var env = PointAt(
             cat,
             "{\n  // #742 operator directive\n  \"t\":{\"adapter\":\"gemini\",\"model\":\"m\",\"effort\":null}\n}",

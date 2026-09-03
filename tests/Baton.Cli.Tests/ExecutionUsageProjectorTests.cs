@@ -922,6 +922,95 @@ public sealed class ExecutionUsageProjectorTests
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // #1709: PeakBilledInWindow -- read off the terminal outcome event, never re-derived from the
+    // captured stream (that is LiveBilledTokens's own job, a REPLAY reconstruction; this is a journalled
+    // measurement read back verbatim).
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void A_succeeded_execution_with_a_recorded_peak_projects_the_number()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1709-succeeded-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1709-succeeded");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionSucceeded(executionId, PeakBilledInWindow: 344_225)),
+            };
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(344_225, view.PeakBilledInWindow);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_failed_execution_with_a_recorded_peak_projects_the_number()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1709-failed-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1709-failed");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 1, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(
+                    new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, PeakBilledInWindow: 228_536)),
+            };
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Equal(228_536, view.PeakBilledInWindow);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void An_execution_whose_terminal_event_carries_no_peak_projects_a_null_PeakBilledInWindow()
+    {
+        // The polarity control, and #1709's own replay claim: a room whose ledger line predates this
+        // field (or whose execution ran with no TokenBudgetMonitor in scope) must keep projecting
+        // PeakBilledInWindow as null, not a fabricated zero -- without this arm, an implementation that
+        // silently defaulted to 0 would pass the two tests above just as well.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1709-absent-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1709-no-peak");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionSucceeded(executionId)),
+            };
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            var view = Assert.Single(usage).Value;
+            Assert.Null(view.PeakBilledInWindow);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter = null) => new(
         executionId,
         new WorkflowId("wf-usage-test"),

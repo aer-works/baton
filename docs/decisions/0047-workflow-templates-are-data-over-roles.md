@@ -84,12 +84,12 @@ becomes deterministic and engine-enforced rather than resting on a janitor's she
 enumerable set** of engine operations, each invoked without shell-string interpolation, with a test that
 a template cannot introduce a new command. The capture also diffs against a base ref in a workspace —
 honest only once the engine *provisions* it (rung 4 / #669); until then it runs against the assumed
-workspace as `dispatch.py` does today, stated as interim.
+workspace the same way `dispatch.py` did at the time, stated as interim.
 
 **Obliges us to** re-express the built-in templates as data over roles (closing #901 as part of this),
 keep the capture operation set closed and shell-injection-free, amend #887's rung bullets to the
-template-data model, keep `dispatch.py`'s own convergence (#898) separate, and have M29 authoring write
-this same format to this same location.
+template-data model, keep `dispatch.py`'s own convergence (#898, moot once #1759 retired dispatch.py)
+separate, and have M29 authoring write this same format to this same location.
 
 **Relates to** [0046](0046-a-room-is-a-container.md), [0003](0003-templates-collapse-to-three-shapes.md),
 [0025](0025-a-step-is-an-instruction-with-a-gate-toggle.md), [0004](0004-permission-scopes.md)/[0034](0034-project-permission-ceiling-lives-in-aers-own-config.md)
