@@ -5,9 +5,7 @@ using Baton.Store;
 namespace Baton.Projection;
 
 /// <summary>
-/// Result of <see cref="RoomTurnUsageStore.LoadWithDiagnostics"/>: the resolved usage plus the
-/// diagnostic lines <see cref="RoomTurnUsageStore.Load"/> would otherwise print to <see
-/// cref="Console.Error"/>. Empty <paramref name="Warnings"/> means the load was unremarkable.
+/// Usage counterpart to <see cref="RoomTurnThrottleLoad"/> -- same shape, same reason it exists.
 /// </summary>
 public sealed record RoomTurnUsageLoad(RoomTurnUsage Usage, IReadOnlyList<string> Warnings);
 
@@ -36,10 +34,9 @@ public static class RoomTurnUsageStore
     };
 
     /// <summary>
-    /// Reads usage fresh from <c>{room}/.baton/turn-usage.json</c>, printing any diagnostics to
-    /// <see cref="Console.Error"/> as it goes -- the single call site that owns the console for this
-    /// store. Callers that need the diagnostics without the console side effect (tests, chiefly)
-    /// should call <see cref="LoadWithDiagnostics"/> directly instead.
+    /// Reads usage fresh from <c>{room}/.baton/turn-usage.json</c>. Same split as
+    /// <see cref="RoomTurnThrottleStore.Load"/>/<see cref="RoomTurnThrottleStore.LoadWithDiagnostics"/>:
+    /// this is the printing wrapper, <see cref="LoadWithDiagnostics"/> is the console-free variant.
     /// </summary>
     public static RoomTurnUsage Load(string roomDirectoryPath)
     {
@@ -53,10 +50,9 @@ public static class RoomTurnUsageStore
     }
 
     /// <summary>
-    /// Same contract as <see cref="Load"/> -- missing file → <see cref="RoomTurnUsage.Empty"/>,
-    /// present-but-invalid (corrupt JSON or negative consecutive failures) → <see
-    /// cref="RoomTurnUsage.Empty"/> -- but returns the diagnostics that <see cref="Load"/> would print
-    /// instead of writing them to <see cref="Console.Error"/> itself.
+    /// Console-free sibling of <see cref="Load"/>: returns <see cref="RoomTurnUsage.Empty"/> on a
+    /// missing, corrupt, or otherwise invalid file, with the diagnostics <see cref="Load"/> would
+    /// print carried on the result instead.
     /// </summary>
     public static RoomTurnUsageLoad LoadWithDiagnostics(string roomDirectoryPath)
     {
