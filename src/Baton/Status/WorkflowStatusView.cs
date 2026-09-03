@@ -187,7 +187,8 @@ public sealed record WorkflowStatusView(
     // DecisionType.Reject half). The `baton resolve` half's reason is instead folded into `Error`
     // (see Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
     [property: JsonPropertyName("rejected")] bool Rejected = false,
-    // #1622 (c)/(d): see spec/baton.md §3's `resolvedBy` entry. Null whenever Rejected is false.
+    // #1622 (c)/(d): see spec/baton.md §3's `resolvedBy` entry. Non-null for either `baton resolve`
+    // verb — it is the wider fact, so it is set on `--close` runs where `Rejected` stays false.
     [property: JsonPropertyName("resolvedBy")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ResolvedBy = null);

@@ -384,8 +384,10 @@ never two that can disagree; and a decision-rejected step now sets the top-level
 (§3 schema below) alongside `state: "Failed"`/`error: null`, so an absent `error` no longer implies an
 absent cause — it can mean "a person said no" as well as "not yet recorded". Neither fix invents a
 value the ledger cannot actually support: there is still no operator-supplied rejection *reason* to
-surface (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays a boolean, not a
-`reason` field that would always read `null`.
+surface on this path (`FlowEvent.ExternalDecisionRecorded` carries none), so `rejected` stays a
+boolean, not a `reason` field that would always read `null`. #1622 (d) later gave `rejected` a second
+producer — `baton resolve --reject` — which *does* take a reason; that one is folded into `error`
+rather than into a new field (the ruling below), so the boolean shape survives both.
 
 **#1513 closes a gap #1462 left, not a choice it made.** #1462 added `liveness` as an additive
 per-step signal and did not address room-level `state` at all — its issue body frames the change as
@@ -1611,9 +1613,11 @@ one contract; `fleet_status` is a third, related shape with its own null-handlin
 **`liveness`/`rejected` (#1375/#1377) round-trip through `fleet_status` too (#1462).** `FleetStatusTool`
 builds `FleetStepStatusView`/`FleetRoomStatusView` by copying named fields off the same
 `WorkflowStatusView`/`WorkflowStatusStepView` projection — never a second probe or a second
-computation — so `FleetStepStatusView.Liveness` and `FleetRoomStatusView.Rejected` are the identical
+computation — so `FleetStepStatusView.Liveness` and `FleetRoomStatusView.Rejected`/`.ResolvedBy`
+(#1622 (d) mirrored the latter across, so the narrower `rejected` never leaves a conductor-closed room
+looking like an unattended crash) are the identical
 values `status --json` would report for the same room (`FleetStatusTool.cs`; the terminal-sentinel
-path copies `sentinel.Liveness`/`sentinel.Rejected` since the sentinel already **is** a
+path copies `sentinel.Liveness`/`sentinel.Rejected`/`sentinel.ResolvedBy` since the sentinel already **is** a
 `WorkflowStatusView`). A fleet_status caller can now tell a dead engine or a rejection apart from an
 ordinary `Failed`/`Running` room without a second `status --json` call per room.
 `liveness` is present on a step this same projection calls `"Running"`, and (#1513) a `"Failed"` step
@@ -1621,9 +1625,8 @@ still carrying a `RetryNotBefore` — the identical gate `StatusCommand.FormatSt
 probing (a `Paused` step's engine has legitimately exited; a step with no execution yet has nothing
 to probe; a `Failed` step with no pending retry has no future engine action to question) — so its
 mere presence in the JSON already answers "does liveness apply here" before a caller reads its value.
-`rejected` carries no reason text
-alongside it: `FlowEvent.ExternalDecisionRecorded` records no operator-supplied reason field, so
-there is nothing structural to surface beyond the boolean fact itself; which step rejected, if that
+`fleet_status` invents no `reason` field beside `rejected`, on either of the two branches §3's
+`rejected` entry enumerates; which step rejected, if that
 matters, is `steps[].state == "Rejected"` — already a token distinct from `"Failed"`.
 
 ---
