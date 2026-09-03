@@ -1237,7 +1237,113 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    /// <summary>
+    /// #1622: the real integration arm for room dispatch-implement-d6101c3c's own measured shape —
+    /// <see cref="ClaudeWorkerAdapter"/> itself as the <see cref="IFailureClassifier"/>, parsing a
+    /// genuine multi-line stream-json tail, unlike Baton.Tests' OutcomeClassifierTests.cs arms, which
+    /// stand in a canned double (Baton cannot reference Baton.Vendors, Architecture Rule 2 -- this is
+    /// the one place the real parse and OutcomeClassifier.Classify run together).
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required()
+    {
+        var streamJsonTail = """
+            {"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}}
+            {"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+            """;
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new ClaudeWorkerAdapter();
 
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: streamJsonTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// #1727 (found while fixing the #1720 review's F1): the SAME tail as the arm above, in the shape
+    /// production actually captures it — see <see cref="StreamJsonTailScanner"/> for the collapse and
+    /// what it did to the old whole-parse-then-split-on-newline check. Red before that scanner; the
+    /// raw-newline arm above is the control that stayed green throughout, which is exactly why the
+    /// gap was invisible.
+    /// </summary>
+    [Fact]
+    public void CreditsRequired_InTheWhitespaceCollapsedTailProductionActuallyCaptures_ClassifiesExhaustedUntil()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}} """
+            + """{"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+    }
+
+    /// <summary>
+    /// #1727's polarity control: an assistant message whose own TEXT quotes the typed error code is
+    /// nested under <c>message.content[].text</c>, so scanning for top-level objects must not match
+    /// it — the scanner widened WHERE the check looks, not WHAT counts as the signal.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_quoting_credits_required_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"The vendor reports errorCode credits_required when the subscription runs dry."}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    /// <summary>
+    /// #1720 review Finding G: the arm above quotes only the ERROR CODE in prose ("errorCode
+    /// credits_required"), which the old check already rejected before this fix. The claim
+    /// <see cref="StreamJsonTailScanner.AnyObject"/> actually has to defeat is a worker's answer text
+    /// embedding a FULL verbatim JSON envelope — the escaped-quote shape a real vendor tail can never
+    /// produce unescaped, per <see cref="StreamJsonTailScanner"/>'s own doc. Written as a raw string
+    /// literal so the backslashes survive into the runtime bytes: a regular literal would collapse
+    /// <c>\"</c> to <c>"</c> at compile time and pin nothing.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"the failure line was {\"errorCode\":\"credits_required\"}"}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {

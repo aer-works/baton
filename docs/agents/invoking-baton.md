@@ -177,9 +177,10 @@ available two other ways, and both give you the same set of paths without parsin
   `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
-  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected` (#1377)
-  is `true` when a human `baton decide reject` settled some step, so `state: "Failed"`/`error: null`
-  never gets misread as an unrecorded crash. `liveness` (#1375/#1513) is present on a step reading
+  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected`
+  (#1377, widened by #1622) is `true` when a human `baton decide reject` or a non-accepting
+  `baton resolve --reject`/`--close` settled some step, so `state: "Failed"`/`error: null` never gets
+  misread as an unrecorded crash — full rule at spec/baton.md §3. `liveness` (#1375/#1513) is present on a step reading
   `"Running"`, or a `"Failed"` step still carrying a pending `RetryNotBefore` — `"alive" | "dead" |
   "unknown"` from the same probe the human `baton status` line already uses — so a SIGKILLed `baton
   run` stops reading as indefinitely `"Running"` (or as an ordinary parked retry) to a polling agent.
@@ -224,13 +225,16 @@ with nothing recoverable to capture), and driving `--accept-capture` off the wro
 the `CapturedResponse` producer names an engine-owned file (in the execution's own output directory,
 never a declared name) on `steps[].capturedResponseFile`, alongside `steps[].unsatisfiedOutputs` naming
 which declared outputs are still unwritten. `baton resolve <room-dir> [--execution <id>]
---accept-capture | --reject --reason <text>` is the one resolution verb, and which of its two verbs a
-step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer obligations" section is
-the full per-producer register, summarized without restating it below: `CapturedResponse` admits either verb and
+--accept-capture | --reject --reason <text> | --close --reason <text>` is the one resolution verb, and
+which of its three verbs a step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer
+obligations" section (and its settle-shape table) is the full per-producer register, summarized without
+restating it below: `CapturedResponse` admits either `--accept-capture` or `--reject`, and
 `--accept-capture` writes the capture's body under each declared name it stands in for, settling the
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
-leaving the step resolved-but-`Failed`; the other two producers admit neither verb and reopen only
-through a fresh `baton dispatch`. Of those two, `VerifyFailed` carries the failing member(s)' own
+leaving the step resolved-but-`Failed`; `VerifyFailed`/`ExecutionArrested` admit only
+`--close --reason <text>` (see spec/baton.md §3 for why those two never admit the other verbs),
+settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
+those two, `VerifyFailed` carries the failing member(s)' own
 output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
 and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
 capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —

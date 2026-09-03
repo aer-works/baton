@@ -60,7 +60,12 @@ public sealed record ProjectionCheckpointState(
     HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
     Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
     Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null,
-    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null)
+    HashSet<StepId>? ResolvedByConductorStepIds = null,
+    Dictionary<StepId, bool?>? WorkspaceChangedByStepId = null,
+    Dictionary<StepId, bool?>? HollowByStepId = null,
+    Dictionary<StepId, string?>? HollowReasonByStepId = null,
+    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null,
+    HashSet<StepId>? ConductorRejectedStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -127,6 +132,43 @@ public sealed record ProjectionCheckpointState(
     /// same <see cref="DeepCopy"/> load-bearing note applies.
     /// </summary>
     public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
+
+    /// <summary>
+    /// #1622 (c)/(d): backs `resolvedByConductor` in the status/terminal-sentinel projection —
+    /// see `Domain.FlowState.StepState.ResolvedByConductor`'s remarks for what it means.
+    /// Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above; no
+    /// <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
+    /// </summary>
+    public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
+
+    /// <summary>
+    /// F11 (#1720 review): the <c>--reject</c> SUBSET of <see cref="ResolvedByConductorStepIds"/> —
+    /// see `Domain.FlowState.StepState.ConductorRejected`'s remarks for why the two are not the same
+    /// set. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above;
+    /// no <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
+    /// </summary>
+    public HashSet<StepId> ConductorRejectedStepIds { get; init; } = ConductorRejectedStepIds ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `workspaceChanged` entry. Same trailing-optional
+    /// replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and the same
+    /// <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, bool?> WorkspaceChangedByStepId { get; init; } = WorkspaceChangedByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `hollow` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
+    /// </summary>
+    public Dictionary<StepId, bool?> HollowByStepId { get; init; } = HollowByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `hollowReason` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
+    /// </summary>
+    public Dictionary<StepId, string?> HollowReasonByStepId { get; init; } = HollowReasonByStepId ?? new();
 
     /// <summary>
     /// #1702: which steps' latest attempt recorded a <see cref="FlowEvent.VerifyNotRun"/> — the
@@ -203,5 +245,10 @@ public sealed record ProjectionCheckpointState(
         new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
         new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
         new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId),
-        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId));
+        new HashSet<StepId>(ResolvedByConductorStepIds),
+        new Dictionary<StepId, bool?>(WorkspaceChangedByStepId),
+        new Dictionary<StepId, bool?>(HollowByStepId),
+        new Dictionary<StepId, string?>(HollowReasonByStepId),
+        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId),
+        new HashSet<StepId>(ConductorRejectedStepIds));
 }

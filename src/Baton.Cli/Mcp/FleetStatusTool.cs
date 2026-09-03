@@ -255,6 +255,9 @@ public sealed class FleetStatusTool : IMcpTool
                 FailureKind: s.FailureKind,
                 RetryEligible: s.RetryEligible,
                 ExhaustedUntil: s.ExhaustedUntil,
+                WorkspaceChanged: s.WorkspaceChanged,
+                Hollow: s.Hollow,
+                HollowReason: s.HollowReason,
                 Verify: s.Verify,
                 VerifyReason: s.VerifyReason
             )).ToList();
@@ -282,6 +285,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: sentinel.Error,
                 Try: sentinel.Try,
                 Rejected: sentinel.Rejected,
+                ResolvedBy: sentinel.ResolvedBy,
                 Role: terminalRole,
                 Adapter: terminalAdapter,
                 Model: terminalModel,
@@ -374,6 +378,9 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.FailureKind,
                     stepView.RetryEligible,
                     stepView.ExhaustedUntil,
+                    stepView.WorkspaceChanged,
+                    stepView.Hollow,
+                    stepView.HollowReason,
                     stepView.Verify,
                     stepView.VerifyReason));
             }
@@ -405,6 +412,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: view.Error,
                 Try: view.Try,
                 Rejected: view.Rejected,
+                ResolvedBy: view.ResolvedBy,
                 Role: role,
                 Adapter: adapter,
                 Model: model,
@@ -587,6 +595,14 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("rejected")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool Rejected = false,
+    // F10/F11 (#1720 review): the room-level WorkflowStatusView.ResolvedBy, copied the same way
+    // Rejected above is. Needed BECAUSE F11 scoped `rejected` to `--reject`: without this the glass
+    // has no signal at all for a conductor `baton resolve --close`, which settles a room Failed with
+    // a recorded ruling rather than a crash. The per-step resolvedByConductor flag stays
+    // deliberately omitted -- WHICH step is a one-room `baton status --json` question.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null,
     // #1503, extended by #1584: worker role/adapter/model/effort/timeout for this room's Running step,
     // read via TryResolveRunningBinding -- see spec/baton.md §6 schema for resolution rules and gating.
     [property: JsonPropertyName("role")]
@@ -675,6 +691,18 @@ public sealed record FleetStepStatusView(
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ExhaustedUntil = null,
+    // #1622/#1390: copied verbatim from WorkflowStatusStepView.WorkspaceChanged/.Hollow/.HollowReason
+    // -- present only for a tree-changing role's Succeeded settle, per that record's own remarks. The
+    // glass badge #1390 asks for reads this rather than probing the worktree itself.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null,
     // #1702: copied verbatim from WorkflowStatusStepView.Verify/.VerifyReason -- "not-run" plus the
     // pre-flight reason, so a fleet_status caller (and Fleet Glass) can render "unverified" for a step
     // that ran but was never checked, distinct from an ordinary Succeeded step.

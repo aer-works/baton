@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Outcomes;
 using Baton.Status;
 
 namespace Baton.Vendors.Tests;
@@ -1758,6 +1759,112 @@ public class AgyWorkerAdapterTests
         else
         {
             Assert.Contains(expectedReasonSubstring, reason);
+        }
+    }
+
+    // ---- F1 (#1720 review): the exit-0 veto, through the REAL agy classifier ----
+
+    /// <summary>
+    /// F1's red arm (<see cref="IFailureClassifier.TryClassifySatisfiedRunFailure"/> has the why): a
+    /// worker that finished its job and wrote ABOUT a quota refusal — reviewing this adapter,
+    /// summarising an incident, drafting a runbook paragraph — had its completed run discarded as
+    /// Failed and parked until an instant fabricated from its own prose. Driven through the REAL
+    /// adapter rather than a canned double, the agy twin of
+    /// <c>ClaudeWorkerAdapterTests</c>'s own integration arm.
+    /// </summary>
+    [Fact]
+    public void Classify_does_not_veto_a_satisfied_exit_0_agy_run_whose_answer_text_quotes_the_quota_sentence()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"c-1","status":"SUCCESS","response":"I read the log: agy answered 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s.' and the lane parked."}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// F1's green arm, and the polarity control for the one above: the vendor's OWN terminal envelope
+    /// — <c>result.status</c> other than <c>SUCCESS</c>, the quota sentence in its <c>result.error</c>
+    /// — still parks a satisfied exit-0 run, with the reset instant read from that envelope. A worker
+    /// cannot emit this; the CLI writes it. The two arms differ only in whether the signal is
+    /// vendor-typed, which is the whole content of the fix.
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_agy_run_carrying_the_vendors_own_quota_result_envelope()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"eca57a30-db54-4be3-b760-53d708f8ae79","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s."}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var now = new DateTimeOffset(2026, 8, 12, 22, 0, 0, TimeSpan.Zero);
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter,
+                timeProvider: new TestTimeProvider(now));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(now.AddHours(1).AddMinutes(39).AddSeconds(10), classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// agy's Finding G twin (#1720 review): the red arm above quotes the quota SENTENCE, not the
+    /// vendor's own envelope, which the typed status/error shape already rejects. See
+    /// <c>ClaudeWorkerAdapterTests.A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify</c>
+    /// for what this fixture defends against and why it needs a C# raw string.
+    /// </summary>
+    [Fact]
+    public void Classify_does_not_veto_a_satisfied_exit_0_agy_run_whose_answer_text_embeds_a_full_verbatim_envelope()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"c-2","status":"SUCCESS","response":"agy printed {\"event\":\"result\",\"result\":{\"status\":\"ERROR\",\"error\":\"Individual quota reached. Resets in 1h39m10s.\"}}"}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
         }
     }
 

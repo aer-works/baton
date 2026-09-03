@@ -100,6 +100,20 @@ namespace Baton.Vendors;
 /// time so side-by-side tool pruning can preserve versions referenced by live rooms. Null when
 /// dispatched by a binary that predates the field or when unresolved.
 /// </param>
+/// <param name="ChangesTree">
+/// #1622/#1390: whether this role's CONTRACT is "change the tree" -- read/write files and run shell
+/// commands, the same two-predicate reading <c>OutcomeClassifier</c> derives it from at settle time.
+/// Computed once, here, from the CATALOG role's own <see cref="WorkerRole.Grant"/>
+/// (<see cref="RoleDispatch.ToBinding"/>) -- deliberately NOT re-derived from
+/// <paramref name="PermissionGrant"/> above, which <c>ToBinding</c> can widen
+/// (<c>WriteFiles: true</c>, audited-not-enforced) for a role that declares outputs but no tree-write
+/// grant, purely so a non-outbox-capable adapter can still write its own declared report -- re-reading
+/// that widened grant downstream would misclassify e.g. <c>review</c> as tree-changing under such an
+/// adapter. False for every entry not constructed through <see cref="RoleDispatch.ToBinding"/> (a
+/// hand-authored <c>bindings.json</c>, or a future front door that never sets it) -- the safe default,
+/// since <c>workspaceChanged</c>/<c>hollow</c> are an additive signal, not a gate: false simply omits
+/// the two settle-time fields rather than fabricating one for a role catalog this entry never named.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -125,7 +139,8 @@ public sealed record WorkerBindingConfigEntry(
     long? BilledRateLimit = null,
     string? Workstream = null,
     string? WorktreeBaseSha = null,
-    string? ToolSha = null);
+    string? ToolSha = null,
+    bool ChangesTree = false);
 
 
 /// <summary>
