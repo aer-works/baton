@@ -648,7 +648,8 @@ public static class MutationInterface
         // The write-sequence discipline: recorded and fsync'd before anything else, whether the
         // target turns out to be a live process, a pending non-process execution, or already
         // terminal (the record itself is the too-late outcome; nothing else changes).
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
 
         return await PumpToFixedPointAsync(
@@ -939,6 +940,14 @@ public static class MutationInterface
         // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
         DateTimeOffset? lastQuotaParkNotified = null;
 
+        // #1634/#1762: this pump's own view of the ledger's Origin: Operator CancellationRequested
+        // targets, re-accumulated every round the same way lastQuotaParkNotified above persists
+        // across rounds. Scope (checkpoint-window, not "this call's own writes"), why
+        // FlowState.CancellationRequestedExecutionIds/ProjectionCheckpoint.State's equivalent were
+        // passed over, and why Origin had to become a durable field rather than staying an in-memory
+        // gate: spec/baton.md §2.
+        var cancellationRequestedExecutionIds = new HashSet<ExecutionId>();
+
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
         // host stop is detected below (M10 Phase 2): every read/write this loop performs to reach
         // its fixed point must keep completing even after the ambient token has fired, or the pump
@@ -976,6 +985,18 @@ public static class MutationInterface
                 state = projection.State;
                 latestCheckpoint = projection.Checkpoint;
                 currentCheckpoint = latestCheckpoint;
+
+                // #1634/#1762: this round's slice of the raw ledger, Origin: Operator only — a
+                // HostStop or legacy (null-Origin) line is never added, which is what makes the block
+                // below correct without also needing !hostStopRequested's help across a process
+                // boundary. spec/baton.md §2.
+                foreach (var flowEvent in events)
+                {
+                    if (flowEvent is FlowEvent.CancellationRequested { Origin: CancellationOrigin.Operator } cancellationRequested)
+                    {
+                        cancellationRequestedExecutionIds.Add(cancellationRequested.ExecutionId);
+                    }
+                }
 
                 var acceptedRequestByExecutionId = latestCheckpoint.State.AcceptedRequestByExecutionId;
 
@@ -1232,6 +1253,39 @@ public static class MutationInterface
                     foreach (var (stepId, executionId) in pauseObligations)
                     {
                         await eventLogWriter.AppendAsync(new FlowEvent.WorkflowPaused(executionId, stepId), ioCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
+                // #1634/#1762: a poller-less pump (e.g. CancelCommand's DIRECT path) never delivers a
+                // parked step's cancel through MarkParkedCancelIntent/SettleParkedCancelIntentsAsync,
+                // so read the ledger directly here, before GetRetryObligations/
+                // DependencyResolver.GetReadySteps get a chance to redispatch it instead. Sourced from
+                // cancellationRequestedExecutionIds -- already Origin: Operator only, see its own
+                // remarks -- filtered through IsParkedRetryTarget, the same terminal
+                // SettleParkedCancelIntentsAsync would produce. Also gated on !hostStopRequested, same
+                // guard readyStepIds uses below -- why both this gate AND Origin: spec/baton.md §2.
+                // Filters state.Steps directly
+                // rather than the accumulator's own HashSet -- state.Steps is itself built by
+                // iterating snapshot.Steps in order (StateProjector), so this gives the
+                // ExecutionCancelled appends below the same deterministic-emission discipline the
+                // ready-step loop further down uses, with no separate join back through
+                // snapshot.Steps that could silently drop a match if that 1:1 shape ever changed.
+                var parkedCancelExecutionIds = hostStopRequested
+                    ? []
+                    : state.Steps
+                        .Where(s => s.LatestExecutionId is { } latestExecutionId
+                            && cancellationRequestedExecutionIds.Contains(latestExecutionId)
+                            && IsParkedRetryTarget(state, latestExecutionId))
+                        .Select(s => s.LatestExecutionId!.Value)
+                        .ToList();
+                if (parkedCancelExecutionIds.Count > 0)
+                {
+                    foreach (var executionId in parkedCancelExecutionIds)
+                    {
+                        await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
                             .ConfigureAwait(false);
                     }
 
@@ -2097,7 +2151,8 @@ public static class MutationInterface
                 continue;
             }
 
-            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), ioCancellationToken)
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CancellationRequested(executionId, CancellationOrigin.Operator), ioCancellationToken)
                 .ConfigureAwait(false);
             await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
                 .ConfigureAwait(false);

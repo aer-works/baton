@@ -123,7 +123,16 @@ public abstract record FlowEvent
     /// execution. Recorded and fsync'd before the request reaches Core, per the
     /// intent-first write sequence rule.
     /// </summary>
-    public sealed record CancellationRequested(ExecutionId ExecutionId) : FlowEvent;
+    /// <param name="Origin">
+    /// #1762: <see cref="CancellationOrigin"/> — <c>Operator</c> vs. <c>HostStop</c>. Nullable
+    /// because history predates the field: a line written before #1762 carries no <c>Origin</c> at
+    /// all and replays as null, the same "history predates the field" shape
+    /// <see cref="ExecutionSucceeded.WorkspaceChanged"/> already documents. A null <c>Origin</c> is
+    /// NOT honoured by <c>MutationInterface</c>'s parked-cancel block (spec/baton.md §2) — that is
+    /// exactly the pre-#1762 behaviour for those lines, so an existing ledger can never be made worse
+    /// by this field's addition.
+    /// </param>
+    public sealed record CancellationRequested(ExecutionId ExecutionId, CancellationOrigin? Origin = null) : FlowEvent;
 
     /// <summary>
     /// A step declaring <see cref="PausePoint"/> reached a terminal outcome; Flow is idle
