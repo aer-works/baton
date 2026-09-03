@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Baton.Artifacts;
 using Baton.Cli.Mcp;
 using Baton.Dispatch;
@@ -29,10 +30,10 @@ namespace Baton.Cli.Daemon;
 /// paths run side by side until #1557's own PR-B.
 /// </para>
 /// <para>
-/// <b>Not in this PR (see the tracking issue's PR slicing):</b> <c>stdoutTail</c> (PR-A2 — no C#
-/// precedent, largest remaining piece); pending-outputs status — grepped
-/// <see cref="Status.StepOutputResolver"/> first, per spec/baton.md §6's own remark on why that
-/// grep came up empty.
+/// <b>PR-A2 (#1557)</b> added <c>rooms[].live.stdoutTail</c> — <see cref="StdoutTailRenderer"/>'s own
+/// doc comment is the port record for that field. <b>Still not in this PR (see the tracking issue's PR
+/// slicing):</b> pending-outputs status — grepped <see cref="Status.StepOutputResolver"/> first, per
+/// spec/baton.md §6's own remark on why that grep came up empty.
 /// </para>
 /// </remarks>
 public sealed class FleetProjectionWriter : BackgroundService
@@ -111,6 +112,11 @@ public sealed class FleetProjectionWriter : BackgroundService
         var roomsArray = new JsonArray();
         var liveKeysThisTick = new HashSet<string>(StringComparer.Ordinal);
 
+        // pusher.py's main() loop reloads its secret-gate denylist every cycle (not once at startup),
+        // so an operator's edit to the patterns file takes effect on the NEXT tick rather than needing
+        // a daemon restart -- matched here rather than caching across ticks.
+        var secretPatterns = StdoutTailRenderer.LoadSecretPatterns(BatonPaths.SecretPatternsFile);
+
         foreach (var room in discovered)
         {
             var view = await FleetStatusTool.ProcessRoomAsync(room.RoomDir, includeTerminal: true, cancellationToken)
@@ -142,7 +148,7 @@ public sealed class FleetProjectionWriter : BackgroundService
             // pusher's own "never a live section a dead process cannot honestly back" rule.
             if (view.Steps?.Any(s => s.State == "Running" && s.Execution is not null) == true)
             {
-                await AttachLiveFieldsAsync(node, view, liveKeysThisTick, cancellationToken).ConfigureAwait(false);
+                await AttachLiveFieldsAsync(node, view, secretPatterns, liveKeysThisTick, cancellationToken).ConfigureAwait(false);
             }
 
             roomsArray.Add(node);
@@ -161,13 +167,18 @@ public sealed class FleetProjectionWriter : BackgroundService
     }
 
     /// <summary>
-    /// spec/baton.md §6's <c>rooms[].live</c>/<c>processAlive</c>/<c>stdout_last_write_ago_sec</c>/
-    /// <c>elapsed</c> — everything that needs the Running step's own execution id. Absent (never a
-    /// fabricated reading) whenever a Running room's steps carry no Running execution id, its stdout
-    /// has not been captured yet, or the step's own timestamp is unreadable.
+    /// spec/baton.md §6's <c>rooms[].live</c> (now including <c>stdoutTail</c>, #1557 PR-A2) /
+    /// <c>processAlive</c>/<c>stdout_last_write_ago_sec</c>/<c>elapsed</c> — everything that needs the
+    /// Running step's own execution id. Absent (never a fabricated reading) whenever a Running room's
+    /// steps carry no Running execution id, its stdout has not been captured yet, or the step's own
+    /// timestamp is unreadable.
     /// </summary>
     private async Task AttachLiveFieldsAsync(
-        JsonObject node, FleetRoomStatusView view, HashSet<string> liveKeysThisTick, CancellationToken cancellationToken)
+        JsonObject node,
+        FleetRoomStatusView view,
+        IReadOnlyList<Regex>? secretPatterns,
+        HashSet<string> liveKeysThisTick,
+        CancellationToken cancellationToken)
     {
         var runningStep = view.Steps?.FirstOrDefault(s => s.State == "Running" && s.Execution is not null);
         if (runningStep is null)
@@ -227,6 +238,16 @@ public sealed class FleetProjectionWriter : BackgroundService
             }
 
             liveNode["lastActivityAt"] = QuantizeActivity(mtimeUtc);
+
+            // #1557 PR-A2: same stdoutPath FindStdoutPaths already resolved above -- never a second
+            // way of finding it. A snapshot read from EOF every tick (not fed by the incremental
+            // offset ReadIncrementalInto tracks), matching pusher.py's own "the tail is a snapshot of
+            // now, not an accumulator" design.
+            var stdoutTail = StdoutTailRenderer.ComputeTail(stdoutPath, secretPatterns);
+            if (stdoutTail is not null)
+            {
+                liveNode["stdoutTail"] = stdoutTail;
+            }
 
             // spec/baton.md §6 (pre-existing pusher.py contract): `live` itself stays gated on the
             // room's DISPLAYED state being exactly "Running" -- never a live section for a room #1513

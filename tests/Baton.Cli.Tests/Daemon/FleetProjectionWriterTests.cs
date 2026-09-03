@@ -229,6 +229,70 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Assert.True(roomNode.ContainsKey("stdout_last_write_ago_sec"));
     }
 
+    /// <summary>
+    /// #1557 PR-A2: end-to-end wiring for <c>live.stdoutTail</c> — <see cref="StdoutTailRendererTests"/>
+    /// pins the renderer's own output against pusher.py; this pins that
+    /// <see cref="FleetProjectionWriter"/> actually calls it with the room's real stdout path and a
+    /// present secret-gate denylist (<see cref="BatonPaths.SecretPatternsFile"/> under this test's own
+    /// isolated <c>BATON_HOME</c>), and that a hit is withheld exactly where the renderer's own tests
+    /// say it should be.
+    /// </summary>
+    [Fact]
+    public async Task RunningRoom_WithAliveEngine_ReportsStdoutTail_RenderedAndSecretGated()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var (room, execId) = await CreateRunningRoomAsync("tail-room", liveIdentity);
+
+        var stdoutPath = Path.Combine(room, "artifacts", $"execution_{execId.Value}", ".stdout.log");
+        await File.AppendAllTextAsync(
+            stdoutPath,
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"Drafting the plan now."}]}}""" + "\n"
+            + "Authorization: Bearer sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" + "\n",
+            TestContext.Current.CancellationToken);
+
+        // Present-but-non-empty patterns file (secretpatterns.example.txt's own first line) -- proves
+        // the daemon actually loads BatonPaths.SecretPatternsFile and gates with it, without depending
+        // on the operator's own gitignored denylist.
+        await File.WriteAllTextAsync(
+            BatonPaths.SecretPatternsFile, "sk-[A-Za-z0-9]{20,}\n", TestContext.Current.CancellationToken);
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.Equal("Drafting the plan now.\n[withheld]", live["stdoutTail"]!.GetValue<string>());
+    }
+
+    /// <summary>Fail-closed polarity arm: no <see cref="BatonPaths.SecretPatternsFile"/> under this
+    /// test's isolated <c>BATON_HOME</c> at all -- every line withheld, matching pusher.py's own
+    /// missing-denylist ruling (spec/baton.md §6, C-11), not merely a per-pattern miss.</summary>
+    [Fact]
+    public async Task RunningRoom_WithAliveEngine_WithholdsStdoutTail_WhenPatternsFileMissing()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var (room, execId) = await CreateRunningRoomAsync("tail-failclosed-room", liveIdentity);
+
+        var stdoutPath = Path.Combine(room, "artifacts", $"execution_{execId.Value}", ".stdout.log");
+        await File.AppendAllTextAsync(
+            stdoutPath,
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"Drafting the plan now."}]}}""" + "\n",
+            TestContext.Current.CancellationToken);
+
+        Assert.False(File.Exists(BatonPaths.SecretPatternsFile));
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.Equal("[withheld]", live["stdoutTail"]!.GetValue<string>());
+    }
+
     /// <summary>Builds a room with one "architect" step Running under a real captured `.stdout.log`,
     /// recorded engine identity <paramref name="identity"/>, and a claude bindings.json entry.</summary>
     private async Task<(string RoomDir, ExecutionId ExecutionId)> CreateRunningRoomAsync(
