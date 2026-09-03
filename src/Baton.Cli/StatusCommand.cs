@@ -581,12 +581,16 @@ public static class StatusCommand
     /// </para>
     /// </summary>
     /// <remarks>
-    /// Prints only <c>TokensIn</c>/<c>TokensOut</c>/<c>Turns</c> — #1569 added
-    /// <c>CacheReadTokens</c>/<c>CacheCreationTokens</c>/<c>ThinkingTokens</c> to the JSON contract
-    /// this same data comes from, but deliberately left this human roll-up unchanged (out of that
-    /// issue's stated scope). Tracked as #1581.
+    /// #1581: extends the roll-up past the three fields #1569 added to the JSON contract
+    /// (<c>CacheReadTokens</c>/<c>CacheCreationTokens</c>/<c>ThinkingTokens</c>) without also
+    /// touching this human-readable line. <c>BilledTokens</c> — the authoritative billed figure per
+    /// spec/baton.md §3 — leads the line when at least one execution reports it, ahead of the raw
+    /// execution count/time; the rest follow in the order: billed, tokens in, tokens out, cache read,
+    /// cache creation, thinking, turns. Each part is independently omitted (via
+    /// <see cref="AppendTokenPart"/>) when no execution reports that figure, so a plain-text-stdout
+    /// room's line is unchanged from before this change.
     /// </remarks>
-    private static string FormatUsageSummary(IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId)
+    internal static string FormatUsageSummary(IReadOnlyDictionary<string, ExecutionUsageView> usageByExecutionId)
     {
         if (usageByExecutionId.Count == 0)
         {
@@ -600,8 +604,12 @@ public static class StatusCommand
             $"{totalExecutionSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s execution time",
         };
 
+        AppendTokenPart(parts, usageByExecutionId, u => u.BilledTokens, "billed tokens");
         AppendTokenPart(parts, usageByExecutionId, u => u.TokensIn, "tokens in");
         AppendTokenPart(parts, usageByExecutionId, u => u.TokensOut, "tokens out");
+        AppendTokenPart(parts, usageByExecutionId, u => u.CacheReadTokens, "cache read tokens");
+        AppendTokenPart(parts, usageByExecutionId, u => u.CacheCreationTokens, "cache creation tokens");
+        AppendTokenPart(parts, usageByExecutionId, u => u.ThinkingTokens, "thinking tokens");
 
         var turnsReporting = usageByExecutionId.Values.Where(u => u.Turns is not null).ToList();
         if (turnsReporting.Count > 0)
