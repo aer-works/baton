@@ -117,7 +117,14 @@ public static class WorktreeWorkspaces
         // below — the same SHA-not-symbolic-ref fix Walk applies for a fresh provision.
         var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
 
-        return entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true, WorktreeBaseSha = baseSha };
+        return entry with
+        {
+            WorkingDirectory = worktreePath,
+            Worktree = null,
+            IsWorktree = true,
+            WorktreeBaseSha = baseSha,
+            WorktreeSourceRepository = spec.Repository,
+        };
     }
 
     /// <summary>
@@ -193,7 +200,14 @@ public static class WorktreeWorkspaces
                 // WorktreeProvisioner.ResolveBaseCommit's own remarks for why this has to run against
                 // the source repository rather than the symbolic ref it replaces.
                 var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
-                rewritten[workerName] = entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true, WorktreeBaseSha = baseSha };
+                rewritten[workerName] = entry with
+                {
+                    WorkingDirectory = worktreePath,
+                    Worktree = null,
+                    IsWorktree = true,
+                    WorktreeBaseSha = baseSha,
+                    WorktreeSourceRepository = spec.Repository,
+                };
             }
             catch (Exception ex) when (!throwOnFailure
                 && ex is InvalidWorkspaceSpecException or WorktreeProvisioningException)

@@ -34,6 +34,15 @@ public sealed class TrustOptionsParserTests
         Assert.Equal(new ProjectCeiling(true, true, false, false), options.Ceiling);
     }
 
+    /// <summary>#1166 review finding H: category tokens are case-insensitive, matching 'all'/'none'.</summary>
+    [Fact]
+    public void Parse_CeilingCategoriesAreCaseInsensitive()
+    {
+        var options = TrustOptionsParser.Parse(["/repo", "--ceiling", "readfiles,WRITEFILES"]);
+
+        Assert.Equal(new ProjectCeiling(true, true, false, false), options.Ceiling);
+    }
+
     [Fact]
     public void Parse_List_ParsesAsListWithNoOtherFields()
     {

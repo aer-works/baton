@@ -1,21 +1,30 @@
+using Baton.Domain;
+
 namespace Baton.Vendors;
 
 /// <summary>
 /// #1166: the single choke point both <see cref="ClaudeWorkerAdapter"/> and <see cref="AgyWorkerAdapter"/>
 /// call at the top of <c>Resolve</c> — one shared read-store/refuse/cap sequence rather than two copies
-/// that drift. Consults <see cref="ProjectCeilingStore"/> against <see cref="WorkerInvocation.WorkingDirectory"/>
-/// and returns an invocation whose <see cref="WorkerInvocation.PermissionGrant"/> is capped to
-/// decision 0004's effective grant = role grant ∩ project ceiling.
+/// that drift. Consults <see cref="ProjectCeilingStore"/> and returns an invocation whose
+/// <see cref="WorkerInvocation.PermissionGrant"/> is capped to decision 0004's effective grant = role
+/// grant ∩ project ceiling.
 /// </summary>
 internal static class ProjectCeilingGate
 {
     /// <param name="invocation">The invocation as resolved so far — read, never mutated (records).</param>
-    /// <param name="workerName">
-    /// <see cref="Baton.Domain.WorkerContract.WorkerName"/> — carried only for the exceptions below;
-    /// the gate itself has no other use for it.
+    /// <param name="contract">
+    /// The paired <see cref="WorkerContract"/> — its <see cref="WorkerContract.WorkerName"/> names the
+    /// exceptions below, and its <see cref="WorkerContract.ProducedOutputs"/> feeds the #629 recheck
+    /// (review finding B).
+    /// </param>
+    /// <param name="withheldWritesReachTheOutbox">
+    /// The calling adapter's own <see cref="IWorkerAdapter.WithheldWritesReachTheOutbox"/> — passed in
+    /// rather than re-derived, the same "ask the adapter" split
+    /// <see cref="WorkerBindingResolver"/>'s own pre-existing check already uses.
     /// </param>
     /// <exception cref="ProjectNotTrustedException">
-    /// <see cref="WorkerInvocation.WorkingDirectory"/> is set and carries no recorded
+    /// The ceiling lookup key (<see cref="WorkerInvocation.WorktreeSourceRepository"/> when set,
+    /// otherwise <see cref="WorkerInvocation.WorkingDirectory"/>) is set and carries no recorded
     /// <see cref="ProjectCeilingStore"/> entry.
     /// </exception>
     /// <exception cref="ProjectCeilingRequiresStructuredGrantException">
@@ -28,11 +37,25 @@ internal static class ProjectCeilingGate
     /// incoherent once narrowed (<see cref="PermissionGrant.CategoriesDefeatedByTheShell"/>'s own
     /// remarks are the canonical statement of the rule; this is the same predicate, not a restatement).
     /// </exception>
-    public static WorkerInvocation Apply(WorkerInvocation invocation, string workerName)
+    /// <exception cref="UnsatisfiableOutputContractException">
+    /// Review finding B: capping removed <see cref="PermissionGrant.WriteFiles"/> from a grant whose
+    /// contract declares outputs, on an adapter that cannot reach the outbox with writes withheld.
+    /// <see cref="WorkerBindingResolver"/>'s own pre-existing version of this check runs on the
+    /// UNCAPPED grant, before <c>Resolve</c> is ever called, so it cannot see a contract this gate's
+    /// own capping just made unsatisfiable — recreating the exact #629 pay-then-fail hazard one level
+    /// down. Re-run here for the same reason the shell-coherence check above is re-run here.
+    /// </exception>
+    public static WorkerInvocation Apply(
+        WorkerInvocation invocation, WorkerContract contract, bool withheldWritesReachTheOutbox)
     {
         ArgumentNullException.ThrowIfNull(invocation);
+        ArgumentNullException.ThrowIfNull(contract);
 
-        if (string.IsNullOrWhiteSpace(invocation.WorkingDirectory))
+        // Review finding A -- see WorkerInvocation.WorktreeSourceRepository's own doc for why a
+        // provisioned worktree overrides the lookup key here; a plain WorkingDirectory dispatch has no
+        // such override and uses it directly.
+        var ceilingKey = invocation.WorktreeSourceRepository ?? invocation.WorkingDirectory;
+        if (string.IsNullOrWhiteSpace(ceilingKey))
         {
             // No project to hold a ceiling against — a plain chat turn or an adapter call with no
             // WorkingDirectory (docs/agents doc: ExecuteSessionTurnAsync never sets one unless the
@@ -41,10 +64,10 @@ internal static class ProjectCeilingGate
             return invocation;
         }
 
-        var ceiling = ProjectCeilingStore.TryGet(invocation.WorkingDirectory, ProjectCeilingStore.DefaultPath);
+        var ceiling = ProjectCeilingStore.TryGet(ceilingKey, ProjectCeilingStore.DefaultPath);
         if (ceiling is null)
         {
-            throw new ProjectNotTrustedException(invocation.WorkingDirectory);
+            throw new ProjectNotTrustedException(ceilingKey);
         }
 
         if (ceiling.IsUnrestricted)
@@ -54,13 +77,19 @@ internal static class ProjectCeilingGate
 
         if (invocation.PermissionGrant is not { } grant)
         {
-            throw new ProjectCeilingRequiresStructuredGrantException(workerName, invocation.WorkingDirectory);
+            throw new ProjectCeilingRequiresStructuredGrantException(contract.WorkerName, ceilingKey);
         }
 
         var capped = ceiling.Cap(grant);
         if (capped.CategoriesDefeatedByTheShell is { Count: > 0 } withheld)
         {
-            throw new IncoherentPermissionGrantException(workerName, withheld);
+            throw new IncoherentPermissionGrantException(contract.WorkerName, withheld);
+        }
+
+        if (!capped.WriteFiles && contract.ProducedOutputs.Count > 0 && !withheldWritesReachTheOutbox)
+        {
+            throw new UnsatisfiableOutputContractException(
+                contract.WorkerName, [.. contract.ProducedOutputs.Select(o => o.Name)]);
         }
 
         return invocation with { PermissionGrant = capped };

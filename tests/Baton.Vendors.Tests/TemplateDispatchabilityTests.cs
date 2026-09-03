@@ -85,16 +85,12 @@ public sealed class TemplateDispatchabilityTests : IDisposable
                     workerName: workerName, workingDirectory: _sourceRepo);
 
                 var config = new Dictionary<string, WorkerBindingConfigEntry> { [workerName] = binding };
+                // #1166 review finding A: a worktree-isolated role's WorkingDirectory becomes a fresh
+                // directory under _room per worker -- ProjectCeilingGate keys the ceiling on
+                // WorktreeSourceRepository (== _sourceRepo, trusted in the constructor) instead of that
+                // ephemeral path for exactly this reason, so no per-worker trust registration is needed
+                // here. If that wiring ever regresses, this loop is what goes red.
                 var (provisioned, _) = WorktreeWorkspaces.Provision(config, _room);
-
-                // #1166: a worktree-isolated role provisions a fresh directory under _room per
-                // worker, distinct from _sourceRepo -- trust whatever WorkingDirectory this entry
-                // actually resolved to, not just the constructor's source repo.
-                if (provisioned[workerName].WorkingDirectory is { } resolvedWorkingDirectory)
-                {
-                    ProjectCeilingStore.Set(
-                        resolvedWorkingDirectory, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
-                }
 
                 var resolved = WorkerBindingResolver.Resolve(provisioned, WorkerAdapterRegistry.Default);
                 Assert.IsType<WorkerBinding.Process>(resolved[workerName]);

@@ -112,6 +112,11 @@ namespace Baton.Vendors;
 /// is an opt-in per #801's scope, not a default every worker now carries the way the mandatory
 /// <c>PreToolUse</c> hook is (0029).
 /// </param>
+/// <param name="WorktreeSourceRepository">
+/// #1166 review finding A: forwarded verbatim from <see cref="WorkerBindingConfigEntry.WorktreeSourceRepository"/>
+/// -- see that member's own doc for why <see cref="ProjectCeilingGate"/> keys the project ceiling on
+/// this rather than <paramref name="WorkingDirectory"/> whenever it is set.
+/// </param>
 public sealed record WorkerInvocation(
     string PromptTemplate,
     string? Model = null,
@@ -125,5 +130,6 @@ public sealed record WorkerInvocation(
     string? LogFilePath = null,
     string? Effort = null,
     TimeSpan? Timeout = null,
-    bool EnableMemoryProposalTool = false);
+    bool EnableMemoryProposalTool = false,
+    string? WorktreeSourceRepository = null);
 

@@ -142,7 +142,10 @@ public static class WorkerBindingResolver
             // adapter so a vendor CLI with its own internal wait limit can be told about AER's. Passing
             // it here rather than plumbing a per-execution value is what keeps this "once per binding
             // entry" contract intact — both come off `entry`.
-            entry.Timeout);
+            entry.Timeout,
+            // #1166 review finding A: forwarded so ProjectCeilingGate keys the ceiling on the stable
+            // source repository rather than the ephemeral, room-scoped worktree path above.
+            WorktreeSourceRepository: entry.WorktreeSourceRepository);
         var target = adapter.Resolve(invocation, entry.Contract);
 
         if (onWorkerStdoutLine is not null)

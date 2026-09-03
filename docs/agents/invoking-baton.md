@@ -455,6 +455,13 @@ room record, same lint, same everything downstream (#1518). One line, no file:
 baton dispatch advise --spec-text "what does baton cancel actually do today?" --workspace <repo> --output <report>
 ```
 
+**`--workspace <dir>` needs a recorded project ceiling too** (#1166, §2 above has the full contract) —
+`baton trust <dir> --ceiling …` once, before the first `baton dispatch` against it. This holds even
+for a role the table below auto-provisions a worktree for: the ceiling keys on `--workspace`'s own
+value (the source repository), never the auto-provisioned worktree path, which is why the operator
+never has to (and never could) trust a fresh directory `dispatch` only allocates after this refusal
+would already have fired.
+
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
 the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or
 `WorkerBindingResolver` refuses it at bind time. `dispatch` now provisions that worktree itself,

@@ -95,6 +95,18 @@ namespace Baton.Vendors;
 /// whenever <paramref name="IsWorktree"/> is false, or the ref could not be resolved against the
 /// source repository.
 /// </param>
+/// <param name="WorktreeSourceRepository">
+/// #1166 review finding A: <paramref name="Worktree"/>'s <see cref="WorktreeWorkspace.Repository"/>,
+/// stamped by <see cref="WorktreeWorkspaces"/> in the SAME expression as <paramref name="WorktreeBaseSha"/>
+/// and for the identical reason — captured before <paramref name="Worktree"/> is nulled. This is the
+/// project-ceiling lookup key <see cref="ProjectCeilingGate"/> uses in preference to
+/// <paramref name="WorkingDirectory"/> whenever it is set: a worktree's <paramref name="WorkingDirectory"/>
+/// is a fresh, room-scoped directory allocated at provisioning time (never the same path twice, and
+/// never known to the operator ahead of dispatch), so keying the ceiling on it would make an
+/// auto-provisioned worktree permanently untrustable — the operator has no stable path to run
+/// <c>baton trust</c> against. The source repository is the stable, operator-known path 0004's ceiling
+/// is actually about. Null whenever <paramref name="IsWorktree"/> is false.
+/// </param>
 /// <param name="ToolSha">
 /// #1668: The commit SHA of the baton binary that dispatched this room, stamped at dispatch
 /// time so side-by-side tool pruning can preserve versions referenced by live rooms. Null when
@@ -139,6 +151,7 @@ public sealed record WorkerBindingConfigEntry(
     long? BilledRateLimit = null,
     string? Workstream = null,
     string? WorktreeBaseSha = null,
+    string? WorktreeSourceRepository = null,
     string? ToolSha = null,
     bool ChangesTree = false);
 

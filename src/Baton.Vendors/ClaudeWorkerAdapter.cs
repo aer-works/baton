@@ -106,7 +106,7 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // first so every channel below derived from invocation.PermissionGrant (--allowedTools,
         // --disallowedTools, the hook-denied-tools env var, the shell-pattern env vars) reflects the
         // capped grant rather than the role's uncapped one.
-        invocation = ProjectCeilingGate.Apply(invocation, contract.WorkerName);
+        invocation = ProjectCeilingGate.Apply(invocation, contract, WithheldWritesReachTheOutbox);
 
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);

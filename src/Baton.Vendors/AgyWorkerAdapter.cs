@@ -444,7 +444,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         // the rule) for why this runs first on that adapter; the same ordering holds here for the same
         // reason, applied to this vendor's own downstream readers: ResolvePermissionScope, the
         // hook-liveness probe below, and every denied-tool env var.
-        invocation = ProjectCeilingGate.Apply(invocation, contract.WorkerName);
+        invocation = ProjectCeilingGate.Apply(invocation, contract, ((IWorkerAdapter)this).WithheldWritesReachTheOutbox);
 
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);

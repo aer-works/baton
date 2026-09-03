@@ -97,6 +97,15 @@ public static class TrustOptionsParser
         return new TrustOptions(TrustMode.Register, projectPath, ParseCeiling(ceilingText));
     }
 
+    /// <summary>
+    /// <c>none</c> parses to every category closed — <b>not</b> a guarantee the worker does nothing.
+    /// A raw <see cref="WorkerInvocation.PermissionScope"/> escape hatch bypasses this ceiling entirely
+    /// unless <see cref="ProjectCeiling.IsUnrestricted"/> (see <see cref="ProjectCeilingGate"/>'s own
+    /// doc), and even a fully-capped structured grant still resolves to *something* runnable on both
+    /// vendors (claude pre-approves Edit/Write/NotebookEdit regardless of <c>WriteFiles</c>, #649; agy
+    /// resolves <c>--mode default</c>) — "none" caps every category a structured grant could ask for,
+    /// it does not itself refuse the dispatch.
+    /// </summary>
     private static ProjectCeiling ParseCeiling(string text)
     {
         if (string.Equals(text, "all", StringComparison.OrdinalIgnoreCase))
@@ -112,18 +121,20 @@ public static class TrustOptionsParser
         bool readFiles = false, writeFiles = false, runShellCommands = false, networkAccess = false;
         foreach (var token in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
+            // Case-insensitive, matching the 'all'/'none' keywords above -- an operator typing
+            // --ceiling readfiles should not be refused over casing alone.
             switch (token)
             {
-                case "ReadFiles":
+                case var t when string.Equals(t, "ReadFiles", StringComparison.OrdinalIgnoreCase):
                     readFiles = true;
                     break;
-                case "WriteFiles":
+                case var t when string.Equals(t, "WriteFiles", StringComparison.OrdinalIgnoreCase):
                     writeFiles = true;
                     break;
-                case "RunShellCommands":
+                case var t when string.Equals(t, "RunShellCommands", StringComparison.OrdinalIgnoreCase):
                     runShellCommands = true;
                     break;
-                case "NetworkAccess":
+                case var t when string.Equals(t, "NetworkAccess", StringComparison.OrdinalIgnoreCase):
                     networkAccess = true;
                     break;
                 default:
