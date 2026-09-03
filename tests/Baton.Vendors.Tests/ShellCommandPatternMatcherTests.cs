@@ -399,6 +399,22 @@ public class ShellCommandPatternMatcherTests
         Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
     }
 
+    [Theory]
+    [InlineData("gh\\ label create x")] // escaped space: the head token is `gh\`, never `gh`
+    [InlineData("gh $'\\''; gh label create x #'")] // a balanced quote span hides the `;`, so segmentation succeeds with `gh` off the head
+    public void The_remaining_named_bypasses_on_an_unscoped_grant_allow_and_are_pinned_as_accepted(string command)
+    {
+        // #1748 re-review: two more members of the accepted family spec/baton.md §9 names. Each is
+        // pinned so that a future change closing one shows up as this test going red, rather than the
+        // register silently going stale.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            command, implement.Grant.ShellCommandPatterns, implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.True(result.IsAllowed, result.Reason);
+    }
+
     [Fact]
     public void Word_splitting_via_IFS_ahead_of_a_denied_command_is_the_other_accepted_bypass_on_an_unscoped_grant()
     {

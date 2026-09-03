@@ -2945,10 +2945,12 @@ before either pattern list is consulted (harmless in effect, but not "no longer 
 that whole-line fold, the deny match (#1748 F2) scans every token offset in the folded segment, not
 only its head, and strips a leading backtick/`$(`/`(`/quote off each compared token — a denied
 command riding inside a hiding construct, or sitting in a genuine segment elsewhere on a line an
-unrelated construct folded, still denies. **This reopens two bypasses on purpose, and accepts
-them**: `>out.txt gh label create x` moves `gh` out of head position and allows, and both
-`gh${IFS}label create x` and the escaped-space form `gh\ label create x` never tokenize to a leading
-`gh` token and allow. Closing them for real needs actual shell argv reconstruction, which is a
+unrelated construct folded, still denies. **This reopens one family of bypasses on purpose, and
+accepts it — anything that moves `gh` off a segment's head without folding the line**:
+`>out.txt gh label create x` (leading redirection), `gh${IFS}label create x` and the escaped-space
+form `gh\ label create x` (neither tokenizes to a leading `gh`), and `gh $'\''; gh label create x #'`
+(a balanced quote span hides the `;`, so segmentation succeeds and the fold's every-offset scan never
+runs). Closing them for real needs actual shell argv reconstruction, which is a
 different, larger project than a glob matcher; the operator judged that project not worth building
 for a channel that is a drift guard rather than a boundary. See
 `ShellCommandPatternMatcher.EvaluateChainedCommand`'s own remarks for the mechanism, scoped to what
