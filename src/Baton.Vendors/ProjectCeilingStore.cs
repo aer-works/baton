@@ -33,11 +33,10 @@ public static class ProjectCeilingStore
     /// can lose an update (last writer wins) even though <see cref="Save"/>'s own write is atomic. A
     /// plain in-process lock is what the callers this store actually has need: every caller today —
     /// <c>baton trust</c> (one process, one call) and this assembly's own tests — is a single
-    /// .NET process, never two OS processes writing the same file at once, so a cross-process primitive
-    /// (a <c>MutexGuardedFileLock</c>-shaped wrapper around <see cref="System.Threading.Mutex"/>) was
-    /// checked for and does not exist anywhere in this tree yet — grepping the repo for
-    /// "MutexGuardedFileLock" finds nothing. If a cross-process caller is ever added, that gap is what
-    /// closes it; it is out of scope for this fix round.
+    /// .NET process, never two OS processes writing the same file at once. The cross-process primitive
+    /// (<c>Baton.Status.MutexGuardedFileLock</c>, #1781) exists for the append-only stores that DO have
+    /// concurrent processes; switch this store onto it the day a second process writes ceilings
+    /// (e.g. a daemon-side trust flow) — until then it would be a named OS mutex guarding nothing.
     /// </summary>
     private static readonly object SyncRoot = new();
 
