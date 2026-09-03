@@ -17,15 +17,15 @@ namespace Baton.Status;
 /// </para>
 /// <para>
 /// <b>Only two fields from the original #1496 fold, not the six the task named — this is the
-/// canonical record of why, the four readers' own "#1496 exempt" comments only point back here.</b>
-/// <see cref="BatonPaths"/>'s <c>BATON_HOME</c> read and <c>McpCommand.cs</c>'s <c>BATON_OUTPUT_DIR</c>
-/// read are folded here. (A third field, <see cref="RepoOverride"/>, was added later by #1645 for a
-/// brand-new reader — <c>Baton.Cli.InstalledVersionDrift</c> — with no such history to fight; it never
-/// needed the fold/revert dance below.)
-/// The other four direct readers were tried against this snapshot and reverted, each because its own
-/// test suite sets an env var per <c>[Fact]</c> and expects the very next call to observe it — the
-/// resolution behaviour IS the subject under test there, which a frozen-at-first-access snapshot
-/// structurally cannot support:
+/// canonical record of why.</b> <see cref="BatonPaths"/>'s <c>BATON_HOME</c> read and
+/// <c>McpCommand.cs</c>'s <c>BATON_OUTPUT_DIR</c> read are folded here. (A third field,
+/// <see cref="RepoOverride"/>, was added later by #1645 for a brand-new reader —
+/// <c>Baton.Cli.InstalledVersionDrift</c> — with no such history to fight; it never needed the
+/// fold/revert dance below.)
+/// The other four direct readers were tried against this snapshot and reverted in #1496, each
+/// because its own test suite set an env var per <c>[Fact]</c> and expected the very next call to
+/// observe it — the resolution behaviour IS the subject under test there, which a
+/// frozen-at-first-access snapshot cannot support on its own:
 /// <list type="bullet">
 /// <item><c>RoomRetentionSweep.cs</c> (<c>IsEnabled</c>/<c>IsPruneEnabled</c>/<c>GetInterval</c>/
 ///   <c>GetThresholdBytes</c>/<c>GetPruneGrace</c>): 5 of 12 <c>RoomRetentionSweepTests</c> failed
@@ -38,11 +38,14 @@ namespace Baton.Status;
 /// <item><c>WorkflowTemplateCatalog.cs</c>'s <c>ResolvePath</c>: 20 of 21 tests in that assembly
 ///   failed under the fold — same shape as <c>WorkerRoleCatalog</c>'s.</item>
 /// </list>
-/// Adding a field here for one of those four with no reader consuming it would be exactly the
-/// unpinned duplication <c>record-once</c> forbids (the field's literal env-var-name string would
-/// drift silently from the reader's own public const the moment either one is renamed) — so the
-/// fields stay absent until a follow-up PR (issue #1524) actually folds a given reader and adds its
-/// field in the same change.
+/// #1524 folds all four anyway, closing the gap the sentence above names rather than working around
+/// it: each reader's own test suite moved off <c>Environment.SetEnvironmentVariable</c> onto
+/// <see cref="BeginScope"/> in the same change that added its field here (the way #1496 already
+/// migrated <c>FleetStatusToolTests</c>/<c>RoomDetailToolTests</c>/<c>DaemonHostTests</c>). A scope
+/// is an explicit per-async-flow override, not a process mutation the frozen snapshot could ever
+/// see — so "the very next call observes it" holds again, just through a different mechanism than
+/// the one the #1496 test suites assumed. Nothing here relies on re-reading the environment after
+/// process start.
 /// </para>
 /// <para>
 /// <b>What is deliberately absent for a different reason.</b> Two families of direct env read stay
@@ -57,7 +60,16 @@ namespace Baton.Status;
 public sealed record BatonEnvironmentSnapshot(
     string? HomeOverride,
     string? McpOutputDirectory,
-    string? RepoOverride = null)
+    string? RepoOverride = null,
+    string? WorkerTiersPathOverride = null,
+    string? WorkerRolesPathOverride = null,
+    string? WorkflowTemplatesPathOverride = null,
+    string? ClaudeConfigRootOverride = null,
+    string? RetentionSweepEnabledOverride = null,
+    string? RetentionSweepIntervalSecondsOverride = null,
+    string? RetentionSweepThresholdBytesOverride = null,
+    string? RetentionPruneEnabledOverride = null,
+    string? RetentionPruneGraceSecondsOverride = null)
 {
     private static readonly Lazy<BatonEnvironmentSnapshot> ProcessSnapshot = new(CaptureFromEnvironment);
 
@@ -68,10 +80,33 @@ public sealed record BatonEnvironmentSnapshot(
     /// cares about one or two fields and wants to be explicit about the rest, rather than inheriting
     /// whatever <see cref="Current"/> happens to hold on the machine running it.
     /// </summary>
+    /// <remarks>
+    /// <b>Wrong base for a partial override whose code path also touches an unrelated field this
+    /// snapshot carries</b> (#1524's own hazard: <c>ClaudeWorkerAdapterTests</c>'s two config-root
+    /// tests built their scope from <c>Blank with { ClaudeConfigRootOverride = … }</c>, which — because
+    /// <see cref="BeginScope"/> replaces the whole ambient snapshot, not just the named field — also
+    /// blanked <see cref="HomeOverride"/> back to null for the scope's lifetime. <c>BatonPaths.Root</c>
+    /// reads <c>HomeOverride</c> too, so inside that scope it fell through to the real
+    /// <c>{UserProfile}/.baton</c> instead of the test assembly's redirected home
+    /// (<c>tests/Shared/BatonHomeRedirect.cs</c>), and <c>ClaudeWorkerAdapter.Resolve</c> writes its
+    /// launch config there on every call — leaking into the real <c>~/.baton</c>). A scope that only
+    /// means to override one field must build from <see cref="Current"/>, carrying every other ambient
+    /// field — including any redirect already in force — forward unchanged; reach for <see cref="Blank"/>
+    /// only when the code path under test provably never resolves a field left unset.
+    /// </remarks>
     public static readonly BatonEnvironmentSnapshot Blank = new(
         HomeOverride: null,
         McpOutputDirectory: null,
-        RepoOverride: null);
+        RepoOverride: null,
+        WorkerTiersPathOverride: null,
+        WorkerRolesPathOverride: null,
+        WorkflowTemplatesPathOverride: null,
+        ClaudeConfigRootOverride: null,
+        RetentionSweepEnabledOverride: null,
+        RetentionSweepIntervalSecondsOverride: null,
+        RetentionSweepThresholdBytesOverride: null,
+        RetentionPruneEnabledOverride: null,
+        RetentionPruneGraceSecondsOverride: null);
 
     /// <summary>
     /// The snapshot every reader resolves against: an explicit <see cref="BeginScope"/> override on
@@ -90,7 +125,28 @@ public sealed record BatonEnvironmentSnapshot(
         // (#1645). That type lives downstream of this project (Baton.Cli depends on Baton, not the
         // reverse), the same reason McpOutputDirectory's name above is a duplicated literal rather than
         // a shared const.
-        RepoOverride: Environment.GetEnvironmentVariable("BATON_REPO"));
+        RepoOverride: Environment.GetEnvironmentVariable("BATON_REPO"),
+        // #1524: the remaining eight fields mirror literal consts owned by downstream projects
+        // (Baton.Vendors, Baton.Cli) for the same reason RepoOverride's does -- this project is the
+        // base of the dependency graph (Baton.Vendors -> Baton, Baton.Cli -> Baton.Vendors -> Baton),
+        // so it cannot reference those consts without a cycle. Each downstream reader's own doc comment
+        // names the matching field here; this is the one place that owns the literal string.
+        // "BATON_WORKER_TIERS_PATH" -- Baton.Vendors.WorkerRoleCatalog.TiersPathEnvironmentVariable.
+        WorkerTiersPathOverride: Environment.GetEnvironmentVariable("BATON_WORKER_TIERS_PATH"),
+        // "BATON_WORKER_ROLES_PATH" -- Baton.Vendors.WorkerRoleCatalog.RolesPathEnvironmentVariable.
+        WorkerRolesPathOverride: Environment.GetEnvironmentVariable("BATON_WORKER_ROLES_PATH"),
+        // "BATON_WORKFLOW_TEMPLATES_PATH" --
+        // Baton.Vendors.WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable.
+        WorkflowTemplatesPathOverride: Environment.GetEnvironmentVariable("BATON_WORKFLOW_TEMPLATES_PATH"),
+        // "BATON_CLAUDE_CONFIG_ROOT" -- Baton.Vendors.ClaudeWorkerAdapter.BatonClaudeConfigRootVariable.
+        ClaudeConfigRootOverride: Environment.GetEnvironmentVariable("BATON_CLAUDE_CONFIG_ROOT"),
+        // The five BATON_RETENTION_* variables -- Baton.Cli.Daemon.RoomRetentionSweep's own
+        // *EnvironmentVariable consts.
+        RetentionSweepEnabledOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_ENABLED"),
+        RetentionSweepIntervalSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_INTERVAL_SECONDS"),
+        RetentionSweepThresholdBytesOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_SWEEP_THRESHOLD_BYTES"),
+        RetentionPruneEnabledOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_ENABLED"),
+        RetentionPruneGraceSecondsOverride: Environment.GetEnvironmentVariable("BATON_RETENTION_PRUNE_GRACE_SECONDS"));
 
     /// <summary>
     /// Test-only seam (via <c>InternalsVisibleTo</c>): makes <paramref name="snapshot"/> the ambient

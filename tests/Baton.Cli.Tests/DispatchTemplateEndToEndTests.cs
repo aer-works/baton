@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Cli.Tests;
 
@@ -15,32 +16,28 @@ namespace Baton.Cli.Tests;
 /// binding → capture HEAD → adapter receives it) is proven without a live LLM and without git having to
 /// produce a real diff. The one namespace rule (0047 §5) and the role-vs-template spec split are here too.
 /// </summary>
+// #1524: kept enrolled solely for Console.Out; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchTemplateEndToEndTests : IDisposable
 {
     private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
 
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
-
-    // Pin all three shipped catalogs -- same hazard, same reason as DispatchCommandEndToEndTests'
-    // own ctor comment, which this class shares [Collection(SerializedEnvironmentCollection.Name)] with.
+    // Pins all three shipped catalogs, same #1524 BeginScope pattern as
+    // DispatchCommandEndToEndTests' own ctor.
     public DispatchTemplateEndToEndTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _catalogScope.Dispose();
         _batonHome.Dispose();
     }
 
@@ -302,8 +299,8 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
                 ]
                 """,
                 TestContext.Current.CancellationToken);
-            Environment.SetEnvironmentVariable(
-                WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, collidingCatalog);
+            using var collidingScope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { WorkflowTemplatesPathOverride = collidingCatalog });
 
             var options = new DispatchOptions("review", SpecFilePath: null, Path.Combine(testRoot, "task"));
 
@@ -345,8 +342,8 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
                 ]
                 """,
                 TestContext.Current.CancellationToken);
-            Environment.SetEnvironmentVariable(
-                WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, faultingCatalog);
+            using var faultingScope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { WorkflowTemplatesPathOverride = faultingCatalog });
 
             var options = new DispatchOptions("faulting-tmpl", SpecFilePath: null, Path.Combine(testRoot, "task"));
 

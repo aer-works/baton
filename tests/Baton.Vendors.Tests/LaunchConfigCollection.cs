@@ -25,9 +25,11 @@ namespace Baton.Vendors.Tests;
 /// <see cref="AgyWorkerAdapterTests"/> is included on the same mechanism rather than its own
 /// observed failure — it writes the other launch config through the same writer.
 /// <c>ClaudeWorkerAdapterTests</c>, an original member and still a launch-config writer, moved to
-/// <see cref="SerializedEnvironmentCollection"/> (#1491, it also mutates env vars); that stays safe
-/// against this group because xUnit guarantees a parallelism-opted-out test never runs in parallel
-/// against ANY other test — two <c>DisableParallelization</c> collections cannot overlap each other.
+/// <c>Baton.Cli.Tests.SerializedEnvironmentCollection</c> (#1491, it also mutated env vars then), then directly
+/// onto this collection (#1524) once its own env-mutating tests moved to
+/// <c>BatonEnvironmentSnapshot.BeginScope</c> and stopped needing <c>SerializedEnvironmentCollection</c>
+/// at all — staying off the default parallel pool is still required for the launch-config race this
+/// remark documents, so the enrollment moved rather than being dropped.
 /// </para>
 /// </remarks>
 [CollectionDefinition(Name, DisableParallelization = true)]
