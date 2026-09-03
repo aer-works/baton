@@ -9,7 +9,7 @@ It is **not** the chat surface. A dispatch turn is non-interactive and runs to c
 interactive session (chat) is a different path with a different prompt and a continuing turn.
 
 ```
-baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
+baton dispatch <role> [--spec <file> | --spec - | --spec-text <text>] [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
                     [--token-budget <n>] [--max-tool-steps <n>] [--verify <cmd>] [--label <text>]
                     [--workstream <slug>] [--attach <file>]...
@@ -21,7 +21,9 @@ baton dispatch --list-capabilities
 
 | Flag | Meaning |
 |------|---------|
-| `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. |
+| `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. Mutually exclusive with `--spec -` and `--spec-text` (#1518): pass exactly one of the three. |
+| `--spec -` | Read the task prompt from stdin instead of a file (#1518) — refused outright if stdin is a terminal rather than a pipe/redirect, so a fat-fingered invocation fails loud instead of hanging on EOF that never comes. |
+| `--spec-text <text>` | The task prompt given inline (#1518) — for a scout question that does not warrant a brief file, e.g. `baton dispatch advise --spec-text "what does baton cancel do today?"`. All three spec sources resolve to the same string and produce the same room record (the spec/grant lint below still runs, `--attach` still works, and a plain `baton redispatch <room-dir>` of the resulting room still reuses its already-built prompt) — there is no separate on-disk spec artifact any of the three lands in. Inline and stdin specs are visible in shell history and in process listings while the command runs; use `--spec <file>` for anything sensitive. |
 | `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `$BATON_HOME/rooms/dispatch-<role>-<8 hex>` (`BATON_HOME` defaults to `~/.baton`, see `BatonPaths`) — outside any workspace a dispatch might audit (#1354/#1380), and fresh each time because a dispatch is one-shot and a stable derived directory would make the second `baton dispatch review` *resume* the first's terminal snapshot instead of running. |
 | `--adapter <vendor>` | Run the role on a specific vendor (`claude` / `agy`) instead of its tier's default. The `--adapter` escape hatch; a role never names a vendor itself. |
 | `--model <m>` | The model axis, independent of the role ([0017]/[0023]). Omitted keeps the tier's model — except on a vendor swap, where the tier's vendor-specific model is dropped for the new vendor's default (#1082). |

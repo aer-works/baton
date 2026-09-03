@@ -7,9 +7,23 @@ namespace Baton.Cli;
 /// </summary>
 /// <param name="Name">The catalog role or workflow template to dispatch (e.g. <c>review</c>), resolved by <see cref="DispatchCommand"/>.</param>
 /// <param name="SpecFilePath">
-/// The file whose contents are the task prompt — what a <em>role</em> is asked to do. Required for a
-/// role, and rejected for a template (a template's phases already carry their instructions). Null when
-/// not supplied.
+/// The file whose contents are the task prompt — what a <em>role</em> is asked to do. Exactly one of
+/// this, <paramref name="SpecText"/>, or <paramref name="SpecFromStdin"/> may be set for a role dispatch
+/// (rejected for a template, same as the other two — a template's phases already carry their
+/// instructions). Null when not supplied.
+/// </param>
+/// <param name="SpecText">
+/// The task prompt given inline via <c>--spec-text</c> (#1518) — a scout question that does not
+/// warrant a brief file. Mutually exclusive with <paramref name="SpecFilePath"/> and
+/// <paramref name="SpecFromStdin"/>; <see cref="DispatchOptionsParser"/> enforces at most one of the
+/// three, and <see cref="DispatchCommand"/> enforces that at least one is present for a role.
+/// Why all three sources produce an identical room record is stated once, on the dispatch entry of
+/// spec/baton.md — not repeated in this file.
+/// </param>
+/// <param name="SpecFromStdin">
+/// True when <c>--spec -</c> (#1518) was passed — read the task prompt from stdin instead of a file.
+/// Mutually exclusive with <paramref name="SpecFilePath"/> and <paramref name="SpecText"/>; see
+/// <paramref name="SpecText"/>'s remarks.
 /// </param>
 /// <param name="RoomDirectoryPath">
 /// Where this dispatch's durable state lives. Defaults to a fresh, uniquely-named directory per
@@ -101,4 +115,6 @@ public sealed record DispatchOptions(
     string? RepoPath = null,
     int? MaxToolSteps = null,
     long? BilledRateLimit = null,
-    string? VerifyCommand = null);
+    string? VerifyCommand = null,
+    string? SpecText = null,
+    bool SpecFromStdin = false);

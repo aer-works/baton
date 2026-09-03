@@ -73,6 +73,48 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1518: a bare redispatch never reads a room-side spec artifact at all -- it reuses <c>workflow.json</c>
+    /// plus the parent's own already-built <c>bindings.json</c> <c>PromptTemplate</c> verbatim, the same
+    /// path <see cref="Redispatching_without_a_spec_reuses_the_parents_prompt_verbatim"/> exercises for a
+    /// file-sourced parent. This mirrors that test with a parent dispatched via <c>--spec-text</c> instead,
+    /// to pin that nothing on the bare-redispatch path assumes a parent's spec ever lived in a file --
+    /// it goes red only because the parent room cannot exist before <c>--spec-text</c> does, not because
+    /// redispatch itself has a file-sourced assumption to find.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_a_room_dispatched_via_spec_text_reuses_its_prompt_verbatim()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            var dispatchOptions = new DispatchOptions(
+                "advise", SpecFilePath: null, parentRoom, Adapter: "fake", SpecText: "Weigh the options for X.");
+            var dispatchResult = await DispatchCommand.ExecuteAsync(dispatchOptions, Adapters, TestContext.Current.CancellationToken);
+            var parentView = WorkflowStatusProjector.Project(dispatchResult.State, dispatchResult.Snapshot, parentRoom);
+            await TerminalSentinelWriter.WriteAsync(parentRoom, parentView, TestContext.Current.CancellationToken);
+
+            var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(parentRoom, "bindings.json"), TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal(parentBindings["advise"].PromptTemplate, childBindings["advise"].PromptTemplate);
+            Assert.Contains("Weigh the options for X.", childBindings["advise"].PromptTemplate, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public async Task Redispatching_with_an_amended_spec_replaces_the_prompt_without_duplicating_output_instructions()
     {
