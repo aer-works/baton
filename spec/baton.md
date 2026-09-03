@@ -2779,7 +2779,9 @@ trigger is not registrable by a standard user and is not used (#1770).
   `elapsed` (§6 schema). A fourth kept responsibility under the same outbound-only ceiling the rest of
   this section states: the daemon only ever writes this file, never serves it over a listener. No
   pusher.py change rides with PR-A — both paths run side by side until a later PR retires the pusher's
-  own derivation.
+  own derivation. A reader of this file opens it with `FileShare.ReadWrite | FileShare.Delete` in C#,
+  or copies then parses in Python (#1782 — `open()` cannot express `FILE_SHARE_DELETE`), so an
+  in-flight atomic rewrite never surfaces a sharing violation or a torn read to it.
 - **The singleton mutex is per-home, not per-user** — `DaemonHost.MutexName` (#1773) owns why.
 
 Explicitly **not** kept: pairing (`PairedClientsStore`), WebSocket broadcast (`/api/ws`,

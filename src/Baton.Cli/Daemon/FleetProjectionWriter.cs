@@ -556,9 +556,15 @@ public sealed class FleetProjectionWriter : BackgroundService
         return result is null ? null : (JsonObject)result.DeepClone();
     }
 
-    /// <summary>Single-writer temp-plus-rename — the ~15-line core of <c>AtomicLaunchConfigWriter.Write</c>,
-    /// minus its retry budget: this daemon is the file's only writer, so the "two processes racing the
-    /// same rename" case that retry exists for does not apply here.</summary>
+    /// <summary>Bounded attempt count, not AtomicLaunchConfigWriter's wall-clock budget: that type is
+    /// internal to Baton.Vendors with no InternalsVisibleTo grant for Baton.Cli, so this is a local
+    /// port of its retry shape (`src/Baton.Vendors/AtomicLaunchConfigWriter.cs`) rather than a call
+    /// into it. #1782: a concurrent reader (a fleet-glass poller, a future room-watcher) can hold the
+    /// target open with <see cref="FileShare.Read"/> only, which makes <see cref="File.Move(string, string, bool)"/>'s
+    /// overwrite throw a transient <see cref="UnauthorizedAccessException"/> or <see cref="IOException"/>
+    /// sharing violation on Windows while the reader's handle is open. This tick must never throw out of
+    /// the hosted service for that -- the next ~30s tick already self-heals a skipped write, so a
+    /// reader that never lets go is logged and skipped rather than crashing the loop.</summary>
     internal static void WriteAtomic(string path, string content)
     {
         var directory = Path.GetDirectoryName(path);
@@ -569,14 +575,34 @@ public sealed class FleetProjectionWriter : BackgroundService
 
         var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
         File.WriteAllText(tempPath, content);
-        try
+
+        const int maxAttempts = 5;
+        var backoffMs = 20.0;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            File.Move(tempPath, path, overwrite: true);
-        }
-        catch
-        {
-            TryDeleteTemp(tempPath);
-            throw;
+            try
+            {
+                File.Move(tempPath, path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == maxAttempts)
+                {
+                    Console.Error.WriteLine(
+                        $"FleetProjectionWriter: skipped a write to {path} after {maxAttempts} attempts -- {ex.Message}");
+                    TryDeleteTemp(tempPath);
+                    return;
+                }
+
+                Thread.Sleep(TimeSpan.FromMilliseconds(backoffMs));
+                backoffMs = Math.Min(backoffMs * 2, 200);
+            }
+            catch
+            {
+                TryDeleteTemp(tempPath);
+                throw;
+            }
         }
     }
 
