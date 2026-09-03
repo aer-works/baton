@@ -44,7 +44,7 @@ public sealed class ExecutionStreamLogger
             : StderrTruncationMarkerFileName;
 
     /// <summary>
-    /// True when <paramref name="fileName"/> is one of this logger's own stream files — the four
+    /// True when <paramref name="fileName"/> is one of this logger's own stream files — the
     /// names declared above — or the agy hook verdict ledger's file name (#1732 review sub-threshold:
     /// same rationale, a different engine-owned mechanism artifact written into the same output
     /// directory by <c>Baton.Vendors.AgyWorkerAdapter</c>, not by this logger). This is the one place

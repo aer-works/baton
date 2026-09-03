@@ -2684,13 +2684,17 @@ permanently disarm the canary for every later one, which is why this is per-exec
 per-room or per-role. The tool-call count is summed over BOTH the execution's rolled `.stdout.log.1`
 segment (read first, when `ExecutionStreamLogger`'s single 8 MiB rollover has produced one) and its
 current `.stdout.log` tail (#1732 review N4), so a long run's earliest tool steps are not missed by
-reading only the tail. Wired at both call sites:
-the crash-recovery replay classifies from the recorded request as always (#1586 S1 — never the
-binding's current resolution), but the already-resolved `CoreDispatchTarget` from that same recorded
-binding carries `CountHookVerdicts` when applicable, and the ledger lives in the artifacts output
-directory that branch already resolves for itself, not in the workspace — so counting there
-re-derives nothing about a possibly-defunct workspace. agy's own fail-open behaviour is otherwise
-unchanged.
+reading only the tail. Wired at both call sites, with one scope limit on the second:
+the crash-recovery replay counts from recorded facts (the recorded adapter's stream parser, the
+ledger the recorded execution wrote into the artifacts output directory that branch already resolves
+for itself), but whether the replay ARMS the canary at all comes from resolving today's
+`bindings.json` — the `CoreDispatchTarget` it yields carries `CountHookVerdicts` only when the
+binding still resolves and still qualifies as sole narrowing. A binding that refuses to resolve on
+restart (the probe finds the hook dead now — which is the persistent #710 shape, not a transient one
+— or the entry was widened or moved off agy since the crash) leaves the replay canary disarmed and
+the recorded exit settles on its own: fail-open for exactly that window. Closing it needs the arming
+fact journaled at dispatch time rather than re-derived; until then this sentence is the register of
+that residual. agy's own fail-open behaviour is otherwise unchanged.
 
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),

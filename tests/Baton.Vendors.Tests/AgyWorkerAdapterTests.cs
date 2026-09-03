@@ -2205,7 +2205,11 @@ public class AgyWorkerAdapterTests
         // reading. Needs only the built Baton.Cli.dll this suite already asserts is present with its
         // runtimeconfig (The_hook_assembly_carries_its_runtimeconfig_so_dotnet_can_load_it above). With
         // F6 landed this now also spawns through the real cmd/sh form, so this one test covers both.
-        // No agy, no vendor spend, no live run.
+        // No agy, no vendor spend, no live run. The per-process live-result cache is reset first and
+        // the spawn counter asserted after, so this test cannot be served from an entry some earlier
+        // test in this class warmed for the same assembly path (#1732 review round 3, Finding A): a
+        // test whose whole purpose is executing the real binary must fail if nothing was executed.
+        ProcessAgyHookLivenessProbe.ResetCacheForTesting();
         var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
         var probe = new ProcessAgyHookLivenessProbe();
 
@@ -2213,6 +2217,7 @@ public class AgyWorkerAdapterTests
 
         Assert.True(result.IsLive, $"expected the real hook to answer deny; got: {result.Detail}");
         Assert.Equal("deny", result.Detail);
+        Assert.Equal(1, ProcessAgyHookLivenessProbe.SpawnCountForTesting);
     }
 
     [Fact]

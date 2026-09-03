@@ -1090,7 +1090,10 @@ public static class MutationInterface
                             // pinning this: StartWorkflowAsync_classifies_crash_recovery_candidate_
                             // when_its_worker_binding_refuses_to_resolve). The consequence is not a
                             // skip: if the journal promised an audit, Classify fails closed on the
-                            // null worktree path.
+                            // null worktree path. countHookVerdicts also stays null on this path
+                            // (#1732 review round 3, Finding B), which un-arms the replay's hook
+                            // canary whenever today's binding will not resolve — the residual is
+                            // registered in spec/baton.md §9, not here.
                         }
 
                         // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
