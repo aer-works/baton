@@ -8,10 +8,13 @@ namespace Baton.Tests.Projection;
 /// between another's capture and restore, and each reads the other's output (#967). An unswapped
 /// direct writer racing a swap is the same defect from the other side (#1607): its write can land in
 /// whichever `TextWriter` happens to be installed at that instant, including another test's capture
-/// buffer. Classes in this collection stay sequential relative to each other; the rest of the
-/// assembly keeps xUnit's normal parallelism.
+/// buffer. Membership alone only serializes members against each other — a non-member class that
+/// writes to <see cref="Console.Error"/> directly still races a member's capture (#1778) — so the
+/// collection opts out of xUnit's parallel pool entirely, the same way <c>SerializedEnvironmentCollection</c>
+/// and the other process-global-state collections do: nothing else in the assembly runs while a member
+/// test runs.
 /// </summary>
-[CollectionDefinition(Name)]
+[CollectionDefinition(Name, DisableParallelization = true)]
 public class ConsoleErrorCaptureCollection
 {
     public const string Name = "console-error-capture";

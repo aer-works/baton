@@ -4,7 +4,6 @@ using Xunit;
 
 namespace Baton.Tests.Projection;
 
-[Collection(ConsoleErrorCaptureCollection.Name)]
 public class RoomTurnThrottleTests
 {
     private static string CreateTempRoomDir()
@@ -20,32 +19,20 @@ public class RoomTurnThrottleTests
         var roomDir = CreateTempRoomDir();
         try
         {
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
+            var throttleLoad = RoomTurnThrottleStore.LoadWithDiagnostics(roomDir);
+            var usageLoad = RoomTurnUsageStore.LoadWithDiagnostics(roomDir);
 
-            RoomTurnThrottles throttles;
-            RoomTurnUsage usage;
-            try
-            {
-                throttles = RoomTurnThrottleStore.Load(roomDir);
-                usage = RoomTurnUsageStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
+            Assert.Equal(TimeSpan.FromSeconds(60), throttleLoad.Throttles.MinMachineTurnInterval);
+            Assert.Equal(10, throttleLoad.Throttles.MaxMachineTurnsPerHour);
+            Assert.Equal(3, throttleLoad.Throttles.FailedTurnsBeforeDormancy);
 
-            Assert.Equal(TimeSpan.FromSeconds(60), throttles.MinMachineTurnInterval);
-            Assert.Equal(10, throttles.MaxMachineTurnsPerHour);
-            Assert.Equal(3, throttles.FailedTurnsBeforeDormancy);
-
-            Assert.Empty(usage.RecentMachineTurnTimestamps);
-            Assert.Null(usage.LastMachineTurnAt);
-            Assert.Equal(0, usage.ConsecutiveFailedTurns);
+            Assert.Empty(usageLoad.Usage.RecentMachineTurnTimestamps);
+            Assert.Null(usageLoad.Usage.LastMachineTurnAt);
+            Assert.Equal(0, usageLoad.Usage.ConsecutiveFailedTurns);
 
             // Absence is normal state -> no loud output
-            Assert.Empty(sw.ToString());
+            Assert.Empty(throttleLoad.Warnings);
+            Assert.Empty(usageLoad.Warnings);
         }
         finally
         {
@@ -66,28 +53,14 @@ public class RoomTurnThrottleTests
             Directory.CreateDirectory(Path.GetDirectoryName(usagePath)!);
             File.WriteAllText(usagePath, "{ corrupt json ... }}}");
 
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
+            var throttleLoad = RoomTurnThrottleStore.LoadWithDiagnostics(roomDir);
+            var usageLoad = RoomTurnUsageStore.LoadWithDiagnostics(roomDir);
 
-            RoomTurnThrottles throttles;
-            RoomTurnUsage usage;
-            try
-            {
-                throttles = RoomTurnThrottleStore.Load(roomDir);
-                usage = RoomTurnUsageStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
+            Assert.Equal(RoomTurnThrottles.Default, throttleLoad.Throttles);
+            Assert.Equal(RoomTurnUsage.Empty, usageLoad.Usage);
 
-            Assert.Equal(RoomTurnThrottles.Default, throttles);
-            Assert.Equal(RoomTurnUsage.Empty, usage);
-
-            var errOutput = sw.ToString();
-            Assert.Contains("[RoomTurnThrottles] Loud fallback to defaults", errOutput);
-            Assert.Contains("[RoomTurnUsage] Loud fallback to empty usage", errOutput);
+            Assert.Contains(throttleLoad.Warnings, w => w.Contains("[RoomTurnThrottles] Loud fallback to defaults"));
+            Assert.Contains(usageLoad.Warnings, w => w.Contains("[RoomTurnUsage] Loud fallback to empty usage"));
 
             // Single file cleanup test (#918)
             FileCleanup.Delete(throttlePath);
@@ -117,22 +90,10 @@ public class RoomTurnThrottleTests
             }
             """);
 
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
+            var loaded = RoomTurnThrottleStore.LoadWithDiagnostics(roomDir);
 
-            RoomTurnThrottles throttles;
-            try
-            {
-                throttles = RoomTurnThrottleStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
-
-            Assert.Equal(RoomTurnThrottles.Default, throttles);
-            Assert.Contains("non-positive values", sw.ToString());
+            Assert.Equal(RoomTurnThrottles.Default, loaded.Throttles);
+            Assert.Contains(loaded.Warnings, w => w.Contains("non-positive values"));
 
             FileCleanup.Delete(throttlePath);
         }
@@ -311,25 +272,14 @@ public class RoomTurnThrottleTests
                 Path.Combine(roomDir, RoomTurnThrottleStore.ThrottleFileName),
                 """{ "maxMachineTurnsPerHour": 5 }""");
 
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
-            RoomTurnThrottles throttles;
-            try
-            {
-                throttles = RoomTurnThrottleStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
+            var loaded = RoomTurnThrottleStore.LoadWithDiagnostics(roomDir);
 
-            Assert.Equal(5, throttles.MaxMachineTurnsPerHour);
-            Assert.Equal(TimeSpan.FromSeconds(60), throttles.MinMachineTurnInterval);
-            Assert.Equal(3, throttles.FailedTurnsBeforeDormancy);
+            Assert.Equal(5, loaded.Throttles.MaxMachineTurnsPerHour);
+            Assert.Equal(TimeSpan.FromSeconds(60), loaded.Throttles.MinMachineTurnInterval);
+            Assert.Equal(3, loaded.Throttles.FailedTurnsBeforeDormancy);
             // Deliberately partial = deliberately silent: overriding one knob is the operator's
             // normal move, not a fault.
-            Assert.Equal(string.Empty, sw.ToString());
+            Assert.Empty(loaded.Warnings);
         }
         finally
         {
@@ -347,23 +297,11 @@ public class RoomTurnThrottleTests
                 Path.Combine(roomDir, RoomTurnThrottleStore.ThrottleFileName),
                 """{ "minMachineTurnInterval": 120 }""");
 
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
-            RoomTurnThrottles throttles;
-            try
-            {
-                throttles = RoomTurnThrottleStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
+            var loaded = RoomTurnThrottleStore.LoadWithDiagnostics(roomDir);
 
             // The typo'd key changed nothing -- and said so.
-            Assert.Equal(TimeSpan.FromSeconds(60), throttles.MinMachineTurnInterval);
-            Assert.Contains("minMachineTurnInterval", sw.ToString());
-            Assert.Contains("IGNORED", sw.ToString());
+            Assert.Equal(TimeSpan.FromSeconds(60), loaded.Throttles.MinMachineTurnInterval);
+            Assert.Contains(loaded.Warnings, w => w.Contains("minMachineTurnInterval") && w.Contains("IGNORED"));
         }
         finally
         {
@@ -383,29 +321,18 @@ public class RoomTurnThrottleTests
                 Path.Combine(roomDir, ".baton", "turn-usage.json"),
                 $$"""{ "recentMachineTurnTimestamps": ["{{newest:O}}"], "lastMachineTurnAt": null, "consecutiveFailedTurns": 0 }""");
 
-            using var sw = new StringWriter();
-            var originalErr = Console.Error;
-            Console.SetError(sw);
-            RoomTurnUsage usage;
-            try
-            {
-                usage = RoomTurnUsageStore.Load(roomDir);
-            }
-            finally
-            {
-                Console.SetError(originalErr);
-            }
+            var loaded = RoomTurnUsageStore.LoadWithDiagnostics(roomDir);
 
-            Assert.NotNull(usage.LastMachineTurnAt);
-            Assert.Equal(newest.ToUnixTimeSeconds(), usage.LastMachineTurnAt!.Value.ToUnixTimeSeconds());
-            Assert.Contains("RECONCILED", sw.ToString());
+            Assert.NotNull(loaded.Usage.LastMachineTurnAt);
+            Assert.Equal(newest.ToUnixTimeSeconds(), loaded.Usage.LastMachineTurnAt!.Value.ToUnixTimeSeconds());
+            Assert.Contains(loaded.Warnings, w => w.Contains("RECONCILED"));
 
             // The reconciled state decides conservatively: a machine turn right now is refused
             // on the interval, exactly as if the two fields had agreed all along.
             Assert.Equal(
                 TurnRefusalReason.MinInterval,
                 RoomTurnDecider.Decide(
-                    RoomTurnThrottles.Default, usage, TurnWakeSource.Machine, newest.AddSeconds(5)).RefusalReason);
+                    RoomTurnThrottles.Default, loaded.Usage, TurnWakeSource.Machine, newest.AddSeconds(5)).RefusalReason);
         }
         finally
         {
