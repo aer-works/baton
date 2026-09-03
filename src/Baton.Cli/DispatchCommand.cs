@@ -401,11 +401,14 @@ public static class DispatchCommand
     private static async Task<(WorkflowDefinition, IReadOnlyDictionary<string, WorkerBindingConfigEntry>)>
         MaterializeTemplateAsync(DispatchOptions options, string workspaceDirectory, CancellationToken cancellationToken)
     {
-        if (options.SpecFilePath is not null)
+        // #1518: a template rejects every spec source, not just a file — --spec-text/--spec - are two
+        // more ways to say the same thing --spec already refuses here, so a template dispatch cannot
+        // silently discard an inline spec the way it never could silently discard a file one.
+        if (options.SpecFilePath is not null || options.SpecText is not null || options.SpecFromStdin)
         {
             throw new CliArgumentException(
                 $"'{options.Name}' is a workflow template — its phases carry their own instructions, so "
-                + "--spec does not apply. Pass --spec only when dispatching a role.");
+                + "--spec/--spec-text does not apply. Pass a spec only when dispatching a role.");
         }
 
         if (options.Attachments is { Count: > 0 })
@@ -484,17 +487,19 @@ public static class DispatchCommand
     private static async Task<(WorkflowDefinition, IReadOnlyDictionary<string, WorkerBindingConfigEntry>)>
         MaterializeRoleAsync(DispatchOptions options, string workspaceDirectory, CancellationToken cancellationToken)
     {
-        if (options.SpecFilePath is null)
+        if (options.SpecFilePath is null && options.SpecText is null && !options.SpecFromStdin)
         {
             throw new CliArgumentException(
-                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec <spec-file>.",
+                $"'{options.Name}' is a worker role, which runs against a task spec. Pass --spec "
+                + "<spec-file>, --spec - to read stdin, or --spec-text <text> for a short inline prompt.",
                 $"baton dispatch {options.Name} --spec <spec-file>");
         }
 
-        if (!File.Exists(options.SpecFilePath))
-        {
-            throw new CliArgumentException($"Spec file '{options.SpecFilePath}' does not exist.");
-        }
+        // #1518: three sources for the one spec string -- spec/baton.md's dispatch entry has the full
+        // rationale (record-once, not restated here). Resolved BEFORE the role lookup/--output
+        // validation below so a missing/blank spec source is still reported ahead of a --output
+        // collision, the same precedence dispatch had before this issue.
+        var spec = await ResolveSpecAsync(options, cancellationToken).ConfigureAwait(false);
 
         var role = WorkerRoleCatalog.For(options.Name);
 
@@ -502,8 +507,6 @@ public static class DispatchCommand
         {
             ValidateOutputOverride(options, role);
         }
-
-        var spec = await File.ReadAllTextAsync(options.SpecFilePath, cancellationToken).ConfigureAwait(false);
 
         // #1083: pin the workspace onto the binding so the worker can actually read the project it was
         // dispatched to study — the process cwd alone does not reach agy (`-p` ignores it, #491).
@@ -517,6 +520,56 @@ public static class DispatchCommand
             tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps,
             billedRateLimitOverride: options.BilledRateLimit,
             verifyCommandOverride: options.VerifyCommand);
+    }
+
+    /// <summary>
+    /// Resolves the task-prompt string from whichever of the three <c>--spec</c>/<c>--spec-text</c>
+    /// sources <see cref="MaterializeRoleAsync"/> found present (the parser already refused more than
+    /// one). A stdin read on an interactive terminal would hang forever waiting for EOF that never
+    /// comes — a non-interactive CLI (the same doctrine <c>--timeout</c>'s ceiling rests on) refuses
+    /// that outright rather than let a scout's one-liner appear to freeze.
+    /// </summary>
+    private static async Task<string> ResolveSpecAsync(DispatchOptions options, CancellationToken cancellationToken)
+    {
+        if (options.SpecText is { } specText)
+        {
+            return specText;
+        }
+
+        if (options.SpecFromStdin)
+        {
+            if (!Console.IsInputRedirected)
+            {
+                throw new CliArgumentException(
+                    "'--spec -' reads the task prompt from stdin, but stdin is a terminal here — reading "
+                    + "it would hang forever waiting for input that never ends.",
+                    "pipe the spec text in, e.g. `echo \"...\" | baton dispatch "
+                    + $"{options.Name} --spec -`, or pass --spec-text/--spec <spec-file> instead.");
+            }
+
+            var stdinSpec = await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+
+            // #1518 second-reader: --spec-text "" is refused at parse time (blank has no sane
+            // invocation to correct into, unlike an empty --label) -- stdin cannot be checked until
+            // read, which is here, but the refusal must be the same one so a blank prompt is never
+            // silently dispatched regardless of which of the two inline sources produced it.
+            if (stdinSpec.Trim().Length == 0)
+            {
+                throw new CliArgumentException(
+                    "'--spec -' read nothing but blank/whitespace from stdin — pass the task prompt text "
+                    + "on stdin, or use --spec-text/--spec <spec-file> instead.",
+                    "pipe non-blank spec text in, or drop --spec - for --spec-text/--spec <spec-file>.");
+            }
+
+            return stdinSpec;
+        }
+
+        if (!File.Exists(options.SpecFilePath))
+        {
+            throw new CliArgumentException($"Spec file '{options.SpecFilePath}' does not exist.");
+        }
+
+        return await File.ReadAllTextAsync(options.SpecFilePath!, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -544,9 +597,18 @@ public static class DispatchCommand
         }
 
         // #1382 F6: "choose a different file name for --output" restated the message with no
-        // invocation in it. The rest of the corrected command is already in scope here -- only the
+        // invocation in it. The rest of the corrected command is already in scope here -- the
         // replacement file name is genuinely unknowable, so that alone stays a placeholder.
-        var retryInvocation = $"baton dispatch {options.Name} --spec {options.SpecFilePath} --output <different-file-name>";
+        // #1518: on a --spec-text dispatch, the operator's own text is a SECOND placeholder --
+        // options.SpecText is known but echoing it verbatim could emit a broken shell line (embedded
+        // quotes/newlines), so "<text>" stays generic rather than round-tripping the actual string. The
+        // file path is null in that case, and rendering it verbatim would print an unrunnable
+        // "--spec  --output ..." (the same class of bug #1382 F6 itself was about) -- specClause below
+        // picks whichever of the three sources the operator actually used instead.
+        var specClause = options.SpecFilePath is not null ? $"--spec {options.SpecFilePath}"
+            : options.SpecFromStdin ? "--spec -"
+            : "--spec-text <text>";
+        var retryInvocation = $"baton dispatch {options.Name} {specClause} --output <different-file-name>";
 
         if (ReservedOutputNames.IsReserved(customName))
         {

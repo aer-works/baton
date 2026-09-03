@@ -84,6 +84,199 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     }
 
     /// <summary>
+    /// #1518: there is no on-disk spec artifact for a file dispatch to land in today -- the spec becomes
+    /// <c>PromptTemplate</c> inside <c>bindings.json</c> via <see cref="Baton.Vendors.RoleDispatch.Materialize"/>,
+    /// which takes the spec as a plain string. "Identical shape to a file-based dispatch" therefore means
+    /// identical <c>PromptTemplate</c> bytes for identical content, whichever of the three sources supplied
+    /// it -- this pins that parity for <c>--spec-text</c> against a file carrying the exact same content.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_with_spec_text_produces_the_same_prompt_as_an_equivalent_spec_file()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            const string specContent = "Weigh the options for X.";
+
+            var specPath = await WriteSpecAsync(testRoot, specContent);
+            var fileRoomDirectory = Path.Combine(testRoot, "file-task");
+            var fileOptions = new DispatchOptions("advise", specPath, fileRoomDirectory, Adapter: "fake");
+            await DispatchCommand.ExecuteAsync(fileOptions, Adapters, TestContext.Current.CancellationToken);
+            var fileBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(fileRoomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+
+            var textRoomDirectory = Path.Combine(testRoot, "text-task");
+            var textOptions = new DispatchOptions(
+                "advise", SpecFilePath: null, textRoomDirectory, Adapter: "fake", SpecText: specContent);
+            var state = (await DispatchCommand.ExecuteAsync(textOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            var textBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(textRoomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            // A positive anchor, not just cross-arm equality -- two identically-EMPTY prompts would also
+            // satisfy Assert.Equal below, so this pins that the spec content genuinely reached the built
+            // prompt on both paths, not just that they happen to match each other.
+            Assert.Contains(specContent, textBindings["advise"].PromptTemplate, StringComparison.Ordinal);
+            Assert.Equal(fileBindings["advise"].PromptTemplate, textBindings["advise"].PromptTemplate);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1518's second source: <c>--spec -</c> reads the same content off stdin instead of a file --
+    /// same byte-parity claim as the <c>--spec-text</c> arm above, via <see cref="Console.SetIn"/> rather
+    /// than an actual pipe (the test process's own stdin is already redirected by the test host, so the
+    /// <c>Console.IsInputRedirected</c> guard in <see cref="DispatchCommand.ResolveSpecAsync"/> does not
+    /// fire here — that guard's own TTY-hang refusal has no automatable repro and is unverified live).
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_with_spec_dash_reads_stdin_and_produces_the_same_prompt_as_a_spec_file()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var priorIn = Console.In;
+        try
+        {
+            const string specContent = "Weigh the options for X.";
+
+            var specPath = await WriteSpecAsync(testRoot, specContent);
+            var fileRoomDirectory = Path.Combine(testRoot, "file-task");
+            var fileOptions = new DispatchOptions("advise", specPath, fileRoomDirectory, Adapter: "fake");
+            await DispatchCommand.ExecuteAsync(fileOptions, Adapters, TestContext.Current.CancellationToken);
+            var fileBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(fileRoomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+
+            Console.SetIn(new StringReader(specContent));
+            var stdinRoomDirectory = Path.Combine(testRoot, "stdin-task");
+            var stdinOptions = new DispatchOptions(
+                "advise", SpecFilePath: null, stdinRoomDirectory, Adapter: "fake", SpecFromStdin: true);
+            var state = (await DispatchCommand.ExecuteAsync(stdinOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            var stdinBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(stdinRoomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            // Same positive-anchor rationale as the --spec-text arm above -- rules out two
+            // identically-empty prompts satisfying the cross-arm equality below.
+            Assert.Contains(specContent, stdinBindings["advise"].PromptTemplate, StringComparison.Ordinal);
+            Assert.Equal(fileBindings["advise"].PromptTemplate, stdinBindings["advise"].PromptTemplate);
+        }
+        finally
+        {
+            Console.SetIn(priorIn);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1518: the spec/grant lint (#1500, <see cref="DispatchSpecLinter"/>) reads the spec as a plain
+    /// string, the same string <see cref="Baton.Vendors.RoleDispatch.BuildPrompt"/> consumes -- so it is
+    /// source-agnostic already, with no --spec-text-specific code path to diverge. This pins that
+    /// directly: both arms actually run, each into its own captured stderr, and the two outputs must be
+    /// EQUAL, not just each independently contain the expected substrings -- the substring-only shape a
+    /// prior draft of this test used would still pass if the two arms diverged in some way neither
+    /// asserted substring happens to cover. Uses <c>advise</c>'s actual grant (no-shell, no-network,
+    /// write allowed) -- not a generically "read-only" role, since a write-withheld role (e.g.
+    /// <c>patch</c>) would instead take <see cref="Baton.Vendors.RoleDispatch"/>'s audited-worktree
+    /// branch against the fake adapter, which needs a real git repo this test does not set up.
+    /// </summary>
+    [Fact]
+    public async Task Dispatching_with_spec_text_produces_the_same_lint_warning_as_the_equivalent_spec_file()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        var priorError = Console.Error;
+        try
+        {
+            const string specContent = "Please gh issue view 1500\nProvide advice.";
+
+            using var fileError = new StringWriter();
+            Console.SetError(fileError);
+            var specPath = await WriteSpecAsync(testRoot, specContent);
+            var fileRoomDirectory = Path.Combine(testRoot, "file-task");
+            var fileOptions = new DispatchOptions("advise", specPath, fileRoomDirectory, Adapter: "fake");
+            var fileState = (await DispatchCommand.ExecuteAsync(fileOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            var fileErrorOutput = fileError.ToString();
+
+            using var textError = new StringWriter();
+            Console.SetError(textError);
+            var textRoomDirectory = Path.Combine(testRoot, "text-task");
+            var textOptions = new DispatchOptions(
+                "advise", SpecFilePath: null, textRoomDirectory, Adapter: "fake", SpecText: specContent);
+            var textState = (await DispatchCommand.ExecuteAsync(textOptions, Adapters, TestContext.Current.CancellationToken)).State;
+            var textErrorOutput = textError.ToString();
+
+            Assert.Equal(WorkflowStatus.Terminal, fileState.Status);
+            Assert.Equal(WorkflowStatus.Terminal, textState.Status);
+
+            // Positive anchors first, so a broken lint (warns on nothing) doesn't slip through a
+            // same-empty-string equality check below.
+            Assert.Contains("Warning: Spec line 1", fileErrorOutput);
+            Assert.Contains("shell", fileErrorOutput);
+            Assert.Contains("network", fileErrorOutput);
+            Assert.Contains("advise", fileErrorOutput);
+            Assert.Equal(fileErrorOutput, textErrorOutput);
+        }
+        finally
+        {
+            Console.SetError(priorError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>#1518: --spec-text/--spec - are two more spellings of the same refusal --spec &lt;file&gt; already gets on a template.</summary>
+    [Theory]
+    [InlineData(true, null)]
+    [InlineData(false, "inline text")]
+    public async Task Dispatching_a_template_with_an_inline_spec_source_is_refused(bool fromStdin, string? specText)
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new DispatchOptions(
+                "implement-review", SpecFilePath: null, Path.Combine(testRoot, "task"),
+                SpecText: specText, SpecFromStdin: fromStdin);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("workflow template", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1518 R6 parity: <c>--output</c>'s retry-invocation line (<see cref="DispatchCommand.ValidateOutputOverride"/>)
+    /// must name whichever spec source was actually used -- rendering the null <c>SpecFilePath</c> a
+    /// <c>--spec-text</c> dispatch carries would print an unrunnable <c>--spec  --output ...</c>, the
+    /// exact #1382 F6 class that field's own comment already names.
+    /// </summary>
+    [Fact]
+    public async Task An_output_collision_on_a_spec_text_dispatch_names_spec_text_in_the_retry_invocation()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var options = new DispatchOptions(
+                "advise", SpecFilePath: null, roomDirectory, Adapter: "fake",
+                SpecText: "Weigh the options for X.", OutputPath: Path.Combine(testRoot, "prompt.txt"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("--spec-text <text>", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("--spec  --output", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
     /// #1499: <c>--label</c> is stamped onto the dispatched role's own <c>bindings.json</c> entry --
     /// the room-scoped file <see cref="Baton.Cli.Mcp.FleetStatusTool"/> reads it back off, on both of
     /// its own read paths (that half is <c>FleetStatusToolTests</c>'s job, not this one's).
@@ -492,8 +685,39 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
             var options = new DispatchOptions(
                 "advise", Path.Combine(testRoot, "does-not-exist.md"), Path.Combine(testRoot, "task"));
 
-            await Assert.ThrowsAsync<CliArgumentException>(
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("does-not-exist.md", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("does not exist", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1518 second-reader: pins the precedence between two things wrong at once -- a missing spec
+    /// source is what makes the invocation invalid in the first place, so it must be reported ahead of
+    /// a secondary <c>--output</c> collision, not the other way around -- the spec-content check inside
+    /// <c>DispatchCommand.MaterializeRoleAsync</c> runs before its <c>--output</c> validation for
+    /// exactly this reason. This test is what would catch a future reordering silently flipping it.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_spec_file_is_reported_ahead_of_an_unrelated_output_collision()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var options = new DispatchOptions(
+                "advise", Path.Combine(testRoot, "does-not-exist.md"), Path.Combine(testRoot, "task"),
+                OutputPath: Path.Combine(testRoot, "prompt.txt"));
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+            Assert.Contains("does not exist", ex.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("--output", ex.Message, StringComparison.Ordinal);
         }
         finally
         {

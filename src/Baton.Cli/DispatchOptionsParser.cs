@@ -3,18 +3,19 @@ using System.Text.RegularExpressions;
 namespace Baton.Cli;
 
 /// <summary>
-/// Parses <c>baton dispatch</c>'s arguments: <c>baton dispatch &lt;name&gt; [--spec &lt;spec-file&gt;]
-/// [--adapter &lt;name&gt;] [--room-dir &lt;dir&gt;] [--workflow-id &lt;id&gt;]</c>. <c>--spec</c> is
-/// optional here because whether it is required depends on whether <c>&lt;name&gt;</c> resolves to a
-/// role (needs one) or a workflow template (rejects one) — a catalog question <see cref="DispatchCommand"/>
-/// answers, not the parser. Every malformed invocation is a <see cref="CliArgumentException"/>
-/// (CLAUDE.md's error-handling rules), never a bare <see cref="InvalidOperationException"/>.
+/// Parses <c>baton dispatch</c>'s arguments — see <see cref="Usage"/> for the full, authoritative flag
+/// list (not restated here, record-once), and spec/baton.md's dispatch entry for why the spec has
+/// three sources (#1518). None is required here because whether one is required at all depends on
+/// whether <c>&lt;name&gt;</c> resolves to a role (needs one) or a workflow template (rejects all
+/// three) — a catalog question <see cref="DispatchCommand"/> answers, not the parser. Every malformed
+/// invocation is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), never a bare
+/// <see cref="InvalidOperationException"/>.
 /// </summary>
 public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -55,6 +56,8 @@ public static class DispatchOptionsParser
     {
         string? name = null;
         string? specFilePath = null;
+        string? specText = null;
+        var specFromStdin = false;
         string? adapter = null;
         string? model = null;
         string? effort = null;
@@ -80,7 +83,30 @@ public static class DispatchOptionsParser
             switch (arg)
             {
                 case "--spec":
-                    specFilePath = RequireValue(args, ref i, arg);
+                    var specValue = RequireValue(args, ref i, arg);
+                    if (specValue == "-")
+                    {
+                        specFromStdin = true;
+                        specFilePath = null;
+                    }
+                    else
+                    {
+                        specFromStdin = false;
+                        specFilePath = specValue;
+                    }
+
+                    break;
+                case "--spec-text":
+                    var specTextValue = RequireValue(args, ref i, arg);
+                    if (specTextValue.Trim().Length == 0)
+                    {
+                        throw new CliArgumentException(
+                            $"'--spec-text' is blank — pass the task prompt text inline, or use --spec "
+                            + $"<spec-file> for a brief that already lives in a file. {Usage}",
+                            "pass a non-blank string after --spec-text.");
+                    }
+
+                    specText = specTextValue;
                     break;
                 case "--attach":
                     attachments.Add(RequireValue(args, ref i, arg));
@@ -172,6 +198,21 @@ public static class DispatchOptionsParser
                 "run 'baton templates' to see available role and template names.");
         }
 
+        // #1518: --spec <file>, --spec -, and --spec-text are three sources for the same one task
+        // prompt — a repeat of the SAME flag is last-wins (specFilePath/specFromStdin above already
+        // implement that for --spec), but naming two DIFFERENT sources is very likely a mistake with no
+        // sane resolution (which one did the operator mean?), so it is refused outright rather than
+        // silently picking a winner. Whether at least one is required at all is a catalog question
+        // (a template takes none) DispatchCommand answers, not the parser — same reason --spec alone
+        // was already optional here before this issue.
+        if ((specFilePath is not null || specFromStdin) && specText is not null)
+        {
+            throw new CliArgumentException(
+                $"Pass at most one of --spec <spec-file>, --spec -, or --spec-text <text> — not more "
+                + $"than one source for the same task prompt. {Usage}",
+                "drop --spec-text to use the file/stdin source, or drop --spec to use --spec-text.");
+        }
+
         // Fresh and unique per invocation unless pinned: a dispatch is one-shot, and deriving a stable
         // directory from the name (the way `baton run` derives one from the workflow file) would make a
         // second `baton dispatch review` resume — and so replay — the first's terminal snapshot rather
@@ -200,7 +241,9 @@ public static class DispatchOptionsParser
             repoPath is null ? null : Path.GetFullPath(repoPath),
             maxToolSteps,
             billedRateLimit,
-            verifyCommand);
+            verifyCommand,
+            specText,
+            specFromStdin);
     }
 
     /// <summary>
