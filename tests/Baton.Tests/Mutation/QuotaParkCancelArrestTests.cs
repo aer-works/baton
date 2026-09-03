@@ -835,9 +835,9 @@ public class QuotaParkCancelArrestTests
     }
 
     // #1762 F1: a line written before this field existed carries no Origin at all and replays as
-    // null (FlowEventSerializationTests pins the wire shape) -- the new block must not honour it
-    // either, which is exactly the pre-#1762 behaviour for those lines (the ledger-read rule did not
-    // exist yet), so an existing ledger can never be made worse by the field's addition.
+    // null (FlowEventSerializationTests pins the wire shape; FlowEvent.CancellationRequested's own
+    // doc comment and spec/baton.md §2 have why this is safe) -- the new block must not honour it
+    // either.
     [Fact]
     public async Task Overdue_park_with_a_legacy_null_origin_cancel_request_still_redispatches_on_a_fresh_pump()
     {

@@ -1263,9 +1263,8 @@ public static class MutationInterface
                 // cancellationRequestedExecutionIds -- already Origin: Operator only, see its own
                 // remarks -- filtered through IsParkedRetryTarget, the same terminal
                 // SettleParkedCancelIntentsAsync would produce. Also gated on !hostStopRequested, same
-                // guard readyStepIds uses below: cheap, and it stops the same-process case one round
-                // earlier than waiting on the accumulator to simply never contain a HostStop id. Full
-                // sequence and the ledger-read rule: spec/baton.md §2. Filters state.Steps directly
+                // guard readyStepIds uses below -- why both this gate AND Origin: spec/baton.md §2.
+                // Filters state.Steps directly
                 // rather than the accumulator's own HashSet -- state.Steps is itself built by
                 // iterating snapshot.Steps in order (StateProjector), so this gives the
                 // ExecutionCancelled appends below the same deterministic-emission discipline the
