@@ -354,12 +354,13 @@ public static class AgyHookCheckCommand
             // pattern list was even consulted, so a standing 'never' silently stopped applying the
             // moment a command carried a chain operator.
             //
-            // UNLIKE the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch), this call
-            // is NOT nested under "allow patterns non-empty": agy has no --disallowedTools-level
-            // backstop for the DenyAlways rung, so this hook is its only enforcement, and it is an
-            // anchored-prefix one — on an unscoped grant no allow list stands behind it (see this
-            // matcher's class comment on what a deny pattern cannot bind). spec/baton.md §9 is the
-            // canonical record of why this asymmetry with claude is safe.
+            // Matching the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch, #1733):
+            // both hooks engage this rung whenever either list is non-empty, neither nested under the
+            // other's allow list. Agy's remaining difference from claude is that it has no
+            // --disallowedTools-level backstop for the unchained case, so this hook is its only
+            // enforcement of the DenyAlways rung, and it is an anchored-prefix one — on an unscoped
+            // grant no allow list stands behind it (see this matcher's class comment on what a deny
+            // pattern cannot bind). spec/baton.md §9 is the canonical record of why that gap is safe.
             if (deniedShellPatternList.Patterns.Count > 0 || shellPatternList.Patterns.Count > 0)
             {
                 if (commandLine is null)

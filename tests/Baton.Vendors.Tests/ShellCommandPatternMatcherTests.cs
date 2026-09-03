@@ -344,9 +344,13 @@ public class ShellCommandPatternMatcherTests
     }
 
     [Theory]
-    [InlineData("git $'\\''; rm -rf / #'")] // the documented ANSI-C-quote chain-hiding escape
-    [InlineData("git diff; echo escaped")] // an ordinary chain past the allowed prefix
-    public void A_scoped_grant_still_fails_closed_exactly_as_before(string command)
+    // #1748 F6: the two rows take different verdicts -- asserting only IsAllowed==false cannot
+    // discriminate a future leak of the permissive (unscoped) path into this scoped one, since both
+    // Unparseable and DeniedSegment satisfy that weaker assertion.
+    [InlineData("git $'\\''; rm -rf / #'", ShellCommandPatternMatcher.ScopedShellVerdict.Unparseable)] // the documented ANSI-C-quote chain-hiding escape
+    [InlineData("git diff; echo escaped", ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment)] // an ordinary chain past the allowed prefix
+    public void A_scoped_grant_still_fails_closed_exactly_as_before(
+        string command, ShellCommandPatternMatcher.ScopedShellVerdict expectedVerdict)
     {
         // The control for the ruling: a SCOPED grant (a non-empty allow list, like review's) never
         // takes the permissive path above -- it is unaffected by this PR and its fail-closed behaviour
@@ -356,6 +360,61 @@ public class ShellCommandPatternMatcherTests
         var result = ShellCommandPatternMatcher.EvaluateChainedCommand(command, allowed, null);
 
         Assert.False(result.IsAllowed);
+        Assert.Equal(expectedVerdict, result.Verdict);
+    }
+
+    [Fact]
+    public void An_embedded_newline_ahead_of_a_denied_command_is_denied_not_folded_past()
+    {
+        // #1748 F1: the #1731 incident command with one ordinary line in front of it -- a routine
+        // multi-line Bash/run_command payload (heredoc, scripted step), not adversarial evasion. An
+        // unquoted top-level newline is now a segment boundary on this scope (spec/baton.md §9), so
+        // the second line is checked on its own head rather than folded into the first.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            "git status\ngh label create operator-merge", implement.Grant.ShellCommandPatterns,
+            implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
+    }
+
+    [Theory]
+    [InlineData("`gh label create x`")] // backtick substitution wraps the head token
+    [InlineData("$(gh label create x)")] // command substitution wraps the head token
+    [InlineData("(gh label create x)")] // subshell grouping wraps the head token
+    [InlineData("echo $(date) && gh label create x")] // denied command in a genuine segment, missed only because an unrelated '(' folded the whole line
+    public void A_denied_command_is_caught_on_the_whole_line_fold_regardless_of_wrapper_or_offset(
+        string command)
+    {
+        // #1748 F2: the fold (TrySegmentChainedCommand could not find a trustworthy boundary) used to
+        // check only the folded segment's head token, so a denied command survived by riding inside a
+        // hiding construct or sitting after an unrelated one elsewhere on the line. The fold path now
+        // scans every token offset and strips leading wrapper/quote characters off each token.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            command, implement.Grant.ShellCommandPatterns, implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal(ShellCommandPatternMatcher.ScopedShellVerdict.DeniedSegment, result.Verdict);
+    }
+
+    [Fact]
+    public void Word_splitting_via_IFS_ahead_of_a_denied_command_is_the_other_accepted_bypass_on_an_unscoped_grant()
+    {
+        // #1748 F8: the second bypass §9 names as accepted (spec/baton.md §9) had no dedicated test --
+        // only the leading-redirection bypass above did, despite both the PR body and the lane report
+        // claiming both were pinned. `${IFS}` never appears in the scanned source text even though
+        // real bash execution collapses it back to the denied command.
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var result = ShellCommandPatternMatcher.EvaluateChainedCommand(
+            "gh${IFS}label create x", implement.Grant.ShellCommandPatterns,
+            implement.Grant.DeniedShellCommandPatterns);
+
+        Assert.True(result.IsAllowed, result.Reason);
     }
 
     [Theory]

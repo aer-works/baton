@@ -2931,18 +2931,29 @@ list *is* what stands between the worker and everything else — and stays exact
 before; nothing here changes for it.
 
 The mechanism: `EvaluateChainedCommand` still splits an unscoped-with-deny command at the same
-`&&`/`||`/`;`/`|`/newline boundaries as any other grant, but matches each deny pattern against the
-segment's whitespace-tokenized *head* rather than a substring/prefix scan (`gh label*` against
-`gh label create x` compares `["gh","label"]` to the segment's first two tokens, not the raw text) —
-and a segment `TrySegmentChainedCommand` cannot find a boundary for (a backtick, `$(`, a subshell,
-an unterminated quote) is evaluated as one unsplit segment instead of refused as `Unparseable`; that
-verdict no longer fires at all on this scope. **This reopens both bypasses named above, on purpose,
-and accepts them**: `>out.txt gh label create x` moves `gh` out of head position and allows, and
-`gh${IFS}label create x` never tokenizes to a leading `gh` token and allows. Closing them for real
-needs actual shell argv reconstruction, which is a different, larger project than a glob matcher; the
-operator judged that project not worth building for a channel that is a drift guard rather than a
-boundary. See `ShellCommandPatternMatcher.EvaluateChainedCommand`'s own remarks for the mechanism;
-this paragraph is the ruling, not restated there.
+`&&`/`||`/`;`/`|` boundaries as any other grant, and (#1748 F1) an unquoted top-level newline is
+now one of those boundaries too on this scope rather than a fatal character — a multi-line
+`Bash`/`run_command` payload (heredoc, scripted step) is routine cooperative-worker shape, not
+adversarial evasion, so folding it into one segment was over-permissive in the wrong direction. Each
+segment's deny check matches a deny pattern against the segment's whitespace-tokenized *head* rather
+than a substring/prefix scan (`gh label*` against `gh label create x` compares `["gh","label"]` to
+the segment's first two tokens, not the raw text) — and a segment `TrySegmentChainedCommand` still
+cannot find a boundary for (a backtick, `$(`, a subshell, an unterminated quote) is evaluated as one
+unsplit whole-line segment instead of refused as `Unparseable`; that verdict no longer fires at all
+on this scope, except the pre-existing empty/whitespace-only-command-line guard, which still fires
+before either pattern list is consulted (harmless in effect, but not "no longer fires at all"). On
+that whole-line fold, the deny match (#1748 F2) scans every token offset in the folded segment, not
+only its head, and strips a leading backtick/`$(`/`(`/quote off each compared token — a denied
+command riding inside a hiding construct, or sitting in a genuine segment elsewhere on a line an
+unrelated construct folded, still denies. **This reopens two bypasses on purpose, and accepts
+them**: `>out.txt gh label create x` moves `gh` out of head position and allows, and both
+`gh${IFS}label create x` and the escaped-space form `gh\ label create x` never tokenize to a leading
+`gh` token and allow. Closing them for real needs actual shell argv reconstruction, which is a
+different, larger project than a glob matcher; the operator judged that project not worth building
+for a channel that is a drift guard rather than a boundary. See
+`ShellCommandPatternMatcher.EvaluateChainedCommand`'s own remarks for the mechanism, scoped to what
+applies on a SCOPED vs. an UNSCOPED-with-deny grant; this paragraph is the ruling, not restated
+there.
 
 **Network honesty: `review`'s `network_access` stays `false`, and `gh` reaches github.com anyway.**
 The categorical `NetworkAccess` grant (claude's `WebFetch`/`WebSearch`, arbitrary URLs) is
