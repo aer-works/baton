@@ -192,10 +192,9 @@ try
         return 0;
     }
 
-    // #1166: decision 0004's project ceiling has no interactive first-use trust prompt in a headless
-    // dispatch -- list/register/revoke against ProjectCeilingStore produces no CommandResult (no
-    // workflow pump), so this joins keep/unkeep/watch above rather than the CommandResult/
-    // FlowStateReporter switch below.
+    // #1166 (TrustCommand's own doc has why this verb exists): list/register/revoke against
+    // ProjectCeilingStore produces no CommandResult (no workflow pump), so this joins keep/unkeep/watch
+    // above rather than the CommandResult/FlowStateReporter switch below.
     if (args[0] == "trust")
     {
         var trustOptions = TrustOptionsParser.Parse(args[1..]);

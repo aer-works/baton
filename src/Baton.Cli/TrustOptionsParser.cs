@@ -17,9 +17,8 @@ public static class TrustOptionsParser
 
     /// <summary>
     /// The category vocabulary <c>--ceiling</c> accepts, one token per <see cref="PermissionGrant"/>
-    /// category — #1166's scope ruling: decision 0004 names no closed set of ceiling levels, so this
-    /// reuses the vocabulary <c>ClaudeWorkerAdapter.TryTranslatePermissionGrant</c> already maps
-    /// rather than inventing a second one.
+    /// category — #1166's scope ruling, stated in full on <c>ProjectCeiling</c>'s own doc comment
+    /// (spec/baton.md §9 carries the same fact canonically).
     /// </summary>
     public const string CategoryTokens = "ReadFiles,WriteFiles,RunShellCommands,NetworkAccess";
 

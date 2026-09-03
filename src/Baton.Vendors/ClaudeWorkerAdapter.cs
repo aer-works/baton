@@ -102,8 +102,8 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
-        // #1166: decision 0004's project ceiling. Capped BEFORE anything below reads
-        // invocation.PermissionGrant, so every channel derived from it (--allowedTools,
+        // #1166: decision 0004's project ceiling (ProjectCeilingGate's own doc has the rule). Applied
+        // first so every channel below derived from invocation.PermissionGrant (--allowedTools,
         // --disallowedTools, the hook-denied-tools env var, the shell-pattern env vars) reflects the
         // capped grant rather than the role's uncapped one.
         invocation = ProjectCeilingGate.Apply(invocation, contract.WorkerName);

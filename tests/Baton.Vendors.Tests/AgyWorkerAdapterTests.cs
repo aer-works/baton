@@ -43,8 +43,8 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
-        // #1166: a WorkingDirectory now has to carry a recorded ceiling or Resolve refuses -- this
-        // test is about forwarding, not the ceiling gate, so it trusts the fixture path unrestricted.
+        // #1166: same reason as ClaudeWorkerAdapterTests's identically-named test -- trust the fixture
+        // path first so this test's own concern (forwarding) is what decides the outcome, not the gate.
         ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
 
         var target = new AgyWorkerAdapter().Resolve(
@@ -2271,9 +2271,8 @@ public class AgyWorkerAdapterTests
     }
 
     /// <summary>
-    /// #1166: decision 0004's project ceiling fails closed against a project directory
-    /// <see cref="ProjectCeilingStore"/> has never seen -- red-first against the pre-#1166 behaviour,
-    /// which spawned unconditionally whenever WorkingDirectory was set.
+    /// #1166: the agy side of <see cref="ClaudeWorkerAdapterTests.An_unseen_project_directory_is_refused_before_any_worker_spawns"/>
+    /// -- see that test's own doc for the red-first claim both arms make against the pre-#1166 behaviour.
     /// </summary>
     [Fact]
     public void An_unseen_project_directory_is_refused_before_any_worker_spawns()

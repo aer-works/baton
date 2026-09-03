@@ -440,10 +440,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
-        // #1166: decision 0004's project ceiling, capped before anything below reads
-        // invocation.PermissionGrant -- see ClaudeWorkerAdapter.Resolve's identical seam for why this
-        // has to run first (ResolvePermissionScope, the hook-liveness probe below, and every denied-tool
-        // env var all derive from the grant).
+        // #1166 -- see ClaudeWorkerAdapter.Resolve's identical seam (ProjectCeilingGate's own doc has
+        // the rule) for why this runs first on that adapter; the same ordering holds here for the same
+        // reason, applied to this vendor's own downstream readers: ResolvePermissionScope, the
+        // hook-liveness probe below, and every denied-tool env var.
         invocation = ProjectCeilingGate.Apply(invocation, contract.WorkerName);
 
         var isWindows = OperatingSystem.IsWindows();

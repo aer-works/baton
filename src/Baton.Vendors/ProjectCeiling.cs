@@ -27,9 +27,8 @@ public sealed record ProjectCeiling(
     public bool IsUnrestricted => ReadFiles && WriteFiles && RunShellCommands && NetworkAccess;
 
     /// <summary>
-    /// Effective grant = role grant ∩ project ceiling (0004): each category survives only when both
-    /// the role's own grant and this ceiling carry it. Never widens — a category the role withheld
-    /// stays withheld regardless of the ceiling.
+    /// Decision 0004's intersection rule (spec/baton.md §9 states it canonically) applied as a
+    /// per-category logical AND, boolean by boolean below.
     /// </summary>
     public PermissionGrant Cap(PermissionGrant grant)
     {
