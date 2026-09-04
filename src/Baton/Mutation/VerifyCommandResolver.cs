@@ -391,6 +391,10 @@ public static class VerifyCommandResolver
         string output;
         try
         {
+            // Combined stream, unchanged from before #1797: pixi's real listing itself prints to
+            // STDERR (`Tasks that can run on this machine:` and the comma-separated names), with only
+            // a bare column header on stdout -- stdoutOnly here would silently blind every positive
+            // read, the opposite of what this probe exists for.
             (exitCode, output) = await VerifyRunner.CaptureAsync(pixiProgram, ["task", "list"], workingDirectory, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -401,13 +405,15 @@ public static class VerifyCommandResolver
         // ExecutionCancelled, not VerifyFailed/Indeterminate) is what actually settles it from there.
         catch (BatonException ex) when (ex.ErrorCode == BatonErrorCode.Cancelled || cancellationToken.IsCancellationRequested)
         {
+            LogProbeDeferral("cancelled mid-flight");
             return (true, null);
         }
         catch (OperationCanceledException)
         {
+            LogProbeDeferral("cancelled mid-flight");
             return (true, null);
         }
-        catch (BatonException)
+        catch (BatonException ex)
         {
             // pixi itself refused to spawn -- not installed, or some OTHER engine-environment problem
             // unrelated to whether this particular workspace declares the task. #1702's own defect is
@@ -417,6 +423,7 @@ public static class VerifyCommandResolver
             // catch), never soften into a silent not-run/Succeeded pass. Reporting runnable here just
             // defers the verdict to that real attempt, the same "let the real run decide" shape the
             // cancellation arms above already use.
+            LogProbeDeferral($"could not spawn: {ex.Message}");
             return (true, null);
         }
 
@@ -427,6 +434,19 @@ public static class VerifyCommandResolver
             // as "task absent" (spec/baton.md §3 enumerates the causes). Deferring to the real run
             // fails closed; calling it absence skipped a gate that plainly existed. The not-run
             // outcome is reachable ONLY from the positive read below.
+            LogProbeDeferral($"exited {exitCode}");
+            return (true, null);
+        }
+
+        if (!output.Contains(TaskListHeader, StringComparison.Ordinal))
+        {
+            // #1797: exit 0 whose output never actually reached pixi's own listing header is not the
+            // positive listing spec/baton.md §3's second producer requires -- it is the probe having
+            // answered without completing a real listing (a degraded/short-circuited run under
+            // contention, a stray warning with no listing at all), the same engine-environment class as
+            // a non-zero exit above. A shape drift in pixi's own header text degrades the SAME direction
+            // (defers instead of misreading absence), never the other way.
+            LogProbeDeferral("exited 0 without a recognized task listing");
             return (true, null);
         }
 
@@ -436,4 +456,28 @@ public static class VerifyCommandResolver
             : (false, $"task absent: {task}");
     }
 
+    /// <summary>
+    /// #1797: the fixed line `pixi task list` prints (to stderr, as of the version this was measured
+    /// against) before naming any task at all -- present on every genuine listing regardless of how
+    /// many tasks the workspace declares, so its presence is what discriminates a real listing from
+    /// output that merely happens to have SOME text in it.
+    /// </summary>
+    private const string TaskListHeader = "Tasks that can run on this machine:";
+
+    /// <summary>
+    /// #1797: one diagnostic line naming which arm deferred the pre-flight verdict to the real run --
+    /// every arm above already reported <c>(true, null)</c> silently, which left an operator staring at
+    /// a `VerifyFailed`/`Indeterminate` room with no record of why the cheaper pre-flight signal never
+    /// fired. Best-effort: a broken stderr pipe must not itself affect the verdict this accompanies.
+    /// </summary>
+    private static void LogProbeDeferral(string outcome)
+    {
+        try
+        {
+            Console.Error.WriteLine($"verify pre-flight probe could not answer ({outcome}) -- deferring to the real run.");
+        }
+        catch (IOException)
+        {
+        }
+    }
 }

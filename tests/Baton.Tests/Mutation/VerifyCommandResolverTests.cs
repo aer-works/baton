@@ -489,6 +489,45 @@ public sealed class VerifyCommandResolverTests
     }
 
     /// <summary>
+    /// #1797, red-first: exit 0 with output that enumerates NOTHING is not the positive listing
+    /// spec/baton.md §3's second producer requires ("A SUCCESSFUL `pixi task list` whose output
+    /// positively does not contain the role's task") — it is the probe having answered without actually
+    /// listing anything (a degraded/short-circuited run under contention, a warning-only stderr with no
+    /// stdout, etc.), the same engine-environment class as a non-zero exit. Before this fix, an empty
+    /// exit-0 output was indistinguishable from a real listing that omits the task and returned
+    /// <c>"task absent: gates-quiet"</c> — the pre-flight `VerifyNotRun` producer, which never returns
+    /// (MutationInterface.cs) and so let a step whose verify never ran settle Succeeded.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_exits_zero_with_no_listing()
+    {
+        var stub = CreateEmptyListingBatchFile();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            File.Delete(stub);
+        }
+    }
+
+    /// <summary>Exits 0 like a genuine `pixi task list` run, but never actually lists a task — the degraded-answer shape #1797 hardens against.</summary>
+    private static string CreateEmptyListingBatchFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-empty-listing-{Guid.NewGuid():N}.cmd");
+        File.WriteAllText(path, "@echo off\r\necho warning: could not load environment 1>&2\r\nexit /b 0\r\n");
+        return path;
+    }
+
+    /// <summary>
     /// #1708 H3, red-first (control arm): an unresolvable first token is NOT a not-run verdict any more.
     /// It runs through <c>cmd.exe /d /c</c> and its exit code becomes a real <c>VerifyFailed</c> — the
     /// polarity here is inverted from what this same input asserted before the fix.
@@ -531,6 +570,46 @@ public sealed class VerifyCommandResolverTests
             resolved!.Program, resolved.Args, workingDirectory: null, TestContext.Current.CancellationToken);
 
         Assert.Equal(expectedPassed, outcome.Passed);
+    }
+
+    /// <summary>
+    /// #1797: a regression guard, not a repro — this arm was already green on arrival (the cancellation
+    /// catch in <see cref="VerifyCommandResolver.CheckRunnableAsync"/> already existed before #1797's
+    /// investigation). Kept because no prior test exercised a probe cancelled mid-flight specifically
+    /// (only a non-zero exit and a can't-spawn); a stub `pixi` that sleeps well past a short deadline
+    /// stands in for a probe stuck behind CPU/lock contention, since <see cref="VerifyCommandResolver.CheckRunnableAsync"/>
+    /// takes no timeout of its own (spec/baton.md §3 — MutationInterface's dispatch-scoped token is the
+    /// only bound).
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_is_cancelled_mid_flight()
+    {
+        var sleeper = CreateSleeperBatchFile();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), cts.Token, pixiProgram: sleeper);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            File.Delete(sleeper);
+        }
+    }
+
+    /// <summary>A `.cmd` that outlives any short test deadline — <c>ping</c>'s wait is not cancellable by closing stdin, so it is reliably still running when the token fires.</summary>
+    private static string CreateSleeperBatchFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-sleeper-{Guid.NewGuid():N}.cmd");
+        File.WriteAllText(path, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n");
+        return path;
     }
 
     [Fact]
