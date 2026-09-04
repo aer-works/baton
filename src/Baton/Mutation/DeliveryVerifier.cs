@@ -120,8 +120,8 @@ public static class DeliveryVerifier
 
         var branch = branchResult.Output.Trim();
 
-        // Unlike the arm above, a SUCCESSFUL rev-parse that answers "HEAD" is a detached HEAD -- spec/
-        // baton.md §3 states why that settles Failed rather than NotRun.
+        // Unlike the arm above, a SUCCESSFUL rev-parse that answers "HEAD" is a detached HEAD --
+        // spec/baton.md §3 states why that settles Failed rather than NotRun.
         if (branch.Length == 0 || string.Equals(branch, "HEAD", StringComparison.Ordinal))
         {
             return new DeliveryCheckOutcome(
