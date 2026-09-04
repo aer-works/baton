@@ -1202,12 +1202,14 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     private static WorkerCapabilities DiscoverCapabilitiesCore(string? workingDirectory, string? userHomeDirectory, string? configRootDirectory)
     {
         var items = new List<WorkerCapabilityItem>();
-        var skillDirs = new List<string>();
+        var projectSkillDirs = new List<string>();
+        var configRootSkillDirs = new List<string>();
+        var userHomeSkillDirs = new List<string>();
         var commandDirs = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
         {
-            skillDirs.Add(Path.Combine(workingDirectory, ".claude", "skills"));
+            projectSkillDirs.Add(Path.Combine(workingDirectory, ".claude", "skills"));
             commandDirs.Add(Path.Combine(workingDirectory, ".claude", "commands"));
         }
 
@@ -1226,7 +1228,10 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         var configRoot = configRootDirectory ?? BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride;
         if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
-            skillDirs.Add(Path.Combine(configRoot, "skills"));
+            // #1575: flat `<root>/skills/`, not `<root>/.claude/skills/`, confirming #1566's
+            // assumption.
+            // record-once-ok: #1575 docs/vendor-doc-audit.md
+            configRootSkillDirs.Add(Path.Combine(configRoot, "skills"));
             commandDirs.Add(Path.Combine(configRoot, "commands"));
         }
         else
@@ -1234,12 +1239,21 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             var userHome = userHomeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrWhiteSpace(userHome) && Directory.Exists(userHome))
             {
-                skillDirs.Add(Path.Combine(userHome, ".claude", "skills"));
+                userHomeSkillDirs.Add(Path.Combine(userHome, ".claude", "skills"));
                 commandDirs.Add(Path.Combine(userHome, ".claude", "commands"));
             }
         }
 
-        foreach (var skillsDir in skillDirs)
+        // #1575: the CLI does not receive `--setting-sources` anywhere in this adapter's spawn argv
+        // (see the args list built above in Resolve), so its default applies and user-scope skills
+        // load alongside project ones. docs/vendor-doc-audit.md's #1575 entry pins the precedence
+        // this relies on, scoped to a BATON_CLAUDE_CONFIG_ROOT-redirected root specifically: on a
+        // name collision there, the CLI resolves to the config-root copy, not the project copy -- so
+        // config-root skills are scanned first, ahead of project, making the GroupBy(...).First()
+        // dedup below keep that copy. The plain ~/.claude fallback (no config root set) was never
+        // part of that measurement, so it keeps its prior project-over-user ordering (L3) rather
+        // than being changed on an assumption.
+        foreach (var skillsDir in configRootSkillDirs.Concat(projectSkillDirs).Concat(userHomeSkillDirs))
         {
             items.AddRange(SkillScanner.DiscoverSkills(skillsDir));
         }
@@ -1268,9 +1282,11 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         items.Add(new WorkerCapabilityItem("/compact", "command", "Summarize and compact session history"));
         items.Add(new WorkerCapabilityItem("/clear", "command", "Clear session context"));
 
-        // L3: project-over-user precedence is produced here, not just by skillDirs' project-first
-        // ordering above -- First() keeps the earliest (project) entry when both arms report the same
-        // name.
+        // L3 / #1575: First() keeps the earliest entry when both arms report the same name, so
+        // precedence is produced by scan order, not here. Commands keep project-over-config
+        // ordering (unmeasured either way, left as it was). Skills scan config-root before project
+        // before plain user-home (above), so a colliding skill name resolves to whichever copy the
+        // CLI itself actually loads -- see the comment at the skill scan loop.
         var uniqueItems = items.GroupBy(i => i.Name).Select(g => g.First()).ToList();
         return new WorkerCapabilities("claude", uniqueItems, ModelAliases);
     }

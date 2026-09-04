@@ -10,6 +10,8 @@ Redirecting `CLAUDE_CONFIG_DIR` to a fresh root isolates conversation state and 
 
 Before dispatches under `BATON_CLAUDE_CONFIG_ROOT` can succeed, the operator must perform a one-time interactive login under the new root.
 
+Skills under the shared root are loaded flat from `<root>/skills/` and, on a name collision, shadow a same-named skill in the project's own `.claude/skills/` — the worker sees the shared root's copy, not the project's. See `docs/vendor-doc-audit.md`'s #1575 entry for the measurement behind this.
+
 ### Performing the Login
 
 In PowerShell:
