@@ -799,6 +799,15 @@ finishing looks like). The reason text opens with `OutcomeClassifier.TimeoutSent
 for a surface:** such a room now describes `Indeterminate`, so `baton run` no longer exits
 `RunExitCode.Timeout` for it — that exit code stays for a timeout with nothing to salvage.
 
+**The per-attempt start sha is journaled, not only held in memory (#1373 follow-up).** The commit half
+of the reading above is a delta against the sha read immediately before Core is asked to run — durable
+now as `FlowEvent.ExecutionAttemptStarted`, appended right after that read and before dispatch, so a
+pump that crashes and recovers mid-attempt classifies a recorded timeout against **that attempt's own**
+start commit rather than `WorkerBinding.Process.WorktreeBaseSha` (the worktree's one-time provisioning
+base, which never moves across attempts and would otherwise misattribute an earlier attempt's own
+commits to the one being classified). Absent on a pre-existing journal line or a dispatch with no
+mutation-probe path, in which case classification falls back to `WorktreeBaseSha` exactly as before.
+
 **The retry that does run carries a continuation brief (#1373, same ruling).** The other half: an
 unmutated timeout is still retried, but `Scheduling.ContinuationBrief.ForRetryAfterTimeout` prepends
 attempt N of M, the predecessor's budget, the kill cause, and the instruction to inspect the workspace

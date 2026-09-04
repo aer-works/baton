@@ -10,6 +10,7 @@ namespace Baton.Domain;
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "eventType")]
 [JsonDerivedType(typeof(ExecutionRequestAccepted), "executionRequestAccepted")]
+[JsonDerivedType(typeof(ExecutionAttemptStarted), "executionAttemptStarted")]
 [JsonDerivedType(typeof(ExecutionRequestRejected), "executionRequestRejected")]
 [JsonDerivedType(typeof(ExecutionSucceeded), "executionSucceeded")]
 [JsonDerivedType(typeof(ExecutionFailed), "executionFailed")]
@@ -49,6 +50,19 @@ public abstract record FlowEvent
         ExecutionRequest Request,
         int? EnginePid = null,
         DateTimeOffset? EngineStartTime = null) : FlowEvent;
+
+    /// <summary>
+    /// #1373 follow-up: the per-attempt mutation-probe baseline, journaled immediately before Core is
+    /// asked to run — the same commit <see cref="Baton.Outcomes.OutcomeClassifier.Classify"/>'s
+    /// <c>workspaceHeadShaAtStart</c> parameter reads on the live-dispatch path, but durable now, so a
+    /// pump that crashes and recovers mid-attempt can classify a timeout against THIS attempt's base
+    /// rather than <see cref="Mutation.WorkerBinding.Process.WorktreeBaseSha"/> (the worktree's
+    /// one-time provisioning base, which never moves across attempts). Never appended when there is no
+    /// mutation-probe path for this dispatch (a non-worktree, non-tree-changing binding). Absent on
+    /// every journal line written before this event existed — the crash-recovery classifier falls back
+    /// to <c>WorktreeBaseSha</c> in that case, exactly as it did before this event was added.
+    /// </summary>
+    public sealed record ExecutionAttemptStarted(ExecutionId ExecutionId, string WorkspaceHeadShaAtStart) : FlowEvent;
 
     /// <summary>Flow declined to submit this request, e.g. a concurrency cap.</summary>
     public sealed record ExecutionRequestRejected(ExecutionId ExecutionId, string Reason) : FlowEvent;

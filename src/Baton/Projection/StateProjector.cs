@@ -88,6 +88,10 @@ public static class StateProjector
     {
         switch (flowEvent)
         {
+            case FlowEvent.ExecutionAttemptStarted attemptStarted:
+                state.WorkspaceHeadShaAtStartByExecutionId[attemptStarted.ExecutionId] = attemptStarted.WorkspaceHeadShaAtStart;
+                break;
+
             case FlowEvent.ExecutionRequestAccepted accepted:
                 state.AcceptedRequestByExecutionId[accepted.Request.ExecutionId] = accepted.Request;
                 if (accepted.Request.StepId is { } acceptedStepId)

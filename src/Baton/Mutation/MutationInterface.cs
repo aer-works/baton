@@ -1149,18 +1149,23 @@ public static class MutationInterface
                             hookVerdictCount = countHookVerdicts(outputDirectory);
                         }
 
-                        // #1373: no workspaceHeadShaAtStart on this path -- it classifies a RECORDED
-                        // exit, so the "before" it would have to have been read at is long past. The
-                        // #1373 timeout probe still runs, against binding.WorktreeBaseSha and then the
-                        // reflog heuristic; both are the fail-closed side of the same question, so a
-                        // recovered timeout on a workspace that cannot be read settles Indeterminate
-                        // rather than being retried blind.
+                        // #1373 follow-up: the journaled FlowEvent.ExecutionAttemptStarted (this
+                        // attempt's own base, not the worktree's one-time provisioning base) is used
+                        // when present -- see that event's own remarks for why WorktreeBaseSha alone
+                        // over-counts mutation against a second-or-later attempt after a crash. Absent
+                        // for a pre-fix journal line (or a dispatch with no mutation-probe path), in
+                        // which case this falls back to binding.WorktreeBaseSha and then the reflog
+                        // heuristic exactly as before -- both fail-closed, so a recovered timeout on a
+                        // workspace that cannot be read still settles Indeterminate rather than being
+                        // retried blind.
+                        var workspaceHeadShaAtStart =
+                            latestCheckpoint.State.WorkspaceHeadShaAtStartByExecutionId.GetValueOrDefault(executionId);
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
                             usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
                             changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
-                            hookVerdictCount: hookVerdictCount);
+                            hookVerdictCount: hookVerdictCount, workspaceHeadShaAtStart: workspaceHeadShaAtStart);
 
                         // #1709: no TokenBudgetMonitor in scope on this path -- this classifies a
                         // RECORDED exit from a possibly-defunct workspace, never a live process, so
@@ -1870,6 +1875,20 @@ public static class MutationInterface
             var workspaceHeadShaAtStart = mutationProbePath is null
                 ? null
                 : Workspaces.WorktreeProvisioner.ResolveBaseCommit(mutationProbePath, "HEAD");
+
+            // #1373 follow-up: journaled here, still off the round's intent-append path (this method
+            // runs per-execution, not inside the loop PrepareExecutionAsync's own comment warns about)
+            // -- so a pump that crashes and recovers between this write and the outcome append below
+            // still has THIS attempt's base on disk, not just the worktree's one-time provisioning
+            // base. See FlowEvent.ExecutionAttemptStarted's own remarks. Never appended when there is
+            // no mutation-probe path -- nothing for a recovered classification to compare against.
+            if (workspaceHeadShaAtStart is not null)
+            {
+                await eventLogWriter.AppendAsync(
+                        new FlowEvent.ExecutionAttemptStarted(prepared.Request.ExecutionId, workspaceHeadShaAtStart),
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
 
             // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
             // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as

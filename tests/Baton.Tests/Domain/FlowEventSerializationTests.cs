@@ -56,6 +56,8 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.ExecutionRequestAccepted(stepLessRequest)];
         yield return [new FlowEvent.ExecutionRequestAccepted(auditedRequest)];
         yield return [new FlowEvent.ExecutionRequestRejected(ExecutionId, "concurrency cap reached")];
+        // #1373 follow-up
+        yield return [new FlowEvent.ExecutionAttemptStarted(ExecutionId, "a1b2c3d4e5f6")];
 
         yield return [new FlowEvent.ExecutionSucceeded(ExecutionId)];
         // #1709: the peak reaches ExecutionSucceeded/ExecutionFailed too now, not only ExecutionArrested.
