@@ -2987,8 +2987,8 @@ reads as the worker refusing writes, not a stuck derivation -- the two ages trac
 exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
 `heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
 
-**ntfy pushes: severity tiers, quiet hours, dedup (#1558, ratified #1502 items 31/32/33 as one
-bundle — shipped together, since #31 alone trains an operator to ignore their phone within a
+**Outbound ntfy notifications for terminal/attention-worthy fleet events (#1558, ratified as #1502's
+menu items 31/32/33, one bundle — #31 alone trains an operator to ignore their phone within a
 week).** Independent of the Cloudflare mailbox above — a separate outbound POST to an ntfy topic
 (`tools/fleet-glass/pusher.py`'s "NTFY PUSH" section, `ntfy_topic`/`ntfy_quiet_hours` in
 `pusher.config.json`, an optional `ntfy_token` in `secrets.local.json`), no write-budget ledger, and
