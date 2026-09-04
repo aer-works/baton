@@ -130,25 +130,37 @@ public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Statu
     bool WithheldWritesReachTheOutbox => false;
 
     /// <summary>
-    /// The absolute directory this adapter's own vendor CLI treats as sensitive and refuses to write
-    /// under, regardless of the grant AER hands it — <see langword="null"/> when the adapter has no
-    /// such root (#599).
+    /// True when a path component of <paramref name="roomDirectoryPath"/> is one this adapter's own
+    /// vendor CLI treats as sensitive and refuses to write under, regardless of the grant AER hands
+    /// it — in which case <paramref name="offendingComponent"/> names the literal matching component.
+    /// Answers <see langword="false"/> (and a <see langword="null"/> component) when the adapter has
+    /// no such rule (#599).
     /// </summary>
     /// <remarks>
-    /// Measured on claude only (2.1.220, Windows): a room directory under <c>~/.claude</c> (claude's
-    /// own config root) makes every write into <c>BATON_OUTPUT_DIR</c> refuse with "which is a
-    /// sensitive file", even though <see cref="WithheldWritesReachTheOutbox"/> is <see langword="true"/>
-    /// and the tool is otherwise pre-approved — a claude-native protection AER's own grant plumbing
-    /// cannot see or override. The refused write is silent from AER's own exit code (0, natural exit);
-    /// only the worker's own transcript names it. Every `agy` dispatch from the same scratch root in
-    /// the session that first measured this succeeded, so this is deliberately per-adapter rather than
-    /// a general room-directory constraint — an adapter that has not been measured against its own
-    /// config root answers <see langword="null"/>, and <see langword="null"/> means the CLI-side refusal
-    /// does NOT fire for it. That is the opposite fail-direction from
+    /// Measured on claude only, corrected by #1827/#1834 from an earlier (2.1.220) config-root-value
+    /// reading: the refusal keys on a path component literally named <c>.claude</c> appearing anywhere
+    /// in the target path, not on the value of <c>CLAUDE_CONFIG_DIR</c>. A <c>CLAUDE_CONFIG_DIR</c>
+    /// override pointed at an arbitrarily-named directory let the write through with no refusal on the
+    /// same CLI build, and the refusal fired identically with <c>CLAUDE_CONFIG_DIR</c> unset entirely
+    /// so long as some ancestor component was named <c>.claude</c> — even though
+    /// <see cref="WithheldWritesReachTheOutbox"/> is <see langword="true"/> and the tool is otherwise
+    /// pre-approved. Comparison is case-insensitive on Windows, ordinal elsewhere; a component such as
+    /// <c>.claude-foo</c> or <c>.claudex</c> does not match. On CLI 2.1.258 the refused write's own
+    /// signature is "no artifact plus an ask-for-approval sentence" under headless <c>-p</c>, not a
+    /// named "which is a sensitive file" string — silent from AER's own exit code (0, natural exit);
+    /// only the worker's own transcript names it. Every <c>agy</c> dispatch from the same scratch root
+    /// in the session that first measured this succeeded, so this is deliberately per-adapter rather
+    /// than a general room-directory constraint — an adapter that has not been measured against its own
+    /// vendor CLI answers <see langword="false"/>, and <see langword="false"/> means the CLI-side
+    /// refusal does NOT fire for it. That is the opposite fail-direction from
     /// <see cref="WithheldWritesReachTheOutbox"/>'s <see langword="false"/> default, and deliberately so:
     /// this member names a vendor-native refusal that was measured to exist for one vendor, not a
     /// capability AER must prove before trusting; refusing every unmeasured adapter here would block
     /// agy dispatches that were measured to succeed (#1823 review).
     /// </remarks>
-    string? SensitiveOutputRoot => null;
+    bool HasSensitiveOutputPathComponent(string roomDirectoryPath, out string? offendingComponent)
+    {
+        offendingComponent = null;
+        return false;
+    }
 }

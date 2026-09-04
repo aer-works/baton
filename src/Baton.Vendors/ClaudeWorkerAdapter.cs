@@ -1142,14 +1142,42 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     public bool WithheldWritesReachTheOutbox => true;
 
     /// <summary>
-    /// #599: the operator-configured config root (<see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/>)
-    /// when set, else claude's own default <c>~/.claude</c> — either way, the directory claude's CLI
-    /// itself treats as sensitive. See this property's interface remarks for the measurement.
+    /// #599, corrected to a component match by #1827/#1834's measurement — see the interface member's
+    /// own remarks for what the predicate actually keys on and why
+    /// <see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/> plays no part in it.
     /// </summary>
-    public string? SensitiveOutputRoot =>
-        BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot
-            ? configRoot
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+    public bool HasSensitiveOutputPathComponent(string roomDirectoryPath, out string? offendingComponent)
+    {
+        offendingComponent = null;
+        if (string.IsNullOrWhiteSpace(roomDirectoryPath))
+        {
+            return false;
+        }
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        var fullPath = Path.GetFullPath(roomDirectoryPath);
+        foreach (var component in fullPath.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.Equals(component, SensitiveOutputPathComponentName, comparison))
+            {
+                offendingComponent = component;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The literal path component name #1827's measurement pins claude's write refusal to, independent
+    /// of <c>CLAUDE_CONFIG_DIR</c>'s value.
+    /// </summary>
+    private const string SensitiveOutputPathComponentName = ".claude";
 
     private static List<string> WithheldToolNames(PermissionGrant grant, bool includeWriteTools)
     {

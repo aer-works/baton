@@ -2052,10 +2052,10 @@ def _skills_config_dir_flat_and_shadow():
 @check("claude.sensitive-root-write-refused", "durability",
        "claude refuses (or silently withholds) a Write whose target sits under a `.claude`-named "
        "config root while the identical write outside it succeeds; the live measurement "
-       "`ClaudeWorkerAdapter.SensitiveOutputRoot`/`RunCommand`'s dispatch-time refusal (#1823, #599) "
-       "rests on", sentinel=True)
+       "`ClaudeWorkerAdapter.HasSensitiveOutputPathComponent`/`RunCommand`'s dispatch-time refusal "
+       "(#1823, #599, #1834) rests on", sentinel=True)
 def _claude_sensitive_root_write_refused():
-    """The full measurement, its rationale, and what it narrows in IWorkerAdapter.SensitiveOutputRoot's
+    """The full measurement, its rationale, and what it narrows in IWorkerAdapter.HasSensitiveOutputPathComponent's
     own doc comment all live in docs/vendor-doc-audit.md's #1827 entry -- read that first.
 
     Mechanically: an `in_root` arm and a control, sharing one CLAUDE_CONFIG_DIR override (credentials
@@ -2101,8 +2101,9 @@ def _claude_sensitive_root_write_refused():
         named = "sensitive file" in in_blob.lower()
         return PASS, (f"in-root write refused (names 'sensitive file'={named}); control wrote "
                       f"outside the root as expected. in-root output: {in_blob!r}")
-    return FAIL, (f"claude WROTE under its own config root -- the refusal SensitiveOutputRoot's "
-                  f"dispatch-time check rests on no longer reproduces on this CLI version.\n"
+    return FAIL, (f"claude WROTE under its own config root -- the refusal "
+                  f"HasSensitiveOutputPathComponent's dispatch-time check rests on no longer "
+                  f"reproduces on this CLI version.\n"
                   f"in-root arm: wrote={in_wrote} content={in_content!r} output={in_blob!r}\n"
                   f"control arm: wrote={out_wrote} content={out_content!r} output={out_blob!r}")
 
