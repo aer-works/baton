@@ -72,7 +72,13 @@ public static class MutationInterface
         Action<DateTimeOffset>? onVendorQuotaPark = null,
         // #1184 / 0026 §4: when true (attended session turn), an ExhaustedUntil step settles immediately
         // rather than scheduling a paced retry obligation. Defaults to false (unattended workflow steps).
-        bool settleOnVendorExhaustion = false)
+        bool settleOnVendorExhaustion = false,
+        // #1767: test-observable only, null in every production call site. Fired each time the pump
+        // re-reads the clock and re-arms a deferral wait (either the idle-deferral branch or the
+        // busy-wait branch below) — never on any other path, and never changes production timing
+        // itself, since it fires after the delay task is already constructed. Mirrors
+        // CancelRequestPoller's per-tick shape: a plain callback, absent cost when null.
+        Action? onDeferralWaitArmed = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -87,7 +93,8 @@ public static class MutationInterface
         return await PumpToFixedPointAsync(
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
-                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion)
+                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion,
+                onDeferralWaitArmed)
             .ConfigureAwait(false);
     }
 
@@ -929,7 +936,8 @@ public static class MutationInterface
         TimeProvider timeProvider,
         Func<double> jitterSource,
         Action<DateTimeOffset>? onVendorQuotaPark = null,
-        bool settleOnVendorExhaustion = false)
+        bool settleOnVendorExhaustion = false,
+        Action? onDeferralWaitArmed = null)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
@@ -1476,6 +1484,10 @@ public static class MutationInterface
                             // belt-and-suspenders for the wait itself, not the only guard.
                             var chunkedDelay = delay > MaxParkWaitChunk ? MaxParkWaitChunk : delay;
                             var delayTask = Task.Delay(chunkedDelay, timeProvider, ioCancellationToken);
+                            // #1767: fires after nowAtCheck's clock read and the delay task's
+                            // construction above, never before — a test awaiting this signal is
+                            // guaranteed the pump has already re-armed on the current time.
+                            onDeferralWaitArmed?.Invoke();
                             var deferralHostStopWatcher = cancellationToken.CanBeCanceled
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)
                                 : null;
@@ -1619,6 +1631,10 @@ public static class MutationInterface
                             var chunkedWakeDelay = wakeDelay > MaxParkWaitChunk ? MaxParkWaitChunk : wakeDelay;
                             deferralWakeup = Task.Delay(chunkedWakeDelay, timeProvider, ioCancellationToken);
                             waitCandidates.Add(deferralWakeup);
+                            // #1767: same signal as the idle branch's onDeferralWaitArmed call above —
+                            // fires after this branch's own clock read (timeProvider.GetUtcNow() feeding
+                            // wakeDelay) and re-arm, never before.
+                            onDeferralWaitArmed?.Invoke();
                         }
                     }
                 }
