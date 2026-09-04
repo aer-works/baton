@@ -126,7 +126,8 @@ public static class RedispatchCommand
                         + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3.",
                     nameof(IndeterminateProducer.ContractFailure) =>
                         $"this room settled Indeterminate with no captured response (an exit-0 contract "
-                        + "failure, or a dead worker on a mutated workspace) — `baton resolve --accept-capture` "
+                        + "failure, a dead worker on a mutated workspace, or a #1373 dispatch timeout on "
+                        + "one — read the step's reason for which) — `baton resolve --accept-capture` "
                         + $"refuses it (nothing to accept), but `baton resolve {options.ParentRoomDirectoryPath} "
                         + "[--execution <id>] --reject --reason <text>` still resolves it; redispatch the "
                         + "resulting room, or, once resolved, redispatch this one — see spec/baton.md §3.",

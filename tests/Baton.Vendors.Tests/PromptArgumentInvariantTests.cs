@@ -24,17 +24,47 @@ public class PromptArgumentInvariantTests
     private static readonly WorkerContract ArchitectContract = new(
         "architect", ["goal"], [new ProducedOutput("plan.md")], []);
 
-    public static TheoryData<string, IWorkerAdapter> ShippedPromptAdapters() => new()
+    /// <summary>
+    /// Swept from <see cref="WorkerAdapterRegistry.Default"/>, never hand-listed: a NEW adapter that
+    /// sets <c>PromptText</c> is precisely the drift this class exists to catch, and a hardcoded pair
+    /// is precisely what could not see it. Adapters that leave <c>PromptText</c> null carry no prose
+    /// prompt at all (<c>CommandWorkerAdapter</c>'s declared argv, the no-op, the capture worker) and
+    /// are filtered out here rather than asserted about — <c>WithPromptPreamble</c>'s documented no-op.
+    /// </summary>
+    public static TheoryData<string> ShippedPromptAdapters()
     {
-        { "claude", new ClaudeWorkerAdapter() },
-        { "agy", new AgyWorkerAdapter() },
-    };
+        var data = new TheoryData<string>();
+        foreach (var (name, adapter) in WorkerAdapterRegistry.Default)
+        {
+            if (TryResolve(adapter)?.PromptText is not null)
+            {
+                data.Add(name);
+            }
+        }
+
+        Assert.NotEmpty(data);
+        return data;
+    }
+
+    private static CoreDispatchTarget? TryResolve(IWorkerAdapter adapter)
+    {
+        try
+        {
+            return adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        }
+        catch (Exception)
+        {
+            // An adapter that refuses this invocation shape outright (CommandWorkerAdapter demands a
+            // JSON argv in its PromptTemplate) has no prose prompt to prepend to either way.
+            return null;
+        }
+    }
 
     [Theory]
     [MemberData(nameof(ShippedPromptAdapters))]
-    public void A_shipped_adapter_passes_its_prompt_as_an_argument_and_as_PromptText(string vendor, IWorkerAdapter adapter)
+    public void A_shipped_adapter_passes_its_prompt_as_an_argument_and_as_PromptText(string vendor)
     {
-        var target = adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        var target = WorkerAdapterRegistry.Default[vendor].Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
         Assert.NotNull(target.PromptText);
         Assert.True(
@@ -45,10 +75,10 @@ public class PromptArgumentInvariantTests
 
     [Theory]
     [MemberData(nameof(ShippedPromptAdapters))]
-    public void A_continuation_brief_reaches_a_shipped_adapters_spawned_argument(string vendor, IWorkerAdapter adapter)
+    public void A_continuation_brief_reaches_a_shipped_adapters_spawned_argument(string vendor)
     {
         const string brief = "[baton] CONTINUATION BRIEF -- finish, do not restart.\n\n";
-        var target = adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        var target = WorkerAdapterRegistry.Default[vendor].Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
         var prefixed = target.WithPromptPreamble(brief);
 

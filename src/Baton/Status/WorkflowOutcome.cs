@@ -67,7 +67,10 @@ public static class WorkflowOutcome
     public static bool IsTimeoutFailure(StepState step) =>
         step.Status == StepStatus.Failed
         && step.LatestFailureReason is { } reason
-        && reason.StartsWith("Execution timed out.", StringComparison.Ordinal);
+        // #1373: the writer's own constant, not a second copy of the literal — the classifier now
+        // opens two different reasons with it, and a reword there must not leave this reading a
+        // sentence nothing produces any more.
+        && reason.StartsWith(Baton.Outcomes.OutcomeClassifier.TimeoutSentence, StringComparison.Ordinal);
 
     private static string DescribeTerminal(IReadOnlyList<StepState> steps)
     {

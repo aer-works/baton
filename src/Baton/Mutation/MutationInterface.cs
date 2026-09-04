@@ -2035,6 +2035,21 @@ public static class MutationInterface
             await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
         }
+        catch (Dispatch.PromptPreambleException ex)
+        {
+            // #1373: a deterministic refusal to spawn, the same shape as the guard below and recorded
+            // for the same reason — the intent is already journalled, so an uncaught throw here would
+            // leave the room stuck at ExecutionRequestAccepted forever, which is exactly what that
+            // arm's own comment says it exists to prevent. Permanent: an adapter whose prompt is not
+            // one of its arguments refuses identically on every resubmission.
+            await eventLogWriter.AppendAsync(
+                new FlowEvent.ExecutionFailed(
+                    prepared.Request.ExecutionId,
+                    FailureClassification.Permanent,
+                    ex.Message),
+                CancellationToken.None)
+                .ConfigureAwait(false);
+        }
         catch (CommandLineTooLongException ex)
         {
             // A deterministic refusal to spawn: re-submission re-refuses identically, so Permanent

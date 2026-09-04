@@ -1,7 +1,7 @@
 namespace Baton.Domain;
 
 /// <summary>
-/// F1 (#1593 review): which of the four sources settled a step's
+/// F1 (#1593 review): which of these four values settled a step's
 /// <see cref="StepState.IndeterminateAwaitingResolution"/> flag — the discriminant <c>baton resolve</c>
 /// (<c>Baton.Cli.ResolveCommand</c>, <c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>)
 /// admits its verbs on, replacing a bare <see cref="StepState.LatestCapturedResponseFile"/> null/not-null
@@ -14,7 +14,7 @@ public enum IndeterminateProducer
     /// <summary>#1594/#1608: <see cref="FlowEvent.ExecutionIndeterminate"/> with a non-null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — the worker's declared output(s) were missing but a terminal response was recoverable. <c>--accept-capture</c> and <c>--reject --reason</c> both admit this producer.</summary>
     CapturedResponse,
 
-    /// <summary>#1593: <see cref="FlowEvent.ExecutionIndeterminate"/> with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — an exit-0 contract failure (or a dead worker on a mutated workspace) with no response to capture. Only <c>--reject --reason</c> admits this producer; <c>--accept-capture</c> has no capture to accept and keeps refusing.</summary>
+    /// <summary>#1593: <see cref="FlowEvent.ExecutionIndeterminate"/> with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — an exit-0 contract failure (or a dead worker on a mutated workspace), and since #1373 a dispatch timeout that killed a worker on a workspace carrying work: three settle shapes, one value, because all three offer a conductor the same judgement and no captured body. Only <c>--reject --reason</c> admits this producer; <c>--accept-capture</c> has no capture to accept and keeps refusing. spec/baton.md §3's producer table is the register.</summary>
     ContractFailure,
 
     /// <summary>#1623: <see cref="FlowEvent.VerifyFailed"/> — the role's verify command exited non-zero after a clean, contract-satisfied worker exit. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
@@ -224,7 +224,7 @@ public enum StepStatus
 /// <see cref="LatestFailureReason"/> instead) leaves this null while still reading Indeterminate.
 /// </param>
 /// <param name="IndeterminateProducer">
-/// F1 (#1593 review): which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised
+/// F1 (#1593 review): which of <see cref="Domain.IndeterminateProducer"/>'s four values raised
 /// <paramref name="IndeterminateAwaitingResolution"/> — the discriminant <c>baton resolve</c> admits
 /// its verbs on. Null whenever <paramref name="IndeterminateAwaitingResolution"/> is false; cleared in
 /// the same breath as <paramref name="IndeterminateReason"/> on resolution or reopen.

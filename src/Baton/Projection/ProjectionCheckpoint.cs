@@ -116,7 +116,7 @@ public sealed record ProjectionCheckpointState(
 
     /// <summary>
     /// F1 (#1593 review): a companion to <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a
-    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised it, for
+    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four values raised it, for
     /// <c>baton resolve</c>'s admission test. Same trailing-optional replay-safety shape as
     /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing note
     /// applies.

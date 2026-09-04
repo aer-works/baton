@@ -243,8 +243,9 @@ public static class ResolveCommand
             {
                 throw new CliArgumentException(
                     $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "
-                    + "with no captured response to accept — an exit-0 contract failure (or a dead worker on "
-                    + "a mutated workspace), not an unwritten-but-recoverable output. "
+                    + "with no captured response to accept — an exit-0 contract failure, a dead worker on "
+                    + "a mutated workspace, or (#1373) a dispatch timeout on one; never an "
+                    + "unwritten-but-recoverable output. "
                     + "'baton resolve --reject --reason <text>' still resolves it.",
                     "pass --reject --reason, naming the conductor's own judgement after inspecting the "
                     + "workspace. See spec/baton.md §3.");

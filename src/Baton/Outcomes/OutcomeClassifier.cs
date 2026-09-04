@@ -236,10 +236,15 @@ public static class OutcomeClassifier
             // measurement behind it, and why the probe fails closed are stated once, in
             // spec/baton.md §3's #1373 paragraph.
             //
-            // Which path gets probed, and why it is not simply the working directory, is part of that
-            // same paragraph -- the two parameters read here carry F4 (#1593 review)'s constraint
-            // already, on their own docs above. A null path means this execution had nowhere to leave
-            // work, and keeps the retry.
+            // worktreePath carries F4 (#1593 review)'s constraint on its own doc above.
+            // changesTreeWorkingDirectory does NOT, and reading it here is a deliberate RELAXATION of
+            // F4, not a case that satisfies it: that parameter was introduced for #1622/#1390's
+            // work-product evidence, which decides nothing, and this makes it decide something. The
+            // ChangedPathCount half is also ABSOLUTE where the commit half is a delta against
+            // workspaceHeadShaAtStart -- it counts what git status reports, with no baseline taken at
+            // spawn. spec/baton.md §3's #1373 paragraph states which population that covers, what it
+            // costs, and why the ruling accepts it. A null path means this execution had nowhere to
+            // leave work, and keeps the retry.
             var mutationProbePath = worktreePath ?? changesTreeWorkingDirectory;
             if (mutationProbePath is not null)
             {
@@ -606,15 +611,23 @@ public static class OutcomeClassifier
     /// <c>OutcomeClassifierTests</c> rather than left to this remark.
     /// </para>
     /// <para>
-    /// Closes with the <c>awaiting conductor resolution.</c> marker every Indeterminate reason ends
-    /// with, which <see cref="Projection.StateProjector"/>'s <c>BuildConductorResolvedReason</c> strips
-    /// when a conductor settles the step. Counts and the resolution verb come first, prose last:
-    /// truncation cuts the tail, so the actionable half must not be what gets dropped.
+    /// Carries the <c>awaiting conductor resolution.</c> marker every Indeterminate reason carries,
+    /// which <see cref="Projection.StateProjector"/>'s <c>BuildConductorResolvedReason</c> strips when a
+    /// conductor settles the step. It is last in the base reason but NOT necessarily last in the stored
+    /// one: <see cref="WithStderr"/> appends the worker's stderr after it, and that strip is an
+    /// <c>EndsWith</c>, so a reason with stderr keeps the clause through resolution. Pre-existing and
+    /// shared with both #1593 arms (one of which already appends workspace evidence past the marker) —
+    /// recorded here rather than fixed, since narrowing it touches every producer's reason at once.
+    /// Counts and the resolution verb come first, prose last: truncation cuts the tail, so the
+    /// actionable half must not be what gets dropped.
     /// </para>
     /// </remarks>
     private static string BuildTimeoutOnMutatedWorkspaceReason(Workspaces.WorkspaceMutationReading reading) =>
+        // "then redispatch", never "or redispatch": RedispatchCommand refuses an Indeterminate parent
+        // unconditionally and says so, with no --force, so offering the two as alternatives would send
+        // a conductor straight into a refusal.
         $"{TimeoutSentence} Workspace carries {reading.Describe()} — resolve it ('baton resolve --reject " +
-        "--reason <text>') or redispatch a brief telling the next worker to finish what this attempt " +
+        "--reason <text>'), then redispatch a brief telling the next worker to finish what this attempt " +
         "started. Not retried: a from-scratch attempt would restart on top of that work — awaiting " +
         "conductor resolution.";
 

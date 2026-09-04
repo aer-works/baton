@@ -776,10 +776,22 @@ workspace attempt 1 had already mutated — two carrying a finished commit, two 
 uncommitted files — and the conductor cancelled all four by hand to salvage the trees. `Workspaces.
 WorktreeProvisioner.ReadWorkspaceMutation` is the reading (its fourth entry point, per #1720 F2's
 own reasoning about consumers with opposite safe defaults); it is asked about the provisioned worktree
-when there is one and a tree-changing role's own working directory otherwise, never
-`WorkerBinding.Target.WorkingDirectory` unconditionally, which F4 (#1593 review) forbids handing a
-retry decision. Its safe default is **mutated**: an unreadable workspace is one whose surviving work
-cannot be ruled out. A null path — an execution with nowhere to leave work — keeps the retry, and so
+when there is one and a tree-changing role's own working directory otherwise. Its safe default is
+**mutated**: an unreadable workspace is one whose surviving work cannot be ruled out.
+
+**This RELAXES F4 (#1593 review), deliberately, and the cost is real.** F4 keeps
+`WorkerBinding.Target.WorkingDirectory` away from a *retry* decision because the operator's own
+repository is routinely dirty for reasons unrelated to the execution; `changesTreeWorkingDirectory`
+was the narrow exemption from it, safe precisely because #1622/#1390's evidence string decides
+nothing. This makes it decide something — and it has to, because a write grant never gets an
+auto-provisioned worktree (`RoleDispatch.ToBinding`), so **every** `ChangesTree` binding, `implement`
+and `janitor` included, is the operator's own repository and F4's rule would exempt exactly the
+population the ruling is about. Two consequences to know rather than discover: the commit half is a
+delta against the sha read at spawn, while the **changed-path half is absolute** — `git status` counts
+whatever is there, with no baseline taken — so a lane dispatched into an already-dirty tree settles
+Indeterminate on a timeout even if its worker wrote nothing. The ruling accepts that: its own wording
+is "uncommitted changes, untracked files" without a baseline, and the failure it prices is a clobbered
+tree (unrecoverable) against a spurious conductor resolution (a minute of someone's time). A null path — an execution with nowhere to leave work — keeps the retry, and so
 does #1089's finished-then-hung guard, which sits upstream of this branch and is unchanged (a
 tree-changing worker that satisfied its contract has a mutated tree by construction; that is what
 finishing looks like). The reason text opens with `OutcomeClassifier.TimeoutSentence`, so

@@ -2225,10 +2225,14 @@ public class OutcomeClassifierTests
             var reason = classification.Reason!;
             Assert.Contains("2 new commit(s) and 14 changed/untracked path(s)", reason, StringComparison.Ordinal);
             Assert.Contains("baton resolve --reject", reason, StringComparison.Ordinal);
-            // The two ends are both load-bearing, not phrasing: WorkflowOutcome.IsTimeoutFailure reads
-            // the prefix, and StateProjector.BuildConductorResolvedReason strips the suffix.
+            // Both markers are load-bearing, not phrasing: WorkflowOutcome.IsTimeoutFailure reads the
+            // prefix, and StateProjector.BuildConductorResolvedReason strips the trailing clause. The
+            // second is asserted as CONTAINED rather than trailing on purpose — WithStderr appends the
+            // worker's stderr after it, so an EndsWith here would pin a fixture with no stderr rather
+            // than the product (see BuildTimeoutOnMutatedWorkspaceReason's own note on that
+            // pre-existing, cross-producer gap).
             Assert.StartsWith("Execution timed out.", reason, StringComparison.Ordinal);
-            Assert.EndsWith("awaiting conductor resolution.", reason, StringComparison.Ordinal);
+            Assert.Contains("awaiting conductor resolution.", reason, StringComparison.Ordinal);
         }
         finally
         {

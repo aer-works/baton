@@ -51,10 +51,18 @@ public static class ContinuationBrief
 
         var attempt = stepState.ConsecutiveFailureCount + 1;
 
+        // "of M" only while M is still true. RetryEngine.MayRetry lets an ExhaustedUntil classification
+        // bypass the MaxAttempts check entirely (quota pacing is not a retry budget), so a
+        // quota-throttled lane can genuinely reach an attempt past its policy -- and "attempt 7 of 2"
+        // in a brief whose whole job is to be believed is worse than no denominator.
+        var attemptClause = attempt <= maxAttempts
+            ? $"This is attempt {attempt} of {maxAttempts}."
+            : $"This is attempt {attempt} (past the policy's {maxAttempts}, which a vendor quota pause extends).";
+
         return $"""
             [baton] CONTINUATION BRIEF -- read this before the brief below.
 
-            This is attempt {attempt} of {maxAttempts}. Attempt {attempt - 1} ran its full {DescribeDuration(timeout)} timeout budget and was killed by baton. It did not crash, it was not refused, and it did not decide to stop -- it ran out of clock, mid-work.
+            {attemptClause} Attempt {attempt - 1} ran its full {DescribeDuration(timeout)} timeout budget and was killed by baton. It did not crash, it was not refused, and it did not decide to stop -- it ran out of clock, mid-work.
 
             You are in the SAME workspace it left behind. Its work is still on disk. Before you write anything, read what is already there -- `git status`, `git log`, and the files themselves -- and then FINISH what attempt {attempt - 1} started. Do not restart it from the beginning, and do not undo it. Your budget is the same {DescribeDuration(timeout)}, so spend it on what is left rather than on what is done.
 
