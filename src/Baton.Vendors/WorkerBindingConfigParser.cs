@@ -108,6 +108,18 @@ public static class WorkerBindingConfigParser
                     + $"'{entry.Timeout}' — it must be positive. Omitting the field leaves it zero, "
                     + "which would kill the worker the moment it starts.");
             }
+
+            // #802: the self-fallback refusal FallbackBinding's own doc names -- enforced here,
+            // at parse time, rather than left to silently loop back onto the vendor it was declared
+            // to escape.
+            if (entry.FallbackOnExhaustion is { } fallback
+                && string.Equals(fallback.Adapter, entry.Adapter, StringComparison.Ordinal))
+            {
+                throw new WorkerBindingConfigException(
+                    $"Worker-binding config entry for '{workerName}'{location} declares "
+                    + $"'FallbackOnExhaustion.Adapter' equal to its own 'Adapter' ('{entry.Adapter}') — "
+                    + "a vendor cannot fall back to itself.");
+            }
         }
 
         return entries;

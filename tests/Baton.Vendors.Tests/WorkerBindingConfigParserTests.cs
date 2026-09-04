@@ -309,4 +309,45 @@ public class WorkerBindingConfigParserTests
             () => WorkerBindingConfigParser.LoadFromFileAsync(missing, TestContext.Current.CancellationToken));
         Assert.Contains("does not exist", ex.Message);
     }
+
+    [Fact]
+    public void A_FallbackOnExhaustion_naming_the_entrys_own_adapter_is_refused()
+    {
+        const string json = """
+            {
+              "architect": {
+                "Adapter": "agy",
+                "Contract": { "WorkerName": "architect", "RequiredInputs": [], "ProducedOutputs": [], "OptionalMetadata": [] },
+                "PromptTemplate": "Draft a plan.",
+                "Timeout": "00:05:00",
+                "FallbackOnExhaustion": { "Adapter": "agy" }
+              }
+            }
+            """;
+
+        var ex = Assert.Throws<WorkerBindingConfigException>(() => WorkerBindingConfigParser.Parse(json));
+        Assert.Contains("cannot fall back to itself", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_FallbackOnExhaustion_naming_a_different_adapter_parses()
+    {
+        const string json = """
+            {
+              "architect": {
+                "Adapter": "agy",
+                "Contract": { "WorkerName": "architect", "RequiredInputs": [], "ProducedOutputs": [], "OptionalMetadata": [] },
+                "PromptTemplate": "Draft a plan.",
+                "Timeout": "00:05:00",
+                "FallbackOnExhaustion": { "Adapter": "claude", "Model": "sonnet" }
+              }
+            }
+            """;
+
+        var entry = WorkerBindingConfigParser.Parse(json)["architect"];
+
+        Assert.NotNull(entry.FallbackOnExhaustion);
+        Assert.Equal("claude", entry.FallbackOnExhaustion.Adapter);
+        Assert.Equal("sonnet", entry.FallbackOnExhaustion.Model);
+    }
 }

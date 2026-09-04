@@ -78,7 +78,12 @@ public static class MutationInterface
         // busy-wait branch below) — never on any other path, and never changes production timing
         // itself, since it fires after the delay task is already constructed. Mirrors
         // CancelRequestPoller's per-tick shape: a plain callback, absent cost when null.
-        Action? onDeferralWaitArmed = null)
+        Action? onDeferralWaitArmed = null,
+        // #802: resolved via WorkerBindingResolver.ResolveFallbacks -- one entry per worker role that
+        // declares a FallbackOnExhaustion, already resolved through the same adapter/ceiling gates as
+        // workerBindings. Null (every caller that hasn't been updated to build one) behaves exactly
+        // like today: a quota-parked step waits out the vendor's own reset instant.
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -94,7 +99,7 @@ public static class MutationInterface
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
                 timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion,
-                onDeferralWaitArmed)
+                onDeferralWaitArmed, fallbackWorkerBindings)
             .ConfigureAwait(false);
     }
 
@@ -938,7 +943,8 @@ public static class MutationInterface
         Func<double> jitterSource,
         Action<DateTimeOffset>? onVendorQuotaPark = null,
         bool settleOnVendorExhaustion = false,
-        Action? onDeferralWaitArmed = null)
+        Action? onDeferralWaitArmed = null,
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
@@ -1336,7 +1342,8 @@ public static class MutationInterface
                 // A derived obligation (#712), re-evaluated from projected state on every round for
                 // the same crash-safety reason the pause obligation above is: evaluated after pause obligations
                 // and before readiness.
-                var retryObligations = GetRetryObligations(state, snapshot, timeProvider, jitterSource, settleOnVendorExhaustion);
+                var retryObligations = GetRetryObligations(
+                    state, snapshot, timeProvider, jitterSource, settleOnVendorExhaustion, fallbackWorkerBindings, acceptedRequestByExecutionId);
                 if (retryObligations.Count > 0)
                 {
                     var (obligationPid, obligationStartTime) = GetCurrentEngineIdentity();
@@ -1383,12 +1390,49 @@ public static class MutationInterface
                             $"No WorkerBinding registered for Worker '{stepDefinition.Worker}' (step '{stepDefinition.StepId}').");
                     }
 
+                    // #802: a step parked on ExhaustedUntil with a declared, not-yet-tried fallback
+                    // (GetRetryObligations already paced it to redispatch immediately rather than wait)
+                    // dispatches on the fallback binding instead of the primary — same predicate,
+                    // recomputed fresh from projected state rather than carried from that earlier call,
+                    // so this stays correct across a crash-and-replay between the two.
+                    var stepStateForDispatch = state.Steps.First(s => s.StepId == stepDefinition.StepId);
+                    var fallbackBinding = ResolveVendorExhaustionFallback(
+                        stepStateForDispatch, stepDefinition.Worker, fallbackWorkerBindings, acceptedRequestByExecutionId);
+                    var previousBinding = binding;
+                    if (fallbackBinding is not null)
+                    {
+                        binding = fallbackBinding;
+                    }
+
                     // The write-sequence rule, extended to a concurrent round: each intent is appended
                     // and fsync'd here — awaited sequentially, in declaration order — before that step's
                     // own dispatch is even started, and before the next step's intent is written.
                     var prepared = await PrepareExecutionAsync(
                             workflowId, stepDefinition, snapshot, state, binding, artifactsRootPath, eventLogWriter, ioCancellationToken)
                         .ConfigureAwait(false);
+
+                    if (fallbackBinding is not null && previousBinding is WorkerBinding.Process previousProcess)
+                    {
+                        // #802: the one room fact naming the original binding, the fallback binding and
+                        // the reset time it rescued the step from waiting out — journaled AFTER the new
+                        // ExecutionRequestAccepted above so StateProjector's StepRebound handler (which
+                        // requires the execution id to already be accepted) has something to apply to;
+                        // that apply is a same-value no-op here since the new request was already built
+                        // from the fallback binding, so this line is diagnostic, not corrective.
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.StepRebound(
+                                    stepDefinition.StepId,
+                                    prepared.Request.ExecutionId,
+                                    PreviousAdapter: previousProcess.Adapter,
+                                    PreviousModel: previousProcess.Model,
+                                    NewAdapter: fallbackBinding.Adapter,
+                                    NewModel: fallbackBinding.Model,
+                                    Reason: "vendor-exhaustion fallback: "
+                                        + $"{previousProcess.Adapter} parked until "
+                                        + $"{stepStateForDispatch.LatestExecutionFailedRetryNotBefore?.ToString("O") ?? "unknown"}"),
+                                ioCancellationToken)
+                            .ConfigureAwait(false);
+                    }
 
                     // A non-process worker is fully handled by the append above: no Core
                     // process to spawn, so nothing joins the in-flight set. The pump reaches its fixed
@@ -2418,6 +2462,40 @@ public static class MutationInterface
             && s.Status == StepStatus.Failed
             && s.RetryNotBefore is not null);
 
+    /// <summary>
+    /// #802: the declared <see cref="WorkerBindingConfigEntry.FallbackOnExhaustion"/> binding for
+    /// <paramref name="worker"/>, when it applies to <paramref name="stepState"/>'s CURRENT park —
+    /// null when there is none declared, or when the step's latest execution already ran on that
+    /// exact fallback (a single declared hop is the whole feature; #802 rules chained/repeated
+    /// auto-failover out permanently). Pure function of projected state and resolved config, so both
+    /// call sites (deciding whether to pace or redispatch immediately, and deciding which binding to
+    /// dispatch on) recompute the identical answer on every round, including after a crash-and-replay
+    /// between the two.
+    /// </summary>
+    private static WorkerBinding.Process? ResolveVendorExhaustionFallback(
+        StepState stepState,
+        string worker,
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings,
+        IReadOnlyDictionary<ExecutionId, ExecutionRequest> acceptedRequestByExecutionId)
+    {
+        if (fallbackWorkerBindings is null
+            || !fallbackWorkerBindings.TryGetValue(worker, out var candidate)
+            || candidate is not WorkerBinding.Process fallbackProcess)
+        {
+            return null;
+        }
+
+        if (stepState.LatestExecutionId is { } latestExecutionId
+            && acceptedRequestByExecutionId.TryGetValue(latestExecutionId, out var latestRequest)
+            && latestRequest.Adapter == fallbackProcess.Adapter
+            && latestRequest.Model == fallbackProcess.Model)
+        {
+            return null;
+        }
+
+        return fallbackProcess;
+    }
+
     /// <param name="ContinuationBrief">
     /// #1373: non-null exactly when this dispatch is a retry of an attempt the dispatch timeout killed
     /// — <see cref="Scheduling.ContinuationBrief.ForRetryAfterTimeout"/>'s text, applied to the target's
@@ -2456,7 +2534,9 @@ public static class MutationInterface
         WorkflowDefinitionSnapshot snapshot,
         TimeProvider timeProvider,
         Func<double> jitterSource,
-        bool settleOnVendorExhaustion = false)
+        bool settleOnVendorExhaustion,
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings,
+        IReadOnlyDictionary<ExecutionId, ExecutionRequest> acceptedRequestByExecutionId)
     {
         var stepDefinitionByStepId = snapshot.Steps.ToDictionary(s => s.StepId);
         var obligations = new List<RetryObligation>();
@@ -2491,18 +2571,27 @@ public static class MutationInterface
                 continue;
             }
 
+            // #802: a declared, not-yet-tried fallback rescues this step from the park below,
+            // known reset instant or not -- resolved once here and reused by both guards.
+            var vendorExhaustionFallback = stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil
+                ? ResolveVendorExhaustionFallback(stepState, stepDef.Worker, fallbackWorkerBindings, acceptedRequestByExecutionId)
+                : null;
+
             // 0026 §5 (#1115 review): an ExhaustedUntil step whose vendor gave NO reset instant
-            // gets NO obligation at all — "nothing wakes up, and the product says so". Falling
-            // through to ordinary backoff here fabricated a ~1s-away instant on every cycle
-            // (ConsecutiveFailureCount is frozen at 0 for quota hits, so the delay never grew),
-            // auto-retrying a claude dispatch against a known-dead quota forever while the
-            // status surfaced the fabricated time as a vendor reset. A person resumes this step
-            // (RetryWithRevision), or a later failure carries a real instant.
+            // gets NO obligation at all — "nothing wakes up, and the product says so" — UNLESS a
+            // declared fallback (#802) can rescue it: redispatching on a different vendor needs no
+            // reset instant from the PARKED one to pace against. Falling through to ordinary backoff
+            // here fabricated a ~1s-away instant on every cycle (ConsecutiveFailureCount is frozen at
+            // 0 for quota hits, so the delay never grew), auto-retrying a claude dispatch against a
+            // known-dead quota forever while the status surfaced the fabricated time as a vendor
+            // reset. A person resumes this step (RetryWithRevision), or a later failure carries a
+            // real instant.
             // 0026 §4 attended/unattended discriminator (#1184): when settleOnVendorExhaustion is true
             // (an attended interactive session turn), an ExhaustedUntil step ALSO gets NO retry obligation
-            // even if a reset instant is known — the turn settles immediately and the operator re-sends after reset.
+            // regardless of a declared fallback — the operator is present and drives the rebind by hand.
             if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
-                (settleOnVendorExhaustion || stepState.LatestExecutionFailedRetryNotBefore is null))
+                (settleOnVendorExhaustion
+                    || (vendorExhaustionFallback is null && stepState.LatestExecutionFailedRetryNotBefore is null)))
             {
                 continue;
             }
@@ -2510,7 +2599,15 @@ public static class MutationInterface
             DateTimeOffset notBefore;
             int delayMs;
 
-            if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
+            if (vendorExhaustionFallback is not null)
+            {
+                // #802: redispatch on the declared fallback immediately rather than pacing to the
+                // primary vendor's reset instant (known or not) — DependencyResolver's own
+                // `now >= notBefore` check then admits this step on the very round that follows.
+                notBefore = timeProvider.GetUtcNow();
+                delayMs = 0;
+            }
+            else if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
                 stepState.LatestExecutionFailedRetryNotBefore is { } resetMoment)
             {
                 var utcNow = timeProvider.GetUtcNow();

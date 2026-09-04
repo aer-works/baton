@@ -167,7 +167,12 @@ public class EngineLivenessProbeTests
             RetryNotBefore: null,
             RetryForeclosed: false);
 
-        Assert.Equal("parked (vendor quota) — reset unknown", StatusCommand.FormatStepStatus(unforeclosedStep, []));
+        // #802: the park still renders, and since #802 it also names the decision the operator owes
+        // (no FallbackOnExhaustion declared → the redispatch verb). The prefix is what this polarity
+        // test pins; the suffix's exact wording belongs to #802's own status tests.
+        var rendered = StatusCommand.FormatStepStatus(unforeclosedStep, []);
+        Assert.StartsWith("parked (vendor quota) — reset unknown", rendered, StringComparison.Ordinal);
+        Assert.Contains("no fallback declared", rendered, StringComparison.Ordinal);
     }
 
     private static ExecutionRequest MakeRequest(string execId) =>

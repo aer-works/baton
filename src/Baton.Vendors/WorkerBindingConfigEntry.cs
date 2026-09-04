@@ -151,6 +151,17 @@ namespace Baton.Vendors;
 /// cref="RoleDispatch.ToBinding"/> is the one caller that overrides this from the catalog role's own
 /// value for every role dispatched through the front door.
 /// </param>
+/// <param name="FallbackOnExhaustion">
+/// #802 (S6, the design ratified on that issue): a declared vendor to rebind this role onto when its own dispatch
+/// parks on a vendor-quota <see cref="Domain.FailureClassification.ExhaustedUntil"/> outcome, rather
+/// than waiting out the vendor's reset. Null (the default) keeps today's behaviour: the step parks,
+/// and (per spec/baton.md's quota-park section) the status surfaces the wait and the operator verb
+/// that rebinds it by hand. Resolved through the SAME <see cref="WorkerBindingResolver.Resolve"/>
+/// pipeline as every other binding — same adapter registry lookup, same permission/ceiling gates — so
+/// a fallback can never widen what a role is permitted to do. Undeclared automatic failover across
+/// DIFFERENT roles is permanently out of scope (operator ruling, 2026-09-01): this field opts in one
+/// role at a time, to one named vendor, never inferred.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -183,7 +194,8 @@ public sealed record WorkerBindingConfigEntry(
     bool ExpectPr = false,
     // #1802 review: default-closed like ChangesTree/DeliversBranch/ExpectPr above -- a hand-authored
     // bindings.json (baton run/resume/decide) that omits this must not be able to spawn.
-    bool AllowsSubagents = false);
+    bool AllowsSubagents = false,
+    FallbackBinding? FallbackOnExhaustion = null);
 
 
 /// <summary>
@@ -194,3 +206,22 @@ public sealed record WorkerBindingConfigEntry(
 /// declared intent.
 /// </summary>
 public sealed record WorktreeWorkspace(string Repository, string Ref);
+
+/// <summary>
+/// #802: the vendor a role's dispatch rebinds onto when its primary binding parks on a vendor-quota
+/// exhaustion. <paramref name="Model"/>/<paramref name="Effort"/> are required-if-a-swap-is-wanted,
+/// not inherited from the primary entry — the same #1082 rule <c>RoleDispatch.ToBinding</c> already
+/// applies to an operator-requested vendor swap: a binding authored for one vendor's tier words has
+/// no correct translation onto another vendor's, so leaving either null resolves to the fallback
+/// adapter's own default rather than silently carrying the primary's tier across.
+/// </summary>
+/// <param name="Adapter">
+/// The registered adapter name to rebind onto — resolved through the same
+/// <see cref="WorkerBindingResolver.Resolve"/> adapter lookup as <see cref="WorkerBindingConfigEntry.Adapter"/>,
+/// so an unregistered name refuses the same way. Must differ from the entry's own
+/// <see cref="WorkerBindingConfigEntry.Adapter"/> — a binding that falls back to itself reads as a
+/// safety net and provides none, refused at parse time (<see cref="WorkerBindingConfigParser"/>).
+/// </param>
+/// <param name="Model">Forwarded verbatim into the resolved fallback <see cref="WorkerInvocation"/>. Null defers to the fallback adapter's own default.</param>
+/// <param name="Effort">Forwarded verbatim into the resolved fallback <see cref="WorkerInvocation"/>. Null defers to the fallback adapter's own default.</param>
+public sealed record FallbackBinding(string Adapter, string? Model = null, string? Effort = null);

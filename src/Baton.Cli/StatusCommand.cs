@@ -659,7 +659,11 @@ public static class StatusCommand
                 && step.RetryNotBefore is null
                 && !step.RetryForeclosed)
             {
-                return "parked (vendor quota) — reset unknown";
+                // #802: reaching this branch at all means no declared FallbackOnExhaustion rescued
+                // the park (one would have redispatched immediately instead of sitting here with a
+                // RetryNotBefore never scheduled) -- never silent: name the decision the operator owes.
+                return "parked (vendor quota) — reset unknown; "
+                    + $"no fallback declared — {RecoveryGuidance.RedispatchAdapterInstruction}, or wait for the operator to resume it";
             }
 
             if (step.RetryNotBefore is not null)
@@ -736,6 +740,7 @@ public static class StatusCommand
         // spec/baton.md §7 for why. Same probe, same identity source as the Running branch below --
         // confirm dead before saying so, so a merely slow (or Unknown-liveness) pump is never
         // misreported as abandoned.
+        EngineLivenessResult? probeResult = null;
         if (step.LatestExecutionId is { } latestExecutionId)
         {
             // #1577: mirrors WorkflowStatusView's engineIdentityByExecutionId loop -- newest stamp
@@ -754,7 +759,7 @@ public static class StatusCommand
                 }
             }
 
-            var probeResult = EngineLivenessProbe.Probe(enginePid, engineStartTime);
+            probeResult = EngineLivenessProbe.Probe(enginePid, engineStartTime);
             if (probeResult.Status == EngineLivenessStatus.Dead)
             {
                 // #1582 review (HIGH-1): `baton resume`/`baton redispatch` both refuse a room in this
@@ -767,7 +772,28 @@ public static class StatusCommand
             }
         }
 
-        return $"parked ({classification}) — retries {localRetryTime}";
+        // #802: reaching here for a "vendor quota" classification means no declared
+        // FallbackOnExhaustion applied (one would have redispatched immediately rather than pacing
+        // to localRetryTime) — never silent: name the decision the operator owes instead of only the
+        // clock. An ordinary "retryable" backoff names nothing extra; it is the machine's own pacing,
+        // not a vendor decision.
+        if (classification != "vendor quota")
+        {
+            return $"parked ({classification}) — retries {localRetryTime}";
+        }
+
+        // #1838: the still-Dead engine already returned above, so reaching here with a live engine
+        // (or one whose identity was never recorded / came back Unknown) means `baton redispatch`
+        // would refuse for want of a terminal sentinel -- `baton cancel` first is the verb that
+        // actually settles the room. Only a confirmed-Alive read gets the two-step wording; Unknown
+        // stays on the plain instruction rather than guessing a cancel is needed (or safe) when the
+        // liveness read itself could not tell.
+        var instruction = probeResult?.Status == EngineLivenessStatus.Alive
+            ? RecoveryGuidance.CancelThenRedispatchAdapterInstruction
+            : RecoveryGuidance.RedispatchAdapterInstruction;
+
+        return $"parked ({classification}) — retries {localRetryTime}; "
+            + $"no fallback declared — {instruction}, or wait";
     }
 
     /// <summary>

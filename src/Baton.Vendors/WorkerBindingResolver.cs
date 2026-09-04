@@ -97,6 +97,49 @@ public static class WorkerBindingResolver
             (workerName, entry) => ResolveEntry(workerName, entry, adapters, profiles, bindingsFileDirectory, onWorkerStdoutLine));
     }
 
+    /// <summary>
+    /// #802: resolves ONLY the entries that declare <see cref="WorkerBindingConfigEntry.FallbackOnExhaustion"/>
+    /// (that member's own doc has the scope/permission guarantee this satisfies), each swapped onto
+    /// its fallback's Adapter/Model/Effort and resolved through the exact same <see cref="ResolveEntry"/>
+    /// path <see cref="Resolve"/> uses for the primary binding. A worker role with no declared fallback
+    /// is simply absent from the returned dictionary, which is what <c>Mutation.MutationInterface</c>
+    /// reads as "no rescue for this role's park."
+    /// </summary>
+    public static IReadOnlyDictionary<string, WorkerBinding> ResolveFallbacks(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> config,
+        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        IReadOnlyDictionary<string, string>? profiles = null,
+        string? bindingsFileDirectory = null,
+        Action<string, string>? onWorkerStdoutLine = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(adapters);
+
+        var bindings = new Dictionary<string, WorkerBinding>();
+        foreach (var (workerName, entry) in config)
+        {
+            if (entry.FallbackOnExhaustion is not { } fallback)
+            {
+                continue;
+            }
+
+            var fallbackEntry = entry with
+            {
+                Adapter = fallback.Adapter,
+                Model = fallback.Model,
+                Effort = fallback.Effort,
+                // The fallback's OWN dispatch never declares a further fallback -- #802 rules
+                // undeclared/chained failover out permanently (operator ruling, 2026-09-01); a single
+                // declared hop is the whole feature.
+                FallbackOnExhaustion = null,
+            };
+
+            bindings[workerName] = ResolveEntry(workerName, fallbackEntry, adapters, profiles, bindingsFileDirectory, onWorkerStdoutLine);
+        }
+
+        return bindings;
+    }
+
     private static WorkerBinding ResolveEntry(
         string workerName,
         WorkerBindingConfigEntry entry,

@@ -792,5 +792,84 @@ public class WorkerBindingResolverTests
         Assert.Throws<UnsatisfiableOutputContractException>(() => WorkerBindingResolver.Resolve(config, adapters));
     }
 
+    [Fact]
+    public void ResolveFallbacks_returns_only_entries_declaring_FallbackOnExhaustion()
+    {
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                FallbackOnExhaustion: new FallbackBinding("echo", "fallback-model")),
+            ["review"] = new WorkerBindingConfigEntry("echo", ArchitectContract, "Review.", TimeSpan.FromMinutes(5)),
+        };
+
+        var fallbacks = WorkerBindingResolver.ResolveFallbacks(config, adapters);
+
+        Assert.Equal(["architect"], fallbacks.Keys);
+        var binding = Assert.IsType<WorkerBinding.Process>(fallbacks["architect"]);
+        Assert.Equal("echo", binding.Adapter);
+        Assert.Equal("fallback-model", binding.Model);
+    }
+
+    [Fact]
+    public void ResolveFallbacks_drops_the_primarys_Model_when_the_fallback_declares_none()
+    {
+        // FallbackBinding's own doc has the #1082 reasoning this pins -- an unset fallback Model
+        // must NOT inherit the primary's.
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5), Model: "primary-model",
+                FallbackOnExhaustion: new FallbackBinding("echo")),
+        };
+
+        var binding = (WorkerBinding.Process)WorkerBindingResolver.ResolveFallbacks(config, adapters)["architect"];
+
+        Assert.Null(binding.Model);
+    }
+
+    [Fact]
+    public void ResolveFallbacks_refuses_an_unregistered_fallback_adapter_the_same_way_Resolve_does()
+    {
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                FallbackOnExhaustion: new FallbackBinding("claude")),
+        };
+
+        var ex = Assert.Throws<UnknownWorkerAdapterException>(() => WorkerBindingResolver.ResolveFallbacks(config, adapters));
+        Assert.Equal("claude", ex.AdapterName);
+    }
+
+    /// <summary>
+    /// #1838 (review LOW): <see cref="WorkerBindingResolver.ResolveFallbacks"/> routes a fallback
+    /// entry through the exact same private <c>ResolveEntry</c> the primary path uses, which is what
+    /// makes it subject to <see cref="ProjectCeilingGate"/> too -- but nothing pinned that for the
+    /// fallback path specifically until this test. Mirrors
+    /// <c>ClaudeWorkerAdapterTests.An_unseen_project_directory_is_refused_before_any_worker_spawns</c>:
+    /// a <see cref="WorkingDirectory"/> <see cref="ProjectCeilingStore"/> has never recorded a
+    /// ceiling for refuses with <see cref="ProjectNotTrustedException"/> regardless of what the
+    /// declared grant asks for, exactly like the primary binding would.
+    /// </summary>
+    [Fact]
+    public void ResolveFallbacks_is_refused_by_the_project_ceiling_gate_the_same_way_Resolve_does()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-fallback-{Guid.NewGuid():N}");
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["claude"] = new ClaudeWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                WorkingDirectory: unseenProject,
+                FallbackOnExhaustion: new FallbackBinding("claude")),
+        };
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => WorkerBindingResolver.ResolveFallbacks(config, adapters));
+        Assert.Equal(unseenProject, ex.ProjectPath);
+    }
 }
 

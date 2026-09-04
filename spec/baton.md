@@ -2555,6 +2555,31 @@ interactive 5-hour-window limit message has ever been captured, live, carrying a
 absent and the chip showing no time — #1115 still forbids fabricating an instant nobody has actually
 observed, live or bundle-derived.
 
+**Declared vendor-exhaustion fallback (#802, shipped).** A `WorkerBindingConfigEntry` may declare
+`FallbackOnExhaustion: {Adapter, Model?, Effort?}` — that field's own doc comment has the scope
+ruling and the resolution/ceiling guarantee, not restated here. When a step's latest attempt
+classifies `ExhaustedUntil` and its role declares a not-yet-tried fallback (`WorkerBindingResolver.
+ResolveFallbacks`'s output), `MutationInterface.GetRetryObligations` paces the retry to now instead of
+the vendor's own reset instant (known or not — redispatching elsewhere needs no reset instant to pace
+against), and the pump dispatches on that binding rather than the primary — one round, no wait. The
+one room fact this records is `FlowEvent.StepRebound` (the same event #1583 introduced for
+crash-recovery binding divergence, reused here for its stated §3.3 purpose), carrying the previous
+adapter/model, the new adapter/model, and the reset instant it rescued the step from waiting out (in
+`Reason`). The retry/attempt counters (`ConsecutiveFailureCount`, `ExecutionCount`) need no
+special-casing: a fallback dispatch is an ordinary `ExecutionRequestAccepted`, so they already count
+it as a fresh attempt of the same step. Chaining stops at one hop: once a step's `LatestExecutionId`
+already ran on the fallback, a further exhaustion parks like any undeclared one — see
+`ResolveVendorExhaustionFallback`'s own remarks for the exact check. With no declared fallback, the
+step parks exactly as the two paragraphs above describe, and `baton status`'s human rendering
+(`StatusCommand.FormatStepStatus`/`FormatParkedStatus`) now names the operator's own escape hatch
+rather than only the clock. `FormatParkedStatus` picks between two verbs depending on the same
+`EngineLivenessProbe` read `FormatStepStatus` already computes (#1838): a confirmed-`Alive` owning
+engine has not written the terminal sentinel `baton redispatch` requires, so the rendering names
+`RecoveryGuidance.CancelThenRedispatchAdapterInstruction` — `baton cancel <room-dir>`, then
+`baton redispatch <room-dir> --adapter <vendor>`; a `Dead` or `Unknown` read (or no recorded engine
+identity) names `RecoveryGuidance.RedispatchAdapterInstruction` — the already-shipped
+`baton redispatch <room-dir> --adapter <vendor>` alone — rather than restating either string.
+
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
 alone. §8 depends on this fact directly, and closes it by unioning the scan with a registry rather
