@@ -45,7 +45,7 @@ public class ChannelPopulationTests
         var grant = new PermissionGrant(
             ReadFiles: read, WriteFiles: write, RunShellCommands: shell, NetworkAccess: network);
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation("Review this.", PermissionGrant: grant), Contract);
+            new WorkerInvocation("Review this.", PermissionGrant: grant, AllowsSubagents: true), Contract);
 
         var flag = Split(target.Args.SkipWhile(a => a != "--disallowedTools").Skip(1).FirstOrDefault());
         var hook = Split(

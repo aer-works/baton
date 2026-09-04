@@ -612,6 +612,48 @@ public class WorkerRoleCatalogTests
         Assert.True(WorkerRoleCatalog.For("r").DeliversBranch);
     }
 
+    // #1802: allows_subagents -- see WorkerRole.AllowsSubagents's own remarks for what it gates.
+
+    /// <summary>
+    /// Catalog lockstep: pins the four roles' values the #1802 brief names explicitly. advise is the
+    /// only shipped role whose whole purpose is weighing options via fan-out; every other role
+    /// (including implement and review, the two the duplicate-review waste was measured on) withholds
+    /// the vendor's subagent tool by leaving the key omitted (default false).
+    /// </summary>
+    [Fact]
+    public void The_shipped_advise_role_allows_subagents_and_implement_and_review_do_not()
+    {
+        using var env = ShippedDefault();
+
+        Assert.True(WorkerRoleCatalog.For("advise").AllowsSubagents);
+        Assert.False(WorkerRoleCatalog.For("implement").AllowsSubagents);
+        Assert.False(WorkerRoleCatalog.For("review").AllowsSubagents);
+    }
+
+    [Fact]
+    public void A_role_with_no_allows_subagents_key_parses_as_false()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $"[{Role("r", "t")}]");
+
+        Assert.False(WorkerRoleCatalog.For("r").AllowsSubagents);
+    }
+
+    [Fact]
+    public void A_role_declaring_allows_subagents_true_parses_as_true()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"allows_subagents\": true}]");
+
+        Assert.True(WorkerRoleCatalog.For("r").AllowsSubagents);
+    }
+
     /// <summary>#1745: spec/baton.md §3 has why `review` and why its two values are equal.</summary>
     [Fact]
     public void The_shipped_review_role_carries_a_per_adapter_map_whose_values_equal_the_prior_single_figure()

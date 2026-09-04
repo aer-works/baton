@@ -1270,6 +1270,22 @@ would mean comparing against a pre-dispatch SHA, or gating on `OutcomeClassifica
 (already computed for `ChangesTree` roles) — a materially different assertion than the two the issue
 named, left for a follow-up rather than folded in here.
 
+**Withholding the vendor subagent tool (#1802).** A role's catalog entry may set
+`WorkerRole.AllowsSubagents` (`allows_subagents` in `WorkerRoles.json`; that member's own doc carries
+the motivating measurement) — `false` (the default; every role but `advise` leaves the key omitted)
+makes `Baton.Vendors.RoleDispatch.ToBinding` carry that value onto the resolved
+`WorkerBindingConfigEntry`/`WorkerInvocation` unchanged, and each adapter withholds its vendor's own
+fan-out tool: `ClaudeWorkerAdapter` appends `Agent,Task` to `--disallowedTools` (both names — `Task` is
+`Agent`'s older one, still honoured by the CLI), and `AgyWorkerAdapter` adds its own subagent tool names
+(`AgyWorkerAdapter.SubagentAndTaskTools`) to the denied-tools list — independent of, and in addition to,
+whatever each already withholds from the role's own `PermissionGrant` (that same list was already
+withheld on agy whenever writes or shell were withheld, #1387;
+this is a second, independent trigger, since `implement`'s grant keeps both true). `advise` is the one
+shipped role that sets `allows_subagents: true` (`WorkerRole.AllowsSubagents`'s own doc has why); on agy
+that role's own grant already withholds writes, so its subagent trio stays denied there regardless —
+this flag only ever narrows a vendor's reach, never widens beyond what the grant's own categories
+already permit.
+
 **`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
 Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its
 step's terminal `Status` read `Succeeded` — but a verify failure (or, pre-#1702, the not-run case

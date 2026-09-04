@@ -146,7 +146,8 @@ public static class WorkerBindingResolver
             entry.Timeout,
             // #1166 review finding A: forwarded so ProjectCeilingGate keys the ceiling on the stable
             // source repository rather than the ephemeral, room-scoped worktree path above.
-            WorktreeSourceRepository: entry.WorktreeSourceRepository);
+            WorktreeSourceRepository: entry.WorktreeSourceRepository,
+            AllowsSubagents: entry.AllowsSubagents);
         var target = adapter.Resolve(invocation, entry.Contract);
 
         if (onWorkerStdoutLine is not null)

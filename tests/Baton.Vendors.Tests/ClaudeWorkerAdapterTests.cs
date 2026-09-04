@@ -312,7 +312,7 @@ public class ClaudeWorkerAdapterTests
         // still carries them — see Withheld_writes_leave_the_flag_and_move_to_the_hooks_list.
         var grant = new PermissionGrant(ReadFiles: true);
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: true), ArchitectContract);
 
         // Writes are pre-approved so the hook can be consulted at all, and absent from the deny flag
         // so the CLI does not refuse them first. Both halves are #649; neither is enforcement.
@@ -325,7 +325,7 @@ public class ClaudeWorkerAdapterTests
     {
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: true), ArchitectContract);
 
         Assert.DoesNotContain("--disallowedTools", target.Args);
     }
@@ -392,9 +392,57 @@ public class ClaudeWorkerAdapterTests
     {
         // The Advanced escape hatch carries no categories to deny — a hand-typed scope is taken as-is.
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionScope: "Read,Edit"), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Read,Edit", AllowsSubagents: true), ArchitectContract);
 
         Assert.DoesNotContain("--disallowedTools", target.Args);
+    }
+
+    // #1802: AllowsSubagents sits outside the four PermissionGrant categories BuildDisallowedTools
+    // maps -- a write-and-shell-granted grant like implement's own never reaches Agent/Task through
+    // the grant alone, so this needs its own coverage independent of the category tests above.
+
+    [Fact]
+    public void A_fully_permissive_grant_with_subagents_withheld_still_denies_Agent_and_Task()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: false), ArchitectContract);
+
+        Assert.Equal("Agent,Task", ArgValue(target, "--disallowedTools"));
+    }
+
+    [Fact]
+    public void Subagent_withholding_composes_with_an_already_nonempty_disallowed_list()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, NetworkAccess: false);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: false), ArchitectContract);
+
+        var denied = ArgValue(target, "--disallowedTools")!;
+        Assert.Contains("Bash", denied);
+        Assert.Contains("WebFetch", denied);
+        Assert.Contains("Agent,Task", denied);
+    }
+
+    [Fact]
+    public void Subagents_allowed_emits_no_Agent_or_Task_denial()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: true), ArchitectContract);
+
+        Assert.DoesNotContain("--disallowedTools", target.Args);
+    }
+
+    [Fact]
+    public void A_WorkerInvocation_built_with_defaults_denies_Agent_and_Task()
+    {
+        // #1811 review: AllowsSubagents must default closed on WorkerInvocation itself, not merely
+        // on WorkerBindingConfigEntry -- a caller constructing one directly (bypassing the resolver)
+        // must not be able to spawn a subagent without naming the opt-in explicitly.
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Equal("Agent,Task", ArgValue(target, "--disallowedTools"));
     }
 
     /// <summary>
@@ -506,7 +554,7 @@ public class ClaudeWorkerAdapterTests
     {
         var grant = new PermissionGrant(ReadFiles: true);
         var target = new ClaudeWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: true), ArchitectContract);
 
         // #649: the two channels deliberately differ, on writes and only on writes. The flag is what
         // the CLI enforces directly; the hook list is what it enforces with the target path in hand.

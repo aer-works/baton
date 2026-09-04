@@ -51,7 +51,10 @@ public static class DispatchCapabilitiesPrinter
             var timebox = $"{(int)role.Timeout.TotalMinutes}m";
             var modelPart = role.Model is not null ? $", model: {role.Model}" : "";
             var effortPart = role.Effort is not null ? $", effort: {role.Effort}" : "";
-            sb.AppendLine($"  {role.Id,-12} {timebox,4}  (tier: {role.Tier}, adapter: {role.Adapter}{modelPart}{effortPart})");
+            // #1802: surface the subagent-withholding default per role -- the printer's whole job is
+            // to make what dispatch actually does visible without reading the catalog source.
+            var subagentsPart = $", subagents: {(role.AllowsSubagents ? "allowed" : "withheld")}";
+            sb.AppendLine($"  {role.Id,-12} {timebox,4}  (tier: {role.Tier}, adapter: {role.Adapter}{modelPart}{effortPart}{subagentsPart})");
         }
 
         return sb.ToString().TrimEnd();

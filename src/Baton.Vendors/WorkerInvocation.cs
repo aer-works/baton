@@ -117,6 +117,17 @@ namespace Baton.Vendors;
 /// -- see that member's own doc for why <see cref="ProjectCeilingGate"/> keys the project ceiling on
 /// this rather than <paramref name="WorkingDirectory"/> whenever it is set.
 /// </param>
+/// <param name="AllowsSubagents">
+/// #1802: forwarded verbatim from <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> (see
+/// <see cref="WorkerRole.AllowsSubagents"/> for what this gates and why). <see langword="false"/> makes
+/// <see cref="ClaudeWorkerAdapter"/> append <c>Agent</c>/<c>Task</c> to <c>--disallowedTools</c> and
+/// <see cref="AgyWorkerAdapter"/> add its subagent tool names to the denied-tools list, alongside
+/// (never instead of) whatever each already withholds from <paramref name="PermissionGrant"/>. Default
+/// <see langword="false"/> (#1811 review) -- an invocation built without naming this explicitly must
+/// not be able to spawn a subagent; only <see cref="WorkerBindingResolver.Resolve"/>, forwarding a
+/// <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> that itself defaults closed, or a caller
+/// that opts in explicitly, produces <see langword="true"/>.
+/// </param>
 public sealed record WorkerInvocation(
     string PromptTemplate,
     string? Model = null,
@@ -131,5 +142,7 @@ public sealed record WorkerInvocation(
     string? Effort = null,
     TimeSpan? Timeout = null,
     bool EnableMemoryProposalTool = false,
-    string? WorktreeSourceRepository = null);
+    string? WorktreeSourceRepository = null,
+    // #1802 review: default-closed; only RoleDispatch.ToBinding (from the catalog) ever sets true.
+    bool AllowsSubagents = false);
 
