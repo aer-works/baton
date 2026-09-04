@@ -32,8 +32,9 @@ raw quality and fall to tenth and eleventh once steps count at all.
   not rank models universally.
 - The API-cost proxy is not the subscription meter. Baton drives subscription-authenticated CLIs and
   nobody outside the vendor knows the meter's weighting.
-- Steps, not output, are what drained the weekly allowance: every step re-reads the context. Compare
-  routes on quality, steps, and output together, then look at cost.
+- Every step re-reads the context, so steps rather than output are the leading candidate for what
+  drained the weekly allowance; the subscription-usage snapshot stops short of a causal claim and so
+  does this page. Compare routes on quality, steps, and output together, then look at cost.
 
 ## The cast
 
