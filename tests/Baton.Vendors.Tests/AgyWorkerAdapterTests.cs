@@ -1132,9 +1132,8 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_WorkerInvocation_built_with_defaults_denies_the_subagent_trio_and_manage_task()
     {
-        // #1811 review: AllowsSubagents must default closed on WorkerInvocation itself, not merely
-        // on WorkerBindingConfigEntry -- a caller constructing one directly (bypassing the resolver)
-        // must not be able to spawn a subagent without naming the opt-in explicitly.
+        // See ClaudeWorkerAdapterTests.A_WorkerInvocation_built_with_defaults_denies_Agent_and_Task
+        // for why this needs its own coverage; this is agy's arm of the same check.
         var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
         var denied = EnvValue(target, AgyWorkerAdapter.DeniedToolsVariable).Split(':', 2)[1].Split(',');
