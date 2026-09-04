@@ -11,6 +11,7 @@ namespace Baton.Cli.Tests;
 /// rejecting with the #1530 reason, poller reject branches for <c>latest</c> with reason in body,
 /// and <see cref="CancelRequestPoller.RunAsync"/>'s own resilience contract.
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class CancelRequestPollerTests
 {
     private static readonly WorkflowDefinitionSnapshot Snapshot = new(

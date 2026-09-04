@@ -16,6 +16,7 @@ namespace Baton.Cli.Tests;
 /// against real rooms rather than fabricated <see cref="LogEntry"/> lists alone
 /// (<c>QuotaLedgerStoreTests</c> covers the store's own merge/concurrency contract in isolation).
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public sealed class QuotaLedgerSettleAndRebuildEndToEndTests : IDisposable
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =

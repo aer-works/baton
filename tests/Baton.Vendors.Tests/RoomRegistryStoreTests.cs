@@ -8,6 +8,7 @@ namespace Baton.Vendors.Tests;
 /// multi-project room registry <c>fleet_status</c> unions with its own directory scan
 /// (<c>FleetStatusToolTests</c> covers that union; this file covers the store in isolation).
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class RoomRegistryStoreTests
 {
     private static string TempRegistryPath() =>

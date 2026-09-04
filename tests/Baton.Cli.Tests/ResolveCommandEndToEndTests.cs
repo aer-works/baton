@@ -25,6 +25,7 @@ namespace Baton.Cli.Tests;
 /// this exact value, since no producer existed before this issue.
 /// </para>
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class ResolveCommandEndToEndTests
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =
