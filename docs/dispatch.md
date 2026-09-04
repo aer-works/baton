@@ -254,7 +254,11 @@ Each tier pins one vendor, model and effort in
 at 52 agent steps while Sonnet never exceeded 54% at any effort and took two to five times the steps,
 and [`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
 shows steps, not output, are what drained the weekly allowance. High buys review four more points for
-about 40% more steps; xhigh and max buy nothing. The `standard` pin is interim — `cheap` keeps agy's
+about 40% more steps; xhigh and max buy nothing. One caveat the snapshot itself states: its dollar
+column is tokens at API list price, so it carries the per-token price gap between models but not the
+subscription meter's own weighting, which the vendor does not publish. Opus medium is better on
+quality and steps for certain; cheaper on the plan only if that weighting is roughly proportional to
+price, which the conductor's per-launch model/effort log is what will show. The `standard` pin is interim — `cheap` keeps agy's
 flash-low for when that quota is idle, and the codex adapter (#1853) is expected to add a compact
 route (Sol high: 69% at 37 steps in the same snapshot) worth comparing against Opus medium for
 `implement` once it exists.
