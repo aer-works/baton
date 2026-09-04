@@ -723,6 +723,10 @@ public class WorkerBindingResolverTests
         var adapters = new Dictionary<string, IWorkerAdapter> { ["agy"] = new AgyWorkerAdapter() };
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
 
+        // #1166: both arms below target Path.GetFullPath(".") as WorkingDirectory -- trust it
+        // unrestricted so this test's own concern (worktree provisioning) is what decides the outcome.
+        ProjectCeilingStore.Set(Path.GetFullPath("."), ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var provisioned = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["review"] = new WorkerBindingConfigEntry(
@@ -745,6 +749,32 @@ public class WorkerBindingResolverTests
             () => WorkerBindingResolver.Resolve(declaredButUnprovisioned, adapters));
         Assert.Equal("review", ex.WorkerName);
         Assert.Contains("use 'baton dispatch <role>' to auto-provision an isolated workspace", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// P2 (#1664 third re-review): <see cref="WorkerBindingConfigEntry.WorktreeBaseSha"/> must survive
+    /// resolution onto <see cref="WorkerBinding.Process.WorktreeBaseSha"/> unchanged — the last hop of
+    /// N2's fix, between the value <see cref="WorktreeWorkspaces"/> stamps and the value
+    /// <c>MutationInterface</c> actually reads. Nothing previously asserted this hop; dropping the
+    /// <c>entry.WorktreeBaseSha</c> argument from the <see cref="WorkerBinding.Process"/> constructor
+    /// call at <c>WorkerBindingResolver.cs:156</c> turns this red alone.
+    /// </summary>
+    [Fact]
+    public void ResolveEntry_carries_WorktreeBaseSha_onto_the_resolved_Process_binding()
+    {
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        const string baseSha = "0369bf3ecafe0369bf3ecafe0369bf3ecafe0369";
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                WorkingDirectory: Path.GetFullPath("."), IsWorktree: true, WorktreeBaseSha: baseSha),
+        };
+
+        var binding = Assert.IsType<WorkerBinding.Process>(WorkerBindingResolver.Resolve(config, adapters)["architect"]);
+
+        Assert.Equal(baseSha, binding.WorktreeBaseSha);
+        Assert.True(binding.IsWorktree);
     }
 
     [Fact]

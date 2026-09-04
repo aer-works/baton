@@ -21,6 +21,23 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(StepRetryScheduled), "stepRetryScheduled")]
 [JsonDerivedType(typeof(StepRetryForeclosed), "stepRetryForeclosed")]
 [JsonDerivedType(typeof(ZeroOutputsDespiteSubstantialWork), "zeroOutputsDespiteSubstantialWork")]
+[JsonDerivedType(typeof(StepRebound), "stepRebound")]
+[JsonDerivedType(typeof(VerifyStarted), "verifyStarted")]
+[JsonDerivedType(typeof(VerifyPassed), "verifyPassed")]
+[JsonDerivedType(typeof(VerifyFailed), "verifyFailed")]
+[JsonDerivedType(typeof(VerifyNotRun), "verifyNotRun")]
+[JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
+[JsonDerivedType(typeof(VerifyDeclarationUnreviewed), "verifyDeclarationUnreviewed")]
+[JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
+[JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
+[JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
+[JsonDerivedType(typeof(ExecutionProgress), "executionProgress")]
+[JsonDerivedType(typeof(CancellationDelivered), "cancellationDelivered")]
+[JsonDerivedType(typeof(CancellationRejected), "cancellationRejected")]
+[JsonDerivedType(typeof(DeliveryPrOpened), "deliveryPrOpened")]
+[JsonDerivedType(typeof(DeliveryChecksGreen), "deliveryChecksGreen")]
+[JsonDerivedType(typeof(DeliveryChecksRed), "deliveryChecksRed")]
+[JsonDerivedType(typeof(DeliveryMerged), "deliveryMerged")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -37,8 +54,30 @@ public abstract record FlowEvent
     public sealed record ExecutionRequestRejected(ExecutionId ExecutionId, string Reason) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as successful.</summary>
+    /// <param name="WorkspaceChanged">
+    /// #1622/#1390: carried into <see cref="Projection.ProjectionCheckpointState.WorkspaceChangedByStepId"/>.
+    /// Nullable because history predates the field: an older <c>flow.jsonl</c> line written before it
+    /// existed still replays, with this null, the same "history predates the field" shape <see
+    /// cref="ExecutionFailed.Reason"/> already documents.
+    /// </param>
+    /// <param name="Hollow">Companion to <paramref name="WorkspaceChanged"/>; see its own remarks.</param>
+    /// <param name="HollowReason">Non-null only when <paramref name="Hollow"/> is true.</param>
+    /// <param name="PeakBilledInWindow">
+    /// #1709: the same <c>TokenBudgetMonitor.SnapshotPeakBilledInWindow()</c> reading
+    /// <see cref="ExecutionArrested.PeakBilledInWindow"/> already carries, stamped here so a
+    /// normally-completed execution's peak reaches the ledger too — before this field, only an arrest
+    /// journalled one, which inverted the population spec/baton.md §3's billed-rate calibration
+    /// actually needs (the false-positive side). Null whenever this execution ran with no live
+    /// <c>TokenBudgetMonitor</c> in scope (a non-Process dispatch, a crash-recovery classification of a
+    /// recorded exit, or a spawn refusal before dispatch), and on any ledger line written before this
+    /// field existed.
+    /// </param>
     public sealed record ExecutionSucceeded(
-        ExecutionId ExecutionId) : FlowEvent;
+        ExecutionId ExecutionId,
+        bool? WorkspaceChanged = null,
+        bool? Hollow = null,
+        string? HollowReason = null,
+        long? PeakBilledInWindow = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as failed.</summary>
     /// <param name="Reason">
@@ -69,13 +108,19 @@ public abstract record FlowEvent
     /// <param name="UnsatisfiedOutputNames">
     /// <c>Outcomes.OutputMaterializer.CapturedResponse.UnsatisfiedOutputNames</c>, carried the same hop.
     /// </param>
+    /// <param name="PeakBilledInWindow">
+    /// #1709: see <see cref="ExecutionSucceeded.PeakBilledInWindow"/>'s remarks — the identical field,
+    /// stamped on the other ordinary terminal outcome so every completed execution (not only a
+    /// successful one) carries the same measurement. Null under the same conditions that field is.
+    /// </param>
     public sealed record ExecutionFailed(
         ExecutionId ExecutionId,
         FailureClassification? FailureClassification,
         string? Reason = null,
         DateTimeOffset? RetryNotBefore = null,
         string? CapturedResponseFile = null,
-        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null,
+        long? PeakBilledInWindow = null) : FlowEvent;
 
     /// <summary>Flow has classified a completed execution as cancelled.</summary>
     public sealed record ExecutionCancelled(ExecutionId ExecutionId) : FlowEvent;
@@ -85,7 +130,16 @@ public abstract record FlowEvent
     /// execution. Recorded and fsync'd before the request reaches Core, per the
     /// intent-first write sequence rule.
     /// </summary>
-    public sealed record CancellationRequested(ExecutionId ExecutionId) : FlowEvent;
+    /// <param name="Origin">
+    /// #1762: <see cref="CancellationOrigin"/> — <c>Operator</c> vs. <c>HostStop</c>. Nullable
+    /// because history predates the field: a line written before #1762 carries no <c>Origin</c> at
+    /// all and replays as null, the same "history predates the field" shape
+    /// <see cref="ExecutionSucceeded.WorkspaceChanged"/> already documents. A null <c>Origin</c> is
+    /// NOT honoured by <c>MutationInterface</c>'s parked-cancel block (spec/baton.md §2) — that is
+    /// exactly the pre-#1762 behaviour for those lines, so an existing ledger can never be made worse
+    /// by this field's addition.
+    /// </param>
+    public sealed record CancellationRequested(ExecutionId ExecutionId, CancellationOrigin? Origin = null) : FlowEvent;
 
     /// <summary>
     /// A step declaring <see cref="PausePoint"/> reached a terminal outcome; Flow is idle
@@ -169,4 +223,315 @@ public abstract record FlowEvent
     public sealed record ZeroOutputsDespiteSubstantialWork(
         ExecutionId ExecutionId,
         string Evidence) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3): the engine has begun running a
+    /// role's declared verify command (<c>pixi run gates-quiet</c> for <c>implement</c>) against a
+    /// worker execution that exited 0 with its output contract satisfied. Diagnostic only, the same
+    /// "durable fact, no <see cref="StepState"/> consequence" shape as
+    /// <see cref="ZeroOutputsDespiteSubstantialWork"/> — <see cref="VerifyPassed"/>/<see cref="VerifyFailed"/>
+    /// record how it ended.
+    /// </summary>
+    public sealed record VerifyStarted(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>#1623: the verify command <see cref="VerifyStarted"/> named exited 0. Diagnostic only.</summary>
+    public sealed record VerifyPassed(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3): the role's verify command exited non-zero after the
+    /// worker itself exited 0 with a satisfied output contract. Settles the step
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> — the ruling's own words, "never a blind
+    /// retry"; the conductor resolves it. <paramref name="FailingMembers"/>/<paramref name="Tail"/>
+    /// mirror <c>tools/gates/gates.py</c>'s own <c>--quiet</c> shape (member names from its
+    /// <c>summarise()</c> line, plus a bounded output tail) — never a full log dump.
+    /// </summary>
+    /// <param name="FailingMembers">Which gate members failed, by name — empty/null if the verify
+    /// command reports no per-member breakdown.</param>
+    /// <param name="Tail">Each named failing member's OWN captured output (#1701) — see
+    /// <see cref="Mutation.VerifyRunner"/>'s own remarks for why a blind tail of the whole run isn't
+    /// this, and what happens when the shape isn't recognized.</param>
+    /// <param name="Kind">#1623 / F3: whether the failure was broken gates, a timeout, a cancellation, or an engine restart.</param>
+    public sealed record VerifyFailed(
+        ExecutionId ExecutionId,
+        IReadOnlyList<string>? FailingMembers = null,
+        string? Tail = null,
+        VerifyFailedKind Kind = VerifyFailedKind.GatesFailed) : FlowEvent;
+
+    /// <summary>
+    /// #1702 — spec/baton.md §3's not-run outcome:
+    /// <see cref="Mutation.VerifyCommandResolver.CheckRunnableAsync"/>'s pre-flight probe found the
+    /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
+    /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>
+    /// — the execution's own already-<c>Succeeded</c> classification decides the room word unassisted.
+    /// Never emitted alongside <see cref="VerifyStarted"/> for the same execution, so
+    /// <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/> and the #1608
+    /// <c>EngineRestart</c> recovery path are both untouched by this arm.
+    /// </summary>
+    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
+    public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
+
+    /// <summary>
+    /// #1708 H1: the workspace's working-tree <c>.baton/verify</c> differed from the one committed in
+    /// <c>HEAD</c> when this execution was dispatched, so the working-tree file was IGNORED and the
+    /// committed declaration (or, if there is none, the role default) decided what verify ran. The
+    /// self-verification boundary made audible: a worker can write that file, and this says when one
+    /// did — or, just as often, that a legitimate declaration was never committed and therefore never
+    /// took effect.
+    /// <para>
+    /// <b>Diagnostic only, and deliberately terminal as a record.</b> Same shape as
+    /// <see cref="VerifyStarted"/>/<see cref="VerifyPassed"/>: no <see cref="StepState"/> field, no
+    /// <c>WorkflowStatusView</c> surface, no <c>fleet_status</c> plumbing, no
+    /// <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict, so it needs no reader
+    /// beyond <c>flow.jsonl</c> — do not "complete" it into one.
+    /// </para>
+    /// </summary>
+    /// <param name="CommittedDigest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the COMMITTED command line —
+    /// null when <c>HEAD</c> holds no declaration (including a non-git workspace), which is exactly the
+    /// "an uncommitted declaration was ignored" case.
+    /// </param>
+    /// <param name="WorkingTreeDigest">The same digest of the working-tree command line; null when the file is absent or comment-only.</param>
+    public sealed record VerifyDeclarationIgnored(
+        ExecutionId ExecutionId,
+        string? CommittedDigest,
+        string? WorkingTreeDigest) : FlowEvent;
+
+    /// <summary>
+    /// #1708 M1: the declaration that graded this execution came from <c>HEAD</c> rather than from the
+    /// merge-base with <c>origin/main</c>, because no merge-base could be computed — no remote, a
+    /// default branch that is not <c>main</c>, or unrelated histories. The per-execution boundary still
+    /// holds (the value was read before the worker spawned), but the WIDER property does not: on this
+    /// workspace, a commit made by an earlier lane on the current branch is inside what grades the next
+    /// one, and nothing has reviewed it. This is what says so out loud instead of leaving it to be
+    /// inferred from the absence of a ref.
+    /// <para>
+    /// <b>Diagnostic only</b>, exactly like <see cref="VerifyDeclarationIgnored"/> — no
+    /// <see cref="StepState"/> field, no <c>WorkflowStatusView</c> surface, no <c>fleet_status</c>
+    /// plumbing, no <see cref="Status.WorkflowOutcome"/> consequence. It changes no verdict and needs no
+    /// reader beyond <c>flow.jsonl</c>; do not "complete" it into one.
+    /// </para>
+    /// <para>
+    /// Appended only when a declaration was actually FOUND that way. A workspace with no reviewed
+    /// baseline and no <c>.baton/verify</c> at all has nothing unreviewed to announce — it runs the role
+    /// default, same as any other.
+    /// </para>
+    /// </summary>
+    /// <param name="Digest">
+    /// <see cref="Mutation.VerifyCommandResolver.DeclarationDigest"/> of the command line that was read,
+    /// so the journal names WHICH unreviewed line took effect rather than only that one did.
+    /// </param>
+    public sealed record VerifyDeclarationUnreviewed(
+        ExecutionId ExecutionId,
+        string? Digest) : FlowEvent;
+
+    /// <summary>
+    /// #1623 (contract: <c>spec/baton.md</c> §3; the addendum's own words are quoted on
+    /// <see cref="Mutation.TokenBudgetMonitor"/>): a live execution's measured usage crossed its role's
+    /// token budget, OR (#1682) its tool-step count crossed its role's tool-step cap, OR (#1691) its
+    /// billed tokens inside one trailing <c>TokenBudgetMonitor.BilledRateWindow</c> crossed an
+    /// operator-supplied <c>--billed-rate-limit</c>. The engine cancels
+    /// the execution (arrest, not park) rather than let it keep running.
+    /// <paramref name="Usage"/> is the measured usage at arrest time; <paramref name="LastToolNames"/>
+    /// the last few tool calls observed, which is what a conductor reads to tell a runaway loop from a
+    /// merely long task. Settles the step <see cref="Status.WorkflowOutcome.Indeterminate"/>, same as
+    /// <see cref="VerifyFailed"/> — never a blind retry. Deliberately not
+    /// <see cref="FlowEvent.CancellationRequested"/>: that event is operator intent, and this is a
+    /// distinct, engine-initiated fact.
+    /// </summary>
+    /// <param name="Reason">
+    /// #1682: which producer armed this arrest — see <see cref="ArrestReason"/>. Null on a
+    /// pre-#1682 ledger line; <c>StateProjector.DescribeArrest</c> is where that reads as.
+    /// </param>
+    /// <param name="ToolStepCount">
+    /// #1682: the tool-step count at arrest time, set independently of <paramref name="Usage"/> (spec/baton.md §3).
+    /// </param>
+    /// <param name="PeakBilledInWindow">
+    /// #1691: the largest Σ billed tokens this execution held inside one trailing
+    /// <c>TokenBudgetMonitor.BilledRateWindow</c> — the OBSERVED rate, recorded whether or not
+    /// <paramref name="BilledRateLimit"/> was set. Null on any ledger line written before #1691.
+    /// #1709 added the identical field to <see cref="ExecutionSucceeded"/>/<see cref="ExecutionFailed"/>
+    /// so a normally-completed execution's peak reaches the ledger too — this field keeps its own
+    /// meaning unchanged (the reading at arrest time specifically), never merged with theirs.
+    /// </param>
+    /// <param name="BilledRateLimit">
+    /// #1691: the limit <paramref name="PeakBilledInWindow"/> was compared against, or null when no
+    /// rate trigger was armed (every role's default — spec/baton.md §3).
+    /// </param>
+    /// <param name="Adapter">
+    /// #1745: the adapter this execution actually ran on, so <c>StateProjector.DescribeArrest</c> can
+    /// name it in a <see cref="ArrestReason.TokenBudget"/> arrest's text — the budget that applied is
+    /// now per-adapter, so the reason it fired is incomplete without naming which vendor's figure it
+    /// was. Null on a ledger line written before this field existed.
+    /// </param>
+    public sealed record ExecutionArrested(
+        ExecutionId ExecutionId,
+        WorkerUsage? Usage = null,
+        IReadOnlyList<string>? LastToolNames = null,
+        ArrestReason? Reason = null,
+        int? ToolStepCount = null,
+        long? PeakBilledInWindow = null,
+        long? BilledRateLimit = null,
+        string? Adapter = null) : FlowEvent;
+
+    /// <summary>
+    /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different
+    /// adapter/model binding. When crash-recovery resubmission encounters a divergent binding
+    /// (the current <c>bindings.json</c> differs from the accepted request's recorded <see cref="ExecutionRequest.Adapter"/>
+    /// and/or <see cref="ExecutionRequest.Model"/>), Flow journals this event before dispatching so that
+    /// usage attribution (<see cref="Status.ExecutionUsageProjector"/>) re-attributes this execution to the
+    /// new binding rather than trusting the pre-crash frozen request.
+    /// </summary>
+    /// <param name="StepId">Which step was rebound.</param>
+    /// <param name="ForExecutionId">The execution whose binding diverged.</param>
+    /// <param name="PreviousAdapter">The adapter originally recorded on the accepted request.</param>
+    /// <param name="PreviousModel">The model originally recorded on the accepted request.</param>
+    /// <param name="NewAdapter">The new adapter resolved from the current worker bindings.</param>
+    /// <param name="NewModel">The new model resolved from the current worker bindings.</param>
+    /// <param name="Reason">Why the step was rebound (diagnostic).</param>
+    public sealed record StepRebound(
+        StepId StepId,
+        ExecutionId ForExecutionId,
+        string? PreviousAdapter = null,
+        string? PreviousModel = null,
+        string? NewAdapter = null,
+        string? NewModel = null,
+        string? Reason = null) : FlowEvent;
+
+    /// <summary>
+    /// #1608: Flow has classified a completed execution as <see cref="Outcomes.OutcomeVerdict.Indeterminate"/>
+    /// — see that type's own remarks for what disagrees with what. Distinct from
+    /// <see cref="ExecutionFailed"/> rather than reusing it with a sentinel classification: a reader
+    /// of this journal sees the disagreement as its own fact, not a <c>Failed</c> collapsed onto a
+    /// null <see cref="FailureClassification"/>. Carries no <see cref="FailureClassification"/> at
+    /// all — see <see cref="Outcomes.OutcomeVerdict.Indeterminate"/>'s own remarks for why. Projects
+    /// to <see cref="StepStatus.Failed"/> (the single-added-enum-value ruling keeps this out of
+    /// <see cref="StepStatus"/> itself) plus <see cref="StepState.IndeterminateAwaitingResolution"/>,
+    /// which is what actually drives the room-level <c>WorkflowOutcome.Indeterminate</c> reading and
+    /// <see cref="Scheduling.RetryEngine.MayRetry"/>'s refusal.
+    /// </summary>
+    /// <param name="Reason">See <see cref="Outcomes.OutcomeClassification.Reason"/>'s remarks — the same "null means not recorded" rule.</param>
+    /// <param name="CapturedResponseFile">See <see cref="ExecutionFailed.CapturedResponseFile"/>'s remarks — carried the same hop.</param>
+    /// <param name="UnsatisfiedOutputNames">See <see cref="ExecutionFailed.UnsatisfiedOutputNames"/>'s remarks — carried the same hop.</param>
+    public sealed record ExecutionIndeterminate(
+        ExecutionId ExecutionId,
+        string? Reason = null,
+        string? CapturedResponseFile = null,
+        IReadOnlyList<string>? UnsatisfiedOutputNames = null) : FlowEvent;
+
+    /// <summary>
+    /// #1608: the conductor resolution verb's own room fact — <c>baton resolve</c> is the only
+    /// path ever allowed to write under a declared output name from a
+    /// <see cref="Outcomes.OutputMaterializer.CapturedResponse"/>, and this event is what makes that
+    /// resolution durable and falsifiable from the room record alone. Recorded exactly once per
+    /// <see cref="ExecutionIndeterminate"/> — <see cref="Projection.StateProjector"/> clears
+    /// <see cref="StepState.IndeterminateAwaitingResolution"/> on apply, so a second resolution
+    /// attempt against the same execution is refused before this is ever appended
+    /// (<c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>), not silently re-applied.
+    /// </summary>
+    /// <param name="StepId">
+    /// The step this resolution applies to — carried explicitly (not solely derived via
+    /// <paramref name="ExecutionId"/>) the same way <see cref="StepRetryForeclosed"/> carries both
+    /// its <c>StepId</c> and its <c>ForExecutionId</c>, so a stale target is a guarded no-op on
+    /// replay rather than a silent misapplication to whichever step now owns that execution id.
+    /// </param>
+    /// <param name="ExecutionId">The indeterminate execution this resolution settles.</param>
+    /// <param name="Accepted">
+    /// <c>true</c>: the capture honestly satisfies its declared output(s) — the step settles
+    /// <see cref="StepStatus.Succeeded"/>, and this event is itself journaled BEFORE the real file(s)
+    /// are written (#1608 review finding 5: fact then files, not files then fact — a crash in between
+    /// leaves this fact durable with a declared output still missing, which
+    /// <c>Mutation.MutationInterface</c>'s own resolution surface re-materializes from the still-durable
+    /// capture on the next matching <c>--execution</c>, rather than the mirror gap the opposite order
+    /// left open: an orphaned file on disk with no fact and a room still reading Indeterminate).
+    /// <c>false</c>: rejected — the step stays
+    /// <see cref="StepStatus.Failed"/>, no file is written, and <see cref="Scheduling.RetryEngine.MayRetry"/>
+    /// re-applies its ordinary predicate rather than refusing unconditionally, since the conductor
+    /// has now made the call this room was blocked on.
+    /// </param>
+    /// <param name="Reason">
+    /// The conductor's own justification — required by <c>ResolveOptionsParser</c> for a rejection,
+    /// optional for an acceptance (the accept/reject choice already speaks for itself there).
+    /// </param>
+    /// <param name="ResolvedOutputNames">
+    /// The declared output name(s) this resolution covers — <see cref="ExecutionIndeterminate.UnsatisfiedOutputNames"/>
+    /// at resolution time, carried onto this event too so the durable record of "what was written, or
+    /// refused" never depends on re-deriving it from projected state.
+    /// </param>
+    /// <param name="Decider">Attribution info for the decider. Defaults to human, same as <see cref="ExternalDecisionRecorded"/>.</param>
+    public sealed record CaptureResolved(
+        StepId StepId,
+        ExecutionId ExecutionId,
+        bool Accepted,
+        string? Reason = null,
+        IReadOnlyList<string>? ResolvedOutputNames = null,
+        DeciderInfo? Decider = null) : FlowEvent
+    {
+        [JsonIgnore]
+        public DeciderInfo EffectiveDecider => Decider ?? DeciderInfo.DefaultHuman;
+    }
+
+    /// <summary>
+    /// #1549: a coarse, content-free progress heartbeat for a live execution. Carries nothing beyond
+    /// the id — the writer-stamped timestamp every journal line already carries
+    /// (<see cref="LogEntry.FlowLogEntry.WriterUtcTimestamp"/>) is the "timestamp" half of "execution
+    /// id + timestamp only". <c>Baton.Cli.ExecutionProgressHeartbeat</c> is the sole producer and the
+    /// canonical explanation of when this fires (cadence, the mtime gate, the coverage limits); see
+    /// its own remarks rather than a second copy here. <c>spec/baton.md</c> §2 records why this event
+    /// exists at all.
+    /// </summary>
+    public sealed record ExecutionProgress(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1549: an operator's <c>cancel.request</c> actually reached a live, still-registered
+    /// <see cref="Mutation.InFlightExecutionRegistry"/> entry and its
+    /// <see cref="System.Threading.CancellationTokenSource"/> was signalled — distinct from
+    /// <see cref="CancellationRequested"/>, which only records that Flow forwarded the intent and is
+    /// appended immediately before the same signal is attempted
+    /// (<see cref="Mutation.InFlightExecutionRegistry.RequestCancellationAsync"/>). Recorded whether
+    /// or not the signal actually reaches the worker process before it exits on its own; it is the
+    /// delivery of the request into Core, not proof the worker observed it. Content-free by design,
+    /// matching <see cref="CancellationRequested"/>'s own shape.
+    /// </summary>
+    public sealed record CancellationDelivered(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1549: the pump-side <c>cancel.request</c> poller (<c>Baton.Cli.CancelRequestPoller</c>)
+    /// exhausted its bounded retry (5 ticks) against a target that still projects
+    /// <see cref="StepStatus.Running"/> but was never reachable through
+    /// <see cref="Mutation.InFlightExecutionRegistry"/> — the "likely non-process work" refusal
+    /// <c>CancelRequestFile.Reject</c> also records to the file channel. Recorded only when a
+    /// concrete <see cref="ExecutionId"/> was resolved; a malformed request or an ambiguous
+    /// <c>latest</c> (no execution ever named) has nothing to key an execution-scoped journal fact
+    /// on and stays a file-and-stderr-only rejection, same as before this event existed.
+    /// </summary>
+    public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>#734: see spec/baton.md §2's "Delivery state facts" for the producer and the no-action rule shared by all four of these cases — not restated per-case here.</summary>
+    /// <param name="Branch">The room's own declared branch name, when the step also declared one.</param>
+    public sealed record DeliveryPrOpened(int PullRequestNumber, string? Branch = null) : FlowEvent;
+
+    /// <summary>#734: see <see cref="DeliveryPrOpened"/>'s remarks. Not terminal, unlike <see cref="DeliveryMerged"/> — a later push can flip this again.</summary>
+    public sealed record DeliveryChecksGreen(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>#734: see <see cref="DeliveryChecksGreen"/>'s remarks — the failing counterpart.</summary>
+    public sealed record DeliveryChecksRed(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>
+    /// #734: see <see cref="DeliveryPrOpened"/>'s remarks. <paramref name="Merged"/> discriminates an
+    /// actual merge from closed-unmerged, so the latter reuses this kind rather than adding a fifth.
+    /// Defaults <c>false</c> deliberately — fail closed: a corrupted or truncated line that lost this
+    /// field must not replay as the one outcome ("shipped") a reader would act differently on than the
+    /// other ("abandoned").
+    /// </summary>
+    public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = false) : FlowEvent;
+
+    /// <summary>
+    /// #1779: an <c>eventType</c> this binary does not recognize, produced by
+    /// <see cref="Baton.Store.FlowEventLogJson.DeserializeLine"/> -- see that method's remarks for why
+    /// (the deliberate exception to <see cref="Baton.Store.FlowEventLogJson"/>'s own "loud beats
+    /// silent" rule) and for the mechanism. Filtered out by <see cref="Baton.Store.FlowEventLogReader"/>
+    /// before anything else -- including <see cref="Projection.StateProjector"/> -- ever sees it; it
+    /// never appears in a <see cref="LogEntry.FlowLogEntry.Event"/> exposed outside the reader.
+    /// </summary>
+    internal sealed record UnknownFlowEvent(string Kind, string RawJson) : FlowEvent;
 }

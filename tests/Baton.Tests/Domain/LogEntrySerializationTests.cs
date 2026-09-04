@@ -46,12 +46,31 @@ public class LogEntrySerializationTests
     }
 
 
+    /// <summary>
+    /// The <c>owner</c> counterpart of <see cref="FlowEventSerializationTests.Deserializing_an_unknown_event_type_discriminator_does_not_throw"/>
+    /// -- see that test's remarks for the #1779 rationale, shared verbatim one layer up the union.
+    /// </summary>
     [Fact]
-    public void Deserializing_an_unknown_owner_discriminator_throws()
+    public void Deserializing_an_unknown_owner_discriminator_does_not_throw()
     {
         const string json = """{"owner":"somethingElse"}""";
 
-        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<LogEntry>(json, FlowEventLogJson.Options));
+        var deserialized = FlowEventLogJson.DeserializeLine(json);
+
+        var unknown = Assert.IsType<LogEntry.UnknownLogEntry>(deserialized);
+        Assert.Equal("somethingElse", unknown.Owner);
+    }
+
+    /// <summary>
+    /// The <c>owner</c> counterpart of <see cref="FlowEventSerializationTests.Deserializing_a_known_event_type_missing_a_required_member_still_throws"/>
+    /// -- a KNOWN owner ("flow") whose nested event is missing a required member.
+    /// </summary>
+    [Fact]
+    public void Deserializing_a_known_owner_with_a_malformed_event_still_throws()
+    {
+        const string json = """{"owner":"flow","Event":{"eventType":"executionFailed"}}""";
+
+        Assert.Throws<JsonException>(() => FlowEventLogJson.DeserializeLine(json));
     }
 
     [Fact]

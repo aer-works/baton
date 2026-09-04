@@ -1,11 +1,29 @@
+using Baton.Tests.Projection;
 using Baton.Tests.TestSupport;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Status;
+using Baton.Workspaces;
 
 namespace Baton.Tests.Outcomes;
 
+/// <summary>
+/// #1607 flake fix (found while gating, unrelated to #1607's own change): several tests here drive
+/// <see cref="OutcomeClassifier.Classify"/> with a <see cref="FakeResponseParser"/> that returns a
+/// non-null response, which reaches <c>OutputMaterializer.TryCaptureFinalResponse</c>'s success arm and
+/// writes a real, unguarded <c>Console.Error.WriteLine("CAPTURED (#1594): ...")</c> — the same
+/// process-global stream <see cref="ConsoleErrorCaptureCollection"/> exists to serialize access to.
+/// Before this fix, this class ran in xUnit's normal parallel pool and could interleave with any test
+/// in that collection (observed: <c>RoomTurnThrottleTests.A_partial_throttle_file_overrides_only_the_field_it_names</c>,
+/// which asserts stderr is empty after temporarily swapping it via <c>Console.SetError</c>, occasionally
+/// captured this class's stray write instead). Joining the same collection is the fix: the collection
+/// docstring's own scope ("every test class that captures loud-fallback stderr") reads as
+/// SetError-swapping only, but the actual invariant it protects is "nothing else may write to the real
+/// stream while a member holds it swapped" — a class that writes it unguarded needs the same
+/// serialization as a class that swaps it.
+/// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class OutcomeClassifierTests
 {
     [Fact]
@@ -30,7 +48,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_returns_Failed_when_exit_code_is_zero_but_a_required_output_is_missing()
+    public void Classify_returns_Indeterminate_when_exit_code_is_zero_but_a_required_output_is_missing()
     {
         var directory = CreateTempDirectory();
         try
@@ -40,7 +58,12 @@ public class OutcomeClassifierTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["plan"], classification.UnsatisfiedOutputNames);
+            Assert.Contains("work possibly on disk", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
         }
         finally
         {
@@ -48,13 +71,12 @@ public class OutcomeClassifierTests
         }
     }
 
-    // #1594 (see OutputMaterializer's class remarks for the ruling): a missing declared output's
-    // response recovered from the worker's own terminal result envelope is EXTRACTED into an
-    // engine-owned dotfile and ATTACHED as a room fact -- it never lands under the declared output
-    // name, and the verdict is always Failed(Permanent), never Succeeded.
+    // #1594/#1608 -- see OutcomeClassifier.Classify's own remarks on the captured-response arm for
+    // why this settles Indeterminate rather than Succeeded/Failed(Permanent), and
+    // OutputMaterializer's class remarks for the capture ruling itself.
 
     [Fact]
-    public void Classify_captures_a_missing_outputs_response_and_settles_Failed_Permanent_leaving_the_declared_output_unwritten()
+    public void Classify_captures_a_missing_outputs_response_and_settles_Indeterminate_leaving_the_declared_output_unwritten()
     {
         var directory = CreateTempDirectory();
         try
@@ -66,8 +88,8 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
             Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
             Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.Contains(OutputMaterializer.CapturedResponseFileName, classification.Reason);
@@ -87,21 +109,21 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_leaves_a_missing_output_failed_when_there_is_no_stdout_log_at_all()
+    public void Classify_leaves_a_missing_output_indeterminate_when_there_is_no_stdout_log_at_all()
     {
         var directory = CreateTempDirectory();
         try
         {
             var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
 
-            // No .stdout.log at all -- the empty-envelope arm: today's failure stands unchanged.
+            // No .stdout.log at all -- no capture possible, settles Indeterminate (#1593)
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser(response: null));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -112,7 +134,7 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_leaves_a_missing_output_failed_when_the_parser_declines_the_stdout_lines_last_line()
+    public void Classify_leaves_a_missing_output_indeterminate_when_the_parser_declines_the_stdout_lines_last_line()
     {
         // The polarity arm the previous test's "no .stdout.log" case can't reach: a real stream log
         // exists, but the adapter's parser looks at its last line and says "not a usable response"
@@ -128,9 +150,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser(response: null));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -163,9 +185,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
-            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Equal(["advice.md", "verdict.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
@@ -192,8 +214,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("the worker's real answer"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["verdict.json"], classification.UnsatisfiedOutputNames);
             // Untouched: the real file a worker actually wrote must never be clobbered by the envelope.
             Assert.Equal("not json", File.ReadAllText(Path.Combine(directory, "verdict.json")));
         }
@@ -223,8 +246,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("free-form prose, not a verdict"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["report.md", "verdict.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "report.md")));
             Assert.False(File.Exists(Path.Combine(directory, "verdict.json")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
@@ -252,8 +276,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("free-form prose"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["turn-actions.json"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "turn-actions.json")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -281,8 +306,9 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("ran the checkers, all green"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["janitor.md", "branch.diff"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
             Assert.False(File.Exists(Path.Combine(directory, "branch.diff")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
@@ -311,8 +337,8 @@ public class OutcomeClassifierTests
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
                 responseParser: new FakeResponseParser("ran the checkers, all green"));
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
-            Assert.Equal(FailureClassification.Permanent, classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
             Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
             Assert.Equal(["janitor.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "janitor.md")));
@@ -336,8 +362,9 @@ public class OutcomeClassifierTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
             Assert.False(File.Exists(Path.Combine(directory, "advice.md")));
             Assert.False(File.Exists(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
         }
@@ -735,12 +762,12 @@ public class OutcomeClassifierTests
             var classSingle = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contractSingleMissing, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classBoth.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classBoth.Verdict);
             Assert.NotNull(classBoth.Reason);
             Assert.Contains("alpha.txt", classBoth.Reason);
             Assert.Contains("beta.json", classBoth.Reason);
 
-            Assert.Equal(OutcomeVerdict.Failed, classSingle.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classSingle.Verdict);
             Assert.NotNull(classSingle.Reason);
             Assert.Contains("alpha.txt", classSingle.Reason);
             Assert.DoesNotContain("beta.json", classSingle.Reason);
@@ -827,12 +854,16 @@ public class OutcomeClassifierTests
             var classTruncated = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classTruncated.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classTruncated.Verdict);
             Assert.NotNull(classTruncated.Reason);
             Assert.True(classTruncated.Reason.Length <= 500, $"Reason length {classTruncated.Reason.Length} exceeded 500 characters cap.");
-            Assert.True(
-                classTruncated.Reason.EndsWith("...") || classTruncated.Reason.EndsWith("…"),
-                "Reason should end with an ellipsis when truncated.");
+            // F13 (#1593 review): the suffix now follows the cut, so a bare EndsWith("...") no longer
+            // holds — but a bare Contains("...") would pass equally on a literal "..." anywhere in an
+            // output name, which is not what this assertion means to discriminate. "... —" pins the cut
+            // immediately followed by the suffix's own leading text, keeping the discrimination the
+            // pre-suffix EndsWith form had.
+            Assert.Contains("... —", classTruncated.Reason);
+            Assert.Contains("awaiting conductor resolution", classTruncated.Reason);
 
             // Polarity arm: non-pathological short reason is not truncated and does not end with ellipsis
             var shortContract = new WorkerContract("worker", [], [new ProducedOutput("short.txt")], []);
@@ -887,8 +918,8 @@ public class OutcomeClassifierTests
             Assert.True(
                 classification.Reason.Length <= 500,
                 $"Reason length {classification.Reason.Length} exceeded the 500-character cap.");
-            Assert.EndsWith("more)", classification.Reason);
             Assert.Contains("(+32 more)", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
 
             // Polarity: at or under the listing cap there is no marker to preserve.
             var fewOutputs = Enumerable.Range(1, 3).Select(i => new ProducedOutput($"out{i}.json")).ToList();
@@ -967,7 +998,7 @@ public class OutcomeClassifierTests
                     new CoreDispatchResult(0, CoreExitReason.TimedOut, StderrTail: null), emptyContract, directory).Reason);
 
             Assert.Equal(
-                "Contract not satisfied: 'plan' is missing",
+                "Contract not satisfied: 'plan' is missing — worker exited 0 with work possibly on disk; awaiting conductor resolution.",
                 OutcomeClassifier.Classify(
                     new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null),
                     new WorkerContract("worker", [], [new ProducedOutput("plan")], []),
@@ -1103,9 +1134,9 @@ public class OutcomeClassifierTests
                 new WorkerContract("worker", [], [new ProducedOutput("plan")], []),
                 directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Equal(
-                "Contract not satisfied: 'plan' is missing stderr: warning: no changes were required",
+                "Contract not satisfied: 'plan' is missing — worker exited 0 with work possibly on disk; awaiting conductor resolution. stderr: warning: no changes were required",
                 classification.Reason);
         }
         finally
@@ -1221,22 +1252,21 @@ public class OutcomeClassifierTests
     }
 
     [Fact]
-    public void Classify_does_not_veto_a_satisfied_run_for_a_non_ToolDenied_classification()
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_stream_carries_a_quota_exhaustion_signal()
     {
-        // #914 scope gate: ONLY an auto-denied tool vetoes an otherwise-satisfied exit-0 run. A
-        // classifier reporting ExhaustedUntil (quota) on a satisfied contract must leave the run
-        // Succeeded — quota exhaustion never produces a satisfied contract, and before the gate this
-        // path stamped such a run Failed AND mislabeled it with the auto-denied message. This arm reds
-        // against the ungated condition and passes against the ToolDenied gate.
+        // #1622: a worker hitting quota mid-lane can still exit 0 against a trivially-satisfied
+        // (zero-output) contract; this must not read Succeeded. See OutcomeClassifier.Classify's own
+        // remarks for why -- pinned here as the gating unit test, mock classifier and all.
         var directory = CreateTempDirectory();
         try
         {
             var contract = new WorkerContract("worker", [], [], []);
             var quotaStderr = "Individual quota reached. Resets in 1h";
+            var resetAt = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
             var mockClassifier = new TestQuotaClassifier(
                 quotaStderr,
                 FailureClassification.ExhaustedUntil,
-                new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+                resetAt);
 
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural, quotaStderr),
@@ -1244,8 +1274,49 @@ public class OutcomeClassifierTests
                 directory,
                 mockClassifier);
 
-            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
-            Assert.Null(classification.FailureClassification);
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(resetAt, classification.RetryNotBefore);
+            Assert.Contains("vendor's quota-exhaustion signal was present in the stream", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    // #1622's real captured-stream fixture (a genuine parse, not pass-through against a canned
+    // classifier double) lives in Baton.Vendors.Tests.ClaudeWorkerAdapterTests
+    // (Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required):
+    // OutcomeClassifier lives in Baton, which cannot reference Baton.Vendors (Architecture Rule 2), so
+    // the arm exercising a real IFailureClassifier implementation against OutcomeClassifier.Classify has
+    // to live in the project that can see both.
+
+    [Theory]
+    [InlineData(FailureClassification.Retryable)]
+    [InlineData(FailureClassification.Permanent)]
+    public void Classify_does_not_veto_a_satisfied_exit_0_run_for_a_non_ToolDenied_non_ExhaustedUntil_classification(
+        FailureClassification classification)
+    {
+        // #914 scope gate, widened by #1622 (a): ONLY ToolDenied/ExhaustedUntil veto an otherwise-
+        // satisfied exit-0 run. This is the polarity control for both vetoing tests above -- reds if a
+        // future change widens the veto to every non-null FailureClassification instead of exactly
+        // these two.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var stderr = "some other failure signature";
+            var mockClassifier = new TestQuotaClassifier(stderr, classification, null);
+
+            var result = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, stderr),
+                contract,
+                directory,
+                mockClassifier);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, result.Verdict);
+            Assert.Null(result.FailureClassification);
         }
         finally
         {
@@ -1613,6 +1684,302 @@ public class OutcomeClassifierTests
         }
     }
 
+    /// <summary>
+    /// F4 (#1593 review): production only ever hands <c>IsWorkspaceUntouched</c> an ACTUALLY-provisioned
+    /// worktree path (<see cref="WorkerBinding.Process.IsWorktree"/>) plus the ref it was provisioned
+    /// from — never a plain <c>git init</c> directory standing in for one, which is not a worktree at
+    /// all (<see cref="WorktreeProvisioner.IsWorktree"/> reads false for it) and so exercised the WRONG
+    /// branch of <see cref="WorktreeProvisioner.IsWorkspaceUntouched"/> before this fix. Rewritten to use
+    /// a real provisioned worktree and its real base ref, so this pins the branch production actually
+    /// takes rather than the non-worktree <c>@{upstream}</c> arm.
+    /// </summary>
+    /// <summary>
+    /// N2 (#1664 re-review): passes the REAL resolved base SHA
+    /// (<see cref="WorktreeProvisioner.ResolveBaseCommit"/>), not the literal symbolic
+    /// <c>"HEAD"</c> the pre-fix version of this test passed. A literal <c>"HEAD"</c>, read back out
+    /// of the worktree itself, is <c>HEAD..HEAD ≡ 0</c> — degenerate, and unable to discriminate a
+    /// commit from no commit, which is exactly why production's own use of the same value could not
+    /// have caught N2. This is the control: same clean workspace, but now compared against a base
+    /// that is genuinely capable of being ahead of.
+    /// </summary>
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_untouched_workspace_retains_Failed_verdict()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            // Streamed worker, but no terminal success record observed, and workspace is completely clean.
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Contains("Contract not satisfied: 'advice.md' is missing", classification.Reason);
+            Assert.DoesNotContain("work possibly on disk", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// N2 (#1664 re-review): the commit polarity the rewritten "untouched" test above cannot exercise
+    /// — a worker that commits inside its worktree, compared against the REAL resolved base SHA, must
+    /// NOT read as untouched. Before this fix, production never populated a real base SHA at all
+    /// (<c>WorktreeWorkspaces</c> nulled <c>Worktree</c> in the same expression that stamped
+    /// <c>IsWorktree: true</c>), so this arm of <see cref="WorktreeProvisioner.IsWorkspaceUntouched"/>
+    /// could never fire and this test is what makes that reachable.
+    /// </summary>
+    [Fact]
+    public void Dead_worker_without_terminal_result_who_committed_over_the_real_base_sha_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+
+            File.WriteAllText(Path.Combine(worktreeDir, "committed.txt"), "the worker's own commit");
+            RunGitProcess(worktreeDir, "add", ".");
+            RunGitProcess(worktreeDir, "commit", "-m", "worker commit");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// N5/F6 (#1664 re-review): the single behaviour F6 asked for, previously unmeasured — a worker
+    /// that emitted a terminal `result` record reporting FAILURE (not SUCCESS) on an otherwise
+    /// UNTOUCHED workspace must settle Indeterminate, not take the dead-worker Failed/retry path.
+    /// <see cref="CoreDispatchResult.TerminalResultObserved"/>, not
+    /// <see cref="CoreDispatchResult.TerminalSuccessObserved"/>, is what tells
+    /// <c>isDeadWorkerWithoutResult</c> a result actually arrived — every other test at this workspace
+    /// shape passes <c>TerminalResultObserved: false</c> (the default) and would pass identically
+    /// under the old, retired predicate.
+    /// </summary>
+    [Fact]
+    public void A_self_reported_failure_result_on_an_untouched_workspace_settles_Indeterminate_not_Failed()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false, TerminalResultObserved: true),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    /// <summary>
+    /// F4 (#1593 review): pins the no-worktree case explicitly, rather than leaving it inferred — a
+    /// room with no provisioned worktree passes <c>worktreePath: null</c>
+    /// (<c>MutationInterface</c>'s own <c>binding.IsWorktree ? ... : null</c> gate), which
+    /// <c>IsWorkspaceUntouched</c> fails closed on immediately, so the untouched-workspace retry carve-out
+    /// can never fire for a non-worktree room — it always settles Indeterminate instead, the same as a
+    /// mutated workspace would.
+    /// </summary>
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_a_null_worktree_path_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: null);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+        }
+    }
+
+    [Fact]
+    public void Dead_worker_without_terminal_result_on_mutated_workspace_settles_Indeterminate()
+    {
+        var outboxDir = CreateTempDirectory();
+        var worktreeDir = CreateTempDirectory();
+        try
+        {
+            InitGitRepository(worktreeDir);
+            // Worker modified a file on disk before dying
+            File.WriteAllText(Path.Combine(worktreeDir, "modified.txt"), "stray work");
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Equal(["advice.md"], classification.UnsatisfiedOutputNames);
+            Assert.Contains("work possibly on disk", classification.Reason);
+            Assert.Contains("awaiting conductor resolution", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(worktreeDir);
+        }
+    }
+
+    /// <summary>
+    /// P1 (#1664 third re-review): the prior version of this test used a plain <c>git init</c>
+    /// directory (not a provisioned worktree — <see cref="WorktreeProvisioner.IsWorktree"/> reads false
+    /// for one), and left its ten files entirely untracked under one new directory, which
+    /// <c>git status --porcelain</c> collapses to a single <c>?? src/</c> line rather than ten. Both
+    /// gaps together made the fixture pass unchanged on the pre-fix tree — see the doc comment N1 left
+    /// on this test for what it wrongly claimed. Rewritten to provision a REAL worktree (so the
+    /// commits-over-base half of the evidence is in play too) and to COMMIT the ten files first, then
+    /// modify them, so <c>git status --porcelain</c> reports ten distinct <c> M …</c> lines — the shape
+    /// that actually blows the suffix budget.
+    /// </summary>
+    [Fact]
+    public void Classify_bounds_ten_long_stray_paths_on_a_dirty_worktree_instead_of_throwing()
+    {
+        var outboxDir = CreateTempDirectory();
+        var sourceRepo = CreateTempDirectory();
+        var worktreeParent = CreateTempDirectory();
+        var worktreeDir = Path.Combine(worktreeParent, "workspace");
+        try
+        {
+            InitGitRepository(sourceRepo);
+            var baseSha = WorktreeProvisioner.ResolveBaseCommit(sourceRepo, "HEAD");
+            Assert.NotNull(baseSha);
+            WorktreeProvisioner.Provision(worktreeDir, sourceRepo, "HEAD");
+
+            var nestedDir = Path.Combine(worktreeDir, "src", "Baton", "Outcomes");
+            Directory.CreateDirectory(nestedDir);
+            for (var i = 0; i < 10; i++)
+            {
+                // Each repo-relative path (from worktreeDir) is well past 40 characters.
+                File.WriteAllText(Path.Combine(nestedDir, $"OutcomeClassifierScenarioNumber{i:D2}.cs"), "stray work");
+            }
+            RunGitProcess(worktreeDir, "add", ".");
+            RunGitProcess(worktreeDir, "commit", "-m", "add ten scenario files");
+            // Now modify every committed file so porcelain reports ten " M …" lines instead of one
+            // collapsed "?? src/" directory entry.
+            for (var i = 0; i < 10; i++)
+            {
+                File.AppendAllText(Path.Combine(nestedDir, $"OutcomeClassifierScenarioNumber{i:D2}.cs"), " modified");
+            }
+
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, TerminalSuccessObserved: false),
+                contract,
+                outboxDir,
+                responseParser: new FakeResponseParser(response: null),
+                worktreePath: worktreeDir,
+                worktreeBaseRef: baseSha);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.NotNull(classification.Reason);
+            Assert.True(
+                classification.Reason.Length <= 500,
+                $"Reason length {classification.Reason.Length} exceeded the 500-character cap.");
+            Assert.Contains("OutcomeClassifierScenarioNumber", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(outboxDir);
+            DirectoryCleanup.DeleteRecursively(sourceRepo);
+            DirectoryCleanup.DeleteRecursively(worktreeParent);
+        }
+    }
+
+    [Fact]
+    public void Nonzero_exit_with_missing_contract_retains_Failed_verdict()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Null(classification.CapturedResponseFile);
+            Assert.Null(classification.UnsatisfiedOutputNames);
+            Assert.Contains("Worker exited with non-zero code 1.", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
     private static void InitGitRepository(string path)
     {
         RunGitProcess(path, "init");
@@ -1638,6 +2005,191 @@ public class OutcomeClassifierTests
         }
         using var proc = System.Diagnostics.Process.Start(startInfo);
         proc?.WaitForExit();
+    }
+
+    // ---- #1680: the first-verdict canary ----
+
+    [Fact]
+    public void Tool_calls_with_zero_hook_verdicts_settle_Indeterminate_never_Succeeded()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            // A fabricated stream: an otherwise clean, contract-satisfied exit -- would be Succeeded
+            // on every other predicate this classifier checks -- reporting 3 tool calls happened while
+            // the hook's own ledger recorded zero verdicts for any of them.
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Contains("hook", classification.Reason);
+            Assert.Contains("3 tool call", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void The_same_stream_with_a_nonzero_verdict_count_leaves_the_classification_unchanged()
+    {
+        // Red/green control for the test above: identical tool-call count, but the ledger now shows
+        // verdicts happened -- the classification must revert to what it would have been without
+        // either count supplied at all (Succeeded), proving the canary keys on the verdict count and
+        // not merely on the presence of a tool-call count.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 3);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Zero_tool_calls_with_zero_verdicts_does_not_force_Indeterminate()
+    {
+        // Nothing to verify: a run that never called a gated tool has no hook activity to be missing.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                toolCallCount: 0, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Omitting_both_counts_leaves_every_other_caller_unaffected()
+    {
+        // The counts default to null, so a caller that never learned this vendor's concept of a
+        // "tool call" or a "hook verdict" -- claude, or any pre-#1680 call site -- gets byte-for-byte
+        // today's classification. This is the regression guard for every call site OutcomeClassifier
+        // already had before this change.
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_timed_out_run_is_not_reclassified_by_the_canary()
+    {
+        // Scoped to CoreExitReason.Natural -- a timeout is already classified by its own branch above
+        // this one in Classify, and must stay Failed/Succeeded on that branch's own terms rather than
+        // being intercepted by a check that runs before the reason switch.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.TimedOut), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_cancelled_run_is_not_reclassified_by_the_canary()
+    {
+        // #1732 review F3's discriminating control, other direction, corrected by N6: this pins
+        // ORDERING only -- CancelRequested returns from its own branch far above where the canary now
+        // sits (:362), so control never reaches the canary at all on a cancelled result, and this test
+        // passes even if the canary's own `Reason == Natural` guard were deleted outright. It would go
+        // red if the canary were hoisted back above the CancelRequested return, which is the regression
+        // worth having a control for; it does not, and cannot, discriminate the `Natural` guard itself.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.CancelRequested), contract, directory,
+                toolCallCount: 3, hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Cancelled, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_quota_refusal_with_a_dead_hook_count_pair_still_classifies_ExhaustedUntil_not_Indeterminate()
+    {
+        // #1732 review F3: before the move, this exact shape (ExitCode != 0, canary counts present)
+        // returned Indeterminate at the canary guard, which sat ahead of the ExitCode != 0 branch and
+        // swallowed the automatic retry a quota refusal is owed. Red before this PR's fix (asserted
+        // against the pre-move code by hand -- the canary preempted this and returned Indeterminate);
+        // green after, because the canary now only runs after this branch has already returned.
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [], []);
+            var now = new DateTimeOffset(2026, 7, 30, 15, 0, 0, TimeSpan.Zero);
+            var testTime = new TestTimeProvider(now);
+            var specimenStderr = "Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 28m40s.";
+            var mockClassifier = new TestQuotaClassifier(specimenStderr, FailureClassification.ExhaustedUntil, now.AddMinutes(28).AddSeconds(40));
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural, specimenStderr),
+                contract,
+                directory,
+                mockClassifier,
+                testTime,
+                toolCallCount: 3,
+                hookVerdictCount: 0);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(now.AddMinutes(28).AddSeconds(40), classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
     }
 }
 

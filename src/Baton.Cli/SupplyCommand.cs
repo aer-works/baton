@@ -43,10 +43,13 @@ public static class SupplyCommand
     /// <exception cref="CliArgumentException"><see cref="SupplyOptions.SourceFilePath"/> does not exist.</exception>
     /// <exception cref="Baton.Concurrency.WorkflowLockedException">
     /// record-once-ok: #443 src/Baton.Cli/RunCommand.cs
-    /// Another Flow instance already holds this room directory's lock.
+    /// Another Flow instance already holds this room directory's lock. This command's own mutation
+    /// guard is the fail-fast kind.
     /// </exception>
     /// <exception cref="Baton.Store.FlowJournalHeldException">
-    /// Same journal-held refusal as <see cref="DecideCommand"/> (#816); see that exception's own docs.
+    /// #816's journal-held refusal. #1650 F3 established that this, and not the lock refusal above,
+    /// is what a supply against a live pump gets; <see cref="DecideCommand"/> carries the reasoning
+    /// for the whole four-command population.
     /// </exception>
     public static async Task<SupplyResult> ExecuteAsync(
         SupplyOptions options,

@@ -45,6 +45,26 @@ public class FlowEventLogJsonTests
         new FlowEvent.StepRetryScheduled(StepId, ExecutionId, FixedInstant, 100),
         new FlowEvent.StepRetryForeclosed(StepId, ExecutionId, "dead pump, unfireable park", ForeclosedBy: "settle"),
         new FlowEvent.ZeroOutputsDespiteSubstantialWork(ExecutionId, "4 turns, 500 output tokens"),
+        new FlowEvent.VerifyStarted(ExecutionId),
+        new FlowEvent.VerifyPassed(ExecutionId),
+        new FlowEvent.VerifyFailed(ExecutionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check", VerifyFailedKind.GatesFailed),
+        new FlowEvent.VerifyNotRun(ExecutionId, "task absent: gates-quiet"),
+        new FlowEvent.VerifyDeclarationIgnored(ExecutionId, "0f2b", "9ac1"),
+        new FlowEvent.VerifyDeclarationUnreviewed(ExecutionId, "0f2b"),
+        new FlowEvent.ExecutionArrested(ExecutionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task"]),
+        new FlowEvent.StepRebound(StepId, ExecutionId, "agy", "gemini-3-pro", "claude", "sonnet", "Vendor failover"),
+        new FlowEvent.ExecutionIndeterminate(ExecutionId, "reason", ".captured-response.md", ["advice.md"]),
+        new FlowEvent.CaptureResolved(StepId, ExecutionId, Accepted: true, Reason: "capture honestly satisfies advice.md", ResolvedOutputNames: ["advice.md"]),
+        new FlowEvent.ExecutionProgress(ExecutionId),
+        new FlowEvent.CancellationDelivered(ExecutionId),
+        new FlowEvent.CancellationRejected(ExecutionId),
+        new FlowEvent.DeliveryPrOpened(123, "734-lane"),
+        new FlowEvent.DeliveryChecksGreen(123),
+        new FlowEvent.DeliveryChecksRed(123),
+        // Both Merged shapes: the bool has no natural "unset" wire value the way a nullable reference
+        // does, so a strip test run only against one polarity would never notice a fail-open default.
+        new FlowEvent.DeliveryMerged(123, Merged: true),
+        new FlowEvent.DeliveryMerged(123, Merged: false),
     ];
 
     /// <summary>
@@ -146,6 +166,30 @@ public class FlowEventLogJsonTests
         Assert.Equal(ExecutionId, failed.ExecutionId);
         Assert.Equal(FailureClassification.Permanent, failed.FailureClassification);
         Assert.Null(failed.Reason);
+    }
+
+    /// <summary>
+    /// #734 review: `DeliveryMerged.Merged` defaults `false` specifically so a line that lost the
+    /// field replays as the unremarkable outcome (closed-unmerged), never as a fabricated merge — the
+    /// generic strip test above only proves the line still deserializes, not which way it defaults.
+    /// This pins the direction directly, the same way `A_line_predating_an_added_optional_member_still_replays_with_the_default`
+    /// pins `ExecutionFailed.Reason`'s.
+    /// </summary>
+    [Fact]
+    public void A_DeliveryMerged_line_that_lost_the_Merged_property_replays_as_false_not_true()
+    {
+        var node = JsonNode.Parse(JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.DeliveryMerged(123, Merged: true),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options))!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.DeliveryMerged.Merged)));
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(node.ToJsonString(), FlowEventLogJson.Options);
+
+        var merged = Assert.IsType<FlowEvent.DeliveryMerged>(deserialized);
+        Assert.Equal(123, merged.PullRequestNumber);
+        Assert.False(merged.Merged);
     }
 
     [Fact]

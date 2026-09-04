@@ -15,8 +15,8 @@ namespace Baton.Vendors;
 /// <para>
 /// <b>The base ref rides in <see cref="WorkerInvocation.PromptTemplate"/></b> — the field
 /// <see cref="CommandWorkerAdapter"/> also repurposes for non-prose per-step data — injected by the
-/// run entrypoint at workflow start (the git-aware place, mirroring <c>dispatch.py</c>'s
-/// <c>head_before</c>). It is diffed against the working tree, not <c>base..HEAD</c> — decision 0047 §4
+/// run entrypoint at workflow start — <c>Baton.Cli.WorkspaceHead</c>'s own doc has the history of
+/// what that captures and mirrors. It is diffed against the working tree, not <c>base..HEAD</c> — decision 0047 §4
 /// has the why (committed and uncommitted work both captured, so no worker is forced to commit).
 /// </para>
 /// <para>
@@ -26,6 +26,12 @@ namespace Baton.Vendors;
 /// process creation, so git (not a shell) receives the resolved path and <c>--output</c> writes the
 /// diff straight to it. A non-git workspace never reaches here (the entrypoint refuses to inject a base
 /// and fails loudly); were it to, git's own non-zero exit surfaces as a failed execution.
+/// </para>
+/// <para>
+/// <b>No grant machinery (#1166).</b> Like <see cref="CommandWorkerAdapter"/>, this is engine-deterministic
+/// rather than a vendor worker — there is no AI on the other end to grant anything to, so it does not
+/// implement <see cref="IPermissionGrantTranslator"/> and <see cref="ProjectCeilingGate"/> never runs
+/// against it.
 /// </para>
 /// </remarks>
 public sealed class CaptureWorkerAdapter : IWorkerAdapter

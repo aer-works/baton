@@ -2,6 +2,7 @@ using System.Linq;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Domain;
+using Baton.Status;
 using Xunit;
 
 namespace Baton.Vendors.Tests;
@@ -12,29 +13,13 @@ namespace Baton.Vendors.Tests;
 /// rebuild (the env override stands in for the runtime <c>worker-tiers.json</c> the operator drops),
 /// and that a malformed catalog fails loudly rather than dispatching something nobody chose.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: every override below is an isolated <see cref="BatonEnvironmentSnapshot.BeginScope"/>, not
+/// a process mutation, so this class needs no <c>SerializedEnvironmentCollection</c> enrollment and
+/// runs parallel-safe.
+/// </remarks>
 public class WorkerRoleCatalogTests
 {
-    private sealed class EnvScope : IDisposable
-    {
-        private readonly List<(string Key, string? Prior)> _prior = [];
-
-        public EnvScope Set(string key, string? value)
-        {
-            _prior.Add((key, Environment.GetEnvironmentVariable(key)));
-            Environment.SetEnvironmentVariable(key, value);
-            return this;
-        }
-
-        public void Dispose()
-        {
-            foreach (var (key, prior) in _prior)
-            {
-                Environment.SetEnvironmentVariable(key, prior);
-            }
-        }
-    }
-
     private sealed class TempCatalog : IDisposable
     {
         public string Dir { get; } = Path.Combine(Path.GetTempPath(), $"wrc-{Guid.NewGuid():N}");
@@ -64,23 +49,28 @@ public class WorkerRoleCatalogTests
            "timeout_minutes":{{timeout}},"verdict_schema":{{(verdict ? "true" : "false")}},"purpose":"p","outputs":{{outputs}}}
           """;
 
-    private static EnvScope PointAt(TempCatalog cat, string tiersJson, string rolesJson) =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, cat.Write("tiers.json", tiersJson))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, cat.Write("roles.json", rolesJson));
+    private static IDisposable PointAt(TempCatalog cat, string tiersJson, string rolesJson) =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = cat.Write("tiers.json", tiersJson),
+            WorkerRolesPathOverride = cat.Write("roles.json", rolesJson),
+        });
 
     // A test that reads the SHIPPED default must be hermetic against the runtime overrides: with no
-    // env set, ResolvePath falls through {BATON_HOME|~/.baton}/worker-*.json, so on a machine where an
-    // operator has used that documented override the test would silently read their file instead of
-    // the shipped one. Point the catalog's OWN env vars straight at the shipped files under
-    // AppContext.BaseDirectory (copied there by the csproj's CopyToOutputDirectory). Deliberately NOT
-    // via BATON_HOME: that variable is global process state BatonPaths.Root reads, so mutating it here
-    // raced a parallel BatonProfileStore.DefaultPath and red an unrelated test (#893). BATON_WORKER_*_PATH
-    // is read only by WorkerRoleCatalog, so nothing else can see it.
-    private static EnvScope ShippedDefault() =>
-        new EnvScope()
-            .Set(WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"))
-            .Set(WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
+    // override set, ResolvePath falls through {BATON_HOME|~/.baton}/worker-*.json, so on a machine
+    // where an operator has used that documented override the test would silently read their file
+    // instead of the shipped one. Point the catalog's OWN snapshot fields straight at the shipped
+    // files under AppContext.BaseDirectory (copied there by the csproj's CopyToOutputDirectory).
+    // Deliberately NOT via HomeOverride: that field is what BatonPaths.Root reads, so setting it here
+    // would race a parallel BatonProfileStore.DefaultPath read the way mutating BATON_HOME once red an
+    // unrelated test (#893). The two Worker*PathOverride fields are read only by WorkerRoleCatalog, so
+    // nothing else can see them -- and BeginScope's own isolation means nothing else does anyway.
+    private static IDisposable ShippedDefault() =>
+        BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank with
+        {
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+        });
 
     [Fact]
     public void The_shipped_catalog_resolves_each_role_against_its_tier()
@@ -120,6 +110,14 @@ public class WorkerRoleCatalogTests
         Assert.False(factCheck.Grant.NetworkAccess);
         Assert.False(factCheck.Grant.RunShellCommands);
 
+        // #1386: advise is the third read lane the issue named, narrowed to write_files: false once
+        // #1765 retired dispatch.py's grant_refusal and #901's audited-write widening was confirmed to
+        // un-refuse a withheld-write role once a worktree is provisioned.
+        var advise = WorkerRoleCatalog.For("advise");
+        Assert.False(advise.Grant.WriteFiles);
+        Assert.False(advise.Grant.NetworkAccess);
+        Assert.False(advise.Grant.RunShellCommands);
+
         var implement = WorkerRoleCatalog.For("implement");
         Assert.Equal("agy", implement.Adapter);
         Assert.True(implement.Grant.RunShellCommands);
@@ -130,6 +128,38 @@ public class WorkerRoleCatalogTests
         Assert.True(implement.Grant.NetworkAccess);
         Assert.False(implement.ProducesVerdict);
         Assert.Equal(TimeSpan.FromMinutes(40), implement.Timeout);
+    }
+
+    // #1686 review F12: nothing tested the catalog's MaxToolSteps values before this -- a build that
+    // dropped maxToolStepsOverride in RoleDispatch.ToBinding passed the whole suite, and so did the
+    // `advise: 20` / spec's "advise unset" contradiction F1 named. Pins the shipped values directly.
+    [Fact]
+    public void The_shipped_catalog_s_MaxToolSteps_match_the_measured_caps()
+    {
+        using var env = ShippedDefault();
+
+        Assert.Equal(610, WorkerRoleCatalog.For("implement").MaxToolSteps);
+        Assert.Equal(100, WorkerRoleCatalog.For("review").MaxToolSteps);
+        // #1686 review F1: advise has no measured floor (spec/baton.md §3 has the reason), so it stays
+        // unset rather than a guess -- matching the spec's own claim about it.
+        Assert.Null(WorkerRoleCatalog.For("advise").MaxToolSteps);
+    }
+
+    // #1691: the catalog's third arrest axis, pinned the same way and for a stronger reason -- here
+    // "unset" is the WHOLE finding, and spec/baton.md §3 is where the measurement behind it lives.
+    // Deliberately iterates the whole catalog rather than naming roles, so the drift #1686 review F1
+    // found -- a role whose caps the records and the JSON disagreed about -- has nowhere to hide.
+    [Fact]
+    public void The_shipped_catalog_arms_no_billed_rate_trigger_on_any_role()
+    {
+        using var env = ShippedDefault();
+
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            Assert.True(
+                role.BilledRateLimit is null,
+                $"role '{role.Id}' declares billed_rate_limit {role.BilledRateLimit}, which spec/baton.md §3 says no role does. Re-run tools/room-rate-sweep/sweep.py: if a defensible value now exists, §3's calibration changes with it.");
+        }
     }
 
     [Fact]
@@ -199,9 +229,10 @@ public class WorkerRoleCatalogTests
     public void A_catalog_file_with_comments_fails_loudly_so_both_readers_agree()
     {
         using var cat = new TempCatalog();
-        // dispatch.py reads the same files through stdlib json.loads, which rejects comments. The C#
-        // reader must reject them too, or an operator's inline // WHY loads in the engine and breaks
-        // every dispatch.
+        // tools/audit-completeness/completeness.py reads WorkerTiers.json through stdlib json.load,
+        // which rejects comments (tools/baton-agy-loop/dispatch.py did too, before #1759 retired it).
+        // The C# reader must reject them too, or an operator's inline // WHY loads in the engine and
+        // breaks every dispatch.
         using var env = PointAt(
             cat,
             "{\n  // #742 operator directive\n  \"t\":{\"adapter\":\"gemini\",\"model\":\"m\",\"effort\":null}\n}",
@@ -438,5 +469,167 @@ public class WorkerRoleCatalogTests
         // so the other two must be named or a model still guesses them.
         Assert.Contains("refuted", instruction);
         Assert.Contains("unverified", instruction);
+    }
+
+    // #1745: token_budget accepts either a bare number (Fixed, today's shape) or an object mapping
+    // adapter name to number (PerAdapter) -- both parsed by WorkerRoleCatalog, never left to a bare
+    // long that could not represent the map shape at all.
+
+    [Fact]
+    public void A_role_with_a_single_number_token_budget_parses_as_Fixed()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $$"""[{{Role("r", "t")[..^1]}}, "token_budget": 42}]""");
+
+        var budget = Assert.IsType<TokenBudgetSpec.Fixed>(WorkerRoleCatalog.For("r").TokenBudget);
+        Assert.Equal(42, budget.Value);
+    }
+
+    [Fact]
+    public void A_role_with_a_per_adapter_map_parses_as_PerAdapter()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"claude\": 10, \"agy\": 20}}]");
+
+        var budget = Assert.IsType<TokenBudgetSpec.PerAdapter>(WorkerRoleCatalog.For("r").TokenBudget);
+        Assert.Equal(10, budget.ByAdapter["claude"]);
+        Assert.Equal(20, budget.ByAdapter["agy"]);
+    }
+
+    [Fact]
+    public void A_role_with_no_token_budget_key_parses_as_null()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $"[{Role("r", "t")}]");
+
+        Assert.Null(WorkerRoleCatalog.For("r").TokenBudget);
+    }
+
+    [Fact]
+    public void A_token_budget_map_naming_an_unknown_adapter_fails_loudly_by_role_and_key()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"gemini\": 10}}]");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("gemini", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_token_budget_map_value_that_is_not_a_whole_number_fails_loudly_by_role_and_key()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"token_budget\": {\"claude\": \"a lot\"}}]");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("claude", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_token_budget_that_is_neither_a_number_nor_an_object_fails_loudly()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $$"""[{{Role("r", "t")[..^1]}}, "token_budget": "a lot"}]""");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => _ = WorkerRoleCatalog.All);
+        Assert.Contains("r", ex.Message, StringComparison.Ordinal);
+    }
+
+    // #1788: delivers_branch -- see WorkerRole.DeliversBranch's own remarks for what it gates.
+
+    [Fact]
+    public void The_shipped_implement_role_delivers_a_branch_and_no_other_role_does()
+    {
+        using var env = ShippedDefault();
+
+        Assert.True(WorkerRoleCatalog.For("implement").DeliversBranch);
+
+        foreach (var role in WorkerRoleCatalog.All.Where(r => r.Id != "implement"))
+        {
+            Assert.False(role.DeliversBranch, $"role '{role.Id}' unexpectedly declares delivers_branch: true.");
+        }
+    }
+
+    /// <summary>
+    /// The lockstep half of #1788's own Build section: a role whose brief ends in a push must actually
+    /// be able to write to the tree in the first place -- a read-shaped role (write_files: false)
+    /// declaring delivers_branch would be incoherent, and nothing else in the catalog loader catches it.
+    /// One-directional on purpose (a write-capable role need not deliver a branch, e.g. janitor -- see
+    /// WorkerRole.DeliversBranch's own remarks for why that one stays false).
+    /// </summary>
+    [Fact]
+    public void Every_role_that_delivers_a_branch_can_write_files()
+    {
+        using var env = ShippedDefault();
+
+        foreach (var role in WorkerRoleCatalog.All.Where(r => r.DeliversBranch))
+        {
+            Assert.True(role.Grant.WriteFiles, $"role '{role.Id}' declares delivers_branch: true but write_files: false.");
+        }
+    }
+
+    [Fact]
+    public void A_role_with_no_delivers_branch_key_parses_as_false()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $"[{Role("r", "t")}]");
+
+        Assert.False(WorkerRoleCatalog.For("r").DeliversBranch);
+    }
+
+    [Fact]
+    public void A_role_declaring_delivers_branch_true_parses_as_true()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"delivers_branch\": true}]");
+
+        Assert.True(WorkerRoleCatalog.For("r").DeliversBranch);
+    }
+
+    /// <summary>#1745: spec/baton.md §3 has why `review` and why its two values are equal.</summary>
+    [Fact]
+    public void The_shipped_review_role_carries_a_per_adapter_map_whose_values_equal_the_prior_single_figure()
+    {
+        using var env = ShippedDefault();
+
+        var budget = Assert.IsType<TokenBudgetSpec.PerAdapter>(WorkerRoleCatalog.For("review").TokenBudget);
+        Assert.Equal(250_000, budget.ByAdapter["claude"]);
+        Assert.Equal(250_000, budget.ByAdapter["agy"]);
+    }
+
+    /// <summary>#1745: every other shipped role keeps today's single-number shape unchanged.</summary>
+    [Fact]
+    public void Every_other_shipped_role_keeps_a_single_number_token_budget()
+    {
+        using var env = ShippedDefault();
+
+        Assert.Equal(1_200_000L, ((TokenBudgetSpec.Fixed)WorkerRoleCatalog.For("implement").TokenBudget!).Value);
+        Assert.Equal(150_000L, ((TokenBudgetSpec.Fixed)WorkerRoleCatalog.For("advise").TokenBudget!).Value);
     }
 }

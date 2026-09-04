@@ -36,6 +36,16 @@
   of pushed_at, and `pending_push_age_s` (2026-09-01 review finding) is the "Push failing" banner's
   own signal -- see the banner code's own comments below for why pushed_at alone false-fired and why
   derived_at alone cannot see a failing push.
+
+  `pusher.writeBudgetExhaustedUntil` (#1690, absent-safe the same way) is the one final snapshot the
+  pusher sends when its daily KV write-budget ledger runs out, and takes priority over every other
+  banner below -- spec/baton.md §6, "Fleet Glass write budget".
+
+  `staleness` (#1557 PR-B1, same absent-safe convention) rides in only on a cycle where the pusher
+  is running with `FLEET_GLASS_PROJECTION_SOURCE=file` and found the daemon's own projection file
+  stale or absent, falling back to its own derivation for that cycle -- checked right after the
+  write-budget banner above (both are the pusher explaining a self-diagnosed source problem, not a
+  KV/heartbeat symptom).
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -62,9 +72,10 @@
   --ok:#66BB6A; --run:#5EA3E8; --warn:#E0A458; --bad:#E57373; --idle:#7C828C;
   --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
 }
-body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
+html{overflow-x:hidden;}
+body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px; overflow-x:hidden; max-width:100vw;}
 main{max-width:62rem; margin:0 auto;}
-h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline;}
+h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:.2rem .5rem;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
 h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.08em; display:flex; justify-content:space-between; align-items:baseline;}
 .dismissall{text-transform:none; font-family:'Public Sans',sans-serif; font-size:.72rem; font-weight:500; letter-spacing:normal; color:var(--accent); cursor:pointer; text-decoration:none;}
@@ -93,25 +104,25 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .dismissnote a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .dismissbtn{background:transparent; border:none; color:var(--ink-soft); font:600 .85rem/1 var(--mono); cursor:pointer; padding:.1em .35em; border-radius:4px; line-height:1;}
 .dismissbtn:hover{background:var(--chip-idle); color:var(--ink);}
-.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card);}
-.lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
-.lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .roomid, .lane .project{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end;}
-.lane .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.lane .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
-.lane .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
-.lane .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
+.lane{border:1px solid var(--line); border-radius:12px; padding:.55rem .75rem; margin:0; background:var(--card); min-width:0;}
+.lane .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
+.lane .name{font:500 .84rem var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
+.lane .roomid, .lane .project, .board-detail-side .roomid, .board-detail-side .project, .board-detail-side .lineage{font:400 .68rem var(--mono); color:var(--ink-soft); margin-top:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .chips, .board-detail-side .chips{display:flex; gap:.3rem; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; max-width:100%;}
+.lane .ev, .board-detail-side .ev{font-size:.76rem; color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.lane .age, .board-detail-side .age{font:400 .7rem var(--mono); color:var(--ink-soft); margin-top:.2rem;}
+.lane .deliverables, .board-detail-side .deliverables{font-size:.74rem; margin-top:.3rem; user-select:none; -webkit-user-select:none;}
+.lane .deliverables a, .board-detail-side .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .lane details{margin:.4rem 0 0; font-size:.74rem;}
 .lane details summary{font:600 .72rem 'Public Sans'; color:var(--ink-soft);}
-.tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem;}
-.tl-entry .tl-type{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.tl-entry .tl-age{color:var(--ink-soft); white-space:nowrap;}
+.tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem; min-width:0;}
+.tl-entry .tl-type{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; min-width:0;}
+.tl-entry .tl-age{color:var(--ink-soft); white-space:nowrap; flex:0 0 auto;}
 .verbs{margin-top:.35rem; display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;}
 .copybtn{font:500 .68rem 'Public Sans'; padding:.25em .65em; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer;}
 .copybtn:active{background:var(--chip-idle);}
-.revealbox{font:400 .68rem var(--mono); padding:.22em .4em; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:12rem;}
-.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap;}
+.revealbox{font:400 .68rem var(--mono); padding:.22em .4em; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:12rem; max-width:100%;}
+.chip{font:600 .62rem/1 'Public Sans'; letter-spacing:.05em; padding:.28em .6em; border-radius:999px; white-space:nowrap; flex-shrink:0;}
 .c-run{background:var(--chip-run); color:var(--run);}
 .c-ok{background:var(--chip-ok); color:var(--ok);}
 .c-warn{background:var(--chip-warn); color:var(--warn);}
@@ -124,10 +135,10 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .mono{font-family:var(--mono); font-size:.9em;}
 .filter{font-size:.8rem; color:var(--ink-soft); margin:.4rem 0 1rem; user-select:none; -webkit-user-select:none;}
 .filter a{color:var(--accent); text-decoration:none; cursor:pointer;}
-.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer;}
-.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
-.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem;}
+.item{border:1px solid var(--line); border-radius:12px; padding:.6rem .8rem; margin:.45rem 0; background:var(--card); cursor:pointer; min-width:0;}
+.item .top{display:flex; justify-content:space-between; align-items:center; gap:.5rem; min-width:0;}
+.item .title{font:500 .88rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
+.item .meta{font:400 .72rem var(--mono); color:var(--ink-soft); margin-top:.25rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .back{display:inline-block; margin-bottom:.8rem; font:500 .8rem 'Public Sans'; color:var(--accent); text-decoration:none; cursor:pointer;}
 .doc{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.2rem;}
 .doc h1,.doc h2,.doc h3{font-family:'Sora',sans-serif; line-height:1.25;}
@@ -160,6 +171,61 @@ summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .finding .finding-detail p{margin:.3em 0;}
 .empty{color:var(--ink-soft); font-size:.85rem;}
 footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:.6rem;}
+
+/* #1678 (Combo C+E): three-column state board + detail pane. Desktop: pane docked right of the
+   board. ≤900px (no room for board+pane side by side): pane stacks below the board instead of
+   losing the dock. ≤480px (the phone breakpoint the ruling names explicitly): carousel pills pick
+   one board column at a time, and tapping a card replaces the board with the pane plus Back. */
+.board-detail-layout{display:flex; gap:1rem; align-items:flex-start; margin-top:.5rem;}
+.board-area{flex:2 1 0; min-width:0; max-width:100%;}
+.board-detail-side{flex:1 1 0; min-width:16rem; max-width:100%; box-sizing:border-box; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.75rem .9rem; position:sticky; top:.75rem; max-height:calc(100vh - 1.5rem); overflow-y:auto; overflow-x:hidden;}
+.phone-carousel-pills{display:none;}
+.board-container{display:grid; grid-template-columns:repeat(3, 1fr); gap:.6rem;}
+.board-column{background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.6rem; display:flex; flex-direction:column; gap:.4rem; min-height:6rem; min-width:0;}
+.column-header{display:flex; justify-content:space-between; align-items:center; gap:.4rem; padding-bottom:.3rem; border-bottom:1px solid var(--line);}
+.column-title{font:700 .72rem 'Public Sans'; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft);}
+.column-count{font:400 .68rem var(--mono); font-variant-numeric:tabular-nums; background:var(--chip-idle); padding:.1em .5em; border-radius:999px; color:var(--ink);}
+.column-extra{display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; font-size:.7rem;}
+.board-column-body{display:flex; flex-direction:column; gap:.4rem;}
+.board-card{background:var(--card); border:1px solid var(--line); border-radius:9px; padding:.5rem .6rem; cursor:pointer; display:flex; flex-direction:column; gap:.25rem; min-width:0;}
+.board-card.selected{border-color:var(--accent);}
+.board-card-top{display:flex; justify-content:space-between; align-items:center; gap:.4rem; min-width:0;}
+.board-card-title{font:500 .82rem 'Public Sans'; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;}
+.board-card-ws{font:400 .66rem 'Public Sans'; color:var(--ink-soft); font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.board-card-telem{font-size:.7rem; color:var(--ink-soft); font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.board-card-dismiss{flex-shrink:0;}
+.detail-top{display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; flex-wrap:wrap;}
+.detail-title{font:700 .92rem 'Sora',sans-serif;}
+.detail-path{font-size:.72rem; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; margin:.2rem 0; max-width:100%; overflow-wrap:anywhere;}
+.detail-path.expanded{white-space:normal; word-break:break-all; overflow-wrap:anywhere;}
+.section-heading{font:600 .7rem 'Public Sans'; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:.6rem 0 .2rem;}
+.stdout-asof{text-transform:none; letter-spacing:normal; font-weight:400;}
+/* #1710: a bounded, internally-scrolling box regardless of viewport -- its own max-height rather than
+   growing with the pane (#1693's own rules let the pane itself grow unbounded on the phone breakpoint;
+   a multi-KB stdout tail must not drag the whole page down with it there). */
+.stdout-tail{font-size:.72rem; line-height:1.35; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-width:100%; box-sizing:border-box; max-height:12rem; overflow-y:auto; overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem;}
+.detail-back-btn{display:none; align-self:flex-start; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:.25em .7em; font:500 .74rem 'Public Sans'; cursor:pointer; color:var(--ink); margin-bottom:.4rem;}
+@media (max-width:900px){
+  .board-detail-layout{flex-direction:column;}
+  /* #1693: in a column, the desktop `flex:1 1 0` is a ZERO height basis with nothing to grow into,
+     and the base overflow-y:auto then clips the pane to its padding. #1792: `.board-detail-side`
+     carries its own box-sizing:border-box (base rule above) so its width:100% here includes its
+     padding/border instead of adding to it -- the phone-width overflow this pane used to cause. */
+  .board-area{flex:none; width:100%;}
+  .board-detail-side{flex:none; position:static; max-height:none; overflow:visible; width:100%; min-width:0; max-width:100%;}
+}
+@media (max-width:480px){
+  .board-detail-side .ev{white-space:normal; overflow-wrap:anywhere; text-overflow:clip;}
+  .phone-carousel-pills{display:flex; gap:.3rem; margin-bottom:.5rem; background:var(--card); padding:.2rem; border-radius:8px; border:1px solid var(--line);}
+  .carousel-tab-btn{flex:1; min-width:0; background:transparent; border:none; font:600 .68rem 'Public Sans'; color:var(--ink-soft); padding:.35em .2em; border-radius:6px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .carousel-tab-btn.active{background:var(--paper); color:var(--accent);}
+  .board-container{display:block;}
+  .board-column-wrap{display:none;}
+  .board-column-wrap.active-col{display:block;}
+  .board-detail-layout.showing-detail .board-area{display:none;}
+  .board-detail-layout:not(.showing-detail) .board-detail-side{display:none;}
+  .board-detail-layout.showing-detail .detail-back-btn{display:inline-block;}
+}
 </style>
 <main>
   <div class="masthead">
@@ -211,15 +277,47 @@ function age(iso){
   if(h < 48) return h + "h";
   return Math.floor(h/24) + "d";
 }
+// #1656: the connector's own error object for a failed tool call (e.g. `code: "upstream_error"`,
+// measured 2026-09-02 against a 160,539-byte deliverables_list body) carries no message beyond a
+// generic "request failed" -- useless for telling "the worker 500'd" apart from "the response was
+// too big for this view to swallow". When the connector DOES attach more (field names are
+// best-effort across connector versions -- `status`/`httpStatus` and `responseSize`/`size`/
+// `bytes`), surface those instead of the generic text; degrade to `e.message`, then the bare code,
+// only when neither is present.
+function upstreamErrorDetail(e){
+  if(e.code !== "upstream_error") return e.message || "";
+  const status = e.status ?? e.httpStatus ?? e.statusCode;
+  const size = e.responseSize ?? e.size ?? e.bytes ?? e.contentLength;
+  const bits = [];
+  if(status != null) bits.push(`HTTP ${status}`);
+  if(size != null) bits.push(`${size} bytes`);
+  if(bits.length) return `upstream returned ${bits.join(", ")}`;
+  return e.message || "upstream request failed (no further detail from the connector)";
+}
 function dur(msVal){
   if(msVal == null) return null;
   const m = Math.round(msVal/60000);
   return m < 1 ? Math.round(msVal/1000) + "s" : m + "m";
 }
+// #1591: spec/baton.md §3's summation rules -- on claude, cacheReadTokens/cacheCreationTokens are
+// true siblings of tokensIn/tokensOut (never subsets), so the honest burn sum adds all four; on agy,
+// cacheCreationTokens is never observed (stays absent, so it contributes 0 either way here) and
+// summing tokensIn+tokensOut+cacheReadTokens is the documented lower bound. thinkingTokens is never
+// added on either vendor -- a breakdown of tokensOut on claude, unmeasured containment on agy.
 function tokens(u){
   if(!u || u.tokensIn == null) return null;
-  const t = (u.tokensIn + (u.tokensOut||0))/1000;
+  const t = (u.tokensIn + (u.tokensOut||0) + (u.cacheReadTokens||0) + (u.cacheCreationTokens||0))/1000;
   return Math.round(t) + "k tok";
+}
+// #1678: fine-grained wall-clock for a terminal/needs-you card's telemetry line ("8m50s"/"45s") --
+// distinct from dur()'s coarse "8m" rounding, which loses the seconds a finished lane's card is
+// meant to show at a glance.
+function durFine(msVal){
+  if(msVal == null) return null;
+  const totalSec = Math.max(0, Math.round(msVal/1000));
+  const m = Math.floor(totalSec/60);
+  const s = totalSec % 60;
+  return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 // #1613 review (live tokens): compact "12.4k"/"68k" formatting for room.live's outputTokens/
 // contextTokens -- one decimal place below 10k for readability, whole numbers at or above it
@@ -258,6 +356,33 @@ function projectLineHtml(room){
   const tail = projectTail(room.project);
   if(!tail) return "";
   return `<div class="project" title="${esc(room.project)}">${esc(tail)}</div>`;
+}
+
+// -----------------------------------------------------------------------------------------------
+// #1441/#1620: redispatch lineage read off .baton/room.json (spec/baton.md §6 schema) --
+// parentRoomPath/parentExecutionId are fixed at redispatch time, so "supersedes" is a straight
+// lookup and "superseded by" is a reverse scan of roomsByPath for a child naming this room as
+// parent. Both stay absent-safe: an ordinary dispatch room has neither field, and a parent that has
+// since aged off the fleet snapshot (retention swept, or simply outside include_terminal) still
+// names itself by its own trailing path segments (projectTail) rather than rendering nothing.
+// -----------------------------------------------------------------------------------------------
+function lineageLineHtml(room, roomsByPath){
+  if(!room) return "";
+  const byPath = roomsByPath instanceof Map ? roomsByPath : new Map();
+  const bits = [];
+  if(room.parentRoomPath){
+    const parent = byPath.get(room.parentRoomPath);
+    const parentName = parent ? (parent.label || parent.name) : (projectTail(room.parentRoomPath) || room.parentRoomPath);
+    bits.push(`supersedes ${esc(parentName)}`);
+  }
+  if(room.path){
+    for(const child of byPath.values()){
+      if(child && child.parentRoomPath === room.path){
+        bits.push(`superseded by ${esc(child.label || child.name)}`);
+      }
+    }
+  }
+  return bits.length ? `<div class="lineage">${bits.join(" · ")}</div>` : "";
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -307,6 +432,15 @@ function failureKindChip(step){
   const cls = step.retryEligible === true ? "c-warn" : step.retryEligible === false ? "c-bad" : "c-idle";
   return [step.failureKind.toUpperCase(), cls];
 }
+// #1702: `step.verify === "not-run"` (WorkflowStatusStepView.Verify) is the pre-flight "not runnable"
+// outcome -- the step still ran and Succeeded, but the engine's own verify step never confirmed it.
+// Presence-gated the same convention as failureKindChip above; chipsHtml's [label,cls] tuple shape
+// has no room for the reason text (`step.verifyReason`), same as every other chip here -- a caller
+// wanting the reason reads fleet_status/status --json directly.
+function unverifiedChip(step){
+  if(!step || step.verify !== "not-run") return null;
+  return ["UNVERIFIED", "c-warn"];
+}
 // -----------------------------------------------------------------------------------------------
 // #1551: `step.exhaustedUntil` is the vendor-quota park's own reset instant (WorkflowStatusStepView,
 // gated to an actual ExhaustedUntil park with a recorded obligation -- absent for an un-obligated
@@ -351,23 +485,35 @@ function parkChip(step){
     ? [`resumes in ${rel} (${clock})`, "c-idle"]
     : [`overdue ${rel} (${clock})`, "c-bad"];
 }
-function chipsHtml(room, running, focusStep){
+// #1678: pulled out of chipsHtml so a compact board card can show the same single primary chip
+// without pulling in the timebox/attempt/failure/park chips a card has no room for.
+function primaryStateChip(room){
   const st = room.state;
-  const chips = [];
-  chips.push(st === "Running" ? ["RUNNING","c-run"]
+  return st === "Running" ? ["RUNNING","c-run"]
     : st === "Failed" && room.rejected ? ["REJECTED","c-warn"]
+    // #1622 (d): `rejected` narrowed to `baton resolve --reject` only, so a room a conductor
+    // settled with `--close` arrives Failed with `rejected` false and only `resolvedBy` set.
+    // Without this arm it would render as a bare FAILED -- an unexplained crash, when in fact a
+    // person looked at it and closed it. `resolvedBy` is the fleet view's field for exactly that
+    // (spec/baton.md §6's room schema).
+    : st === "Failed" && room.resolvedBy ? ["CLOSED","c-warn"]
     : st === "Succeeded" ? ["SUCCEEDED","c-ok"]
     : st === "Failed" ? ["FAILED","c-bad"]
     // #1582: Stalled means a scheduled retry with no scheduler left to fire it -- nothing moves
     // it without a person, so it gets the "needs you" colour, never the idle grey the generic
     // fallback below would give an unrecognized state.
     : st === "Stalled" ? ["STALLED","c-warn"]
+    // #1698: Cancelled is over and nobody needs to act -- idle grey, never the "needs you" amber.
+    : st === "Cancelled" ? ["CANCELLED","c-idle"]
     // #1586 S1: Indeterminate means journal facts alone could not decide success vs failure -- a
-    // conductor has to look, same "needs you" colour as Stalled, distinct label. No production
-    // writer emits this state yet (WorkflowOutcome.Indeterminate's own remarks); this branch is
-    // ahead of that so the render is already correct once S2/#1608 land.
+    // conductor has to look, same "needs you" colour as Stalled, distinct label. Producer since
+    // #1608 (WorkflowOutcome.Indeterminate's own remarks) -- baton resolve is the way out.
     : st === "Indeterminate" ? ["INDETERMINATE","c-warn"]
-    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"]);
+    : st ? [st.toUpperCase(),"c-idle"] : ["UNREADABLE","c-warn"];
+}
+function chipsHtml(room, running, focusStep){
+  const chips = [];
+  chips.push(primaryStateChip(room));
   if(running && running.liveness === "dead") chips.push(["ZOMBIE","c-bad"]);
   const tb = timeboxChip(room, running);
   if(tb) chips.push(tb);
@@ -377,6 +523,11 @@ function chipsHtml(room, running, focusStep){
   if(fc) chips.push(fc);
   const pc = parkChip(focusStep);
   if(pc) chips.push(pc);
+  const uc = unverifiedChip(focusStep);
+  if(uc) chips.push(uc);
+  // #1155: pusher.py's `pruned` field -- see spec/baton.md §6 for the shape/rationale. Idle
+  // grey, informational only, no restore verb here.
+  if(room.pruned && room.pruned.count) chips.push([`${room.pruned.count} PRUNED`,"c-idle"]);
   return chips.map(([label,cls]) => `<span class="chip ${cls}">${esc(label)}</span>`).join("");
 }
 
@@ -413,6 +564,24 @@ const EVENT_NAMES = {
   "workflowResumed": "workflow resumed",
   "flow.stepRetryScheduled": "retry scheduled",
   "stepRetryScheduled": "retry scheduled",
+  "flow.executionIndeterminate": "execution indeterminate",
+  "executionIndeterminate": "execution indeterminate",
+  "flow.captureResolved": "capture resolved",
+  "captureResolved": "capture resolved",
+  "flow.verifyStarted": "verify started",
+  "verifyStarted": "verify started",
+  "flow.verifyPassed": "verify passed",
+  "verifyPassed": "verify passed",
+  "flow.verifyFailed": "verify failed",
+  "verifyFailed": "verify failed",
+  "flow.verifyNotRun": "verify not run",
+  "verifyNotRun": "verify not run",
+  "flow.verifyDeclarationIgnored": "verify declaration ignored",
+  "verifyDeclarationIgnored": "verify declaration ignored",
+  "flow.verifyDeclarationUnreviewed": "verify declaration unreviewed",
+  "verifyDeclarationUnreviewed": "verify declaration unreviewed",
+  "flow.executionArrested": "execution arrested",
+  "executionArrested": "execution arrested",
 
   // Core events (CoreEvent.cs)
   "core.executionStarted": "execution started",
@@ -628,12 +797,21 @@ function shq(s){ return s.replace(/"/g, '\\"'); }
 function copyButtonHtml(verb, label){
   return `<button class="copybtn" data-verb="${esc(verb)}">${esc(label)}</button><input class="revealbox mono" readonly hidden>`;
 }
-function copyButtonsHtml(room, running){
+// #1659: `baton room delete` copy button, terminal cards only -- a room still Running/Stalled may
+// have a live engine holding its files (RoomDeleteCommand's own refusal exists for exactly that), so
+// this is offered only where `terminal` is true (Failed/Succeeded/Indeterminate, the states a room's
+// terminal.json is actually written for). Dry-run-free (no --force) on purpose: a terminal card is
+// already known terminal from the same fleet_status read this page renders from, so the default
+// refusal `baton room delete` would hit on a non-terminal room never applies here.
+function copyButtonsHtml(room, running, terminal){
   if(!room.path || !shellArgSafe(room.path)) return "";
   const buttons = [copyButtonHtml(`baton redispatch "${shq(room.path)}"`, "copy redispatch")];
   if(room.state === "Running" && running && running.execution){
     const cancelVerb = `baton cancel "${shq(room.path)}" --execution ${running.execution} --bindings "${shq(bindingsPathFor(room.path))}"`;
     buttons.push(copyButtonHtml(cancelVerb, "copy cancel"));
+  }
+  if(terminal){
+    buttons.push(copyButtonHtml(`baton room delete "${shq(room.path)}"`, "copy delete"));
   }
   return `<div class="verbs">${buttons.join("")}</div>`;
 }
@@ -660,6 +838,10 @@ async function copyToClipboard(text){
 document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".copybtn");
   if(!btn) return;
+  // #1659: the Terminal section's "copy prune" button lives inside <summary> (so it reads as part of
+  // the section header) -- without this, a click on it would ALSO fire the native <summary> toggle
+  // and collapse/expand the section the operator was not trying to touch.
+  ev.preventDefault();
   const verb = btn.dataset.verb;
   const ok = await copyToClipboard(verb);
   const reveal = btn.nextElementSibling;
@@ -679,27 +861,98 @@ document.addEventListener("click", async (ev) => {
 
 // -----------------------------------------------------------------------------------------------
 // #1613 item 1: live telemetry for a Running room's currently-executing step -- a tool-call COUNT,
-// claude-only live token counts (2026-09-01 review), and a last-stream-activity age, all read
-// pusher-side straight off the execution's own .stdout.log (no engine change; see pusher.py's own
-// "Seam choice" comment). Absent-safe like role/adapter/model/effort above: `room.live` is simply
-// never present until the pusher that produced this snapshot has been redeployed for #1613, same
-// convention every other optional fleet_status field on this page already follows. The token
-// fields are additionally claude-only (agy's step_update carries no usage to read) and further
-// gated on the per-message capture shape -- see pusher.py's `extract_live_counts` doc for exactly
-// when each is present.
+// billed-token/turn counts for BOTH vendors (#1682 -- widened from claude-only after a live capture
+// found agy's DONE/agent_response step_update also carries usage), claude-only context-level tokens
+// (2026-09-01 review), and a last-stream-activity age, all read pusher-side straight off the
+// execution's own .stdout.log (no engine change; see pusher.py's own "Seam choice" comment).
+// Absent-safe like role/adapter/model/effort above: `room.live` is simply never present until the
+// pusher that produced this snapshot has been redeployed for #1613, same convention every other
+// optional fleet_status field on this page already follows. `contextTokens`/`cacheReadTokens` stay
+// claude-only and are further gated on the per-message capture shape -- see pusher.py's
+// `extract_live_counts` doc for exactly when each is present.
 // -----------------------------------------------------------------------------------------------
-function liveTelemetryHtml(room){
-  const live = room.live;
-  if(!live) return "";
+function liveTelemetryBits(live){
+  if(!live) return [];
   const bits = [];
-  if(live.outputTokens != null) bits.push(`out ${fmtK(live.outputTokens)}`);
+  // #1706: on claude the billed figure is a LOWER BOUND -- the vendor's mid-stream usage carries no
+  // real input or output count anywhere, so what is shown is cache-creation alone and the real spend
+  // is at least this, by a room-dependent factor with no constant to scale by (spec/baton.md §3 has
+  // the swept range), which is why this marks the figure instead of correcting it. The "+" is the
+  // whole marker on a compact card; pusher.py's `billedIsFloor` is where it comes from.
+  if(live.billedTokens != null) bits.push(`billed ${fmtK(live.billedTokens)}${live.billedIsFloor ? "+" : ""}`);
   if(live.contextTokens != null) bits.push(`ctx ${fmtK(live.contextTokens)}`);
+  if(live.turns != null) bits.push(`${live.turns} turn${live.turns === 1 ? "" : "s"}`);
   if(live.toolCalls != null) bits.push(`${live.toolCalls} call${live.toolCalls === 1 ? "" : "s"}`);
   const a = age(live.lastActivityAt);
   if(a) bits.push(`active ${a} ago`);
+  return bits;
+}
+function liveTelemetryHtml(room){
+  const bits = liveTelemetryBits(room.live);
   return bits.length ? `<div class="ev mono">${bits.join(" · ")}</div>` : "";
 }
-function laneHtml(room, timelines, dismissable = false, openTimelines = null){
+// #1678: the ruling's one-telemetry-line-per-card requirement, terminal/needs-you rooms included
+// (pre-#1678 only Running cards carried a telemetry line at all). Reads final usage off the last
+// step's own `usage`/`linkedFromUsage` (WorkflowStatusStepView, spec/baton.md §3) -- the same figures
+// the detail pane's full per-step breakdown below reads, just the tail summary a compact card has
+// room for. Never fabricates a number: an absent usage object renders the literal "—" the ruling
+// calls for, not a blank line that could be mistaken for zero.
+function cardTelemetryText(room){
+  if(room.state === "Running"){
+    const bits = liveTelemetryBits(room.live);
+    return bits.length ? bits.join(" · ") : "—";
+  }
+  const steps = room.steps || [];
+  const lastStep = steps[steps.length - 1];
+  const u = lastStep && (lastStep.usage || lastStep.linkedFromUsage);
+  if(!u) return "—";
+  const bits = [];
+  if(u.tokensOut != null) bits.push(`out ${fmtK(u.tokensOut)}`);
+  if(u.turns != null) bits.push(`${u.turns} turn${u.turns === 1 ? "" : "s"}`);
+  const wc = durFine(u.wallClockMs);
+  if(wc) bits.push(wc);
+  return bits.length ? bits.join(" · ") : "—";
+}
+// Detail pane's full telemetry section: every step that carries a usage figure, not just the last.
+function stepUsageLine(step){
+  const u = step.usage || step.linkedFromUsage;
+  if(!u) return null;
+  const bits = [];
+  if(u.tokensOut != null) bits.push(`out ${fmtK(u.tokensOut)}`);
+  if(u.turns != null) bits.push(`${u.turns} turn${u.turns === 1 ? "" : "s"}`);
+  const wc = durFine(u.wallClockMs);
+  if(wc) bits.push(wc);
+  const tk = tokens(u);
+  if(tk) bits.push(tk);
+  return bits.length ? `<div class="ev mono">${esc(step.id)}: ${bits.join(" · ")}</div>` : null;
+}
+// #1710: a bounded stdout tail for a Running room's detail pane, riding `room.live.stdoutTail`
+// (pusher.py's own `stdout_tail_for_room`) -- absent-safe like every other `live` field, so this
+// renders nothing on a terminal room, a Running room whose pusher predates #1710, or one with no
+// captured stdout yet. `derivedAt` (the snapshot's OWN `derived_at`, spec/baton.md §6) is what "as
+// of <age>" reads -- the tail is only ever as fresh as the pusher's last successful derivation, not
+// `Date.now()` at render time.
+function stdoutTailHtml(room, derivedAt){
+  const tail = room.state === "Running" && room.live && typeof room.live.stdoutTail === "string"
+    ? room.live.stdoutTail : null;
+  if(!tail) return "";
+  const asOfAge = age(derivedAt);
+  const asOf = asOfAge ? `<span class="stdout-asof">as of ${esc(asOfAge)} ago</span>` : "";
+  // #1723: stdoutTail is pre-rendered prose (stream-json lines summarized, blobs elided) by the
+  // pusher, not the worker's raw stdout -- this hint is why a reader won't find every field here.
+  const hint = `<span class="stdout-asof" title="stream-json lines are rendered as prose and long base64/blob tokens are elided -- this is not raw stdout">rendered</span>`;
+  return `<div class="section-heading">stdout ${hint} ${asOf}</div>
+    <div class="stdout-tail mono">${esc(tail)}</div>
+    <div class="verbs">${copyButtonHtml(tail, "copy stdout")}</div>`;
+}
+function fullTelemetryHtml(room){
+  if(room.state === "Running"){
+    return liveTelemetryHtml(room) || `<div class="ev">—</div>`;
+  }
+  const lines = (room.steps || []).map(stepUsageLine).filter(Boolean);
+  return lines.length ? lines.join("") : `<div class="ev">—</div>`;
+}
+function laneHtml(room, timelines, dismissable = false, openTimelines = null, terminal = false){
   const running = (room.steps||[]).find(s => s.state === "Running");
   const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
   // Chips key off the step that actually failed, not array position: in A->B->C with B
@@ -721,9 +974,19 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
   const tryLine = room.try ? `<div class="ev" title="${esc(room.try)}">↻ suggested: ${esc(room.try.slice(0,110))}</div>` : "";
   const t = newestStepTime(room);
   const a = age(t);
-  const ageLine = a ? `<div class="age">last event ${a} ago${room.state === "Running" && t && (Date.now()-Date.parse(t)) > 15*60000 ? " ⚠" : ""}</div>` : "";
-  const deliverables = room.name
-    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(room.name)}">deliverables &rarr;</a></div>` : "";
+  // #1656 / #1549: a healthy lane can run 30+ minutes between journal events (a long tool call),
+  // so keying the stale ⚠ on journal-event age alone false-fires on every live lane whose journal
+  // just happens to be quiet. `room.live.lastActivityAt` (pusher.py's own .stdout.log mtime probe,
+  // present whenever a Running room's execution has captured output) is the honest signal when it
+  // exists -- fall back to the journal-event age (`t`) only for a Running room `live` was never
+  // attached to (dispatch just started, or the pusher hasn't been redeployed for #1613 item 1 yet).
+  const liveActivityAt = room.live && room.live.lastActivityAt;
+  const stalenessBasis = liveActivityAt || t;
+  const isStale = room.state === "Running" && stalenessBasis && (Date.now() - Date.parse(stalenessBasis)) > 15 * 60000;
+  const ageLine = a ? `<div class="age">last event ${a} ago${isStale ? " ⚠" : ""}</div>` : "";
+  const roomDeliverablesKey = room.path || room.name;
+  const deliverables = roomDeliverablesKey
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
   // #1499: a --label makes the room title the human-legible name (e.g. "the #1496 env-snapshot
   // lane") instead of its bare dispatch-<role>-<hex8> directory name; the room name never disappears
   // -- it drops to a secondary line so deliverables/redispatch/cancel still show what to paste.
@@ -740,7 +1003,7 @@ function laneHtml(room, timelines, dismissable = false, openTimelines = null){
     ${bits.length ? `<div class="ev">${bits.join(" · ")}</div>` : ""}${tryLine}${err}${ageLine}
     ${liveTelemetryHtml(room)}
     ${timelineHtml(room, timelines, isTlOpen)}
-    ${copyButtonsHtml(room, running)}
+    ${copyButtonsHtml(room, running, terminal)}
     ${deliverables}</div>`;
 }
 function underhoodHtml(list){
@@ -756,6 +1019,100 @@ function underhoodHtml(list){
   }).join("");
   return `<h2>Under the hood · ${list.length}</h2><div class="lanes">` + rows + `</div>`;
 }
+function conductorRoomPathOf(conductor){
+  if(!conductor || !conductor.artifacts_path) return null;
+  return conductor.path || conductor.artifacts_path.replace(/[\\/]artifacts[\\/]conductor[\\/]?$/, "");
+}
+// -----------------------------------------------------------------------------------------------
+// #1678 (Combo C+E): the three-column state board + detail pane. A card carries only a label, one
+// state chip, and one telemetry line (cardTelemetryText above) -- no verbs, no path, no timeline;
+// those move to the detail pane on tap/click (the ruling's own "no verbs on cards"). The conductor
+// is pinned first in Needs You (#1681's link + copy-path verb, carried into the pane instead of the
+// card body -- the card itself is a plain board-card like any other, keyed "__conductor__").
+// -----------------------------------------------------------------------------------------------
+const CONDUCTOR_KEY = "__conductor__";
+function boardCardHtml(key, label, chip, telemetryText, selected, dismissKey, workstream){
+  const [chipLabel, chipCls] = chip;
+  const dismissBtn = dismissKey
+    ? `<button class="dismissbtn board-card-dismiss" data-path="${esc(dismissKey)}" title="Dismiss room" aria-label="Dismiss">×</button>`
+    : "";
+  const wsLine = workstream ? `<div class="board-card-ws">${esc(workstream)}</div>` : "";
+  return `<div class="board-card${selected ? " selected" : ""}" data-key="${esc(key)}">
+    <div class="board-card-top"><span class="board-card-title">${label}</span><span class="chip ${chipCls}">${esc(chipLabel)}</span>${dismissBtn}</div>
+    ${wsLine}
+    <div class="board-card-telem mono">${esc(telemetryText)}</div>
+  </div>`;
+}
+function roomCardHtml(room, selectedKey, dismissable){
+  const key = room.path;
+  const title = room.label ? esc(room.label) : esc(room.name);
+  return boardCardHtml(key, title, primaryStateChip(room), cardTelemetryText(room), key === selectedKey,
+    dismissable && key ? key : null, room.workstream);
+}
+function conductorCardHtml(conductor, selectedKey){
+  return boardCardHtml(CONDUCTOR_KEY, "conductor", ["STANDBY", "c-ok"], "—", selectedKey === CONDUCTOR_KEY, null, null);
+}
+function boardColumnHtml(title, count, cardsHtml){
+  return `<div class="board-column"><div class="column-header"><span class="column-title">${esc(title)}</span><span class="column-count">${count}</span></div>
+    <div class="board-column-body">${cardsHtml || `<div class="empty">none</div>`}</div></div>`;
+}
+function conductorDetailHtml(conductor){
+  const conductorRoomPath = conductorRoomPathOf(conductor);
+  if(!conductor || !conductor.artifacts_path) return `<div class="empty">No conductor.</div>`;
+  const copyBtn = copyButtonHtml(conductor.artifacts_path, "copy path");
+  const items = Array.isArray(inboxIndex) ? inboxIndex.filter(m => m && (m.kind === "conductor" || (conductorRoomPath && m.room === conductorRoomPath))) : null;
+  const countLine = items !== null ? `<div class="ev">${items.length} deliverable${items.length === 1 ? "" : "s"}</div>` : "";
+  const deliverables = conductorRoomPath
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(conductorRoomPath)}">deliverables &rarr;</a></div>`
+    : "";
+  return `<div class="detail-top"><span class="detail-title">conductor</span><span class="chips"><span class="chip c-ok">STANDBY</span></span></div>
+    <div class="detail-path mono" title="${esc(conductor.artifacts_path)}">${esc(conductor.artifacts_path)}</div>
+    ${countLine}
+    <div class="verbs">${copyBtn}</div>
+    ${deliverables}`;
+}
+// Full detail: path (tap to expand), role/adapter/model/effort, error, step timeline, full
+// telemetry, deliverables link, and the same state-appropriate copy verbs the old per-lane card
+// used to carry directly (copyButtonsHtml, unchanged -- read-only, copies only, never executes).
+function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt, roomsByPath){
+  const running = (room.steps||[]).find(s => s.state === "Running");
+  const lastStep = (room.steps||[])[ (room.steps||[]).length - 1 ];
+  const failedStep = (room.steps||[]).find(s => s.state === "Failed");
+  const focusStep = running || failedStep || lastStep;
+  const terminal = room.state === "Failed" || room.state === "Succeeded" || room.state === "Cancelled";
+  const title = room.label ? esc(room.label) : esc(room.name);
+  const roomIdLine = room.label ? `<div class="roomid">${esc(room.name)}</div>` : "";
+  const isTlOpen = !!(openTimelinePaths && room.path && openTimelinePaths.has(room.path));
+  const pathHtml = room.path
+    ? `<div class="detail-path mono" title="Tap to expand">${esc(room.path)}</div>` : "";
+  const err = room.error ? `<div class="ev" title="${esc(room.error)}">⛔ ${esc(room.error)}</div>` : "";
+  const tryLine = room.try ? `<div class="ev" title="${esc(room.try)}">↻ suggested: ${esc(room.try)}</div>` : "";
+  const roomDeliverablesKey = room.path || room.name;
+  const deliverables = roomDeliverablesKey
+    ? `<div class="deliverables"><a class="inboxlink" data-room="${esc(roomDeliverablesKey)}">deliverables &rarr;</a></div>` : "";
+  return `<div class="detail-top"><span class="detail-title">${title}</span><span class="chips">${chipsHtml(room, running, focusStep)}</span></div>
+    ${roomIdLine}
+    ${projectLineHtml(room)}
+    ${lineageLineHtml(room, roomsByPath)}
+    ${pathHtml}
+    ${bindingLineHtml(room)}
+    ${err}${tryLine}
+    <div class="section-heading">Telemetry</div>
+    ${fullTelemetryHtml(room)}
+    ${stdoutTailHtml(room, derivedAt)}
+    <div class="section-heading">Timeline</div>
+    ${timelineHtml(room, timelines, isTlOpen) || `<div class="ev">no timeline entries</div>`}
+    ${copyButtonsHtml(room, running, terminal)}
+    ${deliverables}`;
+}
+function detailPaneHtml(selectedKey, roomsByPath, conductor, timelines, openTimelinePaths, backOnclick, derivedAt){
+  const backBtn = backOnclick ? `<button class="detail-back-btn" id="board-back">&larr; Back to board</button>` : "";
+  if(!selectedKey) return backBtn + `<div class="empty">Select a card.</div>`;
+  if(selectedKey === CONDUCTOR_KEY) return backBtn + conductorDetailHtml(conductor);
+  const room = roomsByPath.get(selectedKey);
+  if(!room) return backBtn + `<div class="empty">That room is no longer in the fleet snapshot.</div>`;
+  return backBtn + roomDetailHtml(room, timelines, openTimelinePaths, derivedAt, roomsByPath);
+}
 function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCount){
   if(totalDismissed <= 0) return "";
   const parts = [];
@@ -769,7 +1126,12 @@ function formatDismissedNote(totalDismissed, failedCount, stalledCount, doneCoun
   const countLabel = totalDismissed === 1 ? "1 hidden" : `${totalDismissed} hidden`;
   return `${countLabel}${detail ? ` · ${detail}` : ""} · <a id="restore-dismissed">restore</a>`;
 }
-function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms){
+// #1678: Combo C+E -- a three-column state board (Needs You / Running / Done) with a detail pane
+// that opens on tap, docked beside the board on desktop and a slide-in second screen on the phone
+// (≤480px). Bucketing/dismiss/pagination logic below is unchanged from the pre-#1678 section
+// layout -- only how the buckets get PAINTED (columns + cards + pane instead of <h2> sections +
+// full lane cards) is new.
+function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenCount, dismissed = dismissedRooms, conductor = lastGood && lastGood.conductor, derivedAt = lastGood && lastGood.derived_at){
   const openTimelinePaths = new Set();
   if(typeof document !== "undefined"){
     for(const el of document.querySelectorAll("#content details.tl-details[open]")){
@@ -785,12 +1147,27 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
   const stalled = rooms.filter(r => r.state === "Stalled");
   // #1586 S1: same hole Stalled itself closed pre-#1582 -- a truthy, unrecognized state string
   // matches none of the exact-match buckets below AND isn't `!r.state`, so without its own bucket
-  // it would vanish off the page entirely rather than surface anywhere. No production writer emits
-  // this state yet; the bucket exists so the render is already correct once one does.
+  // it would vanish off the page entirely rather than surface anywhere. Producer since #1608.
   const indeterminate = rooms.filter(r => r.state === "Indeterminate");
-  const failed  = rooms.filter(r => r.state === "Failed");
+  // #1698: Cancelled (`baton cancel`'s terminal word) rides the Failed bucket -- over, not
+  // successful, dismissable, deletable. Measured 9/2: 29 of 72 live rooms were Cancelled and none
+  // rendered, the same truthy-unrecognised-state hole Stalled and Indeterminate closed above.
+  const isFailedLike = (r) => r.state === "Failed" || r.state === "Cancelled";
+  const failed  = rooms.filter(isFailedLike);
   const done    = rooms.filter(r => r.state === "Succeeded");
   const other   = rooms.filter(r => !r.state);
+  // #1656: fold in whatever terminal-archive pages the operator has already loaded via "load
+  // older" -- deduped against the hot set by path, since fleet_status's `page=0` deliberately
+  // returns the same newest terminal rooms the hot set already carries (split_hot_and_archive's own
+  // doc: the archive is the full population, not just the tail beyond the cap).
+  if(terminalArchiveExtra.length){
+    const seenPaths = new Set(failed.concat(done).map(r => r.path));
+    for(const r of terminalArchiveExtra){
+      if(!r || !r.path || seenPaths.has(r.path)) continue;
+      seenPaths.add(r.path);
+      (isFailedLike(r) ? failed : r.state === "Succeeded" ? done : other).push(r);
+    }
+  }
   const byNewest = (a,b) => (newestStepTime(b)||"").localeCompare(newestStepTime(a)||"");
   running.sort(byNewest); stalled.sort(byNewest); indeterminate.sort(byNewest); failed.sort(byNewest); done.sort(byNewest);
 
@@ -806,47 +1183,81 @@ function render(rooms, pushedAt, underhood, heartbeatAt, timelines, staleHiddenC
 
   const totalDismissed = dismissedFailed.length + dismissedDone.length + dismissedStalled.length;
 
-  let html = underhoodHtml(underhood);
-  html += `<h2>Running · ${running.length}</h2><div class="lanes">` + (running.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
-  // Ranked above Failed and kept out of the collapsible Terminal section (unlike Failed/Succeeded):
-  // a stalled room isn't finished, and nothing but a person will ever move it, so it stays as
-  // visible as Running rather than one click away.
-  const stalledDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss all</a>` : "";
-  html += `<h2><span>Stalled · ${visibleStalled.length}</span>${stalledDismissAll}</h2><div class="lanes">` + (visibleStalled.map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
-  // Same placement reasoning as Stalled above: an Indeterminate room isn't finished either -- it
-  // needs a conductor's recorded resolution, never a silent default -- so it stays out of the
-  // collapsible Terminal section too, as visible as Running/Stalled rather than one click away.
-  html += `<h2>Indeterminate · ${indeterminate.length}</h2><div class="lanes">` + (indeterminate.map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("") || `<div class="lane"><div class="ev">none</div></div>`) + `</div>`;
+  // Needs You: the conductor pinned first, then Stalled + Indeterminate (both "nothing moves this
+  // without a person", the same reasoning the pre-#1678 layout already applied by keeping them out
+  // of the collapsible Terminal section). Done: Failed + Succeeded together -- both are over, only
+  // the outcome differs, and both get a card dismiss (×) button.
+  const needsYouRooms = visibleStalled.concat(indeterminate).sort(byNewest);
+  const doneRooms = visibleFailed.concat(visibleDone).sort(byNewest);
+  const roomsByPath = new Map();
+  for(const r of rooms) if(r && r.path) roomsByPath.set(r.path, r);
+  for(const r of terminalArchiveExtra) if(r && r.path && !roomsByPath.has(r.path)) roomsByPath.set(r.path, r);
 
-  const termParts = [];
-  if(visibleDone.length > 0 || visibleFailed.length === 0){
-    termParts.push(`${visibleDone.length} succeeded`);
-  }
-  if(visibleFailed.length > 0){
-    termParts.push(`${visibleFailed.length} failed`);
-  }
-  const termSummary = termParts.join(" · ");
-
-  let termContent = "";
-  if(visibleFailed.length > 0){
-    const failedDismissAll = `<a class="dismissall" data-section="failed">dismiss all</a>`;
-    termContent += `<h2><span>Failed · ${visibleFailed.length}</span>${failedDismissAll}</h2><div class="lanes">` + visibleFailed.slice(0,12).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
-  }
-  if(visibleDone.length > 0){
-    const doneDismissAll = `<a class="dismissall" data-section="succeeded">dismiss all</a>`;
-    termContent += `<h2><span>Succeeded · ${visibleDone.length}</span>${doneDismissAll}</h2><div class="lanes">` + visibleDone.slice(0,40).map(r => laneHtml(r, timelines, true, openTimelinePaths)).join("") + `</div>`;
-  }
-  if(!visibleFailed.length && !visibleDone.length){
-    termContent += `<div class="lanes"><div class="lane"><div class="ev">none</div></div></div>`;
+  const hasConductor = !!(conductor && conductor.artifacts_path);
+  if(selectedCardKey === null){
+    // First render only -- pick a default so the pane is never empty on load, without yanking the
+    // operator's own selection out from under them on a later poll.
+    selectedCardKey = hasConductor ? CONDUCTOR_KEY
+      : needsYouRooms[0] ? needsYouRooms[0].path
+      : running[0] ? running[0].path
+      : doneRooms[0] ? doneRooms[0].path
+      : null;
   }
 
-  // Preserve the section's open/closed state across a re-render -- otherwise every dismiss/restore
-  // click (which rebuilds #content from scratch) would slam an opened Terminal section shut again.
-  const terminalWasOpen = !!($("terminal-details") && $("terminal-details").open);
-  html += `<details id="terminal-details"${terminalWasOpen ? " open" : ""}><summary>Terminal · ${termSummary}</summary>${termContent}</details>`;
+  const needsYouCards = (hasConductor ? conductorCardHtml(conductor, selectedCardKey) : "")
+    + needsYouRooms.map(r => roomCardHtml(r, selectedCardKey, r.state !== "Indeterminate")).join("");
+  const runningCards = running.map(r => roomCardHtml(r, selectedCardKey, false)).join("");
+  let doneCards = doneRooms.map(r => roomCardHtml(r, selectedCardKey, true)).join("");
+  // #1656: terminalTotal (server's count of ALL terminal rooms) vs. failed.length+done.length
+  // (everything actually loaded so far, hot set + any "load older" pages) -- offer the link only
+  // while there is provably more archive left to fetch.
+  const loadedTerminalCount = failed.length + done.length;
+  if(terminalTotal != null && loadedTerminalCount < terminalTotal && terminalNextPage != null){
+    doneCards += `<a id="load-more-terminal" class="loadmore">load older (${terminalTotal - loadedTerminalCount} more)</a>`;
+  }
+
+  const needsYouDismissAll = visibleStalled.length > 0 ? `<a class="dismissall" data-section="stalled">dismiss stalled</a>` : "";
+  const doneDismissBits = [];
+  if(visibleFailed.length > 0) doneDismissBits.push(`<a class="dismissall" data-section="failed">dismiss failed</a>`);
+  if(visibleDone.length > 0) doneDismissBits.push(`<a class="dismissall" data-section="succeeded">dismiss succeeded</a>`);
+  // #1659: "copy prune" -- the batch form of a Done card's own "copy delete" verb. Copies the
+  // dry-run form (no --yes): the operator reviews what would be removed before opting into the
+  // destructive form themselves, same "copy text, never execute" contract every button on this page
+  // follows (spec/baton.md §10: origination and arrest stay orchestrator-only).
+  if(loadedTerminalCount > 0) doneDismissBits.push(copyButtonHtml("baton rooms prune --terminal", "copy prune"));
+  const doneColumnExtra = doneDismissBits.length ? `<div class="column-extra">${doneDismissBits.join(" ")}</div>` : "";
+
+  const needsYouCount = (hasConductor ? 1 : 0) + needsYouRooms.length;
+  const needsYouColumn = boardColumnHtml("Needs You", needsYouCount, needsYouDismissAll ? `<div class="column-extra">${needsYouDismissAll}</div>${needsYouCards}` : needsYouCards);
+  const runningColumn = boardColumnHtml("Running", running.length, runningCards);
+  const doneColumn = boardColumnHtml("Done", loadedTerminalCount, doneColumnExtra + doneCards);
+
+  const showingDetail = phoneShowDetail;
+  const boardHtml = underhoodHtml(underhood)
+    + `<div class="board-detail-layout${showingDetail ? " showing-detail" : ""}">`
+    + `<div class="board-area">`
+    + `<div class="phone-carousel-pills">`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "needsyou" ? " active" : ""}" data-col="needsyou">Needs You (${needsYouCount})</button>`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "running" ? " active" : ""}" data-col="running">Running (${running.length})</button>`
+    + `<button class="carousel-tab-btn${phoneActiveColumn === "done" ? " active" : ""}" data-col="done">Done (${loadedTerminalCount})</button>`
+    + `</div>`
+    + `<div class="board-container">`
+    + `<div class="board-column-wrap${phoneActiveColumn === "needsyou" ? " active-col" : ""}">${needsYouColumn}</div>`
+    + `<div class="board-column-wrap${phoneActiveColumn === "running" ? " active-col" : ""}">${runningColumn}</div>`
+    + `<div class="board-column-wrap${phoneActiveColumn === "done" ? " active-col" : ""}">${doneColumn}</div>`
+    + `</div></div>`
+    + `<div class="board-detail-side">${detailPaneHtml(selectedCardKey, roomsByPath, conductor, timelines, openTimelinePaths, true, derivedAt)}</div>`
+    + `</div>`;
+
   const unreadableWasOpen = !!($("unreadable-details") && $("unreadable-details").open);
-  if(other.length) html += `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>`;
-  $("content").innerHTML = html;
+  const other20 = other.length ? `<details id="unreadable-details"${unreadableWasOpen ? " open" : ""}><summary>Unreadable entries · ${other.length}</summary><div class="lanes">${other.slice(0,20).map(r => laneHtml(r, timelines, false, openTimelinePaths)).join("")}</div></details>` : "";
+
+  $("content").innerHTML = boardHtml + other20;
+  // #1710: newest stdout at the bottom -- the pane is rebuilt wholesale every render, so there is no
+  // scroll position to preserve; just land on the newest line each time, same convention the tail
+  // itself follows (oldest first, newest last).
+  const stdoutTailEl = $("content").querySelector(".stdout-tail");
+  if(stdoutTailEl) stdoutTailEl.scrollTop = stdoutTailEl.scrollHeight;
   $("fresh").textContent = freshLabel(pushedAt, "pushed ") || "push time unknown";
   const hb = freshLabel(heartbeatAt, "pusher alive ");
   if(hb) $("fresh").textContent += " · " + hb;
@@ -869,6 +1280,29 @@ function freshLabel(iso, prefix){
   return prefix + (a || new Date(iso).toLocaleTimeString()) + (a && a !== "just now" ? " ago" : "");
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
+
+// #1656: on-demand paging over the terminal archive (see terminalArchiveExtra's own comment at its
+// declaration). One-shot fetch on click -- `refetchInterval: 0` means this watchTool call does not
+// join the periodic 30s poll the main fleet_status subscription already runs; it settles once and
+// the callback re-renders from the (module-level) accumulated state.
+function loadMoreTerminal(){
+  if(!window.mcpHandle || terminalNextPage == null) return;
+  window.mcpHandle.watchTool("baton", "fleet_status", { page: terminalNextPage, limit: 50 }, (ev) => {
+    if(ev.type !== "data") return;
+    let payload = ev.result.payload;
+    if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+    if(!payload || !Array.isArray(payload.rooms)) return;
+    const known = new Set(terminalArchiveExtra.map(r => r && r.path));
+    for(const r of payload.rooms){
+      if(r && r.path && !known.has(r.path)){ terminalArchiveExtra.push(r); known.add(r.path); }
+    }
+    if(typeof payload.terminal_total === "number") terminalTotal = payload.terminal_total;
+    terminalNextPage = typeof payload.next_page === "number" ? payload.next_page : null;
+    if(lastGood){
+      render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms);
+    }
+  }, { refetchInterval: 0 });
+}
 
 // -----------------------------------------------------------------------------------------------
 // Deliverables inbox (#1413, merged into this artifact as a tab by #1505 item 4). Same data
@@ -1100,23 +1534,39 @@ function renderMarkdown(text){
   return html;
 }
 function itemRow(item){
-  const [label, cls] = verdictChip(item.verdict);
+  const isConductor = item.kind === "conductor";
+  const [label, cls] = isConductor ? ["CONDUCTOR", "c-run"] : verdictChip(item.verdict);
   const a = age(item.created_at || item.pushed_at);
   const withheld = item.withheld ? ` · <span title="${esc(item.stub_reason || "")}">withheld</span>` : "";
+  const roomLabel = item.room_name || item.room;
   return `<div class="item" data-id="${esc(item.id)}">
     <div class="top"><span class="title">${esc(item.title || item.artifact || item.id)}</span><span class="chip ${cls}">${label}</span></div>
-    <div class="meta">${esc(item.room)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
+    <div class="meta">${esc(roomLabel)}${item.artifact ? " · " + esc(item.artifact) : ""} · ${a ? a + " ago" : "?"}${withheld}</div>
   </div>`;
 }
-function renderInboxList(items, roomFilter){
+function renderInboxList(items, roomFilter, count){
+  let filterLabel = roomFilter;
+  if(roomFilter){
+    const match = (items.length > 0 ? items : inboxIndex).find(m => m.room === roomFilter && m.room_name);
+    if(match) filterLabel = match.room_name;
+  }
   $("filter").innerHTML = roomFilter
-    ? `filtered to room <b>${esc(roomFilter)}</b> · <a id="clearfilter">clear</a>`
+    ? `filtered to room <b>${esc(filterLabel)}</b> · <a id="clearfilter">clear</a>`
     : "";
   const clear = $("clearfilter");
   if(clear) clear.addEventListener("click", () => { inboxRoomFilter = ""; location.hash = "#inbox"; applyRoute(); });
-  $("inboxcontent").innerHTML = items.length
+  const list = items.length
     ? items.map(itemRow).join("")
     : `<div class="empty">No deliverables ${roomFilter ? "for this room " : ""}yet.</div>`;
+  // #1656 F1: "showing N of count" plus a load-more control mirroring loadMoreTerminal() above --
+  // never silently truncate to the first page. `count` is null only before the first page for the
+  // current filter has come back (fetchInboxPage's one-shot fetch); the summary line waits for it.
+  const summary = count != null
+    ? `<div class="lanes">showing ${items.length} of ${count}`
+      + (inboxNextCursor != null ? ` · <a id="load-more-inbox" class="loadmore">load more</a>` : "")
+      + `</div>`
+    : "";
+  $("inboxcontent").innerHTML = list + summary;
   for(const el of document.querySelectorAll("#inboxcontent .item")){
     el.addEventListener("click", () => { location.hash = "#inbox:" + encodeURIComponent(el.dataset.id); });
   }
@@ -1129,9 +1579,10 @@ function renderInboxDoc(item, text){
   const isVerdictShaped = parsed && typeof parsed === "object" && !Array.isArray(parsed) && (
     Array.isArray(parsed.findings) || typeof parsed.verdict === "string"
   );
+  const isConductor = item && item.kind === "conductor";
   const verdictForChip = (isVerdictShaped && typeof parsed.verdict === "string") ? parsed.verdict : (item && item.verdict);
-  const [label, cls] = verdictChip(verdictForChip);
-  const verdict = item && item.verdict;
+  const [label, cls] = isConductor ? ["CONDUCTOR", "c-run"] : verdictChip(verdictForChip);
+  const verdict = isConductor ? null : (item && item.verdict);
   const verdictLine = verdict
     ? `<div class="meta">${esc(verdict.state || "?")}${verdict.error ? " — " + esc(verdict.error) : ""}${verdict.try ? " (" + esc(verdict.try) + ")" : ""}</div>`
     : "";
@@ -1160,6 +1611,44 @@ function renderInboxDoc(item, text){
 // -----------------------------------------------------------------------------------------------
 let inboxRoomFilter = new URLSearchParams(location.search).get("room") || "";
 let inboxIndex = [];
+// #1656 F1: on-demand paging over the inbox, mirroring terminalArchiveExtra/terminalNextPage/
+// terminalTotal below. inboxExtra/inboxCount/inboxNextCursor are (re)populated by fetchInboxPage
+// whenever the active filter changes (including landing on the unfiltered view) or "load more" is
+// clicked; inboxLoadedFilter records which filter they currently answer for, so switching rooms
+// resets accumulation instead of mixing pages fetched under a different filter.
+let inboxExtra = [];
+let inboxCount = null;
+let inboxNextCursor = null;
+let inboxLoadedFilter = null;
+// One-shot fetch of a deliverables_list page for `room` (empty string/undefined = unfiltered),
+// scoped by an opaque cursor from a prior call's next_cursor. `replace` is true for the first page
+// of a (re)started filter -- overwrites inboxExtra outright rather than appending, since a filter
+// switch must not mix pages fetched under the OLD filter into the new one's count/items.
+function fetchInboxPage(room, cursor, replace){
+  if(!window.mcpHandle) return;
+  const args = { limit: 50 };
+  if(room) args.room = room;
+  if(cursor) args.cursor = cursor;
+  window.mcpHandle.watchTool("baton", "deliverables_list", args, (ev) => {
+    if(ev.type !== "data") return;
+    let payload = ev.result.payload;
+    if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
+    if(!payload || !Array.isArray(payload.items)) return;
+    if(replace){
+      inboxExtra = payload.items;
+    } else {
+      const known = new Set(inboxExtra.map(m => m && m.id));
+      for(const it of payload.items){ if(it && it.id && !known.has(it.id)){ inboxExtra.push(it); known.add(it.id); } }
+    }
+    if(typeof payload.count === "number") inboxCount = payload.count;
+    inboxNextCursor = payload.next_cursor || null;
+    if(!location.hash.startsWith("#inbox:")) applyRoute();
+  }, { refetchInterval: 0 });
+}
+function loadMoreInbox(){
+  if(inboxNextCursor == null) return;
+  fetchInboxPage(inboxRoomFilter, inboxNextCursor, false);
+}
 function applyRoute(){
   const h = location.hash;
   const onInbox = h === "#inbox" || h.startsWith("#inbox:");
@@ -1181,15 +1670,93 @@ function applyRoute(){
       }
     }, { refetchInterval: 0 });
   } else {
-    const items = inboxRoomFilter ? inboxIndex.filter((m) => m.room === inboxRoomFilter) : inboxIndex;
-    renderInboxList(items, inboxRoomFilter);
+    // #1656 F1: a room filter pages the same way the unfiltered view does -- a fresh, server-side
+    // room-scoped fetch on every filter switch, never a client-side .filter() of the unfiltered
+    // top page (which would silently miss older items for that room, past whatever the unfiltered
+    // page happened to carry).
+    if(inboxLoadedFilter !== inboxRoomFilter){
+      inboxExtra = [];
+      inboxNextCursor = null;
+      inboxCount = null;
+      inboxLoadedFilter = inboxRoomFilter;
+      fetchInboxPage(inboxRoomFilter, null, true);
+    }
+    const base = inboxRoomFilter ? [] : inboxIndex;
+    const knownIds = new Set(base.map(m => m && m.id));
+    const items = base.concat(inboxExtra.filter(m => m && !knownIds.has(m.id)));
+    renderInboxList(items, inboxRoomFilter, inboxCount);
   }
 }
 let lastGood = null;
 let accumulatedTimelines = loadPersistedTimelines();
 let dismissedRooms = loadPersistedDismissed();
+// #1656: the pushed snapshot's `rooms` only carries non-terminal rooms plus the newest
+// HOT_TERMINAL_CAP (pusher.py) terminal ones -- everything older lives server-side in
+// worker.js's "terminal_archive" key and is fetched a page at a time via fleet_status's own
+// `page`/`limit` arguments (never a second tool -- FleetGlassReadOnlyTests pins the TOOLS array to
+// exactly fleet_status/deliverables_list/deliverable_read). `terminalArchiveExtra` accumulates
+// pages the operator has actually asked for by clicking "load older"; `terminalTotal` is the
+// server's count of ALL terminal rooms, used only to decide whether the link still has more to
+// offer; `terminalNextPage` is `null` once the archive is exhausted.
+let terminalArchiveExtra = [];
+let terminalTotal = null;
+let terminalNextPage = 0;
+// #1678 (Combo C+E board state): the selected card's key (a room path, or CONDUCTOR_KEY) drives the
+// docked/slide-in detail pane; phoneActiveColumn is which carousel pill is showing on a ≤480px
+// viewport; phoneShowDetail is whether that viewport is showing the pane (replacing the board) or
+// the board itself -- the ruling's "tapping a card replaces the board with the pane plus a Back
+// control".
+let selectedCardKey = null;
+let phoneActiveColumn = "needsyou";
+let phoneShowDetail = false;
 
+function rerenderFromLastGood(){
+  if(lastGood && Array.isArray(lastGood.rooms)){
+    render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms, lastGood.conductor);
+  }
+}
 document.addEventListener("click", (ev) => {
+  // #1678: selecting a board card (or the conductor card) just changes which room the detail pane
+  // shows -- on a ≤480px viewport it also flips the board over to the pane (CSS's .showing-detail),
+  // the ruling's "tapping a card replaces the board with the pane plus a Back control". The per-card
+  // dismiss (×) button is a descendant of .board-card, so its own `.dismissbtn` branch further below
+  // must run instead of this one -- `isDismissClick` short-circuits the card-select branch for it
+  // rather than selecting the card that click just hid.
+  const isDismissClick = !!ev.target.closest(".board-card-dismiss");
+  const card = !isDismissClick && ev.target.closest(".board-card");
+  if(card && card.dataset.key){
+    selectedCardKey = card.dataset.key;
+    phoneShowDetail = true;
+    rerenderFromLastGood();
+    return;
+  }
+  const backBtn = ev.target.closest("#board-back");
+  if(backBtn){
+    phoneShowDetail = false;
+    rerenderFromLastGood();
+    return;
+  }
+  const carouselBtn = ev.target.closest(".carousel-tab-btn");
+  if(carouselBtn && carouselBtn.dataset.col){
+    phoneActiveColumn = carouselBtn.dataset.col;
+    rerenderFromLastGood();
+    return;
+  }
+  const detailPath = ev.target.closest(".detail-path");
+  if(detailPath){
+    detailPath.classList.toggle("expanded");
+    return;
+  }
+  const loadMoreBtn = ev.target.closest("#load-more-terminal");
+  if(loadMoreBtn){
+    loadMoreTerminal();
+    return;
+  }
+  const loadMoreInboxBtn = ev.target.closest("#load-more-inbox");
+  if(loadMoreInboxBtn){
+    loadMoreInbox();
+    return;
+  }
   const dismissBtn = ev.target.closest(".dismissbtn");
   if(dismissBtn){
     const path = dismissBtn.dataset.path;
@@ -1273,6 +1840,13 @@ window.addEventListener("hashchange", applyRoute);
   // RUNNING_SUSPICION_MS: a coalesced-but-healthy pending age never exceeds the 90s floor by more
   // than one polling interval, so only a genuinely failing push keeps growing past minutes.
   const PUSH_FAILING_MS = 10 * 60 * 1000;
+  // #1712: the daily KV write cap fails the heartbeat write right alongside the snapshot/derived
+  // write, so heartbeat_at and derived_at go stale TOGETHER -- the pre-fix version of this banner
+  // chain had no arm for that shape and fell through to "derivation may be stuck" below, which is
+  // wrong: derivation isn't stuck, the Worker can't write anything at all. "Within one push
+  // interval of each other" is the tell: a genuinely stuck derivation leaves heartbeat_at FRESH
+  // (the heartbeat write still succeeds) while only derived_at ages: See spec/baton.md §6.
+  const KV_CAP_SYNC_MS = 3 * 60 * 1000;
   mcp.watchTool("baton", "fleet_status", {}, (ev) => {
     if(ev.type === "data"){
       let snap = ev.result.payload;
@@ -1283,11 +1857,39 @@ window.addEventListener("hashchange", applyRoute);
         savePersistedTimelines(accumulatedTimelines);
         dismissedRooms = pruneDismissed(dismissedRooms, snap.rooms);
         savePersistedDismissed(dismissedRooms);
+        // #1656: terminal_total (absent on an unredeployed pusher, same optional-field convention
+        // as every other fleet_status extension) tells the Terminal section's "load older" link
+        // whether the hot set's newest-N terminal rooms are the whole population or not -- never
+        // reset terminalNextPage here, which would throw away pages the operator already loaded on
+        // every 30s poll.
+        if(typeof snap.terminal_total === "number") terminalTotal = snap.terminal_total;
         const hbMs = snap.heartbeat_at ? Date.now() - Date.parse(snap.heartbeat_at) : null;
         const derivedMs = snap.derived_at ? Date.now() - Date.parse(snap.derived_at) : null;
         const pendingPushMs = typeof snap.pending_push_age_s === "number" ? snap.pending_push_age_s * 1000 : null;
         const running = snap.rooms.some(r => r.state === "Running");
-        if(hbMs == null){
+        // #1690: writeBudgetExhaustedUntil (absent-safe -- an unredeployed pusher never sends a
+        // `pusher` section at all) is the LAST snapshot the pusher intentionally sends before it
+        // stops pushing for the rest of the UTC day, once its daily KV write budget ledger runs out
+        // (spec/baton.md §6, "Fleet Glass write budget"). Checked FIRST: this is an intentional,
+        // self-explained stop, not a failure the other banners below would otherwise misdiagnose as
+        // a dead pusher or a stuck derivation once pushed_at/derived_at start aging past it.
+        const budgetExhaustedUntil = snap.pusher && typeof snap.pusher.writeBudgetExhaustedUntil === "string"
+          ? snap.pusher.writeBudgetExhaustedUntil : null;
+        // #1557 PR-B1: absent-safe the same way as writeBudgetExhaustedUntil above -- a pusher not
+        // yet running FLEET_GLASS_PROJECTION_SOURCE=file, or one whose read of the daemon's
+        // projection file found it fresh, never sends `staleness` at all. Present only on a cycle
+        // that fell back to `derive_snapshot_and_timelines` because the file was stale or absent
+        // (spec/baton.md §6). Checked right after the write-budget banner, same priority rung: both
+        // are the pusher explaining a self-diagnosed source problem, not a downstream KV/heartbeat
+        // symptom the banners below would otherwise misdiagnose.
+        const staleness = snap.staleness && typeof snap.staleness === "object" ? snap.staleness : null;
+        if(budgetExhaustedUntil){
+          banner(`<b>Write budget exhausted for today.</b> The pusher hit its daily KV write cap and stopped snapshot pushes until ${esc(budgetExhaustedUntil)} — deliverables may still be landing. Data below is from the last push before the stop.`);
+        } else if(staleness && staleness.stale){
+          const daemonDerivedAt = typeof staleness.daemon_derived_at === "string" ? staleness.daemon_derived_at : null;
+          const ageText = typeof staleness.age_s === "number" ? `${Math.round(staleness.age_s)}s old` : "absent";
+          banner(`<b>Fleet projection file is stale.</b> The daemon's projection file (${daemonDerivedAt ? `last written ${esc(ageText)}` : "never written, or unreadable"}) fell back to the pusher's own derivation this cycle — data below is live, but check that \`baton daemon\` is running.`);
+        } else if(hbMs == null){
           banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
         } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
           banner(`<b>Pusher likely dead.</b> No heartbeat in ${esc(age(snap.heartbeat_at) || "over 2.5h")} — the fleet machine may be off or the pusher process may have stopped. Data below is from the last push.`);
@@ -1298,12 +1900,17 @@ window.addEventListener("hashchange", applyRoute);
           banner("<b>No derivation timestamp yet.</b> derived_at is unset — redeploy pusher.py for #1613, or the mailbox hasn't received one yet.");
         } else if(pendingPushMs != null && isFinite(pendingPushMs) && pendingPushMs > PUSH_FAILING_MS){
           banner(`<b>Push failing.</b> The pusher has had a snapshot waiting to go out for ${esc(dur(pendingPushMs))} even though derivation is healthy (derived_at ${esc(age(snap.derived_at))} ago) — check pusher.log for POST errors (413 from the 1 MB cap, 5xx, network). Data below may be stale.`);
+        } else if(isFinite(hbMs) && isFinite(derivedMs) && hbMs > RUNNING_SUSPICION_MS && derivedMs > RUNNING_SUSPICION_MS
+                  && Math.abs(hbMs - derivedMs) < KV_CAP_SYNC_MS){
+          // #1712: heartbeat_at and derived_at both stale, aging together -- the Worker itself is
+          // refusing writes (Cloudflare's daily KV cap), not a stuck derivation.
+          banner(`<b>The worker is refusing writes</b> (daily KV write cap hit around ${esc(age(snap.heartbeat_at))} ago; writes resume 00:00 UTC). Data below is from the last push.`);
         } else if(running && isFinite(derivedMs) && derivedMs > RUNNING_SUSPICION_MS){
           banner(`<b>Snapshot derivation may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but its last successful derivation was ${esc(age(snap.derived_at))} ago while rooms show Running — derive_snapshot_and_timelines may be failing every cycle.`);
         } else {
           banner("");
         }
-        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms);
+        render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms, snap.conductor, snap.derived_at);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         $("dismissnote").innerHTML = "";
@@ -1323,7 +1930,7 @@ window.addEventListener("hashchange", applyRoute);
     } else if(e.code === "tool_error"){
       banner(`<b>fleet_status reported failure:</b> ${esc(e.message || "")}` + (lastGood ? " — showing last good data." : ""));
     } else {
-      if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}`); }
+      if(!lastGood){ banner(`<b>No data yet</b> (${esc(e.code || "unknown")}). ${esc(upstreamErrorDetail(e))}`); }
     }
   }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
 
@@ -1333,10 +1940,13 @@ window.addEventListener("hashchange", applyRoute);
       if(typeof payload === "string"){ try { payload = JSON.parse(payload); } catch { payload = null; } }
       inboxIndex = (payload && Array.isArray(payload.items)) ? payload.items : [];
       if(!location.hash.startsWith("#inbox:")) applyRoute();
+      if(lastGood && Array.isArray(lastGood.rooms)){
+        render(lastGood.rooms, lastGood.pushed_at, lastGood.underhood, lastGood.heartbeat_at, accumulatedTimelines, lastGood.stale_hidden_count, dismissedRooms, lastGood.conductor);
+      }
       return;
     }
     const e = ev.error || {};
-    $("inboxbanner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(e.message || "")}</div>`;
+    $("inboxbanner").innerHTML = `<div class="banner"><b>Inbox feed unavailable</b> (${esc(e.code || "unknown")}). ${esc(upstreamErrorDetail(e))}</div>`;
   }, { refetchInterval: 30000, cache: { staleTime: 25000 } });
 
   applyRoute();

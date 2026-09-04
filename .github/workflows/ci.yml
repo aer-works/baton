@@ -15,6 +15,7 @@ jobs:
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -43,6 +44,7 @@ jobs:
     # does not skip this job on push.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
     name: test (${{ matrix.name }})
+    timeout-minutes: 17
     strategy:
       fail-fast: false
       matrix:
@@ -162,50 +164,6 @@ jobs:
         run: pixi run dotnet build-server shutdown
         if: always()
 
-  # Platform-independent formatting and compiler/linter checks hoisted out of the test matrix (#1363).
-  # Runs parallel to the test legs, saving ~2 min of serial overhead off the long pole. Windows-only
-  # (#1405): no non-Windows-specific step here, so this just moved to the same runner as everything else.
-  lint:
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dotnet == 'true') }}
-    runs-on: windows-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: prefix-dev/setup-pixi@v0.8.0
-        id: pixi-attempt-1
-        continue-on-error: true
-        with:
-          run-install: false
-          cache: false
-      - if: steps.pixi-attempt-1.outcome == 'failure'
-        shell: bash
-        run: sleep 30
-      - uses: prefix-dev/setup-pixi@v0.8.0
-        if: steps.pixi-attempt-1.outcome == 'failure'
-        with:
-          run-install: false
-          cache: false
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.x"
-          cache: true
-          cache-dependency-path: "**/packages.lock.json"
-
-      - name: Check formatting
-        run: pixi run fmt-check
-
-      - name: Lint
-        run: pixi run lint
-
-      - name: Shutdown dotnet build server
-        run: pixi run dotnet build-server shutdown
-        if: always()
-
   # M13 Phase 3 (#109): packs baton into a nupkg — Windows-only (#1405), so this is a single-RID
   # (win-x64) package, not a multi-RID one (see the `Pack baton` step below for what that packs
   # post-#1474). Runs after `test`
@@ -220,6 +178,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'push' && needs.test.result == 'success' }}
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 5
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
@@ -288,15 +247,36 @@ jobs:
   # a session filtered the output for `OK`/`FAIL`, and the red run was reported as passing 16/16
   # in a merged PR body. Adding a red check to CI would have blocked every unrelated PR on
   # pre-existing debt, which is why #589 landed first.
-  audit:
+  # The single source of truth for "every local gate passed" (#1676) -- one step, the same tracked
+  # pixi task a human or the pre-push hook runs, never a hand-picked list of individual
+  # `pixi run <member>` steps mirroring tools/gates/gates.py's own membership (what let a member
+  # added there, or in pixi.toml, go unrun in CI until someone remembered to add a step). What
+  # `--ci` enforces: spec/baton.md §11 C-12. Unconditional -- no `changes` filter: several members
+  # (audit-completeness et al.) must catch a docs-only or decisions-only PR too, same reason the
+  # former `audit` job ran unconditionally; the cost is that this job now also runs the full
+  # build+test+lint on every PR regardless of what changed, which `test`'s own path-filtered shards
+  # above deliberately do not.
+  #
+  # Cost, stated once: the former `audit` job passed `audit-recordonce` an explicit
+  # `origin/${{ github.base_ref || 'main' }}` argument; the tracked `pixi run audit-recordonce`
+  # gates.py itself invokes takes none and always diffs against `origin/main` (recordonce.py's own
+  # default). A PR stacked on a non-main base loses that precision here -- unchanged from what a
+  # local `pixi run gates` run has always done, so this makes CI match local behaviour rather than
+  # regressing it, but it is a real loss of precision worth naming rather than leaving silent.
+  gates:
     runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     steps:
       - uses: actions/checkout@v4
         with:
-          # The record-once check below diffs against origin/main. A shallow clone cannot see it, and
-          # the check fails closed rather than passing on an unreadable diff -- so the depth is what
-          # makes it run at all.
+          # audit-recordonce diffs against origin/main. A shallow clone cannot see it, and the check
+          # fails closed rather than passing on an unreadable diff -- so the depth is what makes it
+          # run at all.
           fetch-depth: 0
+
       # Same setup the test and pack jobs use, for the reason recorded there: pinning a pixi version
       # pinned one too old to read this repo's lock file (version 7), and setup-pixi's own install
       # step fails hard on an empty environment. Let `pixi run` do the implicit install.
@@ -322,74 +302,34 @@ jobs:
         with:
           run-install: false
           cache: false
-      # No submodule, no .NET, no build: this reads docs/, decisions/ and the vendor-verify
-      # registry as text. The exit code is the verdict -- never the output.
-      - name: Audit register completeness
-        run: pixi run audit-completeness
-      # audit-selfcheck below is no longer .NET-free: since #887 the role catalog's one source
-      # is the engine (`baton templates --json`), and selfcheck's catalog checks consume it. This
-      # builds ONLY Baton.Cli -- no native lib, no cargo (see pixi.toml's build-cli).
-      # cache is OFF here (#1398): Baton.Cli's project graph has zero PackageReferences (framework
-      # refs resolve from SDK runtime packs, outside NuGet's restore graph), so restore never
-      # creates ~/.nuget/packages -- and then setup-dotnet's post-job cache save fails the job
-      # after every audit step passed. A cache saves nothing here; heavy test/pack jobs keep theirs.
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.x"
-          cache: false
-      - name: Build the CLI the selfcheck reads the catalog through
-        run: pixi run build-cli
-      # The checkers' own checker (#630). Same job on purpose: it reads the same registers as
-      # text -- plus, since #887, the engine catalog via the CLI built above -- needs no vendor,
-      # and a failure has to block the same aggregate `ci` gate.
-      - name: Assert the tooling's enumerable surfaces
-        run: pixi run audit-selfcheck
-      # Proves the step above discriminates, by breaking what each assertion checks and requiring it
-      # to go red. Four of those assertions were once satisfied by construction rather than by
-      # comparison and printed OK; a reviewer found them by reading, and nothing in the repo could
-      # have. Same job because a checker that has stopped checking must block the same gate as a
-      # checker that failed.
-      - name: Prove those assertions discriminate
-        run: pixi run audit-controls
-      # See tools/audit-completeness/recordonce.py (#671). The pin that keeps this checker honest on
-      # real data runs inside audit-selfcheck above, where audit-controls can reach it.
-      - name: No fact is explained in more than one place
-        run: pixi run audit-recordonce -- origin/${{ github.base_ref || 'main' }}
-      # #1397: the docs-budget tripwire (see docsbudget.py). No build, no vendor -- same job as
-      # the other free audits above.
-      - name: Tracked markdown stays within the docs budget
-        run: pixi run audit-docsbudget
-      # #1428: the spec-citation tripwire (see speccitations.py). No build, no vendor -- same job
-      # as the other free audits above.
-      - name: The spec carries no line-number citations
-        run: pixi run audit-speccitations && pixi run audit-speccitations-selftest
-      # #1430: the comment spec-ref tripwire (see commentspecrefs.py). No build, no vendor --
-      # belongs with the free audits here.
-      - name: Every § in a code comment resolves to a live document
-        run: pixi run audit-commentspecrefs && pixi run audit-commentspecrefs-selftest
-      # Hermetic gate polarity check (#1601, see tools/gates/sabotage.py).
-      - name: Prove gate members go red under sabotage
-        run: pixi run gate-sabotage
-      # The live PR-body guard moved to its own workflow, .github/workflows/pr-body-lint.yml (#862),
-      # so that fixing a bad body CLEARS it (it runs on `edited`; this job does not). Its logic is
-      # still tested here -- `negated_close_faults`'s polarity arms run in audit-selfcheck above,
-      # driven by both incident bodies verbatim -- so nothing about the check's correctness left
-      # this job; only the invocation against the live body did.
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Run every local gate (tools/gates/gates.py's tracked member list)
+        run: pixi run gates-ci-quiet
+
+      - name: Shutdown dotnet build server
+        run: pixi run dotnet build-server shutdown
+        if: always()
 
   ci:
-    needs: [changes, test, lint, audit]
+    needs: [changes, test, gates]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Verify no required job failed
         env:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
-          LINT: ${{ needs.lint.result }}
-          AUDIT: ${{ needs.audit.result }}
+          GATES: ${{ needs.gates.result }}
         run: |
-          echo "results: changes=$CHANGES test=$TEST lint=$LINT audit=$AUDIT"
-          for r in "$CHANGES" "$TEST" "$LINT" "$AUDIT"; do
+          echo "results: changes=$CHANGES test=$TEST gates=$GATES"
+          for r in "$CHANGES" "$TEST" "$GATES"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job reported '$r'."
               exit 1

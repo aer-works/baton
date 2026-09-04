@@ -196,7 +196,7 @@ public class ContractValidatorTests
                 var classification = OutcomeClassifier.Classify(
                     new CoreDispatchResult(0, CoreExitReason.Natural), usedContract, directory);
 
-                Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+                Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
                 Assert.NotNull(classification.Reason);
                 Assert.Contains(outputName, classification.Reason);
                 return classification.Reason;
@@ -278,7 +278,7 @@ public class ContractValidatorTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.NotNull(classification.Reason);
             Assert.Contains("first.json", classification.Reason);
             Assert.Contains("second.json", classification.Reason);
@@ -427,7 +427,7 @@ public class ContractValidatorTests
             var classification = OutcomeClassifier.Classify(
                 new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory);
 
-            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
             Assert.Contains("'verdict.json' is not a valid document of its declared schema", classification.Reason);
             Assert.Contains("reviewedRef", classification.Reason);
         }

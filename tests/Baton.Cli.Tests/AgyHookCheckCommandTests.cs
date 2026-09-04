@@ -39,14 +39,16 @@ public class AgyHookCheckCommandTests
 
     private static string Decide(
         string stdinText, string? denied, string? outbox = null, string? workspace = null,
-        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:")
+        string? shellPatterns = "agy:", string? deniedShellPatterns = "agy:",
+        string? deniedShellOptionTokens = "agy:")
     {
         using var stdin = new StringReader(stdinText);
         using var stdout = new StringWriter();
 
         var exitCode = AgyHookCheckCommand.Execute(
             stdin, stdout, denied, shellPatternsRaw: shellPatterns, outboxDirectory: outbox,
-            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns);
+            workspaceDirectory: workspace, deniedShellPatternsRaw: deniedShellPatterns,
+            deniedShellOptionTokensRaw: deniedShellOptionTokens);
 
         Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
 
@@ -152,6 +154,91 @@ public class AgyHookCheckCommandTests
         // onto other tools (view_file is judged only by the denied-tool channel).
         var payload = Payload("view_file");
         Assert.Equal("allow", Decide(payload, "agy:", deniedShellPatterns: null));
+    }
+
+    // ---- Chained-command segmentation (#1685) ----
+    //
+    // The DenyAlways rung above was checked against the whole command line as one string. That scan
+    // rejects any unquoted shell metacharacter outright (#659) -- including '&' -- so a chained line
+    // like `git push --force && true` was denied by the metacharacter scan itself, before either
+    // pattern list was ever consulted, and read as "cannot judge, deny" rather than "the deny pattern
+    // matched". The DIFFERENCE that matters: that denial carried the wrong reason and, on a SCOPED
+    // allow list, would have refused a chain none of whose segments a standing deny even names. The
+    // fix routes agy through the same segmentation claude's Bash hook uses
+    // (ShellCommandPatternMatcher.EvaluateChainedCommand) so every top-level segment is judged on its
+    // own terms: deny-checked, then (only under a scoped grant) allow-checked.
+
+    private static string CommandPayload(string command) => $$"""
+        {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+         "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+         "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}},"Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                     "name":"run_command"},
+         "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+        """;
+
+    [Fact]
+    public void An_unscoped_grant_still_denies_a_standing_deny_riding_a_chained_command()
+    {
+        // The shell is granted unscoped ("agy:" = allow anything), yet a standing 'never' on git push
+        // must still catch it chained after a no-op tail -- the exact shape #1685 was filed on.
+        var payload = CommandPayload("git push --force && true");
+        Assert.Equal(
+            "deny",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void An_unscoped_grant_denies_a_standing_deny_riding_the_first_segment_of_a_chain()
+    {
+        // Same claim, the other position: the standing deny must be caught wherever it sits in the
+        // chain, not only when it happens to lead.
+        var payload = CommandPayload("true && git push --force");
+        Assert.Equal(
+            "deny",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void A_scoped_grant_allows_a_chain_whose_every_segment_matches_the_allow_list()
+    {
+        // The discriminating control: segmentation must not degrade into a blanket chain refusal.
+        // Both segments independently match the review role's own allowlist, so the chain is allowed.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var payload = CommandPayload("git status && git log -1");
+        Assert.Equal(
+            "allow",
+            Decide(
+                payload, "agy:write_to_file,replace_file_content",
+                shellPatterns: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+                deniedShellPatterns: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+                deniedShellOptionTokens: "agy:" + string.Join(",", review.Grant.DeniedShellOptionTokens!)));
+    }
+
+    [Fact]
+    public void An_unscoped_deny_only_grant_never_denies_as_unparseable_even_around_a_substitution()
+    {
+        // #1731 operator ruling (spec/baton.md §9) superseded this test's original claim: a command
+        // substitution used to deny the whole line as Unparseable here too, same polarity as the
+        // whole-line scan it replaced. `EvaluateChainedCommand`'s own remarks state the current
+        // mechanism; "git push*" simply does not match this line's head tokens either way, so it
+        // allows. A SCOPED grant (review) is unaffected -- see
+        // HookCheckCommandTests.An_unparseable_command_fails_closed_under_a_scoped_grant.
+        var payload = CommandPayload("git status && echo $(whoami)");
+        Assert.Equal(
+            "allow",
+            Decide(payload, "agy:", shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
+    }
+
+    [Fact]
+    public void An_unscoped_grant_still_allows_a_command_the_standing_deny_does_not_name()
+    {
+        // The discriminating control for the relaxed empty-allow-list branch: with no allow list, the
+        // deny half is the ONLY thing that may refuse. Without this arm, reverting that relaxation
+        // turns every unscoped role with a standing deny into a blanket refusal, all-green.
+        Assert.Equal(
+            "allow",
+            Decide(CommandPayload("git status"), "agy:",
+                shellPatterns: "agy:", deniedShellPatterns: "agy:git push*"));
     }
 
     [Fact]
@@ -439,6 +526,268 @@ public class AgyHookCheckCommandTests
         // mirrored on both sides. Each side asserts the literal in its own suite; if they drift,
         // the hook reads an empty list, treats it as "nothing withheld", and allows everything.
         Assert.Equal("BATON_HOOK_DENIED_TOOLS", AgyHookCheckCommand.DeniedToolsEnvironmentVariable);
+    }
+
+    [Theory]
+    [InlineData("git merge-base --is-ancestor a b", "allow")]
+    [InlineData("git diff --stat", "allow")]
+    [InlineData("git status", "allow")]
+    [InlineData("git difftool --extcmd=calc -y HEAD~1 HEAD", "deny")]
+    [InlineData("git grep -Ocalc foo", "deny")]
+    [InlineData("git grep --open-files-in-pager=calc foo", "deny")]
+    [InlineData("git -c alias.x=!calc x", "deny")]
+    [InlineData("git push --dry-run", "deny")]
+    [InlineData("gh api repos/x", "deny")]
+    [InlineData("gh pr view 1", "allow")]
+    // #1683 F1 -- denied by absence once `git grep*` left the review allow list; F2 -- the --output
+    // write escape, now closed by the option-token channel; F3 -- the respelled `git merge *` deny.
+    // The parity requirement: agy's hook reaches the same verdict on every one of these as claude's.
+    [InlineData("git grep -nOcalc foo", "deny")]
+    [InlineData("git grep --ignore-case -Ocalc foo", "deny")]
+    [InlineData("git grep --open-files=calc foo", "deny")]
+    [InlineData("git grep  -Ocalc foo", "deny")]
+    [InlineData("git log -1 --output=C:/x --format=format:y", "deny")]
+    [InlineData("git show --output C:/x", "deny")]
+    [InlineData("git log -1 --outpu\"t\"=C:/x --format=format:y", "deny")]
+    [InlineData("git log --oneline -5", "allow")]
+    [InlineData("git log --grep=\"--output\"", "allow")]
+    [InlineData("git merge origin/main", "deny")]
+    public void Review_role_command_allow_deny_polarities_from_catalog(string command, string expectedDecision)
+    {
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        var shellPatternsRaw = review.Grant.ShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.ShellCommandPatterns)
+            : "agy:";
+        var deniedShellPatternsRaw = review.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns)
+            : "agy:";
+        var deniedShellOptionTokensRaw = review.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "agy:" + string.Join(",", review.Grant.DeniedShellOptionTokens)
+            : "agy:";
+
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: shellPatternsRaw,
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(expectedDecision, doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Theory]
+    // #1731's grant shape, agy's side (spec/baton.md §9): #1725's segment-level deny check is not
+    // nested under a non-empty allow list here, so this rung engages the same way on an unscoped
+    // grant as on review's scoped one.
+    [InlineData("implement", "gh pr create --title x --body-file y", "allow")]
+    [InlineData("implement", "gh pr edit 1 --body-file y", "allow")]
+    [InlineData("implement", "gh label create x", "deny")]
+    [InlineData("implement", "gh pr edit 1 --add-label x", "deny")]
+    [InlineData("implement", "gh pr edit 1 --remove-label x", "deny")]
+    // Found-while-fixing, same PR: `--label` at creation time attaches a label too, and was never
+    // covered by the issue's own token list.
+    [InlineData("implement", "gh pr create --title x --label operator-merge", "deny")]
+    [InlineData("implement", "gh issue create --title x --label operator-merge", "deny")]
+    [InlineData("implement", "gh pr merge 1 --squash", "deny")]
+    [InlineData("implement", "gh api repos/a/b", "deny")]
+    [InlineData("implement", "true && gh label create x", "deny")]
+    // #1731 found-while-fixing: adding a deny list to an unscoped agy role (the first one to carry
+    // one) routes every run_command through EvaluateChainedCommand's segmenter for the first time.
+    // The operator ruling recorded at spec/baton.md §9 is what makes these rows allow rather than
+    // deny -- read there for the reasoning; this pins the resulting behaviour through the real catalog.
+    [InlineData("implement", "dotnet test > out.txt", "allow")]
+    [InlineData("implement", "echo $PATH", "allow")]
+    [InlineData("janitor", "gh pr create --title x --body-file y", "allow")]
+    [InlineData("janitor", "gh pr edit 1 --body-file y", "allow")]
+    [InlineData("janitor", "gh label create x", "deny")]
+    [InlineData("janitor", "gh pr edit 1 --add-label x", "deny")]
+    [InlineData("janitor", "gh pr edit 1 --remove-label x", "deny")]
+    [InlineData("janitor", "gh pr merge 1 --squash", "deny")]
+    [InlineData("janitor", "gh api repos/a/b", "deny")]
+    [InlineData("janitor", "true && gh label create x", "deny")]
+    [InlineData("janitor", "dotnet test > out.txt", "allow")]
+    [InlineData("janitor", "echo $PATH", "allow")]
+    public void Unscoped_write_role_denies_label_merge_and_api_writes_from_the_catalog(
+        string roleId, string command, string expectedDecision)
+    {
+        var role = Baton.Vendors.WorkerRoleCatalog.For(roleId);
+        Assert.Null(role.Grant.ShellCommandPatterns); // stays unscoped -- item 1's "do NOT add" requirement
+        var deniedShellPatternsRaw = role.Grant.DeniedShellCommandPatterns is { Count: > 0 }
+            ? "agy:" + string.Join(",", role.Grant.DeniedShellCommandPatterns)
+            : "agy:";
+        var deniedShellOptionTokensRaw = role.Grant.DeniedShellOptionTokens is { Count: > 0 }
+            ? "agy:" + string.Join(",", role.Grant.DeniedShellOptionTokens)
+            : "agy:";
+
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:", // unscoped: Present, empty pattern list
+            deniedShellPatternsRaw: deniedShellPatternsRaw,
+            deniedShellOptionTokensRaw: deniedShellOptionTokensRaw);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(expectedDecision, doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public void The_option_token_channel_is_what_denies_the_output_write_not_the_pattern_lists()
+    {
+        // agy's copy of claude's discriminating control (#1683 F2): same command line, same allow/deny
+        // pattern lists, option-token channel PRESENT but empty -> allowed. Without this arm the deny
+        // row above would not distinguish the new channel from the lists that were already there.
+        // Present-but-empty, not absent: #1683 F3 made an absent channel deny outright (fail-closed,
+        // matching its two sibling channels), so an absent channel no longer isolates "the pattern
+        // lists alone did not deny this" -- it deny for its own, unrelated reason.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        const string command = "git log -1 --output=C:/x --format=format:y";
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+            deniedShellPatternsRaw: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+            deniedShellOptionTokensRaw: "agy:");
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("allow", doc.RootElement.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public void An_absent_denied_option_token_channel_now_fails_closed()
+    {
+        // #1683 F3: this channel used to skip silently on a non-Present status, unlike its two
+        // sibling channels in the same branch (shellPatternList, deniedShellPatternList), which
+        // already deny on Status != Present. A broken channel now denies with a reason naming it,
+        // the same way the siblings already do.
+        var review = Baton.Vendors.WorkerRoleCatalog.For("review");
+        const string command = "git log --oneline -5";
+        var payload = $$"""
+            {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+             "modelName":"gemini-3.6-flash-medium","stepIdx":3,
+             "toolCall":{"args":{"CommandLine":{{JsonSerializer.Serialize(command)}}, "Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                         "name":"run_command"},
+             "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+            """;
+        using var stdin = new StringReader(payload);
+        using var stdout = new StringWriter();
+
+        AgyHookCheckCommand.Execute(
+            stdin, stdout, "agy:write_to_file,replace_file_content",
+            shellPatternsRaw: "agy:" + string.Join(",", review.Grant.ShellCommandPatterns!),
+            deniedShellPatternsRaw: "agy:" + string.Join(",", review.Grant.DeniedShellCommandPatterns!),
+            deniedShellOptionTokensRaw: null);
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+        Assert.Contains("denied option token", doc.RootElement.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public void The_denied_option_token_variable_matches_the_adapter_side_contract()
+    {
+        Assert.Equal(
+            "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS",
+            AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
+    }
+
+    // ---- #1680: the first-verdict canary's write side ----
+
+    [Fact]
+    public void Execute_appends_one_ledger_line_per_verdict_whether_allowed_or_denied()
+    {
+        var ledgerPath = Path.Combine(Path.GetTempPath(), $"agy-hook-verdicts-{Guid.NewGuid():N}.ndjson");
+        try
+        {
+            using (var stdin = new StringReader(Payload("view_file")))
+            using (var stdout = new StringWriter())
+            {
+                AgyHookCheckCommand.Execute(
+                    stdin, stdout, deniedToolsRaw: "agy:", verdictLedgerPath: ledgerPath);
+            }
+
+            using (var stdin = new StringReader(Payload("view_file")))
+            using (var stdout = new StringWriter())
+            {
+                AgyHookCheckCommand.Execute(
+                    stdin, stdout, deniedToolsRaw: "agy:view_file", verdictLedgerPath: ledgerPath);
+            }
+
+            var lines = File.ReadAllLines(ledgerPath);
+            Assert.Equal(2, lines.Length);
+        }
+        finally
+        {
+            FileCleanup.Delete(ledgerPath);
+        }
+    }
+
+    [Fact]
+    public void Execute_never_throws_when_the_ledger_path_is_unwritable()
+    {
+        // A directory that does not exist -- File.AppendAllText would throw DirectoryNotFoundException
+        // (an IOException) if this were not swallowed. The verdict on stdout must still be correct;
+        // only the ledger write is best-effort.
+        var unwritablePath = Path.Combine(
+            Path.GetTempPath(), $"agy-hook-ledger-missing-dir-{Guid.NewGuid():N}", "verdicts.ndjson");
+
+        using var stdin = new StringReader(Payload("view_file"));
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedToolsRaw: "agy:view_file", verdictLedgerPath: unwritablePath);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("deny", doc.RootElement.GetProperty("decision").GetString());
+        Assert.False(Directory.Exists(Path.GetDirectoryName(unwritablePath)));
+    }
+
+    [Fact]
+    public void A_null_ledger_path_writes_no_ledger_and_does_not_throw()
+    {
+        using var stdin = new StringReader(Payload("view_file"));
+        using var stdout = new StringWriter();
+
+        var exitCode = AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedToolsRaw: "agy:", verdictLedgerPath: null);
+
+        Assert.Equal(AgyHookCheckCommand.ExitCode, exitCode);
+    }
+
+    [Fact]
+    public void The_verdict_ledger_variable_matches_the_adapter_side_contract()
+    {
+        Assert.Equal("BATON_HOOK_VERDICT_LEDGER", AgyHookCheckCommand.VerdictLedgerEnvironmentVariable);
     }
 
     private sealed class ThrowingReader : TextReader

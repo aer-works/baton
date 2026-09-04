@@ -256,4 +256,361 @@ public class DispatchOptionsParserTests
         Assert.Contains("--list-capabilities", ex.Message);
         Assert.Contains("review", ex.TryInvocation);
     }
+
+    [Fact]
+    public void Parses_the_workstream_axis()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "1619"]);
+        Assert.Equal("1619", options.Workstream);
+    }
+
+    [Fact]
+    public void A_workstream_is_absent_when_never_passed()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md"]);
+        Assert.Null(options.Workstream);
+    }
+
+    [Fact]
+    public void A_blank_workstream_is_treated_as_absent_rather_than_refused()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "   "]);
+        Assert.Null(options.Workstream);
+    }
+
+    [Fact]
+    public void A_workstream_is_trimmed_but_not_otherwise_folded()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", "  w1619  "]);
+        Assert.Equal("w1619", options.Workstream);
+    }
+
+    [Theory]
+    [InlineData("w1619")]
+    [InlineData("1619")]
+    [InlineData("review-worktree")]
+    [InlineData("a.b_c-9")]
+    public void A_path_safe_slug_is_accepted_verbatim(string slug)
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", slug]);
+        Assert.Equal(slug, options.Workstream);
+    }
+
+    /// <summary>
+    /// #1619: a valid slug is folded to lowercase -- <see cref="DispatchOptionsParser.SanitizeWorkstream"/>
+    /// has the pointer to the rationale.
+    /// </summary>
+    [Theory]
+    [InlineData("W1619", "w1619")]
+    [InlineData("Review-Worktree", "review-worktree")]
+    [InlineData("A.B_C-9", "a.b_c-9")]
+    public void A_valid_slug_is_folded_to_lowercase(string rawValue, string expected)
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", rawValue]);
+        Assert.Equal(expected, options.Workstream);
+    }
+
+    /// <summary>
+    /// #1619: unlike --label, a workstream slug is later used (lowercase-folded) as a Windows
+    /// directory name (WorkstreamJunctionLinker) -- so it is refused outright, never folded, when it
+    /// carries a character unsafe as one path segment.
+    /// </summary>
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("a:b")]
+    [InlineData("a&b")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("-leading-dash")]
+    [InlineData(" has space")]
+    public void A_path_unsafe_workstream_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", rawValue]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_workstream_longer_than_60_characters_is_a_typed_argument_error()
+    {
+        var raw = new string('x', 61);
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", raw]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_workstream_at_exactly_60_characters_is_accepted()
+    {
+        var raw = new string('x', 60);
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--workstream", raw]);
+        Assert.Equal(raw, options.Workstream);
+    }
+
+    [Fact]
+    public void The_repo_option_parses_to_an_absolute_path()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--repo", "."]);
+
+        Assert.Equal(Path.GetFullPath("."), options.RepoPath);
+    }
+
+    [Fact]
+    public void Omitting_repo_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]);
+
+        Assert.Null(options.RepoPath);
+    }
+
+    /// <summary>
+    /// #1653 review F5: the parity arm for <c>StatusOptionsParserTests.A_repo_option_with_no_value_throws</c>.
+    /// The two parsers reach the same refusal by different routes — Status validates inline, Dispatch
+    /// goes through the shared <c>RequireValue</c> helper — so "the other one is covered" is not
+    /// coverage of this one.
+    /// </summary>
+    [Fact]
+    public void A_repo_option_with_no_value_throws()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--repo"]));
+
+        Assert.Contains("--repo", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>#1686 review F11: --max-tool-steps mirrors --token-budget end to end.</summary>
+    [Fact]
+    public void The_max_tool_steps_option_parses_to_a_positive_int()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--max-tool-steps", "100"]);
+
+        Assert.Equal(100, options.MaxToolSteps);
+    }
+
+    [Fact]
+    public void Omitting_max_tool_steps_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.MaxToolSteps);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("not-a-number")]
+    public void A_non_positive_or_non_numeric_max_tool_steps_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--max-tool-steps", rawValue]));
+
+        Assert.Contains("--max-tool-steps", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>#1702: --verify mirrors --token-budget's own escape-hatch shape end to end.</summary>
+    [Fact]
+    public void The_verify_option_parses_verbatim()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--verify", "python -m pytest"]);
+
+        Assert.Equal("python -m pytest", options.VerifyCommand);
+    }
+
+    [Fact]
+    public void Omitting_verify_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.VerifyCommand);
+    }
+
+    /// <summary>#1691: --billed-rate-limit mirrors --token-budget end to end.</summary>
+    [Fact]
+    public void The_billed_rate_limit_option_parses_to_a_positive_long()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--billed-rate-limit", "250000"]);
+
+        Assert.Equal(250_000, options.BilledRateLimit);
+    }
+
+    [Fact]
+    public void Omitting_billed_rate_limit_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.BilledRateLimit);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("not-a-number")]
+    public void A_non_positive_or_non_numeric_billed_rate_limit_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--billed-rate-limit", rawValue]));
+
+        Assert.Contains("--billed-rate-limit", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1691: the flag appears in the usage line every parse error prints. A flag that exists and is
+    /// undiscoverable is the documentation defect CLAUDE.md's writing rule names, and the usage string
+    /// is the only place a CLI reader looks.
+    /// </summary>
+    [Fact]
+    public void The_usage_line_advertises_billed_rate_limit()
+    {
+        Assert.Contains("--billed-rate-limit <n>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1702: the usage line advertises --verify for the same reason the billed-rate-limit arm above
+    /// asserts its own — one flag added without the other's usage entry is the discoverability defect,
+    /// not a cosmetic omission.
+    /// </summary>
+    [Fact]
+    public void The_usage_line_advertises_verify()
+    {
+        Assert.Contains("--verify <cmd>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
+    // #1788: --expect-pr mirrors --verify's own escape-hatch shape (a single explicit value, not a
+    // bare flag), except its domain is a literal true/false rather than free text.
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("True", true)]
+    [InlineData("FALSE", false)]
+    public void The_expect_pr_option_parses_a_literal_bool_case_insensitively(string rawValue, bool expected)
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--expect-pr", rawValue]);
+
+        Assert.Equal(expected, options.ExpectPr);
+    }
+
+    [Fact]
+    public void Omitting_expect_pr_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.ExpectPr);
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("yes")]
+    [InlineData("")]
+    public void A_non_boolean_expect_pr_value_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--expect-pr", rawValue]));
+
+        Assert.Contains("--expect-pr", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_expect_pr()
+    {
+        Assert.Contains("--expect-pr <true|false>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1518: a scout question's inline source — parsed the same way every other free-text flag value
+    /// is, no sanitization (unlike <c>--label</c>) because this string becomes the task prompt itself,
+    /// not display text.
+    /// </summary>
+    [Fact]
+    public void Parses_spec_text_verbatim()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec-text", "What does baton cancel do today?"]);
+
+        Assert.Equal("What does baton cancel do today?", options.SpecText);
+        Assert.Null(options.SpecFilePath);
+        Assert.False(options.SpecFromStdin);
+    }
+
+    /// <summary>#1518: <c>--spec -</c> reuses the existing <c>--spec</c> flag rather than adding a fourth one.</summary>
+    [Fact]
+    public void A_dash_spec_value_selects_stdin_and_clears_the_file_path()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "-"]);
+
+        Assert.True(options.SpecFromStdin);
+        Assert.Null(options.SpecFilePath);
+        Assert.Null(options.SpecText);
+    }
+
+    /// <summary>
+    /// A blank <c>--spec-text</c> has no sane invocation to correct into ("did you mean to pass
+    /// nothing?") the way an empty <c>--label</c> does — unlike a label, this string becomes the whole
+    /// task prompt, so a silent no-op dispatch is the wrong failure mode. Refused at parse time, like
+    /// every other malformed <c>baton dispatch</c> argument.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void A_blank_spec_text_is_a_typed_argument_error(string blank)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec-text", blank]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1518: <see cref="DispatchOptionsParser"/>'s own remarks above the exclusivity check have the
+    /// rationale (record-once, not restated here). Whether at least one source is required at all is a
+    /// catalog question the parser does not answer (a template dispatch takes none) —
+    /// <see cref="A_name_without_a_spec_parses_because_a_template_takes_none"/> already pins that this
+    /// parser stays permissive on the "none" side.
+    /// </summary>
+    [Fact]
+    public void A_spec_file_and_spec_text_together_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "t.md", "--spec-text", "inline text"]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Same refusal as the file-plus-text combination, for the stdin form of <c>--spec</c>.</summary>
+    [Fact]
+    public void A_dash_spec_and_spec_text_together_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["advise", "--spec", "-", "--spec-text", "inline text"]));
+
+        Assert.Contains("--spec-text", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Repeating the SAME flag is last-wins, same convention every other repeatable-in-practice flag in
+    /// this parser follows — only naming two DIFFERENT sources is refused.
+    /// </summary>
+    [Fact]
+    public void A_repeated_spec_flag_is_last_wins()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec", "first.md", "--spec", "second.md"]);
+
+        Assert.Equal("second.md", options.SpecFilePath);
+    }
+
+    [Fact]
+    public void A_repeated_spec_text_flag_is_last_wins()
+    {
+        var options = DispatchOptionsParser.Parse(["advise", "--spec-text", "first", "--spec-text", "second"]);
+
+        Assert.Equal("second", options.SpecText);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_spec_text_and_the_dash_stdin_form()
+    {
+        Assert.Contains("--spec-text <text>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+        Assert.Contains("--spec -", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
 }

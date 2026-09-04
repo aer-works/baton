@@ -30,12 +30,23 @@
  *    newest-first, optionally filtered by room), and `deliverable_read` (one item's full content).
  *    Read auth is the unguessable URL segment -- same posture as the operator's private ntfy topics.
  *
- * Storage, all in one KV namespace:
+ * #1712: every `env.FLEET.put` above (push, heartbeat, deliver's index/batch/eviction writes) is
+ * wrapped so Cloudflare's own daily KV write cap answers `429 {"reason": "kv-write-cap", "resets_at"}`
+ * (`worker.core.mjs`'s `classifyKvError`/`nextUtcMidnightIso`) instead of a bare 500 -- spec/baton.md
+ * §6 has the incident and the three-layer fix (worker/pusher/glass) this is one third of.
+ *
+ * Storage, all in one KV namespace (#1690 folded this to ONE write per /push and TWO per /deliver
+ * batch -- spec/baton.md §6, "Fleet Glass write budget", has the full arithmetic):
  *  - "snapshot"          : the fleet snapshot, verbatim JSON, carrying pushed_at so consumers can
  *                          render honest staleness; absent data renders as absent, never fabricated.
  *                          Also carries `derived_at` (#1613 item 2) whenever the pusher included one
  *                          in the push body -- NOT part of pusher.py's own snapshot_hash, so its
- *                          presence never gates the #1457 change-gate.
+ *                          presence never gates the #1457 change-gate. Also carries `terminal_archive`
+ *                          (#1656, folded in by #1690 item 2 -- previously its own KV key, written by
+ *                          a second `env.FLEET.put` on every push that had one): the plain (no `page`)
+ *                          fleet_status response strips it back out on the READ side so it never
+ *                          inflates the everyday response; a paged call reads it out of this same
+ *                          value instead of a separate key.
  *  - "heartbeat_at"      : JSON `{"at": ISO-8601, "derived_at"?: ISO-8601, "pending_push_age_s"?:
  *                          number}` (#1613 item 2 widened this from a bare ISO-8601 string;
  *                          `pending_push_age_s` was added by a 2026-09-01 review finding; a bare
@@ -45,10 +56,36 @@
  *                          count as a snapshot content change and trigger the change-gate (#1457)
  *                          to push early.
  *  - "inbox:index"       : JSON array of deliverable METADATA (no content), newest-first, capped at
- *                          INBOX_CAP entries -- what deliverables_list returns.
- *  - "inbox:item:<id>"   : one deliverable's full content (or a withheld stub), keyed by the id the
- *                          pusher assigned it -- what deliverable_read returns.
+ *                          INBOX_CAP entries -- what deliverables_list returns. Each entry carries a
+ *                          `batch_id` (#1690 item 2) naming which "inbox:batch:<id>" blob holds its
+ *                          content; an entry with no `batch_id` predates #1690 and resolves through
+ *                          the legacy "inbox:item:<id>" key instead.
+ *  - "inbox:batch:<id>"  : ONE JSON object `{itemId: content, ...}` per /deliver POST (#1690 item 2)
+ *                          -- every item in that POST's content, keyed by item id, in a single KV
+ *                          value. Replaces the pre-#1690 "inbox:item:<id>" per-item key (K+1 writes
+ *                          for a K-item batch); deliverable_read resolves an id to its batch via the
+ *                          index's `batch_id`, falling back to "inbox:item:<id>" for anything
+ *                          delivered before this change. Refcounted (F5, 2026-09-02 review):
+ *                          `computeDeliverBatch` returns `orphanedBatchIds` -- batch ids no
+ *                          remaining index entry references after this POST's eviction or
+ *                          re-delivery -- and handleDeliver deletes those blobs, so KV storage no
+ *                          longer grows without bound the way the pre-fix (unreclaimed) version did.
+ *  - "inbox:item:<id>"   : LEGACY (pre-#1690) per-item content key, one deliverable's full content
+ *                          (or a withheld stub) -- still read as deliverable_read's fallback, never
+ *                          written to by a current pusher.
  */
+
+import {
+  computeDeliverablesPage,
+  computeFleetStatusPage,
+  computeDeliverBatch,
+  deliverableBatchKeyFor,
+  deliverableReadOutcome,
+  isValidFleetStatusPage,
+  maxIsoOrNull,
+  classifyKvError,
+  nextUtcMidnightIso,
+} from "./worker.core.mjs";
 
 const INBOX_CAP = 500;
 
@@ -56,17 +93,28 @@ const TOOLS = [
   {
     name: "fleet_status",
     description:
-      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, derived_at for snapshot-derivation health, and pending_push_age_s for push-delivery health -- these are independent (#1486, #1613 item 2, 2026-09-01 review): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh, and a fleet whose PUSHES keep failing (derivation healthy) grows pending_push_age_s even while derived_at stays fresh.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      "Read-only snapshot of room statuses across the operator's baton fleet, as last pushed by the fleet machine. Includes pushed_at for snapshot staleness, heartbeat_at for pusher liveness, derived_at for snapshot-derivation health, and pending_push_age_s for push-delivery health -- these are independent (#1486, #1613 item 2, 2026-09-01 review): a quiet fleet lets pushed_at go stale on purpose (heartbeat_at tells that apart from a dead pusher), a fleet whose derivation keeps failing lets derived_at go stale even while heartbeat_at stays fresh, and a fleet whose PUSHES keep failing (derivation healthy) grows pending_push_age_s even while derived_at stays fresh. With no arguments, `rooms` carries every non-terminal room plus only the newest N terminal ones (terminal_total names the full terminal count) -- pass `page` (0-based) and optionally `limit` (default 50, max 200) to page through the REST of the terminal archive instead; a paged call's response carries rooms/page/limit/terminal_total/next_page (null once exhausted) and omits every other top-level field.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        page: { type: "number" },
+        limit: { type: "number" },
+      },
+      additionalProperties: false,
+    },
     annotations: { readOnlyHint: true },
   },
   {
     name: "deliverables_list",
     description:
-      "Newest-first index of lane deliverables pushed across rooms (title, room, artifact, pushed_at, content_hash, withheld). Optionally filtered to one room. Never carries content -- call deliverable_read for that.",
+      "Newest-first index of lane deliverables pushed across rooms (title, room, artifact, pushed_at, content_hash, withheld). Optionally filtered to one room. Never carries content -- call deliverable_read for that. Paged: limit (default 50, max 200) and an opaque cursor from a prior call's next_cursor; response carries items, count (the total after any room filter), and next_cursor (null once exhausted).",
     inputSchema: {
       type: "object",
-      properties: { room: { type: "string" } },
+      properties: {
+        room: { type: "string" },
+        limit: { type: "number" },
+        cursor: { type: "string" },
+      },
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
@@ -99,6 +147,11 @@ function json(body, status = 200) {
 }
 function toolText(text) {
   return { content: [{ type: "text", text }] };
+}
+// #1712: every KV put path answers this instead of a bare 500 once classifyKvError recognizes
+// Cloudflare's daily write-cap message -- spec/baton.md §6.
+function kvWriteCapResponse() {
+  return json({ reason: "kv-write-cap", resets_at: nextUtcMidnightIso(Date.now()) }, 429);
 }
 function toolError(text) {
   return { content: [{ type: "text", text }], isError: true };
@@ -135,19 +188,6 @@ async function readHeartbeat(env) {
   return { heartbeatAt: at, derivedAt, pendingPushAgeS };
 }
 
-// Both isoStrings this ever compares come from the same producer's datetime.isoformat() call
-// (pusher.py), so a plain string comparison over two well-formed ISO-8601 UTC instants sorts the
-// same as comparing the instants themselves -- no Date parsing, and no timezone-offset pitfall to
-// get wrong. Either argument being absent/non-string degrades to "the other one, or null".
-function maxIsoOrNull(a, b) {
-  const aOk = typeof a === "string" && a.length > 0;
-  const bOk = typeof b === "string" && b.length > 0;
-  if (aOk && bOk) return a > b ? a : b;
-  if (aOk) return a;
-  if (bOk) return b;
-  return null;
-}
-
 async function readInboxIndex(env) {
   const raw = await env.FLEET.get("inbox:index");
   if (!raw) return [];
@@ -174,25 +214,36 @@ async function handleDeliver(request, env) {
   const items = Array.isArray(parsed?.items) ? parsed.items : null;
   if (!items) return new Response("expected {\"items\": [...]}", { status: 400 });
 
-  let index = await readInboxIndex(env);
-  let stored = 0;
-  for (const item of items) {
-    if (!item || typeof item.id !== "string" || !item.id) continue;
-    if (typeof item.room !== "string" || !item.room) continue;
-    await env.FLEET.put(`inbox:item:${item.id}`, String(item.content ?? ""));
-    const { content: _content, ...meta } = item;
-    index = index.filter((m) => m.id !== item.id);
-    index.unshift({ ...meta, pushed_at: item.pushed_at || new Date().toISOString() });
-    stored += 1;
-  }
-  if (index.length > INBOX_CAP) {
-    const evicted = index.slice(INBOX_CAP);
-    index = index.slice(0, INBOX_CAP);
+  const existingIndex = await readInboxIndex(env);
+  // #1690 item 2: one inbox:batch:<id> blob for the WHOLE POST plus the index -- 2 KV writes per
+  // batch regardless of item count K (was K+1: one inbox:item:<id> put per item, pre-#1690).
+  const batchId = crypto.randomUUID();
+  const { index, batchContent, stored, evicted, orphanedBatchIds } = computeDeliverBatch(existingIndex, items, batchId, INBOX_CAP);
+
+  // #1712: one try/catch around every write this POST makes -- the daily KV cap fails whichever
+  // put or delete hits it first, and the rest would fail the same way, so there is nothing to gain
+  // from classifying each call site separately.
+  try {
     for (const m of evicted) {
-      await env.FLEET.delete(`inbox:item:${m.id}`);
+      // A LEGACY (pre-#1690) evicted entry costs a delete: its content lives at its own
+      // inbox:item:<id> key.
+      if (!m.batch_id) await env.FLEET.delete(`inbox:item:${m.id}`);
     }
+    // F5 (2026-09-02 review): reclaim a batched entry's underlying `inbox:batch:<id>` blob once NO
+    // remaining index entry references it (eviction, or this same POST re-delivering an id under a
+    // new batch id) -- pre-fix, these were left orphaned forever, growing KV storage without bound
+    // even though storage isn't write-budgeted the way writes are.
+    for (const orphanId of orphanedBatchIds) {
+      await env.FLEET.delete(`inbox:batch:${orphanId}`);
+    }
+    if (stored > 0) {
+      await env.FLEET.put(`inbox:batch:${batchId}`, JSON.stringify(batchContent));
+    }
+    await env.FLEET.put("inbox:index", JSON.stringify(index));
+  } catch (err) {
+    if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+    throw err;
   }
-  await env.FLEET.put("inbox:index", JSON.stringify(index));
   return json({ ok: true, stored, index_size: index.length });
 }
 
@@ -230,6 +281,28 @@ async function handleMcp(request, env) {
   if (method === "tools/call") {
     const name = params?.name;
     if (name === "fleet_status") {
+      const args = params?.arguments || {};
+      // #1656: `page` pages over the FULL terminal-room archive -- a plain 0-based page index
+      // rather than an opaque cursor (unlike deliverables_list below), since the archive is a
+      // single append-mostly array with no independent per-item identity worth round-tripping. On
+      // the SAME tool rather than a new one so worker.js's TOOLS array stays exactly the three
+      // read-only names FleetGlassReadOnlyTests pins.
+      if (isValidFleetStatusPage(args.page)) {
+        // #1690 item 2: terminal_archive now lives INSIDE the "snapshot" KV value (no separate
+        // "terminal_archive" key -- folding it in is what took the /push handler from 2 writes to
+        // 1), so a paged call reads the same key the plain call does and pulls its own field out.
+        const raw = await env.FLEET.get("snapshot");
+        let archive = [];
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            archive = Array.isArray(parsed?.terminal_archive) ? parsed.terminal_archive : [];
+          } catch {
+            archive = [];
+          }
+        }
+        return json(rpcResult(id, toolText(JSON.stringify(computeFleetStatusPage(archive, args.page, args.limit)))));
+      }
       const stored = await env.FLEET.get("snapshot");
       const { heartbeatAt, derivedAt: derivedAtFromHeartbeat, pendingPushAgeS } = await readHeartbeat(env);
       const storedSnapshot = stored === null ? null : JSON.parse(stored);
@@ -241,27 +314,72 @@ async function handleMcp(request, env) {
       // pending_push_age_s (2026-09-01 review finding) has only ONE route -- the heartbeat ping,
       // never the snapshot body itself (a snapshot that successfully pushed has nothing pending by
       // definition) -- so there is no second value to max against here.
+      // #1656: fold pushed_at into the DISPLAYED heartbeat_at (same maxIsoOrNull merge derived_at
+      // already uses) -- rationale and the bug this fixes: spec/baton.md §6.
+      const heartbeatDisplayAt = maxIsoOrNull(heartbeatAt, storedSnapshot?.pushed_at);
       if (stored === null) {
         return json(rpcResult(id, toolText(JSON.stringify({ pushed_at: null, rooms: null, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS, note: "no snapshot pushed yet" }))));
       }
+      // #1690 item 2: terminal_archive rides inside storedSnapshot now (folded in on write), but the
+      // PLAIN (no `page`) response must stay exactly as small as it was when it lived in its own key
+      // -- stripped here, on the read side, rather than never stored. A paged call reads it back via
+      // the isValidFleetStatusPage branch above.
+      const { terminal_archive: _archive, ...restSnapshot } = storedSnapshot;
       // heartbeat_at/derived_at/pending_push_age_s are merged in at read time, never written into
       // the "snapshot" value itself -- that keeps them out of pusher.py's change-gate hash (see
       // this file's header).
-      const snapshot = { ...storedSnapshot, heartbeat_at: heartbeatAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
+      const snapshot = { ...restSnapshot, heartbeat_at: heartbeatDisplayAt, derived_at: derivedAt, pending_push_age_s: pendingPushAgeS };
       return json(rpcResult(id, toolText(JSON.stringify(snapshot))));
     }
     if (name === "deliverables_list") {
       const index = await readInboxIndex(env);
       const room = params?.arguments?.room;
-      const items = room ? index.filter((m) => m.room === room) : index;
-      return json(rpcResult(id, toolText(JSON.stringify({ items, count: items.length }))));
+      const filtered = room ? index.filter((m) => m.room === room) : index;
+      // #1656: paged the same way as fleet_status's terminal archive, but with an OPAQUE cursor
+      // (base64 of {pushedAt, id}) rather than a page index -- the inbox index is mutated by every
+      // /deliver POST (dedupe-by-id unshift, INBOX_CAP eviction), so a page-index cursor could skip
+      // or repeat items across two calls; a cursor anchored to a specific item's own identity
+      // degrades gracefully (falls back to the start) instead of returning a silently wrong slice.
+      const page = computeDeliverablesPage(filtered, params?.arguments?.limit, params?.arguments?.cursor);
+      return json(rpcResult(id, toolText(JSON.stringify(page))));
     }
     if (name === "deliverable_read") {
       const itemId = params?.arguments?.id;
       if (!itemId) return json(rpcResult(id, toolError("id is required")));
-      const content = await env.FLEET.get(`inbox:item:${itemId}`);
-      if (content === null) return json(rpcResult(id, toolError(`no deliverable with id ${itemId}`)));
-      return json(rpcResult(id, toolText(content)));
+      // #1690 item 2: resolve id -> its inbox:batch:<id> blob via the index's own batch_id stamp,
+      // falling back to the legacy per-item key for anything delivered before this change (or a
+      // missing/corrupt batch blob).
+      const index = await readInboxIndex(env);
+      const batchKey = deliverableBatchKeyFor(index, itemId);
+      let content = null;
+      if (batchKey) {
+        const batchRaw = await env.FLEET.get(batchKey);
+        if (batchRaw) {
+          try {
+            const batch = JSON.parse(batchRaw);
+            if (batch && Object.prototype.hasOwnProperty.call(batch, itemId)) content = batch[itemId];
+          } catch {
+            // Corrupt batch blob -- fall through to the legacy key below.
+          }
+        }
+      }
+      if (content === null) {
+        content = await env.FLEET.get(`inbox:item:${itemId}`);
+      }
+      // F8 (2026-09-02 review): KV is eventually consistent across colos -- there is a real window
+      // where the index (read above, via readInboxIndex) has propagated while its
+      // inbox:batch:<id> blob has not, which is exactly how an operator can see an id in
+      // deliverables_list and then have deliverable_read 404 on it a moment later.
+      // deliverableReadOutcome tells that apart from a genuinely nonexistent id.
+      const outcome = deliverableReadOutcome(content, batchKey);
+      if (!outcome.found) {
+        if (outcome.pending) {
+          return json(rpcResult(id, toolError(
+            `deliverable ${itemId} is known but its content has not replicated yet -- retry in a minute`)));
+        }
+        return json(rpcResult(id, toolError(`no deliverable with id ${itemId}`)));
+      }
+      return json(rpcResult(id, toolText(outcome.content)));
     }
     return json(rpcResult(id, toolError(`unknown tool: ${name}`)));
   }
@@ -304,8 +422,18 @@ export default {
       // Legacy body is a bare rooms array; newer pushers send {rooms, underhood, ...} --
       // spread object bodies so extra sections ride along, keep wrapping bare arrays.
       const payload = Array.isArray(parsed) ? { rooms: parsed } : parsed;
+      // #1690 item 2: `terminal_archive` (every terminal room; pusher.py's own hot-set cap keeps
+      // `rooms` itself to non-terminal + the newest N terminal only, see pusher.py's
+      // HOT_TERMINAL_CAP) rides straight into `payload` below, no separate KV key or write of its
+      // own -- this file's own header docstring is the canonical record of who reads it back out
+      // and how (the fleet_status handler, both the plain and the `page` branch).
       const snapshot = JSON.stringify({ pushed_at: new Date().toISOString(), ...payload });
-      await env.FLEET.put("snapshot", snapshot);
+      try {
+        await env.FLEET.put("snapshot", snapshot);
+      } catch (err) {
+        if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+        throw err;
+      }
       return new Response("ok", { status: 200 });
     }
 
@@ -338,7 +466,12 @@ export default {
       const stored = { at: new Date().toISOString() };
       if (derivedAt) stored.derived_at = derivedAt;
       if (pendingPushAgeS !== null) stored.pending_push_age_s = pendingPushAgeS;
-      await env.FLEET.put("heartbeat_at", JSON.stringify(stored));
+      try {
+        await env.FLEET.put("heartbeat_at", JSON.stringify(stored));
+      } catch (err) {
+        if (classifyKvError(err) === "kv-write-cap") return kvWriteCapResponse();
+        throw err;
+      }
       return new Response("ok", { status: 200 });
     }
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
+using Baton.Status;
 
 namespace Baton.Cli.Tests;
 
@@ -17,24 +18,27 @@ namespace Baton.Cli.Tests;
 /// <c>WithheldWritesReachTheOutbox</c> (false) and flips the grant to <c>AuditedNotEnforced</c>, while
 /// the process actually dispatched is still this file's fake — no live vendor needed.
 /// </summary>
+// #1524: enrolled for Console.Out only now, per SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 {
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
+    private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
 
+    // Catalog pinning: same #1524 BeginScope pattern as DispatchCommandEndToEndTests' own ctor.
     public DispatchAuditedWorktreeAcceptanceTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
+        _catalogScope.Dispose();
+        _batonHome.Dispose();
     }
 
     [Fact]

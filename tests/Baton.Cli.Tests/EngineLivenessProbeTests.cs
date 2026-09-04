@@ -96,6 +96,43 @@ public class EngineLivenessProbeTests
         Assert.Equal("Pending", StatusCommand.FormatStepStatus(pendingStep, []));
     }
 
+    /// <summary>
+    /// #1622 (b)/#1390: a hollow success renders visibly different from an ordinary one -- the room
+    /// word stays "Succeeded" (never reclassified; spec/baton.md §3), but the operator reading
+    /// `baton status` must not see it as indistinguishable from a real one.
+    /// </summary>
+    [Fact]
+    public void FormatStepStatus_renders_hollow_reason_for_a_hollow_Succeeded_step()
+    {
+        var emptyUpstreams = new Dictionary<StepId, ExecutionId>();
+        var hollowStep = new StepState(
+            StepId, StepStatus.Succeeded, LatestExecutionId: new ExecutionId("exec-hollow"), emptyUpstreams,
+            WorkspaceChanged: false, Hollow: true, HollowReason: "no diff, no outputs");
+
+        var output = StatusCommand.FormatStepStatus(hollowStep, []);
+
+        Assert.Equal("Succeeded — hollow: no diff, no outputs", output);
+    }
+
+    /// <summary>
+    /// The polarity control: a genuinely non-hollow Succeeded step (WorkspaceChanged true, or Hollow
+    /// simply absent for a non-tree-changing role) renders exactly the plain "Succeeded" it always
+    /// has -- <see cref="FormatStepStatus_renders_both_polarities_and_probe_failure"/> already pins
+    /// the field-absent case; this pins the WorkspaceChanged: true case specifically.
+    /// </summary>
+    [Fact]
+    public void FormatStepStatus_renders_plain_Succeeded_when_the_workspace_actually_changed()
+    {
+        var emptyUpstreams = new Dictionary<StepId, ExecutionId>();
+        var changedStep = new StepState(
+            StepId, StepStatus.Succeeded, LatestExecutionId: new ExecutionId("exec-changed"), emptyUpstreams,
+            WorkspaceChanged: true, Hollow: false);
+
+        var output = StatusCommand.FormatStepStatus(changedStep, []);
+
+        Assert.Equal("Succeeded", output);
+    }
+
     [Fact]
     public void FormatStepStatus_does_not_render_an_unfireable_park_for_a_foreclosed_step()
     {

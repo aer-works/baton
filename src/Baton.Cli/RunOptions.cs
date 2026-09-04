@@ -69,6 +69,12 @@ namespace Baton.Cli;
 /// poll loop for it to bound. Validated (rejects zero/negative) by <see cref="RunOptionsParser"/>,
 /// not here.
 /// </param>
+/// <param name="Register">
+/// #1657: forwarded verbatim as <see cref="Baton.Vendors.RoomRegistryStore.AppendAsync"/>'s
+/// <c>explicitRegister</c> — see that parameter for which rooms this opts back in and which are
+/// unaffected by it. Set by <c>--register</c> for a bare <c>baton run</c>; always <c>true</c> for the
+/// <c>RunOptions</c> <see cref="DispatchCommand"/>/<see cref="RedispatchCommand"/> build internally.
+/// </param>
 public sealed record RunOptions(
     string? WorkflowFilePath,
     string BindingsFilePath,
@@ -78,4 +84,5 @@ public sealed record RunOptions(
     bool SettleOnVendorExhaustion = false,
     bool Wait = false,
     string? ProjectRootDirectory = null,
-    TimeSpan? WaitTimeout = null);
+    TimeSpan? WaitTimeout = null,
+    bool Register = false);

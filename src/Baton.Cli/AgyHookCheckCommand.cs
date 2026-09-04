@@ -85,6 +85,22 @@ public static class AgyHookCheckCommand
         Baton.Vendors.AgyWorkerAdapter.DeniedShellPatternsVariable;
 
     /// <summary>
+    /// Mirror-name for <see cref="Baton.Vendors.AgyWorkerAdapter.DeniedShellOptionTokensVariable"/>
+    /// (#1683 F2) — owned there because that adapter emits it, read here. See it for what the channel
+    /// is and why neither vendor has a flag half for it.
+    /// </summary>
+    public const string DeniedShellOptionTokensEnvironmentVariable =
+        Baton.Vendors.AgyWorkerAdapter.DeniedShellOptionTokensVariable;
+
+    /// <summary>
+    /// Mirror-name for <see cref="Baton.Vendors.AgyWorkerAdapter.VerdictLedgerVariable"/> (#1680) —
+    /// owned there because that adapter emits it, read here. See it and
+    /// <see cref="Baton.Vendors.AgyHookVerdictLedger"/> for what the ledger is for.
+    /// </summary>
+    public const string VerdictLedgerEnvironmentVariable =
+        Baton.Vendors.AgyWorkerAdapter.VerdictLedgerVariable;
+
+    /// <summary>
     /// agy reads the verdict from stdout and the process exit code carries no gating meaning — a
     /// denial and an allow both exit 0. Compare <see cref="HookCheckCommand.DeniedExitCode"/>, where
     /// the exit code <i>is</i> the signal.
@@ -118,7 +134,8 @@ public static class AgyHookCheckCommand
     public static int Execute(
         TextReader stdin, TextWriter stdout, string? deniedToolsRaw, string? shellPatternsRaw = null,
         string? outboxDirectory = null, string? workspaceDirectory = null,
-        string? deniedShellPatternsRaw = null)
+        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null,
+        string? verdictLedgerPath = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
@@ -127,7 +144,7 @@ public static class AgyHookCheckCommand
         {
             stdout.Write(Decide(
                 stdin, deniedToolsRaw, shellPatternsRaw, outboxDirectory, workspaceDirectory,
-                deniedShellPatternsRaw));
+                deniedShellPatternsRaw, deniedShellOptionTokensRaw));
         }
         catch
         {
@@ -145,13 +162,52 @@ public static class AgyHookCheckCommand
             // exists to prevent.
             stdout.Write(FallbackDenyJson);
         }
+        finally
+        {
+            // #1680's first-verdict canary: one line per verdict this process actually reached stdout
+            // for, allow or deny (including the fallback deny above -- it is still a verdict, just an
+            // internally-forced one). Deliberately in `finally`, not inside the try above: a ledger
+            // write must never compete with the stdout write for the same exception handling, and its
+            // own failure (below) is swallowed rather than risking a SECOND exception mid-handler.
+            AppendVerdictLedgerLine(verdictLedgerPath);
+        }
 
         return ExitCode;
     }
 
+    /// <summary>
+    /// Best-effort and silently so: a ledger write that throws must never turn an already-written
+    /// stdout verdict into a process that also crashes, and its failure mode (the canary undercounts
+    /// verdicts) is fail-closed on the read side — see <c>AgyHookVerdictLedger</c>'s own remarks.
+    /// </summary>
+    private static void AppendVerdictLedgerLine(string? verdictLedgerPath)
+    {
+        if (string.IsNullOrWhiteSpace(verdictLedgerPath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.AppendAllText(verdictLedgerPath, DateTimeOffset.UtcNow.ToString("O") + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        catch (ArgumentException)
+        {
+            // e.g. a path with characters this filesystem rejects -- unreachable with AER's own
+            // ledger path today, but this method must never throw, whatever the input.
+        }
+    }
+
     private static string Decide(
         TextReader stdin, string? deniedToolsRaw, string? shellPatternsRaw,
-        string? outboxDirectory, string? workspaceDirectory, string? deniedShellPatternsRaw)
+        string? outboxDirectory, string? workspaceDirectory, string? deniedShellPatternsRaw,
+        string? deniedShellOptionTokensRaw)
     {
         // Drain stdin first and unconditionally: agy is the writer on the other end of this pipe,
         // and exiting before reading its full payload risks a blocked write on its side for any
@@ -289,41 +345,78 @@ public static class AgyHookCheckCommand
             // Deny beats allow (0022, #390): a standing "never" refuses the command BEFORE any
             // allow-narrowing, so an unscoped grant (empty allow list) or a matching allow pattern
             // cannot reopen a family the operator has closed.
-            if (deniedShellPatternList.Patterns.Count > 0)
+            //
+            // #1685: routed through the same top-level chained-command segmentation the claude hook
+            // uses (ShellCommandPatternMatcher.EvaluateChainedCommand, shared rather than copied —
+            // see its own remarks for the segmentation rule and what it fails closed on). Evaluating
+            // the whole line as one string here used to mean the metacharacter scan inside
+            // IsDenied/IsAllowed rejected a chained line (`git push --force && true`) before either
+            // pattern list was even consulted, so a standing 'never' silently stopped applying the
+            // moment a command carried a chain operator.
+            //
+            // Matching the claude hook (HookCheckCommand.Decide, the toolName == "Bash" branch, #1733):
+            // both hooks engage this rung whenever either list is non-empty, neither nested under the
+            // other's allow list. Agy's remaining difference from claude is that it has no
+            // --disallowedTools-level backstop for the unchained case, so this hook is its only
+            // enforcement of the DenyAlways rung, and it is an anchored-prefix one — on an unscoped
+            // grant no allow list stands behind it (see this matcher's class comment on what a deny
+            // pattern cannot bind). spec/baton.md §9 is the canonical record of why that gap is safe.
+            if (deniedShellPatternList.Patterns.Count > 0 || shellPatternList.Patterns.Count > 0)
             {
                 if (commandLine is null)
                 {
                     return DenyJson(
-                        "AER: the 'run_command' tool has standing deny patterns, but this gate could not " +
-                        "read toolCall.args.CommandLine in the hook payload and denied this call rather " +
-                        "than allowing it unchecked.");
+                        "AER: the 'run_command' tool is gated by this session's shell command patterns " +
+                        "(allowed, denied, or both), but this gate could not read toolCall.args.CommandLine " +
+                        "in the hook payload and denied this call rather than allowing it unchecked.");
                 }
 
-                if (Baton.Vendors.ShellCommandPatternMatcher.IsDenied(commandLine, deniedShellPatternList.Patterns))
+                var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(
+                    commandLine, shellPatternList.Patterns, deniedShellPatternList.Patterns);
+
+                if (!result.IsAllowed)
                 {
                     return DenyJson(
-                        $"AER: the command line '{commandLine}' matches a standing 'never' rule for this " +
-                        "session's grant (deny-always) and was refused.");
+                        $"AER: the command line '{commandLine}' is denied under this session's shell " +
+                        $"grant — {result.Reason}.");
                 }
             }
 
-            // Present with no patterns is the deliberate unscoped-shell grant: allow. Only a non-empty
-            // pattern set narrows the shell, and then the command line must match it.
-            if (shellPatternList.Patterns.Count > 0)
+            // #1683 F3: fails closed on a non-Present status, matching its two sibling channels above
+            // rather than skipping silently. Both adapters emit this variable unconditionally alongside
+            // the other two ("agy:"/"claude:" at minimum), so today the three arrive or break together
+            // and this is a no-op change in practice -- but the prior wording asserted that togetherness
+            // as a guarantee the code did not have, in the fail-open direction, and this is the one rung
+            // with no vendor-flag backstop on either vendor to catch a silent drift.
+            var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
+            if (deniedOptionTokenList.Status != ShellPatternListStatus.Present)
+            {
+                return DenyJson(
+                    deniedOptionTokenList.Status == ShellPatternListStatus.Absent
+                        ? "AER: the permission gate did not receive its denied option token list and denied " +
+                          "this run_command call rather than allowing it unchecked."
+                        : "AER: the permission gate received another vendor's denied option token list, whose " +
+                          "tokens it cannot judge, and denied this run_command call rather than allowing it " +
+                          "unchecked.");
+            }
+
+            if (deniedOptionTokenList.Patterns.Count > 0)
             {
                 if (commandLine is null)
                 {
                     return DenyJson(
-                        "AER: the 'run_command' tool is granted with shell command patterns, but this gate " +
-                        "could not read toolCall.args.CommandLine in the hook payload and denied this call " +
-                        "rather than allowing it unchecked.");
+                        "AER: the 'run_command' tool has standing denied option tokens, but this gate could " +
+                        "not read toolCall.args.CommandLine in the hook payload and denied this call rather " +
+                        "than allowing it unchecked.");
                 }
 
-                if (!Baton.Vendors.ShellCommandPatternMatcher.IsAllowed(commandLine, shellPatternList.Patterns))
+                if (Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
+                        commandLine, deniedOptionTokenList.Patterns))
                 {
                     return DenyJson(
-                        $"AER: the command line '{commandLine}' is denied because it does not match the " +
-                        "shell command patterns allowed by this session's grant.");
+                        $"AER: the command line '{commandLine}' carries an option this session's grant " +
+                        "denies outright (a standing option-token 'never', matched anywhere on the line " +
+                        "rather than at its start) and was refused.");
                 }
             }
         }

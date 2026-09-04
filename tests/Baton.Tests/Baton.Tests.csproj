@@ -35,6 +35,9 @@
     <!-- M7 Phase 8's end-to-end test loads a real WorkflowDefinition from disk (issue #14) rather
          than constructing one in-memory, so the fixture must be present next to the test binary. -->
     <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- #1706 review M4: a raw captured stream is line-delimited JSON, not a JSON document, and is
+         copied verbatim so the test reads the vendor's own bytes rather than a transcription. -->
+    <None Include="Fixtures\**\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

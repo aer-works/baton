@@ -79,6 +79,11 @@ public class ProjectionCheckpointTests
         {
             Assert.Equal(expected.CancellationRequestedExecutionIds[i], actual.CancellationRequestedExecutionIds[i]);
         }
+        Assert.Equal(expected.UnmatchedVerifyExecutionIds.Count, actual.UnmatchedVerifyExecutionIds.Count);
+        for (int i = 0; i < expected.UnmatchedVerifyExecutionIds.Count; i++)
+        {
+            Assert.Equal(expected.UnmatchedVerifyExecutionIds[i], actual.UnmatchedVerifyExecutionIds[i]);
+        }
     }
 
     private static void AssertStepStateEqual(StepState expected, StepState actual)
@@ -102,6 +107,13 @@ public class ProjectionCheckpointTests
         Assert.Equal(expected.LatestCapturedResponseFile, actual.LatestCapturedResponseFile);
         Assert.Equal(expected.LatestUnsatisfiedOutputNames, actual.LatestUnsatisfiedOutputNames);
         Assert.Equal(expected.RetryForeclosed, actual.RetryForeclosed);
+
+        // Both halves of the Indeterminate state, not just the reason: the flag is what
+        // WorkflowOutcome/RetryEngine actually read, so a checkpoint round-trip that dropped it while
+        // preserving the diagnostic text would be invisible to this helper otherwise -- the exact
+        // shape of the DeepCopy hazard ProjectionCheckpointState.RetryForeclosedStepIds documents.
+        Assert.Equal(expected.IndeterminateAwaitingResolution, actual.IndeterminateAwaitingResolution);
+        Assert.Equal(expected.IndeterminateReason, actual.IndeterminateReason);
         Assert.Equal(expected.UpstreamExecutionIds.Count, actual.UpstreamExecutionIds.Count);
         foreach (var (k, v) in expected.UpstreamExecutionIds)
         {
@@ -810,6 +822,78 @@ public class ProjectionCheckpointTests
             Assert.Empty(fullObligations.ToResubmit);
             Assert.Empty(brokenTailObligations.ToFinalizeAsAbandoned);
             Assert.Single(brokenTailObligations.ToResubmit, exec1);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    /// <summary>
+    /// N3 (#1664 re-review): a checkpoint written by the shipped release (Version 3, before
+    /// <c>IndeterminateProducerByStepId</c> existed) must be rejected by <see cref="ProjectionCheckpointStore.Load"/>
+    /// rather than accepted with that map silently empty — an empty map here is indistinguishable from
+    /// "a producer no verb admits" (see <see cref="ProjectionCheckpoint.Version"/>'s own remarks), which
+    /// would make an already-Indeterminate room permanently unresolvable after upgrade. A full replay
+    /// off the untouched flow.jsonl is what repopulates the map correctly.
+    /// </summary>
+    [Fact]
+    public async Task Version3_checkpoint_is_rejected_by_Load_and_the_room_full_replays_to_the_right_producer()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "baton_v3_checkpoint_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var snapshot = TestSnapshot();
+            var logPath = Path.Combine(tempDir, "flow.jsonl");
+            var writer = new FlowEventLogWriter(logPath);
+
+            var exec1 = new ExecutionId("exec-1");
+
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Step1), 100, DateTimeOffset.UtcNow), TestContext.Current.CancellationToken);
+            // Natural exit-0, no captured response: the ContractFailure producer (StateProjector's own
+            // CapturedResponseFile-null read).
+            await writer.AppendAsync(new FlowEvent.ExecutionIndeterminate(exec1, "Contract not satisfied: 'output1' is missing."), TestContext.Current.CancellationToken);
+
+            var reader = new FlowEventLogReader(logPath);
+            var fullSnapshot = await reader.ReadSnapshotAsync(TestContext.Current.CancellationToken);
+            var (fullState, checkpoint) = StateProjector.ProjectAndCheckpoint(fullSnapshot.FlowEvents, snapshot, logByteOffset: fullSnapshot.ByteOffset);
+
+            var step1Full = Assert.Single(fullState.Steps, s => s.StepId == Step1);
+            Assert.True(step1Full.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, step1Full.IndeterminateProducer);
+
+            // Simulate the shipped release's checkpoint by writing Version 3 straight to disk —
+            // ProjectionCheckpointStore.Save always writes the current Version, so this bypasses it
+            // deliberately to reproduce a file that predates IndeterminateProducerByStepId.
+            var legacyCheckpoint = checkpoint with { Version = 3 };
+            ProjectionCheckpointStore.Save(tempDir, legacyCheckpoint);
+
+            using var sw = new StringWriter();
+            var originalErr = Console.Error;
+            Console.SetError(sw);
+
+            ProjectionCheckpoint? loaded;
+            try
+            {
+                loaded = ProjectionCheckpointStore.Load(tempDir);
+            }
+            finally
+            {
+                Console.SetError(originalErr);
+            }
+
+            Assert.Null(loaded);
+            Assert.Contains("Fallback to full replay LOUDLY", sw.ToString());
+
+            // With Load rejecting the stale checkpoint, the room re-derives state via a full replay off
+            // the untouched flow.jsonl — the same path MutationInterface takes when Load returns null.
+            var replayedSnapshot = await reader.ReadSnapshotFromOffsetAsync(loaded?.ByteOffset ?? 0, TestContext.Current.CancellationToken);
+            var (replayedState, _) = StateProjector.ProjectAndCheckpoint(replayedSnapshot.FlowEvents, snapshot, loaded, replayedSnapshot.ByteOffset);
+
+            var step1Replayed = Assert.Single(replayedState.Steps, s => s.StepId == Step1);
+            Assert.True(step1Replayed.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, step1Replayed.IndeterminateProducer);
         }
         finally
         {

@@ -3,6 +3,7 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Status;
+using Baton.Tests.Shared;
 
 namespace Baton.Vendors.Tests;
 
@@ -11,7 +12,17 @@ namespace Baton.Vendors.Tests;
 /// M20 Phase 4's deliverable: unit tests for the refactored, direct shell-less
 /// <see cref="ClaudeWorkerAdapter"/> resolving.
 /// </summary>
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: the two config-root tests isolate <see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/>
+/// through <see cref="BatonEnvironmentSnapshot.BeginScope"/> rather than mutating process environment,
+/// so this class no longer needs <c>SerializedEnvironmentCollection</c> enrollment for that. It still
+/// needs <see cref="LaunchConfigCollection"/>, unrelated to this fold: this class writes launch config
+/// files (<c>claude-settings.json</c>/<c>claude-mcp.json</c>) under the assembly's shared
+/// <c>BATON_HOME</c>, and <see cref="LaunchConfigCollection"/>'s own remarks record the
+/// <see cref="UnauthorizedAccessException"/> race #667/#682 measured when a launch-config writer runs
+/// in the default parallel pool instead.
+/// </remarks>
+[Collection(LaunchConfigCollection.Name)]
 public class ClaudeWorkerAdapterTests
 {
     private static readonly WorkerContract ArchitectContract = new(
@@ -79,6 +90,10 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
+        // #1166: a WorkingDirectory now has to carry a recorded ceiling or Resolve refuses -- this
+        // test is about forwarding, not the ceiling gate, so it trusts the fixture path unrestricted.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new ClaudeWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -343,6 +358,33 @@ public class ClaudeWorkerAdapterTests
         // not appear -- this grant GRANTS the shell, just scoped, so the bare-tool denial branch
         // (WithheldToolNames) must not fire.
         Assert.DoesNotMatch(@"(^|,)Bash(,|$)", denied);
+    }
+
+    [Fact]
+    public void Denied_option_tokens_ride_the_hook_channel_and_deliberately_reach_no_vendor_flag()
+    {
+        // #1683 F2, both halves of the decision this PR is required to state, pinned rather than left
+        // in prose. The rung is real -- the env channel carries it to the hook -- and it is hook-only:
+        // --disallowedTools matches the whole command line anchored, so a token deny is not expressible
+        // there as an enforceable entry, and emitting `Bash(--output)` would be a positional pattern
+        // wearing a token's name. If someone later wires it onto the flag, this fails and they have to
+        // justify it against a measurement.
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: false, RunShellCommands: true,
+            ShellCommandPatterns: ["git log*"], NetworkAccess: false,
+            DeniedShellCommandPatterns: ["git push*"], ShellCommandsAreReadOnly: true,
+            DeniedShellOptionTokens: ["--output"]);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == ClaudeWorkerAdapter.DeniedShellOptionTokensVariable
+                && env.Value == "claude:--output");
+
+        var denied = ArgValue(target, "--disallowedTools")!;
+        Assert.Contains("Bash(git push*)", denied);
+        Assert.DoesNotContain("--output", denied, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -811,6 +853,69 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1515: <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks carry the
+    /// measurement and the reasoning. Must throw here, not reach an empty no-op channel.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_space_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash (git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as above with a tab instead of a space -- <c>\s</c> covers both, and the CLI's own
+    /// parser was not measured to distinguish them, so this must throw identically.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_tab_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash\t(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// #1515: the negative half of the measurement <c>BuildShellPatternsFromRawScope</c>'s own
+    /// remarks record -- must NOT throw, and must yield an empty channel like any other non-Bash
+    /// clause.
+    /// </summary>
+    [Fact]
+    public void A_lowercase_bash_clause_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// The canonical no-whitespace form must keep parsing normally alongside the new whitespace refusal
+    /// -- this is #1506's original comma-list-refusal test re-asserted here to pin that the #1515 fix
+    /// did not disturb it.
+    /// </summary>
+    [Fact]
+    public void The_canonical_no_whitespace_Bash_clause_still_parses()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
@@ -896,7 +1001,7 @@ public class ClaudeWorkerAdapterTests
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
 
         Assert.Equal(2, exitCode);
-        Assert.Contains("scoped shell grant", stderr, StringComparison.Ordinal);
+        Assert.Contains("this session's shell grant", stderr, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -934,7 +1039,7 @@ public class ClaudeWorkerAdapterTests
         var (escapeExitCode, escapeStderr) = RunResolvedHookCommand(
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff; echo escaped"}}""");
         Assert.Equal(2, escapeExitCode);
-        Assert.Contains("scoped shell grant", escapeStderr, StringComparison.Ordinal);
+        Assert.Contains("this session's shell grant", escapeStderr, StringComparison.Ordinal);
 
         var (diffExitCode, diffStderr) = RunResolvedHookCommand(
             target, """{"tool_name": "Bash", "tool_input": {"command": "git diff"}}""");
@@ -1084,37 +1189,77 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void Claude_config_root_unset_injects_no_CLAUDE_CONFIG_DIR()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, null);
-            var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+        // Scope from Current, not Blank: Resolve() also writes claude-settings.json/claude-mcp.json
+        // under BatonPaths.WorkerLaunchConfig (BatonPaths.Root -> HomeOverride), so the scope must
+        // carry forward whatever redirected home is already ambient (BatonHomeRedirect's module
+        // initializer, in this assembly) rather than blanking it back to the real ~/.baton. See
+        // BatonEnvironmentSnapshot's remarks for why Blank is the wrong base for a partial override
+        // here.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
-            Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
-        }
+        var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.DoesNotContain(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable);
     }
 
     [Fact]
     public void Claude_config_root_set_injects_CLAUDE_CONFIG_DIR_for_batch_and_gate()
     {
-        var original = Environment.GetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable);
         var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        // See the sibling test above: scope from Current so the redirected BATON_HOME survives.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
+
+        Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
+    }
+
+    /// <summary>
+    /// Tripwire for the leak the CI post-test pollution check caught (see
+    /// <see cref="BatonEnvironmentSnapshot.Blank"/>'s remarks): under a <c>BeginScope</c> home
+    /// override, the launch config <see cref="ClaudeWorkerAdapter.Resolve"/> writes on every call must
+    /// land under that override — never under the real <c>~/.baton</c> — regardless of which other
+    /// fields the same scope also overrides.
+    /// </summary>
+    [Fact]
+    public void Resolve_writes_launch_config_under_a_scoped_home_override_never_the_real_home()
+    {
+        var overrideHome = Path.Combine(Path.GetTempPath(), $"claude-launch-config-tripwire-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(overrideHome);
+        // The negative half of the name: the real ~/.baton/worker-launch must not be rewritten. A leaked
+        // write stamps THIS test process's AppContext.BaseDirectory into the hook path (that is how the
+        // CI pollution check's diff read), so the real files must not mention it afterwards. Content, not
+        // mtime: on the operator's machine a legitimate dispatch can rewrite these files mid-test.
+        var realLaunchDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".baton", "worker-launch");
+        var realSettings = Path.Combine(realLaunchDir, "claude-settings.json");
+        var realMcp = Path.Combine(realLaunchDir, "claude-mcp.json");
+        var thisProcessMarker = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         try
         {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, testPath);
+            using var scope = BatonEnvironmentSnapshot.BeginScope(
+                BatonEnvironmentSnapshot.Current with { HomeOverride = overrideHome, ClaudeConfigRootOverride = null });
 
-            var target = new ClaudeWorkerAdapter().Resolve(
-                new WorkerInvocation("Draft a plan.", SessionId: "session-123", ResumeSession: true), ArchitectContract);
+            new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
-            Assert.Contains(target.Environment!, e => e.Name == ClaudeWorkerAdapter.ClaudeConfigDirVariable && e.Value == testPath);
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-settings.json")));
+            Assert.True(File.Exists(Path.Combine(overrideHome, "worker-launch", "claude-mcp.json")));
+            foreach (var realFile in new[] { realSettings, realMcp })
+            {
+                if (File.Exists(realFile))
+                {
+                    // JSON doubles backslashes; unescape before comparing so a Windows path can match at all.
+                    var unescaped = File.ReadAllText(realFile).Replace("\\\\", "\\");
+                    Assert.DoesNotContain(thisProcessMarker, unescaped, StringComparison.OrdinalIgnoreCase);
+                }
+            }
         }
         finally
         {
-            Environment.SetEnvironmentVariable(ClaudeWorkerAdapter.BatonClaudeConfigRootVariable, original);
+            DirectoryCleanup.DeleteRecursively(overrideHome);
         }
     }
 
@@ -1210,7 +1355,420 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    /// <summary>
+    /// #1622: the real integration arm for room dispatch-implement-d6101c3c's own measured shape —
+    /// <see cref="ClaudeWorkerAdapter"/> itself as the <see cref="IFailureClassifier"/>, parsing a
+    /// genuine multi-line stream-json tail, unlike Baton.Tests' OutcomeClassifierTests.cs arms, which
+    /// stand in a canned double (Baton cannot reference Baton.Vendors, Architecture Rule 2 -- this is
+    /// the one place the real parse and OutcomeClassifier.Classify run together).
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_run_when_the_real_stream_json_stdout_tail_carries_credits_required()
+    {
+        var streamJsonTail = """
+            {"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}}
+            {"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}
+            """;
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new ClaudeWorkerAdapter();
 
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: streamJsonTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// #1727 (found while fixing the #1720 review's F1): the SAME tail as the arm above, in the shape
+    /// production actually captures it — see <see cref="StreamJsonTailScanner"/> for the collapse and
+    /// what it did to the old whole-parse-then-split-on-newline check. Red before that scanner; the
+    /// raw-newline arm above is the control that stayed green throughout, which is exactly why the
+    /// gap was invisible.
+    /// </summary>
+    [Fact]
+    public void CreditsRequired_InTheWhitespaceCollapsedTailProductionActuallyCaptures_ClassifiesExhaustedUntil()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123","tools":["Bash"]} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"Attempting operation..."}]}} """
+            + """{"type":"result","subtype":"error","is_error":true,"errorCode":"credits_required","result":"Subscription quota exhausted."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+    }
+
+    /// <summary>
+    /// #1727's polarity control: an assistant message whose own TEXT quotes the typed error code is
+    /// nested under <c>message.content[].text</c>, so scanning for top-level objects must not match
+    /// it — the scanner widened WHERE the check looks, not WHAT counts as the signal.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_quoting_credits_required_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"The vendor reports errorCode credits_required when the subscription runs dry."}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    /// <summary>
+    /// #1720 review Finding G: the arm above quotes only the ERROR CODE in prose ("errorCode
+    /// credits_required"), which the old check already rejected before this fix. The claim
+    /// <see cref="StreamJsonTailScanner.AnyObject"/> actually has to defeat is a worker's answer text
+    /// embedding a FULL verbatim JSON envelope — the escaped-quote shape a real vendor tail can never
+    /// produce unescaped, per <see cref="StreamJsonTailScanner"/>'s own doc. Written as a raw string
+    /// literal so the backslashes survive into the runtime bytes: a regular literal would collapse
+    /// <c>\"</c> to <c>"</c> at compile time and pin nothing.
+    /// </summary>
+    [Fact]
+    public void A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify()
+    {
+        var collapsedTail =
+            """{"type":"system","subtype":"init","session_id":"s-123"} """
+            + """{"type":"assistant","message":{"content":[{"type":"text","text":"the failure line was {\"errorCode\":\"credits_required\"}"}]}} """
+            + """{"type":"result","subtype":"success","is_error":false,"result":"Done."}""";
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        IFailureClassifier adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(
+            stderrTail: null, stdoutTail: collapsedTail, testTime, out var classification, out _);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+    }
+
+    /// <summary>
+    /// #1166: decision 0004's project ceiling fails closed against a project directory
+    /// <see cref="ProjectCeilingStore"/> has never seen -- red-first against the pre-#1166 behaviour,
+    /// which spawned unconditionally whenever WorkingDirectory was set.
+    /// </summary>
+    [Fact]
+    public void An_unseen_project_directory_is_refused_before_any_worker_spawns()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unseen-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: unseenProject), ArchitectContract));
+
+        Assert.Equal(unseenProject, ex.ProjectPath);
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("baton trust", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1166: effective grant = role grant ∩ project ceiling. The role grants WriteFiles; the
+    /// project's recorded ceiling withholds it, so the capped grant must withhold it too. Asserted on
+    /// the hook-denied-tools channel rather than <c>--allowedTools</c>, because #649 pre-approves
+    /// Edit/Write/NotebookEdit unconditionally -- the flag alone would pass even if capping did nothing.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_the_role_grant_caps_the_effective_grant_to_the_intersection()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-cap-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        var hookDenied = target.Environment!.Single(v => v.Name == ClaudeWorkerAdapter.DeniedToolsVariable).Value;
+        Assert.Contains("Write", hookDenied);
+        Assert.Contains("Edit", hookDenied);
+        Assert.Contains("NotebookEdit", hookDenied);
+    }
+
+    /// <summary>#1166: after 'baton trust --revoke', the next dispatch against that project refuses again.</summary>
+    [Fact]
+    public void A_revoked_project_is_refused_on_the_next_dispatch()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-revoke-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(project, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        // Confirm it dispatches while trusted, so the refusal below is the revoke's effect and not a
+        // ceiling that was never actually recorded.
+        new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan.", WorkingDirectory: project), ArchitectContract);
+
+        ProjectCeilingStore.Revoke(project, ProjectCeilingStore.DefaultPath);
+
+        Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: project), ArchitectContract));
+    }
+
+    /// <summary>
+    /// #1166 review finding A -- <see cref="ProjectCeilingGate"/>'s own doc has why. Both directions
+    /// asserted (v-and-v): trust the source repo alone and dispatch succeeds even though the worktree
+    /// path itself was never trusted; trust only the worktree path and dispatch still refuses, naming
+    /// the source repo.
+    /// </summary>
+    [Fact]
+    public void A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path()
+    {
+        var sourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(sourceRepo, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: worktreePath, WorktreeSourceRepository: sourceRepo),
+            ArchitectContract);
+
+        Assert.Equal(worktreePath, target.WorkingDirectory);
+
+        var untrustedWorktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree2-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(untrustedWorktreePath, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var otherSourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src2-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: untrustedWorktreePath, WorktreeSourceRepository: otherSourceRepo),
+            ArchitectContract));
+        Assert.Equal(otherSourceRepo, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding B, the polarity partner of
+    /// <see cref="AgyWorkerAdapterTests.A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy"/>:
+    /// on claude a withheld write still reaches the outbox (#649, <c>WithheldWritesReachTheOutbox</c> is
+    /// true), so capping WriteFiles away here must NOT refuse the same contract that throws on agy --
+    /// otherwise the gate-level recheck would be over-firing rather than closing the specific #629 gap
+    /// it exists for.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_caps_away_write_files_does_not_refuse_the_contract_on_claude()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unsatisfiable-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: false, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        Assert.NotNull(target);
+    }
+
+    /// <summary>
+    /// #1166 review finding C: neither of the gate's own two structural refusals had a test. A ceiling
+    /// that withholds a category (here NetworkAccess) has nothing to intersect against when the
+    /// invocation carries only the raw PermissionScope escape hatch, not a structured PermissionGrant --
+    /// AER cannot verify an opaque vendor string against a category ceiling.
+    /// </summary>
+    [Fact]
+    public void A_restrictive_ceiling_refuses_a_raw_PermissionScope_invocation_with_no_structured_grant()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-raw-scope-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+
+        var ex = Assert.Throws<ProjectCeilingRequiresStructuredGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write", WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal(project, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding C, the other untested structural refusal: a role grant that is coherent
+    /// on its own (an unscoped shell alongside every other category) becomes the #529 shape once the
+    /// ceiling caps WriteFiles away while leaving RunShellCommands granted -- the shell still reaches
+    /// writes regardless of what the ceiling nominally withheld. This is the gate's own re-check, not
+    /// WorkerBindingResolver's pre-existing bind-time one (which never sees the capped grant).
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_makes_the_capped_grant_incoherent_refuses_rather_than_widen()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-incoherent-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784: STRICT reading, operator ruling 2026-09-03. A ceiling that withholds NetworkAccess closes
+    /// the category outright — even through a shell pattern the grant's own author vouches as read-only
+    /// (<see cref="PermissionGrant.ShellCommandsAreReadOnly"/>). Today (pre-fix) this grant passes the
+    /// gate, because <see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/>'s read-only
+    /// exemption is honored against the ceiling too; that is the bug #1784 files and the polarity
+    /// partner below (no ceiling) proves the author's assertion is not itself wrong, only misapplied
+    /// against an operator's outer bound.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_withholds_network_access_refuses_an_author_vouched_read_only_shell_pattern()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.NetworkAccess), ex.WithheldCategories);
+        Assert.DoesNotContain(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784 polarity partner: the same grant with no restrictive ceiling recorded (an unrestricted
+    /// ceiling caps nothing) stays coherent — <see cref="PermissionGrant.ShellCommandsAreReadOnly"/>
+    /// still answers the AUTHOR's own coherence question correctly on its own; only an operator ceiling
+    /// changes the answer.
+    /// </summary>
+    [Fact]
+    public void The_same_author_vouched_read_only_shell_pattern_stays_coherent_with_no_restrictive_ceiling()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-network-none-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(project, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        Assert.NotNull(target);
+    }
+
+    /// <summary>#1784: same shape, WriteFiles closed by the ceiling instead of NetworkAccess.</summary>
+    [Fact]
+    public void A_ceiling_that_withholds_write_files_refuses_an_author_vouched_read_only_shell_pattern()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-write-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+        Assert.DoesNotContain(nameof(PermissionGrant.NetworkAccess), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784 second-reader finding 1's exact repro, shaped after the built-in `review` role
+    /// (WorkerRoles.json: WriteFiles and NetworkAccess both unset, a scoped shell asserted read-only
+    /// via <see cref="PermissionGrant.ShellCommandsAreReadOnly"/>). A ceiling closing only WriteFiles
+    /// correctly refuses that one category; before the fix it named NetworkAccess too, purely because
+    /// this shape leaves it unset on the grant regardless of what the ceiling permits.
+    /// </summary>
+    [Fact]
+    public void A_review_shaped_role_is_refused_for_write_files_only_when_the_ceiling_closes_it()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-review-shape-open-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var reviewShapedGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: false,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: reviewShapedGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal([nameof(PermissionGrant.WriteFiles)], ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// Mirror of the case above with the closed and open categories swapped: refused for NetworkAccess
+    /// only, not WriteFiles, even though the grant leaves WriteFiles unset too.
+    /// </summary>
+    [Fact]
+    public void A_review_shaped_role_is_refused_for_network_access_only_when_the_ceiling_closes_it()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-review-shape-closed-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var reviewShapedGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: false,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: reviewShapedGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal([nameof(PermissionGrant.NetworkAccess)], ex.WithheldCategories);
+    }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow, TimeZoneInfo? localTimeZone = null) : TimeProvider
     {

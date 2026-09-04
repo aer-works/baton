@@ -21,4 +21,9 @@ namespace Baton.Cli;
 /// (refused by the parser): a follow loop's whole point is a running commentary, which is exactly
 /// the "parseable, single object" contract this flag promises.
 /// </param>
-public sealed record StatusOptions(string RoomDirectoryPath, bool Follow = false, bool Json = false);
+/// <param name="RepoPath">
+/// <c>--repo</c> (#1645) — see <see cref="DispatchOptions.RepoPath"/>'s doc for the shared contract;
+/// <see cref="InstalledVersionDrift"/> is the one evaluator both commands call.
+/// </param>
+public sealed record StatusOptions(
+    string RoomDirectoryPath, bool Follow = false, bool Json = false, string? RepoPath = null);

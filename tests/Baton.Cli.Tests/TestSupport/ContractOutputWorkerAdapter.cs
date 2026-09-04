@@ -23,7 +23,8 @@ namespace Baton.Cli.Tests.TestSupport;
 internal sealed class ContractOutputWorkerAdapter(
     bool satisfyOutputs,
     IReadOnlyDictionary<string, string>? outputFixtures = null,
-    IReadOnlyList<WorkerCapabilityItem>? capabilities = null) : IWorkerAdapter
+    IReadOnlyList<WorkerCapabilityItem>? capabilities = null,
+    int failureExitCode = 0) : IWorkerAdapter
 {
     /// <summary>The directory <see cref="DiscoverCapabilitiesAsync"/> was last called with — lets a test pin which directory <c>DispatchCommand</c> actually scanned (#1512 H1).</summary>
     public string? LastDiscoverCapabilitiesWorkingDirectory { get; private set; }
@@ -40,7 +41,7 @@ internal sealed class ContractOutputWorkerAdapter(
             ? string.Join(
                 OperatingSystem.IsWindows() ? " & " : " && ",
                 contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
-            : "exit 0";
+            : $"exit {failureExitCode}";
 
         return OperatingSystem.IsWindows()
             ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)

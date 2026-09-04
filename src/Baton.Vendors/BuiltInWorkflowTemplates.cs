@@ -25,7 +25,13 @@ public sealed record RoleTemplateExport(
     // Field semantics: spec/baton.md §9.
     [property: JsonPropertyName("shell_command_patterns")] IReadOnlyList<string>? ShellCommandPatterns = null,
     [property: JsonPropertyName("denied_shell_command_patterns")] IReadOnlyList<string>? DeniedShellCommandPatterns = null,
-    [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false);
+    [property: JsonPropertyName("shell_commands_are_read_only")] bool ShellCommandsAreReadOnly = false,
+    // #1683 F2: exported for the same reason as the two lists above — until #1759 retired it,
+    // dispatch.py built its PermissionGrant from this export, so a field missing here was a deny
+    // silently absent from every lane dispatched through that tool. `baton templates --json`
+    // (this export's own surface) is still exercised today by tool-refresh/refresh.py's install
+    // smoke check.
+    [property: JsonPropertyName("denied_shell_option_tokens")] IReadOnlyList<string>? DeniedShellOptionTokens = null);
 
 /// <summary>
 /// Information describing a built-in workflow template (M22 Phase 1).
@@ -101,7 +107,8 @@ public static class BuiltInWorkflowTemplates
                     Instruction: o.Instruction)).ToList(),
                 ShellCommandPatterns: role.Grant.ShellCommandPatterns,
                 DeniedShellCommandPatterns: role.Grant.DeniedShellCommandPatterns,
-                ShellCommandsAreReadOnly: role.Grant.ShellCommandsAreReadOnly);
+                ShellCommandsAreReadOnly: role.Grant.ShellCommandsAreReadOnly,
+                DeniedShellOptionTokens: role.Grant.DeniedShellOptionTokens);
         }
         return dict;
     }

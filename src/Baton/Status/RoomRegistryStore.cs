@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -89,6 +88,14 @@ public static class RoomRegistryStore
     /// reader compares registry entries against directory-scan results the same way every other
     /// per-directory record in AER already does.
     /// </summary>
+    /// <param name="explicitRegister">
+    /// #1657: a repro is not fleet. Without this, a <paramref name="roomPath"/> under the user temp
+    /// directory or a project's own <c>.scratch*</c>/<c>.baton</c> directory (see
+    /// <see cref="IsThrowawayReproPath"/>) is skipped rather than written — <c>baton run</c>'s
+    /// <c>--register</c> flag is the one caller that sets this true for such a path on purpose. A room
+    /// under <see cref="BatonPaths.Rooms"/> (every <c>baton dispatch</c>/<c>redispatch</c> room, and
+    /// most deliberate <c>baton run --room-dir</c> invocations) is never skipped regardless of this flag.
+    /// </param>
     /// <exception cref="IOException">
     /// Another process held the registry lock for longer than <see cref="LockTimeout"/>. Callers (see
     /// <c>RunCommand.RegisterRoomAsync</c>) treat this the same as any other registry write failure:
@@ -100,11 +107,23 @@ public static class RoomRegistryStore
     /// above: log and swallow.
     /// </exception>
     public static Task AppendAsync(
-        string roomPath, string projectRoot, string registryFilePath, CancellationToken cancellationToken = default)
+        string roomPath,
+        string projectRoot,
+        string registryFilePath,
+        bool explicitRegister = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomPath);
         ArgumentException.ThrowIfNullOrEmpty(projectRoot);
         ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+
+        var recordedRoomPath = BatonPaths.RecordKey(roomPath);
+        if (!explicitRegister && IsThrowawayReproPath(recordedRoomPath))
+        {
+            Console.Error.WriteLine(
+                $"Room registry: skipping '{roomPath}' (looks like a repro room, not fleet work). Pass --register to include it.");
+            return Task.CompletedTask;
+        }
 
         var directory = Path.GetDirectoryName(registryFilePath);
         if (!string.IsNullOrEmpty(directory))
@@ -112,8 +131,7 @@ public static class RoomRegistryStore
             Directory.CreateDirectory(directory);
         }
 
-        var entry = new RoomRegistryEntry(
-            BatonPaths.RecordKey(roomPath), BatonPaths.RecordKey(projectRoot), DateTime.UtcNow);
+        var entry = new RoomRegistryEntry(recordedRoomPath, BatonPaths.RecordKey(projectRoot), DateTime.UtcNow);
         var line = JsonSerializer.Serialize(entry, SerializerOptions);
         var bytes = Encoding.UTF8.GetBytes(line + "\n");
 
@@ -122,6 +140,15 @@ public static class RoomRegistryStore
             {
                 RunUnderLock(registryFilePath, () =>
                 {
+                    // #1657: a bare `baton run` re-registering an unchanged room on every call through
+                    // the pump (see the type remarks) would otherwise write an identical line every
+                    // time -- skip when a line for this exact (RoomPath, ProjectRoot) pair is already
+                    // present, so only an actual change (or a genuinely new room) grows the file.
+                    if (File.Exists(registryFilePath) && IsAlreadyRegistered(registryFilePath, entry))
+                    {
+                        return;
+                    }
+
                     using var stream = new FileStream(
                         registryFilePath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 4096, useAsync: false);
                     stream.Write(bytes);
@@ -129,6 +156,83 @@ public static class RoomRegistryStore
                 });
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// #1657: true for a <paramref name="recordedRoomPath"/> (already run through
+    /// <see cref="BatonPaths.RecordKey"/>) that reads as a throwaway repro room rather than fleet work —
+    /// under the user temp directory, or carrying a <c>.scratch*</c>/<c>.baton</c> path segment. A path
+    /// under <see cref="BatonPaths.Rooms"/> is never throwaway: that is every room's legitimate home,
+    /// and it happens to contain a <c>.baton</c> segment of its own (<c>{UserProfile}/.baton/rooms</c>),
+    /// which is exactly why that check runs first.
+    /// </summary>
+    private static bool IsThrowawayReproPath(string recordedRoomPath)
+    {
+        var homeRooms = BatonPaths.RecordKey(BatonPaths.Rooms);
+        if (IsUnderOrEqual(recordedRoomPath, homeRooms))
+        {
+            return false;
+        }
+
+        var tempDirectory = BatonPaths.RecordKey(Path.GetTempPath());
+        if (IsUnderOrEqual(recordedRoomPath, tempDirectory))
+        {
+            return true;
+        }
+
+        var segments = recordedRoomPath.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        return segments.Any(segment =>
+            segment.Equals(".baton", StringComparison.OrdinalIgnoreCase)
+            || segment.StartsWith(".scratch", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsUnderOrEqual(string candidate, string root) =>
+        candidate.Equals(root, StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// #1657: reads <paramref name="registryFilePath"/> (already known to exist, and already inside the
+    /// caller's <see cref="RunUnderLock{T}(string,Func{T})"/> section) looking for a line whose
+    /// <see cref="RoomRegistryEntry.RoomPath"/> and <see cref="RoomRegistryEntry.ProjectRoot"/> both
+    /// match <paramref name="candidate"/> exactly — <see cref="RoomRegistryEntry.CreatedAt"/> is
+    /// deliberately excluded from the comparison, since it differs on every call by construction. A
+    /// project-root *change* for an already-registered room path is not a duplicate and still appends,
+    /// preserving <see cref="ReadDistinctByRoomAsync"/>'s last-writer-wins fold.
+    /// </summary>
+    private static bool IsAlreadyRegistered(string registryFilePath, RoomRegistryEntry candidate)
+    {
+        string text;
+        try
+        {
+            text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            RoomRegistryEntry? existing;
+            try
+            {
+                existing = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (existing is not null
+                && string.Equals(existing.RoomPath, candidate.RoomPath, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existing.ProjectRoot, candidate.ProjectRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -198,56 +302,200 @@ public static class RoomRegistryStore
     }
 
     /// <summary>
-    /// Runs <paramref name="action"/> holding a named <see cref="Mutex"/> keyed on
-    /// <paramref name="registryFilePath"/>, so every process touching the same registry file — reader
-    /// or writer — serializes against every other one. Acquire, <paramref name="action"/>, and release
-    /// all happen synchronously on the calling thread — see the type's remarks on why an
-    /// <c>await</c> inside this cannot be allowed. The path is hashed rather than used verbatim because
-    /// a raw path is neither a valid nor a safely short Windows kernel-object name (backslashes,
-    /// length limits); the digest just needs to collide only when the paths do — which is exactly why
-    /// it is hashed through <see cref="BatonPaths.RecordKey"/> first, not the raw string: two spellings of
-    /// the same file (forward vs. backward slashes, a different <c>BATON_HOME</c> casing) must still hash
-    /// to the one mutex name, or two processes pointed at the same file take out two different locks
-    /// and the registry corruption this mutex exists to prevent is right back.
+    /// #1659: removes every line whose <see cref="RoomRegistryEntry.RoomPath"/> matches
+    /// <paramref name="roomPath"/> (compared through <see cref="BatonPaths.RecordKey"/>, the same
+    /// normalization every other registry comparison uses) and rewrites the file under the same
+    /// <see cref="Mutex"/> every other access takes — a delete is a writer like any other, and must
+    /// serialize against a concurrent <see cref="AppendAsync"/> the same way. Returns the number of
+    /// lines removed (0 for a missing file or a room path with no matching line — never throws for
+    /// either, matching this type's fail-open contract on read).
     /// </summary>
-    private static T RunUnderLock<T>(string registryFilePath, Func<T> action)
+    public static Task<int> RemoveByRoomPathAsync(
+        string registryFilePath, string roomPath, CancellationToken cancellationToken = default)
     {
-        var digest = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(BatonPaths.RecordKey(registryFilePath).ToUpperInvariant())));
-        using var mutex = new Mutex(initiallyOwned: false, name: $"Global\\baton-room-registry-{digest}");
+        ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+        ArgumentException.ThrowIfNullOrEmpty(roomPath);
 
-        bool owned;
-        try
+        if (!File.Exists(registryFilePath))
         {
-            owned = mutex.WaitOne(LockTimeout);
-        }
-        catch (AbandonedMutexException)
-        {
-            // A prior holder crashed mid-access. Per Mutex's own contract, ownership still transfers
-            // to us when this is thrown -- whatever partial state it left behind is already handled by
-            // the tolerant, skip-malformed-lines read path above, not something to react to here.
-            owned = true;
+            return Task.FromResult(0);
         }
 
-        if (!owned)
-        {
-            throw new IOException($"Timed out after {LockTimeout} waiting for the room registry lock on '{registryFilePath}'.");
-        }
+        var recordedRoomPath = BatonPaths.RecordKey(roomPath);
 
-        try
-        {
-            return action();
-        }
-        finally
-        {
-            mutex.ReleaseMutex();
-        }
+        return Task.Run(
+            () => RunUnderLock(registryFilePath, () =>
+            {
+                var (survivors, removedCount) = ReadAndFilter(
+                    registryFilePath, entry => !string.Equals(entry.RoomPath, recordedRoomPath, StringComparison.OrdinalIgnoreCase));
+                if (removedCount > 0)
+                {
+                    WriteAllLines(registryFilePath, survivors);
+                }
+
+                return removedCount;
+            }),
+            cancellationToken);
     }
 
-    private static void RunUnderLock(string registryFilePath, Action action) =>
-        RunUnderLock<object?>(registryFilePath, () =>
+    /// <summary>
+    /// #1659: the compaction spec/baton.md §8 names as "left undone" — fold every entry down to
+    /// last-writer-wins per <see cref="RoomRegistryEntry.RoomPath"/> (the same rule
+    /// <see cref="ReadDistinctByRoomAsync"/> already applies at read time) and drop any entry whose
+    /// room directory no longer exists on disk, then rewrite the file under the same <see cref="Mutex"/>
+    /// every other access takes. <c>baton rooms prune</c> runs this on every invocation, gated by
+    /// nothing — dedupe/missing-dir cleanup is registry hygiene, independent of the <c>--terminal</c>
+    /// batch-delete filter. Returns (entries removed by dedupe, entries dropped for a missing
+    /// directory); both are 0 for a missing or already-compact file.
+    /// </summary>
+    public static Task<(int DedupedCount, int MissingDirectoryCount)> CompactAsync(
+        string registryFilePath, CancellationToken cancellationToken = default) =>
+        CompactAsync(registryFilePath, write: true, cancellationToken);
+
+    /// <summary>
+    /// #1659: read-only counterpart of <see cref="CompactAsync(string,CancellationToken)"/> — computes
+    /// the exact same (deduped, missing-directory) counts without rewriting the file. What
+    /// <c>baton rooms prune</c>'s dry-run listing (the default, no <c>--yes</c>) calls, so the counts it
+    /// prints match what <c>--yes</c> would actually do without mutating the registry to find out.
+    /// </summary>
+    public static Task<(int DedupedCount, int MissingDirectoryCount)> PreviewCompactionAsync(
+        string registryFilePath, CancellationToken cancellationToken = default) =>
+        CompactAsync(registryFilePath, write: false, cancellationToken);
+
+    private static Task<(int DedupedCount, int MissingDirectoryCount)> CompactAsync(
+        string registryFilePath, bool write, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(registryFilePath);
+
+        if (!File.Exists(registryFilePath))
         {
-            action();
-            return null;
-        });
+            return Task.FromResult((0, 0));
+        }
+
+        return Task.Run(
+            () => RunUnderLock(registryFilePath, () =>
+            {
+                var text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+                var originalCount = 0;
+                var byRoom = new Dictionary<string, RoomRegistryEntry>(BatonPaths.RecordKeyComparer);
+                foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    RoomRegistryEntry? entry;
+                    try
+                    {
+                        entry = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    if (entry is null || string.IsNullOrWhiteSpace(entry.RoomPath) || string.IsNullOrWhiteSpace(entry.ProjectRoot))
+                    {
+                        continue;
+                    }
+
+                    originalCount++;
+                    byRoom[entry.RoomPath] = entry;
+                }
+
+                var dedupedCount = originalCount - byRoom.Count;
+                var survivors = byRoom.Values.Where(entry => Directory.Exists(entry.RoomPath)).ToList();
+                var missingDirectoryCount = byRoom.Count - survivors.Count;
+
+                if (write && (dedupedCount > 0 || missingDirectoryCount > 0))
+                {
+                    WriteAllLines(registryFilePath, survivors);
+                }
+
+                return (dedupedCount, missingDirectoryCount);
+            }),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads every parseable, well-formed line in <paramref name="registryFilePath"/> (already known to
+    /// exist, and already inside the caller's <see cref="RunUnderLock{T}(string,Func{T})"/> section),
+    /// returning the ones <paramref name="keep"/> selects alongside how many did not survive — a
+    /// malformed line is silently dropped from both counts, matching this type's read tolerance
+    /// elsewhere. Shared by <see cref="RemoveByRoomPathAsync"/>; <see cref="CompactAsync"/> has its own
+    /// dedupe-then-filter pass instead, since it needs the pre-dedupe count too.
+    /// </summary>
+    private static (List<RoomRegistryEntry> Survivors, int RemovedCount) ReadAndFilter(
+        string registryFilePath, Func<RoomRegistryEntry, bool> keep)
+    {
+        var text = File.ReadAllText(registryFilePath, Encoding.UTF8);
+        var survivors = new List<RoomRegistryEntry>();
+        var removedCount = 0;
+
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            RoomRegistryEntry? entry;
+            try
+            {
+                entry = JsonSerializer.Deserialize<RoomRegistryEntry>(line, SerializerOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (entry is null || string.IsNullOrWhiteSpace(entry.RoomPath) || string.IsNullOrWhiteSpace(entry.ProjectRoot))
+            {
+                continue;
+            }
+
+            if (keep(entry))
+            {
+                survivors.Add(entry);
+            }
+            else
+            {
+                removedCount++;
+            }
+        }
+
+        return (survivors, removedCount);
+    }
+
+    /// <summary>
+    /// Replaces <paramref name="registryFilePath"/>'s entire contents with one JSON line per
+    /// <paramref name="entries"/>, via a temp-file-then-move so a concurrent reader under the same
+    /// <see cref="Mutex"/> never observes a truncated file — the same atomic-replace discipline
+    /// <see cref="Baton.Status.TerminalSentinelWriter"/> uses for the same reason. Callers already hold
+    /// the registry <see cref="Mutex"/>.
+    /// </summary>
+    private static void WriteAllLines(string registryFilePath, IReadOnlyList<RoomRegistryEntry> entries)
+    {
+        var tempPath = $"{registryFilePath}.{Guid.NewGuid():N}.tmp";
+        var builder = new StringBuilder();
+        foreach (var entry in entries)
+        {
+            builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
+        }
+
+        File.WriteAllText(tempPath, builder.ToString(), Encoding.UTF8);
+        File.Move(tempPath, registryFilePath, overwrite: true);
+    }
+
+    /// <summary>
+    /// The lock name prefix <see cref="MutexGuardedFileLock"/> combines with a digest of the registry
+    /// file path — kept as the exact literal this store always used before the extraction to
+    /// <see cref="MutexGuardedFileLock"/> (#1570). That type's own remarks state why the literal must
+    /// not move.
+    /// </summary>
+    private const string LockNamePrefix = "baton-room-registry";
+
+    /// <summary>
+    /// Runs <paramref name="action"/> holding a named <see cref="Mutex"/> keyed on
+    /// <paramref name="registryFilePath"/>, so every process touching the same registry file — reader
+    /// or writer — serializes against every other one. <see cref="MutexGuardedFileLock"/> (#1570) is
+    /// the mechanism itself, shared with <see cref="QuotaLedgerStore"/> — this store's own remarks on
+    /// why every critical section must stay synchronous, and on the digest, moved there with it.
+    /// </summary>
+    private static T RunUnderLock<T>(string registryFilePath, Func<T> action) =>
+        MutexGuardedFileLock.RunUnderLock(registryFilePath, LockNamePrefix, LockTimeout, action);
+
+    private static void RunUnderLock(string registryFilePath, Action action) =>
+        MutexGuardedFileLock.RunUnderLock(registryFilePath, LockNamePrefix, LockTimeout, action);
 }

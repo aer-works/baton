@@ -103,6 +103,12 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
+        // #1166: decision 0004's project ceiling (ProjectCeilingGate's own doc has the rule). Applied
+        // first so every channel below derived from invocation.PermissionGrant (--allowedTools,
+        // --disallowedTools, the hook-denied-tools env var, the shell-pattern env vars) reflects the
+        // capped grant rather than the role's uncapped one.
+        invocation = ProjectCeilingGate.Apply(invocation, contract, WithheldWritesReachTheOutbox);
+
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
         var permissionScope = ResolvePermissionScope(invocation);
@@ -248,12 +254,18 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
             // why an allow-only channel is still a strict improvement there.
             (DeniedShellPatternsVariable,
                 $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
+            // #1683 F2. Unlike the two channels above this one has NO --disallowedTools half here --
+            // BuildDisallowedTools emits nothing from it, deliberately (the reasoning is canonical on
+            // ShellCommandPatternMatcher.IsDeniedByOptionToken), so the hook is claude's only
+            // enforcement of an option-token deny. Empty on the raw PermissionScope path for the same
+            // reason the denied-pattern channel is: that string has no deny concept to parse out of it.
+            (DeniedShellOptionTokensVariable,
+                $"{ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
 
-        // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-        // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-        // BatonEnvironmentSnapshot's own remarks.
-        if (Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable) is { Length: > 0 } configRoot)
+        // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+        // #1524: folded into BatonEnvironmentSnapshot.
+        if (BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot)
         {
             environment.Add((ClaudeConfigDirVariable, configRoot));
         }
@@ -348,6 +360,16 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// vendor's only enforcement of a standing "never" the way it is on agy.
     /// </summary>
     public const string DeniedShellPatternsVariable = AgyWorkerAdapter.DeniedShellPatternsVariable;
+
+    /// <summary>
+    /// #1683 F2's option-token deny channel, same literal as
+    /// <c>AgyWorkerAdapter.DeniedShellOptionTokensVariable</c> (record-once: declared there, referenced
+    /// here). <b>Read this alongside <see cref="DeniedShellPatternsVariable"/>, whose "belt-and-braces"
+    /// framing does not carry over</b>: that channel has a vendor-flag half and this one has none, so a
+    /// silently-dead hook (#530) leaves this rung unenforced where it leaves that one standing.
+    /// </summary>
+    public const string DeniedShellOptionTokensVariable =
+        AgyWorkerAdapter.DeniedShellOptionTokensVariable;
 
     /// <summary>
     /// The environment variable name Claude Code reads for its subagent fan-out depth cap.
@@ -684,6 +706,20 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// not explicitly allowed, so an allow-only channel closes the #1461 chaining escape without
     /// needing a deny list of its own.
     /// </para>
+    /// <para>
+    /// <b>Whitespace before the opening paren is a grant, not text (#1515, #1514).</b> Measured against
+    /// claude 2.1.258: <c>Bash (pattern)</c> -- whitespace between <c>Bash</c> and <c>(</c> -- IS
+    /// honored by the CLI's own <c>--allowedTools</c> parser as a shell grant, so a clause of that
+    /// shape reaching claude's own flag while this method reads it as ordinary non-<c>Bash</c> text
+    /// (its <c>StartsWith("Bash(")</c> check fails on the whitespace) reopens the exact #1459 layer
+    /// drift this method exists to close. Refused with <see cref="PermissionGrantUnsupportedException"/>
+    /// rather than silently dropped. Lowercase <c>bash(</c> was measured the other way -- NOT honored
+    /// as a grant on the vendor side -- so it is left alone, still dropped as text; only whitespace
+    /// before the paren, case preserved, is refused. #1514's own measurement (a companion issue, not
+    /// this one) confirmed the unrelated question above -- that <c>Bash(a, b)</c> is one literal
+    /// pattern to the CLI, not two -- so the "no comma-list inside one clause" refusal above already
+    /// matches the CLI and needed no change.
+    /// </para>
     /// </remarks>
     private static string BuildShellPatternsFromRawScope(string resolvedScope)
     {
@@ -747,6 +783,24 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
             // grant and then fails to parse falls into a throw below.
             if (!clause.StartsWith("Bash(", StringComparison.Ordinal))
             {
+                // #1515: measured against claude 2.1.258 that `Bash (pattern)` -- whitespace between
+                // `Bash` and the opening paren -- IS honored by the CLI's own --allowedTools parser as
+                // a shell grant, while this method's StartsWith("Bash(") check reads it as ordinary
+                // non-Bash text and drops it. That is the exact #1459 layer drift: claude auto-approves
+                // a shell the hook channel never scoped. Lowercase `bash(` was measured NOT to be a
+                // grant on the vendor side, so it stays dropped as text -- only whitespace before the
+                // paren, case preserved, is refused here.
+                if (Regex.IsMatch(clause, @"^Bash\s+\(", RegexOptions.CultureInvariant))
+                {
+                    throw new PermissionGrantUnsupportedException(
+                        "claude",
+                        $"the raw PermissionScope clause '{clause}' has whitespace between Bash and " +
+                        "its opening paren -- claude's own --allowedTools parser still honors this as " +
+                        "a shell grant (measured #1515), so refusing rather than silently dropping it " +
+                        "as non-Bash text, which would reopen the #1459 bypass this method exists to " +
+                        "close -- write it as the canonical Bash(pattern) form instead");
+                }
+
                 continue;
             }
 
@@ -934,9 +988,11 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// <para>
     /// <b>Boundary:</b> denial here is by <em>enumeration</em>, not default-deny. It covers the tools a
     /// grant category names; it does not cover tools outside the grant's four categories (<c>Task</c>,
-    /// MCP server tools, or a tool a future CLI adds). Genuine fail-closed across the whole tool surface
-    /// is the broader change decision 0004 tracks (the project ceiling); this closes the reported,
-    /// category-mapped holes. Returns <see cref="string.Empty"/> when there is no structured grant (the
+    /// MCP server tools, or a tool a future CLI adds). Decision 0004's project ceiling
+    /// (<see cref="ProjectCeilingGate"/>, #1166) narrows the same four categories this method already
+    /// enumerates before <c>Resolve</c> ever reaches here — it does not widen this method's boundary,
+    /// which is unchanged: still category-mapped, still silent on a tool outside the four. Returns
+    /// <see cref="string.Empty"/> when there is no structured grant (the
     /// raw <see cref="WorkerInvocation.PermissionScope"/> escape hatch carries no category to deny) or
     /// when nothing is withheld.
     /// </para>
@@ -994,7 +1050,19 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// refused even under an unscoped grant and without re-asking. Under the runtime gate this is the
     /// <em>whole</em> of what <c>--disallowedTools</c> carries (withheld categories ride the ask band);
     /// off the gate it rides alongside them. Enforced independently of the <c>PreToolUse</c> hook, so it
-    /// survives a silently-dead hook (#530) — which is why claude needs no hook-side deny check.
+    /// survives a silently-dead hook (#530). <b>#1731 corrected the claim that claude "needs no
+    /// hook-side deny check"</b> — this flag matches the whole command line as typed (#1461), so it
+    /// never catches a denied family riding a chain (<c>true &amp;&amp; gh label create x</c>); the hook's
+    /// own segmented deny check (<c>HookCheckCommand</c>, <c>toolName == "Bash"</c>) closes that gap and
+    /// is not merely belt-and-braces on top of this flag. See spec/baton.md §9.
+    /// <para>
+    /// <b><see cref="PermissionGrant.DeniedShellOptionTokens"/> deliberately emits nothing here
+    /// (#1683 F2)</b> — that rung is hook-only on this vendor. The reasoning and the measurement gap
+    /// behind that choice live on <c>ShellCommandPatternMatcher.IsDeniedByOptionToken</c>; a change to
+    /// this line edits it there first. Pinned by
+    /// <c>ClaudeWorkerAdapterTests.Denied_option_tokens_ride_the_hook_channel_and_deliberately_reach_no_vendor_flag</c>,
+    /// so wiring it onto the flag fails a test rather than passing quietly.
+    /// </para>
     /// </summary>
     private static IEnumerable<string> StandingShellDenials(PermissionGrant? grant) =>
         grant?.DeniedShellCommandPatterns is { Count: > 0 } denied
@@ -1186,7 +1254,9 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         // while the adapter redirects the root is defensible in neither reading, so this follows the
         // root when the operator has actually set one, rather than assert a roster for a directory the
         // worker does not use.
-        var configRoot = configRootDirectory ?? Environment.GetEnvironmentVariable(BatonClaudeConfigRootVariable);
+        // Read through the snapshot, not the process env: #1524 folded BATON_CLAUDE_CONFIG_ROOT so a
+        // BeginScope override is honoured here exactly as at the launch-config site above.
+        var configRoot = configRootDirectory ?? BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride;
         if (!string.IsNullOrWhiteSpace(configRoot) && Directory.Exists(configRoot))
         {
             skillDirs.Add(Path.Combine(configRoot, "skills"));
@@ -1543,53 +1613,27 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// <c>message</c> object or sits as its sibling — both are checked, and a live capture is what
     /// settles which one the CLI actually emits.
     /// </summary>
+    /// <summary>
+    /// Same whole-parse-then-split-on-<c>'\n'</c> bug #1727 fixed for
+    /// <see cref="ContainsTypedCreditsRequiredError"/> applies here too: the retained tail is
+    /// whitespace-collapsed on capture, so a real multi-object tail arrives as one line and a
+    /// per-line parse finds nothing. Scans via <see cref="StreamJsonTailScanner"/> instead.
+    /// </summary>
     private static bool TryClassifyRateLimitEnvelopeFromText(
         string input,
         TimeProvider timeProvider,
         out FailureClassification? classification,
         out DateTimeOffset? retryNotBefore)
     {
-        if (TryCheckCandidateForRateLimit(input, timeProvider, out classification, out retryNotBefore))
-        {
-            return true;
-        }
+        FailureClassification? matchedClassification = null;
+        DateTimeOffset? matchedRetryNotBefore = null;
 
-        var lines = input.Split('\n');
-        if (lines.Length > 1)
-        {
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length > 0 && TryCheckCandidateForRateLimit(trimmed, timeProvider, out classification, out retryNotBefore))
-                {
-                    return true;
-                }
-            }
-        }
+        var matched = StreamJsonTailScanner.AnyObject(input, root =>
+            TryClassifyRateLimitEnvelope(root, timeProvider, out matchedClassification, out matchedRetryNotBefore));
 
-        classification = null;
-        retryNotBefore = null;
-        return false;
-    }
-
-    private static bool TryCheckCandidateForRateLimit(
-        string jsonCandidate,
-        TimeProvider timeProvider,
-        out FailureClassification? classification,
-        out DateTimeOffset? retryNotBefore)
-    {
-        classification = null;
-        retryNotBefore = null;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(jsonCandidate);
-            return TryClassifyRateLimitEnvelope(doc.RootElement, timeProvider, out classification, out retryNotBefore);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
+        classification = matched ? matchedClassification : null;
+        retryNotBefore = matched ? matchedRetryNotBefore : null;
+        return matched;
     }
 
     private static bool TryClassifyRateLimitEnvelope(
@@ -1750,41 +1794,14 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     [GeneratedRegex(@"resets\s+(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)", RegexOptions.IgnoreCase)]
     private static partial Regex ResetClockTimeRegex();
 
-    private static bool ContainsTypedCreditsRequiredError(string input)
-    {
-        if (TryCheckElementForCreditsRequired(input))
-        {
-            return true;
-        }
-
-        var lines = input.Split('\n');
-        if (lines.Length > 1)
-        {
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length > 0 && TryCheckElementForCreditsRequired(trimmed))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryCheckElementForCreditsRequired(string jsonCandidate)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(jsonCandidate);
-            return HasTypedCreditsRequiredCode(doc.RootElement);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    /// <summary>
+    /// #1720 review (found while fixing F1, issue #1727): this used to whole-parse the tail and then
+    /// split it on <c>'\n'</c>, which finds nothing in a REAL captured tail — see
+    /// <see cref="StreamJsonTailScanner"/> for the whitespace-collapse that makes a multi-object tail
+    /// one line. The shared scanner reads both the collapsed and the raw-newline shape.
+    /// </summary>
+    private static bool ContainsTypedCreditsRequiredError(string input) =>
+        StreamJsonTailScanner.AnyObject(input, HasTypedCreditsRequiredCode);
 
     private static bool HasTypedCreditsRequiredCode(JsonElement element)
     {

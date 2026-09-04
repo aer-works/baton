@@ -72,12 +72,44 @@ public static class RoleDispatch
     /// </param>
     /// <param name="attachments">Attached context files supplied by the operator.</param>
     /// <param name="attachmentsDirectory">The directory inside the room artifacts where attached files live.</param>
+    /// <param name="tokenBudgetOverride">
+    /// The <c>--token-budget</c> escape hatch (#1623), independent of the role like <paramref
+    /// name="timeoutOverride"/>. Null keeps <see cref="WorkerRole.TokenBudget"/>, resolved against the
+    /// winning <paramref name="adapterOverride"/> (or the role's own tier adapter) via
+    /// <see cref="TokenBudgetSpec.Resolve"/> -- #1745: a role's map with no entry for that adapter
+    /// throws <see cref="TokenBudgetAdapterNotConfiguredException"/> rather than silently running
+    /// unwatched.
+    /// </param>
+    /// <param name="maxToolStepsOverride">
+    /// The <c>--max-tool-steps</c> escape hatch (#1686 review F11), mirroring <paramref
+    /// name="tokenBudgetOverride"/> end to end. Null keeps <see cref="WorkerRole.MaxToolSteps"/>.
+    /// </param>
+    /// <param name="billedRateLimitOverride">
+    /// The <c>--billed-rate-limit</c> escape hatch (#1691), mirroring <paramref
+    /// name="tokenBudgetOverride"/> end to end. Null keeps <see cref="WorkerRole.BilledRateLimit"/> —
+    /// which no role sets, so in practice null means no rate trigger at all.
+    /// </param>
+    /// <param name="verifyCommandOverride">
+    /// The <c>--verify</c> escape hatch (#1702), independent of the role like <paramref
+    /// name="tokenBudgetOverride"/>. Null keeps the workspace-resolution order
+    /// (<c>Baton.Mutation.VerifyCommandResolver.Resolve</c>): a <c>.baton/verify</c> declaration, then
+    /// <see cref="WorkerRole.VerifyPixiTask"/>.
+    /// </param>
+    /// <param name="expectPrOverride">
+    /// The <c>--expect-pr</c> escape hatch (#1788), independent of the role like <paramref
+    /// name="tokenBudgetOverride"/> -- but unlike every override above, its EFFECTIVE value is resolved
+    /// right here as <c>expectPrOverride ?? role.DeliversBranch</c> rather than left null; spec/baton.md
+    /// §3's "Post-exit delivery check" entry states why this one resolves early instead of downstream.
+    /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
         string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
         IReadOnlyList<string>? requiredInputs = null, string? outputOverride = null,
         bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
-        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null)
+        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
+        long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null,
+        bool? expectPrOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -162,7 +194,30 @@ public static class RoleDispatch
             // #1089, #1540: agy and claude. Streaming puts event-level JSON envelopes on stdout so a running lane's
             // log fills incrementally (feeding the live tail), while agy's terminal `result` event reaches the
             // teardown-hang guard. claude dispatches run plain stream-json --verbose without --include-partial-messages.
-            StreamJson: StreamsJson(adapter));
+            StreamJson: StreamsJson(adapter),
+            // #1623: verify is the engine's own step. #1702: the role's own default is now only the
+            // lowest-precedence input to VerifyCommandResolver.Resolve, alongside the workspace's own
+            // .baton/verify declaration and this verifyCommandOverride -- see VerifyCommandOverride's
+            // own remarks on WorkerBindingConfigEntry.
+            VerifyPixiTask: role.VerifyPixiTask,
+            VerifyCommandOverride: verifyCommandOverride,
+            // #1745: --token-budget wins outright; otherwise the role's own spec is resolved against
+            // THIS binding's winning adapter (the local `adapter` above, already normalized/overridden),
+            // never role.Adapter -- a per-adapter map must answer for the vendor actually dispatched to.
+            TokenBudget: tokenBudgetOverride ?? role.TokenBudget?.Resolve(role.Id, adapter),
+            // #1686 review F11: the --max-tool-steps escape hatch, mirroring --token-budget.
+            MaxToolSteps: maxToolStepsOverride ?? role.MaxToolSteps,
+            // #1691: the --billed-rate-limit escape hatch, mirroring both of the above.
+            BilledRateLimit: billedRateLimitOverride ?? role.BilledRateLimit,
+            // #1622/#1390: read off the CATALOG role's own grant, before the write-widening above can
+            // touch it -- see WorkerBindingConfigEntry.ChangesTree's own remarks for why re-deriving
+            // this from the (possibly widened) `grant` local a few lines up would misclassify a
+            // read-only role under some adapters.
+            ChangesTree: role.Grant.WriteFiles && role.Grant.RunShellCommands,
+            // #1788: DeliversBranch is purely catalog-controlled (no dispatch-time override exists for
+            // it); ExpectPr is resolved HERE against it -- see expectPrOverride's own doc for why.
+            DeliversBranch: role.DeliversBranch,
+            ExpectPr: expectPrOverride ?? role.DeliversBranch);
     }
 
     /// <summary>
@@ -184,14 +239,18 @@ public static class RoleDispatch
         WorkerRole role, string spec, string? adapterOverride = null, string? workingDirectory = null,
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
-        string? attachmentsDirectory = null)
+        string? attachmentsDirectory = null, long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null, bool? expectPrOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         var binding = ToBinding(
             role, spec, adapterOverride, workingDirectory: workingDirectory,
             modelOverride: modelOverride, effortOverride: effortOverride, outputOverride: outputOverride,
-            timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory);
+            timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
+            tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
+            billedRateLimitOverride: billedRateLimitOverride,
+            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 

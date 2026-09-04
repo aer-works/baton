@@ -9,9 +9,10 @@ It is **not** the chat surface. A dispatch turn is non-interactive and runs to c
 interactive session (chat) is a different path with a different prompt and a continuing turn.
 
 ```
-baton dispatch <role> --spec <file> [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
+baton dispatch <role> [--spec <file> | --spec - | --spec-text <text>] [--room-dir <dir>] [--adapter <vendor>] [--model <m>] [--effort <e>]
                     [--workspace <dir>] [--workflow-id <label>] [--output <path>] [--timeout <minutes>]
-                    [--label <text>] [--attach <file>]...
+                    [--token-budget <n>] [--max-tool-steps <n>] [--verify <cmd>] [--expect-pr <true|false>] [--label <text>]
+                    [--workstream <slug>] [--attach <file>]...
 
 baton dispatch --list-capabilities
 ```
@@ -20,16 +21,23 @@ baton dispatch --list-capabilities
 
 | Flag | Meaning |
 |------|---------|
-| `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. |
+| `--spec <file>` | The task prompt for the worker — the file whose contents become the spec. Mutually exclusive with `--spec -` and `--spec-text` (#1518): pass exactly one of the three. |
+| `--spec -` | Read the task prompt from stdin instead of a file (#1518) — refused outright if stdin is a terminal rather than a pipe/redirect, so a fat-fingered invocation fails loud instead of hanging on EOF that never comes. |
+| `--spec-text <text>` | The task prompt given inline (#1518) — for a scout question that does not warrant a brief file, e.g. `baton dispatch advise --spec-text "what does baton cancel do today?"`. All three spec sources resolve to the same string and produce the same room record (the spec/grant lint below still runs, `--attach` still works, and a plain `baton redispatch <room-dir>` of the resulting room still reuses its already-built prompt) — there is no separate on-disk spec artifact any of the three lands in. Inline and stdin specs are visible in shell history and in process listings while the command runs; use `--spec <file>` for anything sensitive. |
 | `--room-dir <dir>` | Where the run is recorded (created if absent) — this is the room. Optional: omitted, each invocation gets a fresh unique one at `$BATON_HOME/rooms/dispatch-<role>-<8 hex>` (`BATON_HOME` defaults to `~/.baton`, see `BatonPaths`) — outside any workspace a dispatch might audit (#1354/#1380), and fresh each time because a dispatch is one-shot and a stable derived directory would make the second `baton dispatch review` *resume* the first's terminal snapshot instead of running. |
 | `--adapter <vendor>` | Run the role on a specific vendor (`claude` / `agy`) instead of its tier's default. The `--adapter` escape hatch; a role never names a vendor itself. |
 | `--model <m>` | The model axis, independent of the role ([0017]/[0023]). Omitted keeps the tier's model — except on a vendor swap, where the tier's vendor-specific model is dropped for the new vendor's default (#1082). |
 | `--effort <e>` | The effort axis, independent of the role. Omitted keeps the tier's effort; dropped on a vendor swap. |
-| `--workspace <dir>` | The repository the worker's read access is scoped to. Defaults to the current directory. For a role whose grant is enforced as declared, this is literally the directory the worker runs in. For a role whose write grant is audited rather than enforced (a withheld-write role on a vendor whose withheld writes do not reach the outbox — today, the write-withholding roles on `agy`), dispatch instead auto-provisions a **fresh git worktree of this directory at `HEAD`** and hands the worker that (#1354/#1380) — the worker never sees uncommitted or staged changes in that case, only what HEAD already had. Bound explicitly because `agy -p` ignores the process working directory (#491). |
+| `--workspace <dir>` | The repository the worker's read access is scoped to. Defaults to the current directory. For a role whose grant is enforced as declared, this is literally the directory the worker runs in. For a role whose write grant is audited rather than enforced (a withheld-write role on a vendor whose withheld writes do not reach the outbox — today, the write-withholding roles on `agy`), dispatch instead auto-provisions a **fresh git worktree of this directory at `HEAD`** and hands the worker that (#1354/#1380) — the worker never sees uncommitted or staged changes in that case, only what HEAD already had. Bound explicitly because `agy -p` ignores the process working directory (#491). Needs a `baton trust` ceiling recorded against this exact path first, in both cases — see `docs/agents/invoking-baton.md` §2/§6 (#1166). |
 | `--workflow-id <label>` | A label forwarded to the run; defaults to the materialised template id. |
-| `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. |
+| `--output <path>` | Copy the role's primary declared output to `<path>` once the run reaches Terminal, in addition to leaving it under the room's own `artifacts/`. Role dispatch only — refused up front on a template dispatch, the same way `--spec` is. `<path>`'s filename is validated before anything is printed or written: it must name a file (not end in a separator), must not start with `.` (the engine's reserved namespace), must not collide with the engine's own `prompt.txt` capture, and must not collide with another output the same role already declares. Delivered whenever the worker actually wrote it, regardless of what the engine's own verify step (below) decides (#1702). |
+| `--verify <cmd>` | Override the engine's own verify command for this dispatch (#1702), ahead of the workspace's own `.baton/verify` declaration and the role's `verify_pixi_task` default — spec/baton.md §3 has the full resolution order and the not-run outcome. Role dispatch only — refused up front on a template dispatch, the same way `--timeout`/`--token-budget` are. |
+| `--expect-pr <true\|false>` | For a role whose catalog entry sets `delivers_branch` (#1788, today only `implement`), whether the engine's post-exit delivery check also requires an open PR for the pushed branch, in addition to the branch itself being reachable from `origin/<branch>` — spec/baton.md §3, "Post-exit delivery check" has the full contract. Defaults to the role's own `delivers_branch` value; meaningless (never checked) for a role that does not deliver a branch at all. Role dispatch only — refused up front on a template dispatch, the same way `--verify` is. |
 | `--timeout <minutes>` | Override the dispatched role's own catalog timeout for just this dispatch — a role that legitimately needs longer than its fixed tier timebox (an orchestrator coordinating sub-lanes, say) does not have to die mid-flight. Role dispatch only — refused up front on a template dispatch, the same way `--output` is: each phase carries its own role's timeout, so there is no single one to override. Must be a positive whole number of minutes; rejected outright above a 24h ceiling (a non-interactive dispatch has no confirmation prompt to gate a larger value behind); merely flagged on stderr above 2h. |
+| `--token-budget <n>` | Override the dispatched role's own default per-execution token ceiling (#1623) for just this dispatch — measured incrementally from the same usage the vendor's own `stream-json` output reports mid-execution, not merely the terminal line. Crossing it arrests the execution (cancels it, mid-flight) and settles the step `Indeterminate` for a conductor to resolve — never a silent retry. Role dispatch only, same refusal as `--timeout` on a template. Must be a positive whole number of tokens; no ceiling (raising your own budget is not the runaway-consumption failure mode this exists to arrest). Per-role defaults are listed in `spec/baton.md` §3; every other role runs unwatched unless this flag is passed. |
+| `--max-tool-steps <n>` | Override the dispatched role's own default cap on tool steps (#1686) for just this dispatch — the second arrest trigger alongside `--token-budget`, armed independently of it (#1682), and settling the same way: the execution is arrested mid-flight and the step goes `Indeterminate`. Role dispatch only, same refusal as `--timeout` on a template. Must be a positive whole number; per-role defaults are in `spec/baton.md` §3. |
 | `--label <text>` | Display text only, e.g. `"the #1496 env-snapshot lane"` — so Fleet Glass shows something legible instead of the bare `dispatch-<role>-<8 hex>` directory name. Never part of the room directory's own name. Trimmed, newline-folded, capped at `DispatchOptionsParser.MaxLabelLength` chars; full contract in `spec/baton.md` §2. |
+| `--workstream <slug>` | A grouping key, not a title — unlike `--label`, IS later used as a Windows directory name (`~/.baton/by-workstream/<slug>`), so it is refused rather than truncated/folded when it fails the slug grammar, and lowercased on success. Persisted onto the room's `bindings.json` the same way `--label` is; full contract (grammar, the by-workstream junction, `baton redispatch`'s inheritance) in `spec/baton.md` §2. |
 | `--attach <file>` | Repeatable (#1500). Copies `<file>` into the room's `artifacts/attachments/` directory before the worker starts, and appends one line to the prompt naming every attached file and that directory. Keeps a brief short instead of pasting context documents inline. Role dispatch only — refused up front on a template dispatch, the same way `--output`/`--timeout` are. Content is operator-supplied and **inbound**: it is never scanned and never published, because the mailbox pusher reads only `terminal.json`'s declared step outputs and an attachment is never one of them (not the deliverable secret gate withholding it — there is nothing for that gate to see in the first place). Each named file must exist; a missing one is a typed argument error before the room is created. |
 | `--list-capabilities` | Prints every adapter's supported models and effort values, plus each catalog role's timebox default, and exits — no `<role>` or room required (#1500). Refused if combined with a `<name>`, rather than silently discarding the dispatch and exiting 0. `WorkerRoleCatalog.All` is the same catalog `ModelAndEffortValidationTests` reads directly. The role and effort sections can never drift from what dispatch actually accepts, but that is single-source construction — this printer and `ClaudeWorkerAdapter.Resolve`/`AgyWorkerAdapter.Resolve` all read the same `EffortTierMapping` statics — not test coverage: that suite only exercises agy's raw effort values end to end; it never hands Claude an `--effort`, and no test passes a canonical word to either vendor. Claude's model aliases (`ClaudeWorkerAdapter.ModelAliases`) are read live too, but that specific list has no validation surface of its own and is not exercised by that suite either — every alias always resolves to a vendor-current model, so nothing dispatch-side rejects one. agy has no equivalent alias catalog — its model names are suffix-parametrized (`gemini-<version>-<flash\|pro>-<low\|medium\|high>`), so the printed agy model examples are illustrative text, not a sourced table. |
 
@@ -68,6 +76,30 @@ assertion on this page — see `DispatchSpecLinter`'s own class doc for why the 
 larger, live on `DispatchSpecLinter`'s own class doc; record-once, not restated here.** In short: the
 shell check cannot tell an allowlisted command from a forbidden one, and the network check can miss an
 unrelated command a scoped shell doesn't actually cover.
+
+### The engine-run verify step (#1623)
+
+`implement` declares an engine-run verify command (`pixi run gates-quiet`) — the ENGINE runs it once,
+never itself holding a lock across the run (`spec/baton.md` §3 states the actual locking mechanism),
+after the worker's own process exits 0 with its output contract satisfied; the worker itself is never
+asked to run gates or tests and never sees the command. `review`/`advise` and
+every other role declare none. A verify failure is never a blind retry: it settles the step
+`Indeterminate`, with the failing gate members and a bounded output tail recorded as room facts
+(`verifyStarted`/`verifyPassed`/`verifyFailed` in `flow.jsonl`) — a conductor resolves it, the same way
+an ambiguous captured-response outcome does (spec/baton.md §3).
+
+### The per-execution token budget (#1623, per-adapter default #1745)
+
+`implement`/`review`/`advise` carry default budgets; every other role runs unwatched unless `--token-budget` is passed.
+A role's catalog entry is either one figure that applies no matter which adapter runs it (today's
+shape, and still what `implement`/`advise` use) or a map keyed by adapter name (`review`'s shape, both
+values presently equal — spec/baton.md §3 has why and states the resolution rule for an
+unconfigured adapter). Usage is read incrementally from the vendor's own `stream-json` output
+as it arrives, not just the terminal line, so a poll loop or a runaway tool-call sequence is caught
+mid-flight rather than after the fact. Crossing the budget arrests the execution (cancels it, never
+lets it keep running) and settles the step `Indeterminate` — `executionArrested` in `flow.jsonl`
+carries the measured usage, the last few tool names observed, and (#1745) the adapter the applied
+budget was resolved for.
 
 ### The auto-provisioned worktree, and what it costs
 
@@ -123,14 +155,14 @@ spec/baton.md §9; this page does not restate them. Enforced on claude via
 pre-approval — not a `PreToolUse` hook change. `agy`'s `IPermissionGrantTranslator` still refuses
 `RunShellCommands` without `NetworkAccess` with no scoped exception, so this shell grant does not
 reach `--adapter agy`: `review` there now refuses to dispatch (`PermissionGrantUnsupportedException`)
-rather than falling back to its old no-shell shape. `tools/baton-agy-loop/dispatch.py` is extended to
-match — spec/baton.md §9's paragraph on that tool states what its extension covers.
+rather than falling back to its old no-shell shape.
 
-`advise` and `patch` are the same shape by outcome (no unscoped shell or network) but not by
-mechanism: `advise` keeps an explicit `write_files: true` (see its own `purpose` field in
-`WorkerRoles.json` for why — narrowing it broke the dispatcher's grant_refusal() coherence check on
-its default `agy` tier), and `patch` never grants a write in the first place —
-its whole point is proposing a diff without mutating the workspace.
+`advise` and `patch` are the same shape by outcome (no unscoped shell or network, `write_files:
+false`) but not by mechanism: `advise` (#1386) withholds the write and, on its default `agy` tier,
+relies on #901's audited-write widening (`GrantAuditMode.AuditedNotEnforced`) to un-refuse once a
+worktree is provisioned — the same shape `review`/`fact-check` take when forced onto `agy`. `patch`
+never grants a write in the first place — its whole point is proposing a diff without mutating the
+workspace.
 
 ### The printed skill roster
 
@@ -178,13 +210,17 @@ this implements and exactly what gets captured where. In short: if every unsatis
 (never present-but-wrong) at settle time and the execution's own terminal result carried a usable
 response, that response lands in an engine file beside the declared outputs, never under a declared
 name, and a room fact records which declared names it stands in for — see
-`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The room
-still settles `Failed` (`FailureClassification.Permanent`, so the engine never auto-retries against the
-same, still-unsatisfied workspace); only a conductor's own recorded resolution can turn a capture into a
-satisfied contract.
+`docs/agents/invoking-baton.md` §3 for what that fact looks like to a harness reading the room. The
+room settles `Indeterminate` (#1608 — the two-predicate model's disagreement case, carrying no
+`FailureClassification` at all, spec/baton.md §3), not `Failed`; `RetryEngine.MayRetry` refuses it
+unconditionally via its own explicit arm, independent of any classification — see spec/baton.md §3's
+"Producers" section for every source that settles a step this way and which ones the ordinary retry
+path stays open for. Only a conductor's own recorded resolution — `baton resolve <room-dir>
+[--execution <id>] --accept-capture | --reject --reason <text>` — can turn a capture into a satisfied
+contract, or explicitly refuse one.
 
-The prose-safe/all-or-nothing rules that used to gate what the engine wrote now gate what a capture
-MAY later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
+The prose-safe/all-or-nothing rules that gate what the engine ever wrote also gate what a capture MAY
+later be resolved into: a plain-text output (`.md`/`.txt`/no extension, no declared
 `Schema`/`Condition` — `advice.md`, `changes.md`, `findings.md` above) can honestly be resolved from a
 captured response; a structured output (`verdict.json`, `patch.diff`, `turn-actions.json` above) can
 not — prose can't honestly stand in for a declared shape. `janitor`'s two outputs (`janitor.md`,
@@ -192,8 +228,13 @@ not — prose can't honestly stand in for a declared shape. `janitor`'s two outp
 fires while it is among the missing outputs (an all-or-nothing capture that could only ever resolve
 `janitor.md` is refused entirely) — a capture for this role is only possible when `janitor.md` alone is
 missing and `branch.diff` is already present and valid. See `src/Baton/Outcomes/OutputMaterializer.cs`
-for the mechanism; the `indeterminate` verdict and the conductor-side resolution verb itself are not
-built yet (#1608).
+for the capture mechanism and `src/Baton/Mutation/MutationInterface.cs`'s
+`RecordCaptureResolutionAsync` for the resolution: it does not re-derive prose-safety at resolution
+time (see `OutputMaterializer`'s own class remarks for why that would be redundant).
+`--accept-capture` strips the engine's own banner
+(`OutputMaterializer.StripCapturedResponseHeader`) and writes the remaining body under each of those
+declared name(s) — `baton resolve` is the one permitted writer here (spec/baton.md §3 rules why).
+`--reject --reason <text>` writes nothing; the reason is the room fact's own justification.
 
 | Role | Tier | Writes | For |
 |------|------|--------|-----|
@@ -213,18 +254,23 @@ schedule background work or wait for a wake-up, because nothing resumes the turn
 ## `baton redispatch` — rerunning a terminal room with an amended brief
 
 ```
-baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <vendor>] [--model <m>] [--effort <e>]
-                          [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]
+baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>]... [--adapter <vendor>] [--model <m>]
+                          [--effort <e>] [--workspace <dir>] [--output <path>] [--timeout <minutes>]
+                          [--token-budget <n>] [--max-tool-steps <n>] [--verify <cmd>] [--label <text>]
+                          [--workstream <slug>]
 ```
 
 `<room-dir>` names the parent room to rerun. The full contract — what each flag inherits from that
 room vs. overrides, the Terminal/single-role refusals, and where lineage is recorded — is
 `spec/baton.md` §2; this page does not restate it.
 
-The spec/grant mismatch lint above and `--attach` are both dispatch-only (#1500's literal scope) —
-`redispatch` runs neither, even though rewriting a brief after a lane failed is plausibly the likeliest
-moment to introduce an instruction the grant cannot execute; tracked as a follow-up rather than wired
-in here (#1500 second-reader LOW-1, filed as #1576).
+**The spec/grant mismatch lint above and `--attach` now also run on `redispatch`'s `--spec` path
+(#1576), the identical way `dispatch` already runs them.** Both go through `RoleSpecMaterializer`, the
+seam `DispatchCommand`'s own role path and `RedispatchCommand`'s amended-spec path now share, so
+neither can silently diverge from the other again — see `spec/baton.md` §2 for why an amended brief
+is exactly the moment a grant/instruction mismatch is likeliest to appear. `--attach` is refused
+outright when `--spec` is omitted: `spec/baton.md` §2 states why (record-once, not restated here).
+<!-- record-once-ok: #1576 spec/baton.md -->
 
 ## What a dispatch leaves in the room
 

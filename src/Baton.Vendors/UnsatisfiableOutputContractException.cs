@@ -36,7 +36,9 @@ namespace Baton.Vendors;
 /// <para>
 /// The remedy today is to grant <see cref="PermissionGrant.WriteFiles"/>, which also grants the
 /// workspace. That <c>WriteFiles</c> cannot separate "write my report" from "modify the repo" is
-/// #649, and it is why every reviewing template in <c>tools/baton-agy-loop</c> grants write.
+/// #649, and it is why <see cref="RoleDispatch.ToBinding"/> auto-widens a withheld-write role's grant
+/// (<see cref="GrantAuditMode.AuditedNotEnforced"/>) rather than leaving every reviewing role in
+/// <c>WorkerRoles.json</c> refused outright on an adapter whose withheld writes miss the outbox.
 /// </para>
 /// </remarks>
 public sealed class UnsatisfiableOutputContractException : BatonFlowException

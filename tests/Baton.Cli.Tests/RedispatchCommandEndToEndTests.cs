@@ -14,6 +14,7 @@ namespace Baton.Cli.Tests;
 /// asserted in isolation (that half is <see cref="RedispatchBindingTests"/>). Mirrors
 /// <see cref="DispatchCommandEndToEndTests"/>'s catalog-pinning and fake-adapter setup.
 /// </summary>
+// #1524: kept enrolled solely for Console.Error; see SerializedEnvironmentCollection's remarks.
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class RedispatchCommandEndToEndTests : IDisposable
 {
@@ -22,27 +23,27 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         {
             ["fake"] = new ContractOutputWorkerAdapter(satisfyOutputs: true),
             ["fake-noop"] = new ContractOutputWorkerAdapter(satisfyOutputs: false),
+            ["fake-fail"] = new ContractOutputWorkerAdapter(satisfyOutputs: false, failureExitCode: 1),
         };
 
-    private readonly string? _priorRoles = Environment.GetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable);
-    private readonly string? _priorTiers = Environment.GetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable);
-    private readonly string? _priorTemplates = Environment.GetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable);
+    private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
 
+    // Catalog pinning mirrors DispatchCommandEndToEndTests' own #1524 ctor.
     public RedispatchCommandEndToEndTests()
     {
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.RolesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"));
-        Environment.SetEnvironmentVariable(
-            WorkerRoleCatalog.TiersPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"));
-        Environment.SetEnvironmentVariable(
-            WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"));
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.RolesPathEnvironmentVariable, _priorRoles);
-        Environment.SetEnvironmentVariable(WorkerRoleCatalog.TiersPathEnvironmentVariable, _priorTiers);
-        Environment.SetEnvironmentVariable(WorkflowTemplateCatalog.TemplatesPathEnvironmentVariable, _priorTemplates);
+        _catalogScope.Dispose();
+        _batonHome.Dispose();
     }
 
     [Fact]
@@ -65,6 +66,48 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
                 Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
             Assert.Equal(parentBindings["advise"].PromptTemplate, childBindings["advise"].PromptTemplate);
             Assert.Equal(parentBindings["advise"].Adapter, childBindings["advise"].Adapter);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1518: a bare redispatch never reads a room-side spec artifact at all -- it reuses <c>workflow.json</c>
+    /// plus the parent's own already-built <c>bindings.json</c> <c>PromptTemplate</c> verbatim, the same
+    /// path <see cref="Redispatching_without_a_spec_reuses_the_parents_prompt_verbatim"/> exercises for a
+    /// file-sourced parent. This mirrors that test with a parent dispatched via <c>--spec-text</c> instead,
+    /// to pin that nothing on the bare-redispatch path assumes a parent's spec ever lived in a file --
+    /// it goes red only because the parent room cannot exist before <c>--spec-text</c> does, not because
+    /// redispatch itself has a file-sourced assumption to find.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_a_room_dispatched_via_spec_text_reuses_its_prompt_verbatim()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            var dispatchOptions = new DispatchOptions(
+                "advise", SpecFilePath: null, parentRoom, Adapter: "fake", SpecText: "Weigh the options for X.");
+            var dispatchResult = await DispatchCommand.ExecuteAsync(dispatchOptions, Adapters, TestContext.Current.CancellationToken);
+            var parentView = WorkflowStatusProjector.Project(dispatchResult.State, dispatchResult.Snapshot, parentRoom);
+            await TerminalSentinelWriter.WriteAsync(parentRoom, parentView, TestContext.Current.CancellationToken);
+
+            var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(parentRoom, "bindings.json"), TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal(parentBindings["advise"].PromptTemplate, childBindings["advise"].PromptTemplate);
+            Assert.Contains("Weigh the options for X.", childBindings["advise"].PromptTemplate, StringComparison.Ordinal);
         }
         finally
         {
@@ -156,6 +199,67 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// LOW-1 (#1619 second-reader): <c>--workstream</c>'s parity gap with <c>--label</c> --
+    /// <see cref="RedispatchCommand.ExecuteAsync"/>'s amended-spec branch (:130-134) duplicates the
+    /// same inherit/override/clear rule <see cref="RedispatchCommand.InheritBinding"/> already applies
+    /// on the no-spec path, and only the label half of that duplication had an end-to-end test proving
+    /// the duplicated line actually does something -- <see cref="RedispatchBindingTests"/> only reaches
+    /// <c>InheritBinding</c> directly. Runs under an isolated <c>BatonPaths.Root</c> (see
+    /// <see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>): a resolved workstream here
+    /// writes an actual directory junction on disk, which must not land under the machine's own
+    /// <c>~/.baton</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_workstream_survives_an_amended_spec_redispatch_unless_overridden()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var (tempHome, scope) = DispatchCommandEndToEndTests.BeginIsolatedBatonHome();
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", workstream: "w1619");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var inheritedChildRoom = Path.Combine(testRoot, "child-inherited");
+            var inheritedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, inheritedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, inheritedResult.State.Status);
+            var inheritedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(inheritedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("w1619", inheritedBindings["advise"].Workstream);
+
+            var overriddenChildRoom = Path.Combine(testRoot, "child-overridden");
+            var overriddenResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, overriddenChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Workstream: "w2024"),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, overriddenResult.State.Status);
+            var overriddenBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(overriddenChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("w2024", overriddenBindings["advise"].Workstream);
+
+            var clearedChildRoom = Path.Combine(testRoot, "child-cleared");
+            var clearedResult = await RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, clearedChildRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Workstream: null, WorkstreamSpecified: true),
+                Adapters, TestContext.Current.CancellationToken);
+            Assert.Equal(WorkflowStatus.Terminal, clearedResult.State.Status);
+            var clearedBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(clearedChildRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(clearedBindings["advise"].Workstream);
+        }
+        finally
+        {
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "child-inherited"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w2024", Path.Combine(testRoot, "child-overridden"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
     [Fact]
     public async Task A_blank_label_clears_the_inherited_label_on_an_unchanged_spec_redispatch()
     {
@@ -177,6 +281,86 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         finally
         {
             DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// See spec/baton.md §2 ("`--workstream` inherits the identical way...") for why a bare
+    /// <c>baton redispatch</c> with no <c>--workstream</c> flag must still get its own by-workstream
+    /// junction rather than just the parent's (<see cref="RedispatchBindingTests"/> pins the
+    /// inheritance rule itself). Runs under an isolated <c>BatonPaths.Root</c>
+    /// (<see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>) rather than the machine's
+    /// real <c>~/.baton</c>.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_an_inherited_workstream_still_creates_its_own_junction()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var (tempHome, scope) = DispatchCommandEndToEndTests.BeginIsolatedBatonHome();
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", workstream: "w1619");
+
+            var childRoom = Path.Combine(testRoot, "child-inherited");
+            var options = new RedispatchOptions(parentRoom, childRoom);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("w1619", childBindings["advise"].Workstream);
+
+            var childLinkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", childRoom);
+            Assert.True(Directory.Exists(childLinkPath), $"expected a by-workstream junction at '{childLinkPath}'");
+        }
+        finally
+        {
+            // Unlink both junctions (parent's and the redispatched child's) BEFORE the real room
+            // directories they point at are removed -- see CleanupWorkstreamJunction's own doc -- while
+            // the scope still resolves BatonPaths.ByWorkstream into tempHome.
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "child-inherited"));
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(tempHome);
+        }
+    }
+
+    /// <summary>
+    /// Runs under an isolated <c>BatonPaths.Root</c>
+    /// (<see cref="DispatchCommandEndToEndTests.BeginIsolatedBatonHome"/>): the parent dispatch below
+    /// (<c>workstream: "w1619"</c>) links its own by-workstream junction as <c>DispatchCommand</c>'s
+    /// side effect, even though the child below clears its own workstream and gets none.
+    /// </summary>
+    [Fact]
+    public async Task A_blank_workstream_clears_the_inherited_workstream_on_an_unchanged_spec_redispatch()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var (tempHome, scope) = DispatchCommandEndToEndTests.BeginIsolatedBatonHome();
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", workstream: "w1619");
+
+            var childRoom = Path.Combine(testRoot, "child-cleared");
+            var options = new RedispatchOptions(parentRoom, childRoom, Workstream: null, WorkstreamSpecified: true);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(childBindings["advise"].Workstream);
+        }
+        finally
+        {
+            // Only the parent got a junction -- the child's workstream was cleared, so
+            // WorkstreamJunctionLinker never created one for "child-cleared". Still resolved through
+            // the active scope, before it is disposed.
+            DispatchCommandEndToEndTests.CleanupWorkstreamJunction("w1619", Path.Combine(testRoot, "parent"));
+            scope.Dispose();
+            DirectoryCleanup.DeleteRecursively(testRoot);
+            DirectoryCleanup.DeleteRecursively(tempHome);
         }
     }
 
@@ -280,9 +464,9 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         var originalError = Console.Error;
         try
         {
-            // fake-noop satisfies no declared output, so advise's step -- and the workflow -- lands
-            // Failed, not Succeeded, once terminal.json is written for it below.
-            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", adapter: "fake-noop");
+            // fake-fail exits 1, so advise's step -- and the workflow -- lands
+            // Failed, not Succeeded or Indeterminate, once terminal.json is written for it below.
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.", adapter: "fake-fail");
 
             using var stderr = new StringWriter();
             Console.SetError(stderr);
@@ -297,6 +481,56 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         finally
         {
             Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// N7 (#1664 re-review): see the selection fix's own remarks
+    /// (<c>RedispatchCommand.cs</c>, the <c>indeterminateStep</c> lookup just above the Indeterminate
+    /// refusal) for why a rejected step can outrank the real target. This fixture puts the rejected
+    /// step FIRST in the array specifically to catch that ordering bug: the refusal must still name
+    /// the ContractFailure remedy (reject only), not the CapturedResponse one.
+    /// </summary>
+    [Fact]
+    public async Task A_rejected_step_sorted_before_the_pending_ContractFailure_step_does_not_win_the_remedy()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new("fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt", TimeSpan.FromMinutes(30)),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [
+                        // Sorted FIRST: a rejected CapturedResponse step — file survives as audit
+                        // trail, producer cleared by CaptureResolved.
+                        new WorkflowStatusStepView("rejected", "Failed", "exec-1", CapturedResponseFile: ".captured-response.md"),
+                        // Sorted SECOND: the room's real pending target.
+                        new WorkflowStatusStepView("pending", "Failed", "exec-2", IndeterminateProducerKind: "ContractFailure"),
+                    ],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, childRoom), Adapters, TestContext.Current.CancellationToken));
+
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains("nothing to accept", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("--accept-capture | --reject", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }
@@ -339,17 +573,30 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
     [Fact]
     public async Task An_Indeterminate_parent_refuses_bare_redispatch_with_a_diagnosis()
     {
-        // #1586 S1: no producer in this slice writes "Indeterminate" to a real terminal.json (see
-        // WorkflowOutcome.Indeterminate's own remarks) -- this fixture writes the sentinel by hand,
-        // which the slice's scope note permits, so the CONSUMER side of the vocabulary gets proven
-        // ahead of any producer existing.
+        // #1586 S1: this fixture writes the sentinel by hand rather than driving a producer, so the
+        // CONSUMER side of the vocabulary is proven independently of which producer settled it.
+        // #1623/#1644 merge: the step now carries a capturedResponseFile, because that is what makes
+        // `baton resolve` the RIGHT remedy to name -- see the polarity partner below, where the same
+        // Indeterminate room without one must be sent somewhere else entirely.
         var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
         try
         {
             var parentRoom = Path.Combine(testRoot, "parent");
             Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new("fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt", TimeSpan.FromMinutes(30)),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
             await TerminalSentinelWriter.WriteAsync(
-                parentRoom, new WorkflowStatusView(WorkflowOutcome.Indeterminate, [], [], null), TestContext.Current.CancellationToken);
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [new WorkflowStatusStepView("a", "Failed", "exec-1", CapturedResponseFile: ".captured-response.md")],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
 
             var childRoom = Path.Combine(testRoot, "child");
             var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
@@ -357,6 +604,84 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
 
             Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(childRoom));
+
+            // F1 (PR #1644 review): the refusal must name the real resolution verb and its flags,
+            // not claim one doesn't exist -- #1608 shipped `baton resolve` in the same PR.
+            Assert.NotNull(ex.TryInvocation);
+            Assert.Contains(
+                $"baton resolve {parentRoom} [--execution <id>] --accept-capture | --reject --reason <text>",
+                ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("does not exist", ex.TryInvocation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task An_Indeterminate_parent_without_a_capture_is_refused_but_NOT_sent_to_baton_resolve()
+    {
+        // #1623/#1644 merge. Polarity partner of the test above, one field apart (no
+        // capturedResponseFile): the refusal is unchanged, but the REMEDY must change. Indeterminate
+        // has three producers now and `baton resolve` handles only the captured-response one --
+        // MutationInterface.RecordCaptureResolutionAsync refuses the other two outright. Naming it
+        // here regardless would hand the operator an invocation guaranteed to throw: a dead end in a
+        // user-facing string, which is the specific defect this arm exists to catch.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = Path.Combine(testRoot, "parent");
+            Directory.CreateDirectory(parentRoom);
+            var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+            {
+                ["advise"] = new(
+                    "fake", new WorkerContract("advise", [], [new ProducedOutput("advice.md")], []), "prompt",
+                    TimeSpan.FromMinutes(45), Model: "sonnet", WorkingDirectory: "/repo"),
+            };
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                bindings, BatonPaths.RoomBindingsFile(parentRoom), TestContext.Current.CancellationToken);
+            await TerminalSentinelWriter.WriteAsync(
+                parentRoom,
+                new WorkflowStatusView(
+                    WorkflowOutcome.Indeterminate,
+                    [new WorkflowStatusStepView("a", "Failed", "exec-1")],
+                    [],
+                    null),
+                TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => RedispatchCommand.ExecuteAsync(
+                new RedispatchOptions(parentRoom, childRoom), Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Indeterminate", ex.Message, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(childRoom));
+
+            // #1623 re-review U1: the remedy must be a reachable command, not "re-dispatch the
+            // parent" (which just names the refused invocation itself) -- a fresh `baton dispatch`
+            // carrying the parent's own recorded flags forward.
+            Assert.NotNull(ex.TryInvocation);
+            // #1622 (d): the remedy DOES name `baton resolve` now -- but `--close`, the verb that
+            // admits this producer, never the `--accept-capture`/`--reject` pair that still throws
+            // for it. Before #1622 no verb admitted it at all, and naming one was the dead end this
+            // arm was written to catch; the dead end, not the verb's name, is what it pins.
+            Assert.DoesNotContain("--accept-capture", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("re-dispatch the parent", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("baton dispatch advise --spec <brief>", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--adapter fake", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--timeout 45", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--model sonnet", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--workspace /repo", ex.TryInvocation, StringComparison.Ordinal);
+
+            // F4 (#1720 review): the remedy must not claim redispatch stays refused after a
+            // `--close`. It does not: `--close` leaves the room Terminal/Failed, Program.cs rewrites
+            // terminal.json from the fresh view, and the Indeterminate gate above stops firing --
+            // pinned end-to-end in ResolveCommandEndToEndTests
+            // .Redispatch_no_longer_refuses_a_verify_failed_room_once_it_has_been_closed.
+            Assert.Contains($"baton resolve {parentRoom}", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("--close --reason <text>", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.Contains("redispatch this room", ex.TryInvocation, StringComparison.Ordinal);
+            Assert.DoesNotContain("still refuses this room", ex.TryInvocation, StringComparison.Ordinal);
         }
         finally
         {
@@ -407,12 +732,200 @@ public sealed class RedispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1576: before this fix, <c>RedispatchCommand</c>'s amended-spec path called
+    /// <c>RoleDispatch.Materialize</c> directly, skipping the spec/grant lint (#1500) entirely — an
+    /// amended brief that instructs something the role's grant withholds got no warning at all, unlike
+    /// the identical brief passed to a fresh <c>baton dispatch</c>. Mirrors
+    /// <see cref="DispatchCommandEndToEndTests.Spec_grant_mismatch_prints_warning_and_proceeds"/>
+    /// exactly, but through <c>redispatch --spec</c>'s rebuild path: <c>advise</c> declares no shell/
+    /// network grant, so a `gh issue view` line in the amended brief must warn the same way.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_an_amended_spec_that_needs_a_withheld_grant_prints_the_linters_warning()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        var priorError = Console.Error;
+        using var capturedError = new StringWriter();
+        Console.SetError(capturedError);
+
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(
+                amendedSpecPath, "Please gh issue view 1500\nProvide advice.", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake");
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var errorOutput = capturedError.ToString();
+            Assert.Contains("Warning: Spec line 1", errorOutput);
+            Assert.Contains("shell", errorOutput);
+            Assert.Contains("network", errorOutput);
+            Assert.Contains("advise", errorOutput);
+        }
+        finally
+        {
+            Console.SetError(priorError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576: before this fix, <c>RedispatchOptions</c> had no <c>Attachments</c> field at all --
+    /// <c>--attach</c> did not exist on <c>redispatch</c>. Mirrors
+    /// <see cref="DispatchCommandEndToEndTests.Dispatching_with_attachments_copies_files_and_lists_them_in_prompt"/>
+    /// through the amended-spec redispatch path instead.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_attach_copies_the_file_into_the_room_and_lists_it_in_the_prompt()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var contextFile = Path.Combine(testRoot, "context.txt");
+            await File.WriteAllTextAsync(contextFile, "Extra context", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [contextFile]);
+
+            var result = await RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var attachmentsDir = Path.Combine(childRoom, "artifacts", "attachments");
+            Assert.True(File.Exists(Path.Combine(attachmentsDir, "context.txt")));
+            Assert.Equal("Extra context", await File.ReadAllTextAsync(Path.Combine(attachmentsDir, "context.txt"), TestContext.Current.CancellationToken));
+
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Contains($"Attached files (in {attachmentsDir}): context.txt", childBindings["advise"].PromptTemplate);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576: pins <c>RedispatchCommand</c>'s own <c>--attach</c>-without-<c>--spec</c> refusal, added
+    /// just above the amended-spec branch -- see that refusal's comment for why the combination makes
+    /// no sense, not restated here.
+    /// </summary>
+    [Fact]
+    public async Task Attach_without_spec_is_refused()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+            var contextFile = Path.Combine(testRoot, "context.txt");
+            await File.WriteAllTextAsync(contextFile, "Extra context", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(parentRoom, childRoom, Attachments: [contextFile]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("--attach", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1576 second-reader: the shared <c>RoleSpecMaterializer</c> validation is exercised by
+    /// <see cref="DispatchCommandEndToEndTests.Dispatching_with_missing_attachment_file_throws_typed_argument_error"/>
+    /// through <c>dispatch</c>, but nothing pinned the identical call path reached through
+    /// <c>redispatch --spec --attach</c> until now.
+    /// </summary>
+    [Fact]
+    public async Task Redispatching_with_a_missing_attachment_file_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+            var missingFile = Path.Combine(testRoot, "nonexistent.txt");
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [missingFile]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("Attached file", ex.Message);
+            Assert.Contains("nonexistent.txt", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>Polarity partner of the missing-file test above: two <c>--attach</c> files colliding on the same destination name.</summary>
+    [Fact]
+    public async Task Redispatching_with_two_attachments_sharing_a_file_name_throws_typed_argument_error()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
+
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(amendedSpecPath, "Weigh the options for Y instead.", TestContext.Current.CancellationToken);
+
+            var subDir = Path.Combine(testRoot, "sub");
+            Directory.CreateDirectory(subDir);
+            var file1 = Path.Combine(testRoot, "doc.txt");
+            var file2 = Path.Combine(subDir, "doc.txt");
+            await File.WriteAllTextAsync(file1, "Top-level doc", TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(file2, "Sub-directory doc", TestContext.Current.CancellationToken);
+
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new RedispatchOptions(
+                parentRoom, childRoom, SpecFilePath: amendedSpecPath, Adapter: "fake", Attachments: [file1, file2]);
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => RedispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
+
+            Assert.Contains("doc.txt", ex.Message);
+            Assert.Contains("same file name", ex.Message);
+            Assert.False(Directory.Exists(childRoom));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> DispatchTerminalParentAsync(
-        string testRoot, string spec, string adapter = "fake", TimeSpan? timeout = null, string? label = null)
+        string testRoot, string spec, string adapter = "fake", TimeSpan? timeout = null, string? label = null,
+        string? workstream = null)
     {
         var specPath = await WriteSpecAsync(testRoot, spec);
         var roomDirectory = Path.Combine(testRoot, "parent");
-        var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: adapter, Timeout: timeout, Label: label);
+        var options = new DispatchOptions(
+            "advise", specPath, roomDirectory, Adapter: adapter, Timeout: timeout, Label: label, Workstream: workstream);
 
         var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
 

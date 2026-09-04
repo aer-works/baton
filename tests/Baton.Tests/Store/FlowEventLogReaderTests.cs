@@ -3,9 +3,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Baton.Domain;
 using Baton.Store;
+using Baton.Tests.Projection;
 
 namespace Baton.Tests.Store;
 
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class FlowEventLogReaderTests
 {
     private static FlowEvent.ExecutionSucceeded MakeEvent(string id) => new(new ExecutionId(id));
@@ -121,6 +123,54 @@ public class FlowEventLogReaderTests
             await File.WriteAllTextAsync(path, "{ not valid json }\n", Encoding.UTF8, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<FlowEventLogReadException>(() => new FlowEventLogReader(path).ReadAllAsync(TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// A line with a non-string <c>Value</c> or <c>kind</c> on an <c>EnvironmentVariable</c> — a torn
+    /// write, a hand-edited journal, a foreign writer — must surface at this boundary as
+    /// <see cref="FlowEventLogReadException"/>, the type every catch in the reader and its callers
+    /// (<c>Program.cs</c>, <c>RoomDetailTool</c>) actually handles. Asserting only at the converter
+    /// would miss a converter that throws <see cref="InvalidOperationException"/> instead of
+    /// <see cref="JsonException"/>: <see cref="FlowEventLogReader"/> catches <c>JsonException</c> only
+    /// (<see cref="FlowEventLogJson"/> remarks), so anything else propagates unhandled.
+    /// </summary>
+    [Theory]
+    [InlineData("Value")]
+    [InlineData("kind")]
+    public async Task ReadAllAsync_throws_a_FlowEventLogReadException_for_a_non_string_EnvironmentVariable_field(string fieldName)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var request = new ExecutionRequest(
+                new ExecutionId("exec-1"),
+                new WorkflowId("wf-1"),
+                new StepId("step-1"),
+                "claude",
+                Inputs: [],
+                Outputs: [],
+                Timeout: TimeSpan.FromMinutes(10),
+                Environment: [new EnvironmentVariable.BatonComputed("BATON_OUTPUT_DIR", "/artifacts/execution_1")],
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+            var line = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(request)),
+                typeof(LogEntry),
+                FlowEventLogJson.Options);
+
+            var lineNode = JsonNode.Parse(line)!.AsObject();
+            var environmentEntry = lineNode["Event"]!["Request"]!["Environment"]!.AsArray()[0]!.AsObject();
+            environmentEntry[fieldName] = 123;
+
+            await File.WriteAllTextAsync(path, lineNode.ToJsonString() + "\n", Encoding.UTF8, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<FlowEventLogReadException>(
+                () => new FlowEventLogReader(path).ReadAllAsync(TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -294,5 +344,63 @@ public class FlowEventLogReaderTests
 
         var sharingEx = new IOException("Sharing violation", hresult: FileHolderProbe.ErrorSharingViolationHResult);
         Assert.True(FileHolderProbe.IsSharingViolation(sharingEx));
+    }
+
+    /// <summary>
+    /// #1779 owner ruling: the read still succeeds past an unrecognized <c>eventType</c>/<c>owner</c>,
+    /// dropping the unrecognized lines from the returned sequence and reporting the count once (not
+    /// per line) -- see <see cref="FlowEventLogReader"/>'s own remarks for which diagnostics channel
+    /// that report lands on.
+    /// </summary>
+    [Fact]
+    public async Task ReadAllAsync_skips_and_counts_unknown_event_kinds_instead_of_throwing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var known1 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-1")), typeof(LogEntry), FlowEventLogJson.Options);
+            var known2 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-2")), typeof(LogEntry), FlowEventLogJson.Options);
+            var known3 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-3")), typeof(LogEntry), FlowEventLogJson.Options);
+
+            // A "flow" line (known owner) carrying an eventType this binary has never heard of --
+            // the shape a newer CLI writes and an older one must still be able to read past.
+            const string unknownEventKind = """{"owner":"flow","Event":{"eventType":"somethingNewer"}}""";
+            // An owner discriminator this binary has never heard of at all.
+            const string unknownOwnerKind = """{"owner":"somethingEvenNewer"}""";
+
+            await File.WriteAllTextAsync(
+                path,
+                string.Join('\n', [known1, unknownEventKind, known2, unknownOwnerKind, known3, string.Empty]),
+                Encoding.UTF8,
+                TestContext.Current.CancellationToken);
+
+            using var sw = new StringWriter();
+            var originalErr = Console.Error;
+            Console.SetError(sw);
+
+            IReadOnlyList<FlowEvent> events;
+            try
+            {
+                events = await new FlowEventLogReader(path).ReadAllAsync(TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                Console.SetError(originalErr);
+            }
+
+            var ids = events.Cast<FlowEvent.ExecutionSucceeded>().Select(e => e.ExecutionId.Value);
+            Assert.Equal(new[] { "exec-1", "exec-2", "exec-3" }, ids);
+
+            var errOutput = sw.ToString();
+            Assert.Contains("Skipped 2 unknown event kind line(s)", errOutput);
+            Assert.Contains("somethingNewer", errOutput);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
     }
 }

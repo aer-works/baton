@@ -213,6 +213,28 @@ public sealed class WorktreeProvisionerTests : IDisposable
         return (repo, "review-target");
     }
 
+    private static string RunGitCapture(string workingDirectory, params string[] args)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, $"git {string.Join(' ', args)} failed: {stderr.Result}");
+        return stdout.Result;
+    }
+
     private static void RunGit(string workingDirectory, params string[] args)
     {
         var startInfo = new ProcessStartInfo("git")
@@ -272,5 +294,125 @@ public sealed class WorktreeProvisionerTests : IDisposable
             WorktreeProvisioner.NormalizeForComparison(b),
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(expected, equal);
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_true_for_a_freshly_provisioned_worktree()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        Assert.True(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_when_worktree_carries_uncommitted_changes()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        File.WriteAllText(Path.Combine(worktree, "dirty.txt"), "dirty content");
+
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_when_worktree_carries_commits_over_base()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        File.WriteAllText(Path.Combine(worktree, "committed2.txt"), "more content");
+        RunGit(worktree, "add", ".");
+        RunGit(worktree, "commit", "-m", "worker commit");
+
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(worktree));
+    }
+
+    [Fact]
+    public void IsWorkspaceUntouched_returns_false_for_null_empty_or_nonexistent_directory()
+    {
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(null));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched("   "));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(Path.Combine(_root, "nonexistent")));
+        Assert.False(WorktreeProvisioner.IsWorkspaceUntouched(_root));
+    }
+
+    /// <summary>
+    /// F2 (#1720 review): the tri-state probe's UNMEASURABLE arm — where negating the fail-closed
+    /// <see cref="WorktreeProvisioner.IsWorkspaceUntouched"/> above fabricated
+    /// <c>workspaceChanged: true</c>. Each of these returns false ("did not measure") and must leave
+    /// the out-parameter alone rather than reporting a change.
+    /// </summary>
+    [Fact]
+    public void TryReadWorkspaceChanged_reports_unmeasured_when_git_cannot_answer()
+    {
+        // Not a git checkout at all: `git status` exits non-zero.
+        var plainDirectory = NewDir("not-a-repo");
+        Assert.False(WorktreeProvisioner.TryReadWorkspaceChanged(plainDirectory, baseRef: null, out var changedInPlainDir));
+        Assert.False(changedInPlainDir);
+
+        // A real checkout whose branch has no @{upstream}: nothing to count HEAD against.
+        var (repo, _) = CreateRepoWithBranch("committed.txt");
+        Assert.False(WorktreeProvisioner.TryReadWorkspaceChanged(repo, baseRef: null, out var changedInRepo));
+        Assert.False(changedInRepo);
+
+        // Nothing to probe at all.
+        Assert.False(WorktreeProvisioner.TryReadWorkspaceChanged(null, baseRef: null, out _));
+        Assert.False(WorktreeProvisioner.TryReadWorkspaceChanged("   ", baseRef: null, out _));
+        Assert.False(WorktreeProvisioner.TryReadWorkspaceChanged(
+            Path.Combine(_root, "nonexistent"), baseRef: null, out _));
+    }
+
+    /// <summary>
+    /// F2's polarity control, in both directions: the probe must still MEASURE where it can, and an
+    /// uncommitted change is conclusive on its own even in the no-upstream checkout the arm above
+    /// reports unmeasurable — otherwise "unmeasurable" would swallow the very signal #1390 wants.
+    /// </summary>
+    [Fact]
+    public void TryReadWorkspaceChanged_measures_a_clean_and_a_dirty_workspace()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(worktree, reference, out var cleanChanged));
+        Assert.False(cleanChanged);
+
+        File.WriteAllText(Path.Combine(worktree, "dirty.txt"), "dirty content");
+        Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(worktree, reference, out var dirtyChanged));
+        Assert.True(dirtyChanged);
+
+        // Same conclusive read on the no-upstream plain checkout, where the commit probes cannot run.
+        File.WriteAllText(Path.Combine(repo, "dirty.txt"), "dirty content");
+        Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(repo, baseRef: null, out var dirtyPlainChanged));
+        Assert.True(dirtyPlainChanged);
+    }
+
+    [Fact]
+    public void TryReadWorkspaceChanged_measures_commits_over_base()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        File.WriteAllText(Path.Combine(worktree, "committed2.txt"), "more content");
+        RunGit(worktree, "add", ".");
+        RunGit(worktree, "commit", "-m", "worker commit");
+
+        // baseRef left null, exactly as IsWorkspaceUntouched's own commits-over-base arm does: the
+        // worktree has `review-target` itself checked out, so a commit moves that branch too and
+        // `review-target..HEAD` counts zero. The reflog heuristic is the arm that sees this shape.
+        Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(worktree, baseRef: null, out var changed));
+        Assert.True(changed);
+
+        // And the base-ref arm on a base that does NOT move with the worker's commit.
+        var baseSha = RunGitCapture(repo, "rev-parse", "HEAD").Trim();
+        Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(worktree, baseSha, out var changedAgainstSha));
+        Assert.True(changedAgainstSha);
     }
 }

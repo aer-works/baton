@@ -4,7 +4,9 @@ using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Concurrency;
 using Baton.Domain;
+using Baton.Projection;
 using Baton.Status;
+using Baton.Store;
 using Baton.Templates;
 
 namespace Baton.Cli.Tests;
@@ -437,6 +439,148 @@ public class TerminalSentinelEndToEndTests
             await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory, Json: true), jsonOutput, TestContext.Current.CancellationToken);
             var statusView = JsonSerializer.Deserialize<WorkflowStatusView>(jsonOutput.ToString());
             Assert.Equal("Failed", statusView!.State);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_CLI_resolve_reject_with_retry_budget_remaining_invalidates_the_stale_sentinel()
+    {
+        // #1608 review finding 1 -- see Program.cs's post-pump `resolve` handling (search "review
+        // finding 1") for why 'baton resolve --reject' with retry budget remaining must invalidate
+        // the stale terminal.json sentinel here. RetryPolicy(3) here matters: every existing resolve
+        // fixture elsewhere uses RetryPolicy(1), which always leaves budget exhausted and so never
+        // exercises this arm at all.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-sentinel-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("resolve-sentinel-test"), 1,
+                [new WorkflowStepDefinition(new StepId("a"), "a", [], ["advice.md"], [], new RetryPolicy(3))]);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(
+                snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                        executionId, new WorkflowId("wf"), new StepId("a"), "a", [], [], TimeSpan.FromSeconds(30), [],
+                        new Dictionary<StepId, ExecutionId>())),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionIndeterminate(
+                        executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var reader = new FlowEventLogReader(logPath);
+            var state = StateProjector.Project(await reader.ReadAllAsync(TestContext.Current.CancellationToken), snapshot);
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
+            var entries = await reader.ReadAllEntriesWithTimestampsAsync(TestContext.Current.CancellationToken);
+            var view = WorkflowStatusProjector.Project(state, snapshot, roomDirectory, entries);
+            await TerminalSentinelWriter.WriteAsync(roomDirectory, view, TestContext.Current.CancellationToken);
+            var sentinelPath = Path.Combine(roomDirectory, "terminal.json");
+            Assert.True(File.Exists(sentinelPath), "setup must leave a sentinel behind to invalidate.");
+
+            using var process = StartBatonProcess(
+                "resolve", roomDirectory, "--execution", executionId.Value, "--reject", "--reason", "not honest advice.md");
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.False(
+                File.Exists(sentinelPath),
+                $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
+
+            // #1608 review finding 4: a non-Terminal room must name its follow-up invocation — see
+            // Program.cs's post-`resolve` step (and spec/baton.md §3) for why.
+            Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
+            Assert.Contains("--room-dir", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_CLI_resolve_on_a_still_Paused_room_names_baton_decide_not_baton_run()
+    {
+        // #1608 re-review finding 1: the post-`resolve` guidance used to be unconditional over
+        // "non-Terminal", which sends a harness in a circle on the Paused shape -- see Program.cs's
+        // post-`resolve` step (and spec/baton.md §3) for why that verb cannot move this room.
+        // Asserted against the REAL binary's stdout, because Program.cs is what branches: an assertion
+        // at the projection layer would pass whether or not the branch exists at all.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-paused-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            Directory.CreateDirectory(roomDirectory);
+            var definition = new WorkflowDefinition(
+                new WorkflowTemplateId("resolve-paused-test"), 1,
+                [
+                    new WorkflowStepDefinition(
+                        new StepId("a"), "a", [], ["advice.md"], [], new RetryPolicy(1),
+                        PausePoint: new PausePoint([])),
+                ]);
+            var snapshot = SnapshotBinder.Bind(definition);
+            await SnapshotBinder.PersistAsync(
+                snapshot, Path.Combine(roomDirectory, "snapshot.json"), TestContext.Current.CancellationToken);
+
+            var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                        executionId, new WorkflowId("wf"), new StepId("a"), "a", [], [], TimeSpan.FromSeconds(30), [],
+                        new Dictionary<StepId, ExecutionId>())),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.ExecutionIndeterminate(
+                        executionId, "captured, awaiting conductor resolution",
+                        Baton.Outcomes.OutputMaterializer.CapturedResponseFileName, ["advice.md"]),
+                    TestContext.Current.CancellationToken);
+                await writer.AppendAsync(
+                    new FlowEvent.WorkflowPaused(executionId, new StepId("a")),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var outputDirectory = Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}");
+            Directory.CreateDirectory(outputDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDirectory, Baton.Outcomes.OutputMaterializer.CapturedResponseFileName),
+                Baton.Outcomes.OutputMaterializer.CapturedResponseHeader + "\n\nthe worker's real answer",
+                TestContext.Current.CancellationToken);
+
+            using var process = StartBatonProcess(
+                "resolve", roomDirectory, "--execution", executionId.Value, "--accept-capture");
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.True(
+                stdout.Contains("Workflow status: Paused", StringComparison.Ordinal),
+                $"the fixture must leave a genuinely Paused room, or this pins nothing. stdout: {stdout} stderr: {stderr}");
+            Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
+            Assert.Contains("baton decide", stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain("--room-dir", stdout, StringComparison.Ordinal);
+            // Every option DecideOptionsParser refuses without, spelled out: naming a verb whose
+            // required arguments the operator cannot see is the same dead end review finding 1 hit.
+            Assert.Contains("--type", stdout, StringComparison.Ordinal);
+            Assert.Contains("--bindings", stdout, StringComparison.Ordinal);
         }
         finally
         {

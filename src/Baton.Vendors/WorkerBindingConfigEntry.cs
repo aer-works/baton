@@ -51,6 +51,95 @@ namespace Baton.Vendors;
 /// than a new file, is spec/baton.md §2/§6. Sanitized once at parse time
 /// (<c>Baton.Cli.DispatchOptionsParser.SanitizeLabel</c>). Null when never supplied.
 /// </param>
+/// <param name="VerifyPixiTask">
+/// #1623: <see cref="WorkerRole.VerifyPixiTask"/>, carried onto the resolved
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged — the engine, never the worker, runs it. Since
+/// #1702 this is only the lowest-precedence input to <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>,
+/// not the sole source of a verify step.
+/// </param>
+/// <param name="VerifyCommandOverride">
+/// #1702: the <c>--verify</c> escape hatch (<see cref="RoleDispatch.ToBinding"/>'s
+/// <c>verifyCommandOverride</c>), mirroring <paramref name="TokenBudget"/>'s override pattern —
+/// highest precedence in <c>Baton.Mutation.VerifyCommandResolver.Resolve</c>. Null defers to the
+/// workspace's own <c>.baton/verify</c> declaration, then <paramref name="VerifyPixiTask"/>.
+/// </param>
+/// <param name="TokenBudget">
+/// #1623: <see cref="WorkerRole.TokenBudget"/>, or the <c>--token-budget</c> override
+/// (<see cref="RoleDispatch.ToBinding"/>'s <c>tokenBudgetOverride</c>) when one was supplied.
+/// </param>
+/// <param name="MaxToolSteps">
+/// #1682: <see cref="WorkerRole.MaxToolSteps"/>, or the <c>--max-tool-steps</c> override (#1686 review
+/// F11, <see cref="RoleDispatch.ToBinding"/>'s <c>maxToolStepsOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>.
+/// </param>
+/// <param name="BilledRateLimit">
+/// #1691: <see cref="WorkerRole.BilledRateLimit"/>, or the <c>--billed-rate-limit</c> override
+/// (<see cref="RoleDispatch.ToBinding"/>'s <c>billedRateLimitOverride</c>) when one was supplied —
+/// same axis shape as <paramref name="TokenBudget"/>'s <c>--token-budget</c>. In practice the override
+/// is the ONLY source: no role declares a default (spec/baton.md §3).
+/// </param>
+/// <param name="Workstream">
+/// The operator-supplied <c>--workstream</c> slug (#1619, rung 1 of #1614's ruling) — a grouping key,
+/// not a title: unlike <paramref name="Label"/> it IS path-written, as the directory name of a
+/// <c>~/.baton/by-workstream/&lt;slug&gt;/</c> junction the CLI creates at dispatch time
+/// (<c>Baton.Cli.WorkstreamJunctionLinker</c>) — see spec/baton.md §2/§6. Sanitized and slug-validated
+/// once at parse time (<c>Baton.Cli.DispatchOptionsParser.SanitizeWorkstream</c>). Null when never
+/// supplied.
+/// </param>
+/// <param name="WorktreeBaseSha">
+/// N2 (#1664 re-review): the commit <paramref name="Worktree"/>'s <see cref="WorktreeWorkspace.Ref"/>
+/// resolved to at provisioning time (<see cref="Workspaces.WorktreeProvisioner.ResolveBaseCommit"/>),
+/// stamped by <see cref="WorktreeWorkspaces"/> in the SAME expression that nulls
+/// <paramref name="Worktree"/> and sets <paramref name="IsWorktree"/> — so the value the fix reads is
+/// captured before the field carrying it is cleared, unlike the symbolic ref this replaces. Null
+/// whenever <paramref name="IsWorktree"/> is false, or the ref could not be resolved against the
+/// source repository.
+/// </param>
+/// <param name="WorktreeSourceRepository">
+/// #1166 review finding A: <paramref name="Worktree"/>'s <see cref="WorktreeWorkspace.Repository"/>,
+/// stamped by <see cref="WorktreeWorkspaces"/> in the SAME expression as <paramref name="WorktreeBaseSha"/>
+/// and for the identical reason — captured before <paramref name="Worktree"/> is nulled. This is the
+/// project-ceiling lookup key <see cref="ProjectCeilingGate"/> uses in preference to
+/// <paramref name="WorkingDirectory"/> whenever it is set: a worktree's <paramref name="WorkingDirectory"/>
+/// is a fresh, room-scoped directory allocated at provisioning time (never the same path twice, and
+/// never known to the operator ahead of dispatch), so keying the ceiling on it would make an
+/// auto-provisioned worktree permanently untrustable — the operator has no stable path to run
+/// <c>baton trust</c> against. The source repository is the stable, operator-known path 0004's ceiling
+/// is actually about. Null whenever <paramref name="IsWorktree"/> is false.
+/// </param>
+/// <param name="ToolSha">
+/// #1668: The commit SHA of the baton binary that dispatched this room, stamped at dispatch
+/// time so side-by-side tool pruning can preserve versions referenced by live rooms. Null when
+/// dispatched by a binary that predates the field or when unresolved.
+/// </param>
+/// <param name="ChangesTree">
+/// #1622/#1390: whether this role's CONTRACT is "change the tree" -- read/write files and run shell
+/// commands, the same two-predicate reading <c>OutcomeClassifier</c> derives it from at settle time.
+/// Computed once, here, from the CATALOG role's own <see cref="WorkerRole.Grant"/>
+/// (<see cref="RoleDispatch.ToBinding"/>) -- deliberately NOT re-derived from
+/// <paramref name="PermissionGrant"/> above, which <c>ToBinding</c> can widen
+/// (<c>WriteFiles: true</c>, audited-not-enforced) for a role that declares outputs but no tree-write
+/// grant, purely so a non-outbox-capable adapter can still write its own declared report -- re-reading
+/// that widened grant downstream would misclassify e.g. <c>review</c> as tree-changing under such an
+/// adapter. False for every entry not constructed through <see cref="RoleDispatch.ToBinding"/> (a
+/// hand-authored <c>bindings.json</c>, or a future front door that never sets it) -- the safe default,
+/// since <c>workspaceChanged</c>/<c>hollow</c> are an additive signal, not a gate: false simply omits
+/// the two settle-time fields rather than fabricating one for a role catalog this entry never named.
+/// </param>
+/// <param name="DeliversBranch">
+/// #1788: <see cref="WorkerRole.DeliversBranch"/>, carried onto the resolved
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged -- whether the engine's post-exit delivery
+/// check (<c>Baton.Mutation.DeliveryVerifier</c>) runs at all. False for every entry not constructed
+/// through <see cref="RoleDispatch.ToBinding"/>, the same safe default <paramref name="ChangesTree"/> uses.
+/// </param>
+/// <param name="ExpectPr">
+/// #1788: the delivery check's PR-half switch, ALREADY RESOLVED by <see cref="RoleDispatch.ToBinding"/>
+/// as <c>expectPrOverride ?? role.DeliversBranch</c> -- so this field, unlike most others on this
+/// record, never needs its own nullable "not specified" state; a plain <see langword="false"/> here
+/// means "do not check for a PR", which is also the correct reading for any entry not constructed
+/// through <see cref="RoleDispatch.ToBinding"/> (the <paramref name="DeliversBranch"/> default already
+/// disables the whole check in that case).
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -68,7 +157,19 @@ public sealed record WorkerBindingConfigEntry(
     WorktreeWorkspace? Worktree = null,
     GrantAuditMode GrantAuditMode = GrantAuditMode.Enforced,
     bool IsWorktree = false,
-    string? Label = null);
+    string? Label = null,
+    string? VerifyPixiTask = null,
+    string? VerifyCommandOverride = null,
+    long? TokenBudget = null,
+    int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
+    string? Workstream = null,
+    string? WorktreeBaseSha = null,
+    string? WorktreeSourceRepository = null,
+    string? ToolSha = null,
+    bool ChangesTree = false,
+    bool DeliversBranch = false,
+    bool ExpectPr = false);
 
 
 /// <summary>

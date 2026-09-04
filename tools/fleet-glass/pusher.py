@@ -9,16 +9,23 @@ THE SNAPSHOT HALF -- change-gated (#1457) and coalescing-floored (#1538)
 -------------------------------------------------------------------------
 The wrapped {rooms, underhood, timelines, stale_hidden_count} body is hashed (stable, sort_keys)
 before every POST; a hash that matches the last SUCCESSFUL push's (persisted in push_state_file, key
-SNAPSHOT_HASH_KEY) skips the POST. Cloudflare's KV free tier caps at 1,000 writes/day and worker.js's
-/push handler is an unconditional env.FLEET.put per POST -- pushing an unchanged snapshot every
-interval_seconds (default 25s) burns 3,456 writes/day against that cap for nothing. A missing/
-unreadable persisted hash always re-pushes (fail toward one extra write, never toward silence, same
-posture as the deliverables state file below); a FAILED POST never persists the hash, so the next
-cycle retries. See `snapshot_hash` / `should_push_snapshot`.
+SNAPSHOT_HASH_KEY) skips the POST. A missing/unreadable persisted hash always re-pushes (fail toward
+one extra write, never toward silence, same posture as the deliverables state file below); a FAILED
+POST never persists the hash, so the next cycle retries. See `snapshot_hash` / `should_push_snapshot`.
 
 COALESCING FLOOR (#1538): when the change-gate says CHANGED, push only if >= min_push_interval_s
-(default 90s) since the last actual push; otherwise log `coalesced (Ns since last push)` and let
-the next cycle retry. Continuous-change days are capped at <=960 writes/day worst case.
+(default 90s, and adaptively widened by the write-budget ledger below) since the last actual push;
+otherwise log `coalesced (Ns since last push)` and let the next cycle retry.
+
+WRITE BUDGET LEDGER (#1690, split into per-producer sub-budgets and pacing by the 2026-09-02 review's
+F1): the real KV-write cost per producer, each producer's own daily sub-budget, its own adaptive
+cadence, and the exhaustion posture are all spec/baton.md §6's canonical record now (the "Fleet Glass
+write budget" entry) -- read there once, not restated per-section here. This module's own piece is
+`KV_DAILY_WRITE_TARGET` and the "WRITE BUDGET LEDGER" section below (`load_budget_ledger` /
+`record_budget_write` / `adaptive_producer_interval_s` / `snapshot_pushes_allowed` /
+`deliver_allowed` / `heartbeat_allowed`), which spec/baton.md cites back. The ledger itself lives in
+its own file (`DEFAULT_BUDGET_STATE_FILE`, F4), written atomically -- see that constant's own
+comment.
 
 SINGLE-INSTANCE GUARD (#1538): on startup, atomically claim pusher.lock (O_EXCL-style create).
 If the lock exists and its PID is alive with 'pusher' in its command line, terminate-and-replace it
@@ -27,8 +34,15 @@ If the lock exists and its PID is alive with 'pusher' in its command line, termi
 `timelines` and `stale_hidden_count` (#1505) are both frozen, append-only-derived facts computed
 once per cycle from on-disk state (flow.jsonl event counts, the stale-room filter) -- neither reads
 `now()` beyond what `drop_stale_rooms`'s own cutoff already did, so neither field makes the hash
-churn on wall-clock time alone; the change-gate above still only re-pushes on a real content change.
-See "THE TIMELINE HALF" below for the KV-write arithmetic this adds.
+churn on wall-clock time alone. The same property now holds for `live` telemetry too (F6, 2026-09-02
+review): `quantize_live_for_hash` buckets the telemetry VALUES themselves (lastActivityAt's own
+parsed instant, toolCalls/outputTokens coarsened to their own grain) rather than the wall-clock
+moment it happens to be called, so an unchanged Running room's telemetry never forces a push on its
+own either -- see that function's own docstring for the exact grains and why bucketing the clock
+instead (the pre-fix shape) forced a snapshot push every bucket_seconds on ANY active fleet,
+regardless of whether anything moved. The change-gate above only re-pushes on a real content change,
+in every one of these three fields. See "THE TIMELINE HALF" below for the KV-write arithmetic this
+adds.
 
 Config comes from pusher.config.json next to this script (gitignored, machine-local -- ship
 pusher.config.example.json and copy it):
@@ -65,9 +79,9 @@ ride the mailbox through this path -- see the module's secret gate above for why
 at all. Capped at the last TIMELINE_CAP (30) entries per
 room: a lane's timeline is step-level transitions (dispatch, execution start/exit, retries, decisions)
 written a handful of times per step, not a line per stdout write -- a lane produces tens of these
-over its life, not thousands, so this rides the mailbox safely under the same 1,000-write/day KV
-budget the change-gate above protects, and 30 is generous headroom over what a normal lane emits
-before terminating. Keyed by room PATH, never room NAME (#1505 review note: fleet_status dedupes
+over its life, not thousands, and rides inside the SAME snapshot write the change-gate above already
+gates (never a write of its own), so it costs nothing extra against the write-budget ledger
+(spec/baton.md §6). Keyed by room PATH, never room NAME (#1505 review note: fleet_status dedupes
 rooms by path, so two same-named rooms under different roots are distinct entries; a name-keyed join
 would hand one room's timeline to the other -- exactly the wrong-and-confident failure mode #41's
 removal below exists to stop, reintroduced by a careless join).
@@ -77,10 +91,9 @@ THE HEARTBEAT HALF (#1486), extended by #1613 item 2
 The change-gate above makes pushed_at legitimately stale on a quiet fleet, and nothing distinguishes
 that from a dead pusher. Independent of the gated snapshot, this loop also POSTs a timestamp ping to
 worker.js's /heartbeat route at a coarse fixed cadence -- hourly, tracked in push_state_file under
-HEARTBEAT_STATE_KEY. Arithmetic: 24 writes/day at hourly cadence, against the same 1,000/day KV
-free-tier cap the change-gate protects; combined with the change-gated snapshot writes (worst case
-one per interval_seconds when the fleet is constantly changing) this adds a small, fixed floor that
-never scales with polling frequency. Same save-only-after-success discipline as
+HEARTBEAT_STATE_KEY, and a more frequent derived-freshness ping (below) -- both gated by
+`heartbeat_allowed` against the SAME write-budget ledger the snapshot half spends from (spec/baton.md
+§6, "Fleet Glass write budget"). Same save-only-after-success discipline as
 push_snapshot_and_record: POST first, record the timestamp only afterwards, so a failed heartbeat
 retries next cycle instead of silently going stale. Heartbeat failures are logged and never raise
 into the snapshot path -- see main()'s heartbeat try/except, which runs in its own block after the
@@ -112,10 +125,31 @@ pattern index matched, and the hit is logged. If the patterns file is MISSING or
 fails CLOSED: every deliverable in that run is withheld, stub included, until an operator fixes it --
 see `load_secret_patterns`'s docstring for why that state is deliberately never memorized as "done".
 
-Dedupe is per (room, artifact, content-hash) -- `push_state_file` (gitignored) remembers the hash
-last pushed for each (room, artifact) pair, and a run that finds an unchanged hash skips re-pushing
-it. A room with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
+Dedupe is per (room_path, artifact, content-hash) -- `push_state_file` (gitignored) remembers the hash
+last pushed for each (room_path, artifact) pair, and a run that finds an unchanged hash skips re-pushing
+it (matching the snapshot half's path-keyed join, #1617; room name is kept for display only). A room
+with zero declared outputs (typically a Failed room) still gets ONE deliverable, carrying
 only the verdict summary, so a failure with nothing to show is still visible in the inbox.
+
+WRITE BUDGET, KEY MIGRATION, & BATCH CAPPING (#1617, PR #1632; folded to writes/batch by #1690, cost
+and cap both revised by the 2026-09-02 review's F3(a)/F5/F13):
+Each /deliver POST costs DELIVER_BATCH_KV_WRITE_COST (3) KV writes flat, independent of how many
+items it carries -- worker.js's handleDeliver (see its own storage-key docstring) makes 2 puts always
+(inbox:batch:<id>, inbox:index) plus, conservatively, +1 for the delete path (a legacy eviction, or
+F5's refcounted orphaned-batch reclaim) -- spec/baton.md §6, "Fleet Glass write budget" has the full
+arithmetic and `deliver_allowed`'s own ledger gating. When keys migrated from room_name to room_path,
+`gather_deliverables` automatically migrates legacy `f"{room_name}::{artifact}"` entries on load
+under their respective room_path keys and drops the old keys, stamping `__format_version__ = 2`. This
+avoids an all-at-once re-push storm of already-delivered history (measured at 210 deliverables / 211
+KV writes worst case on this machine without migration). To protect against retry storms on network
+errors or payload cap violations (>5MB body cap), deliver POSTs are capped at a cumulative-BYTES
+budget (DEFAULT_DELIVER_BATCH_BYTES, ~4MB) plus a generous item-count ceiling
+(DEFAULT_DELIVER_BATCH_COUNT_CEILING) -- F13: a fixed item count was only ever a proxy for the body
+cap deliver's own POST is actually constrained by, and post-fold (a batch costs the same flat 3
+regardless of K) a small fixed count bought nothing but extra write-amplifying batches for a large
+backlog. A backlog drains across successive cycles (paced by F1's own deliver sub-budget and
+adaptive interval, below), and a failing batch retries only its own capped bytes rather than an
+unbounded full-fleet burst.
 
 A PER-ITEM pattern hit IS memorized as pushed, unlike the missing-patterns-file case: its stub was
 delivered, and not memorizing it would re-send that stub every cycle. The trade-off is that a
@@ -123,7 +157,14 @@ false-positive match does not self-heal when the offending pattern is later narr
 such an item, delete its (room, artifact) entry from push_state_file, or touch the artifact so its
 hash changes.
 
-Usage: python pusher.py [--once] [--selftest]
+PROJECTION FILE READ PATH (#1557 PR-B1)
+-------------------------------------------
+Two sources for the fleet snapshot, selected by FLEET_GLASS_PROJECTION_SOURCE (`derive` default,
+`file` = the daemon's projection file); the switch, the staleness rule, and the compare command are
+specified once in spec/baton.md §6 (the "PR-B1 … second, opt-in source" passage) -- `read_projection_file` and
+`compare_projection` carry the mechanics, not a second statement of the rule.
+
+Usage: python pusher.py [--once] [--selftest] [--compare-projection]
 Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
 """
 
@@ -138,8 +179,10 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -148,7 +191,70 @@ LOG = HERE / "pusher.log"
 DEFAULT_ROOMS_ROOT = Path.home() / ".baton" / "rooms"
 DEFAULT_SECRET_PATTERNS_FILE = HERE / "secretpatterns.local.txt"
 DEFAULT_PUSH_STATE_FILE = HERE / "push-state.local.json"
+DEFAULT_BUDGET_STATE_FILE = HERE / "write-budget.local.json"  # F4 (2026-09-02 review): the write-
+                                                                # budget ledger's own file -- why
+                                                                # separate from push-state.local.json:
+                                                                # spec/baton.md §6.
 DEFAULT_LOCK_FILE = HERE / "pusher.lock"
+
+# #1557 PR-B1: FLEET_GLASS_PROJECTION_SOURCE=file switches main()'s loop to read the daemon's own
+# BatonPaths.FleetProjectionFile instead of deriving via `dotnet mcp` -- default "derive" so nothing
+# changes for a deployed pusher until an operator flips it (plan §4/item 1). Any other value is
+# treated as "derive" (fail toward the always-worked path, not a crash on a typo).
+FLEET_GLASS_PROJECTION_SOURCE_ENV = "FLEET_GLASS_PROJECTION_SOURCE"
+
+# #1557 plan §5 (load-bearing: no scheduled task runs `baton daemon` today, so this fallback is the
+# steady-state path, not an edge case): the file is treated as stale -- and the cycle falls back to
+# `derive_snapshot_and_timelines` -- once it is older than 3 of the pusher's own coalescing windows
+# (900s), or when it is absent/unreadable/malformed.
+PROJECTION_STALE_AFTER_S = 900
+
+
+def resolve_projection_file_path() -> Path:
+    """Mirrors `BatonPaths.FleetProjectionFile` (src/Baton/Status/BatonPaths.cs) -- BATON_HOME when
+    set to a non-blank value, else `~/.baton`, then `fleet/projection.json`. This is the ONE place
+    that rule is duplicated in Python (#1557 PR-B1); every other reference goes through this
+    function rather than re-deriving the path."""
+    home_override = os.environ.get("BATON_HOME", "")
+    root = Path(home_override) if home_override.strip() else Path.home() / ".baton"
+    return root / "fleet" / "projection.json"
+
+
+def read_projection_file(path: Path, now_ts: float, max_age_s: float = PROJECTION_STALE_AFTER_S):
+    """Returns `(data, staleness)`. `data` is the parsed projection object (`{"derived_at": ...,
+    "rooms": [...]}`) when the file is present, well-formed, and fresh -- `None` otherwise, in which
+    case the caller falls back to `derive_snapshot_and_timelines` for this cycle (#1557 plan §5).
+    `staleness` is `None` when `data` is fresh (nothing to report -- glass.html's chip stays absent,
+    same optional-field convention as `pusher.writeBudgetExhaustedUntil`), else
+    `{daemon_derived_at, age_s, stale: True}` for the pushed body -- `daemon_derived_at`/`age_s` are
+    `None` when the file is absent/unreadable/malformed rather than merely old."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    daemon_derived_at = parsed.get("derived_at") if isinstance(parsed, dict) else None
+    if not isinstance(daemon_derived_at, str):
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    try:
+        derived_dt = datetime.fromisoformat(daemon_derived_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": None, "stale": True}
+
+    age_s = max(0.0, now_ts - derived_dt.timestamp())
+    if age_s > max_age_s:
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": round(age_s, 1), "stale": True}
+
+    if not isinstance(parsed.get("rooms"), list):
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": round(age_s, 1), "stale": True}
+
+    return parsed, None
 
 
 def log(msg: str) -> None:
@@ -460,41 +566,74 @@ def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
     return complete.split("\n"), offset + consumed
 
 
-def extract_live_counts(lines: list[str]) -> dict:
-    """A tool-call COUNT, plus claude-only live token fields, tolerant of a torn last line (the
-    file is still being written) and of both vendors' stream envelopes:
+def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -> dict:
+    """A tool-call COUNT, plus live token/turn fields for BOTH vendors (#1682 -- agy's `step_update`
+    usage was found live during that issue's own evidence gathering; the prior "agy has no usage to
+    read" claim recorded here was wrong and is corrected in this same change), tolerant of a torn
+    last line (the file is still being written) and of both vendors' stream envelopes:
       - claude: `type`-keyed; a completed `assistant` message's `message.content` array carries a
         `{"type": "tool_use", ...}` block per tool call -- shape measured against real #1559
         capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs). The SAME `assistant`
-        message's `message.usage` object carries an output count plus, when the CLI reports the
-        cache split, the three input-side counts a context figure needs -- the exact key names and
-        where they were measured are spec/baton.md §6's `rooms[].live` entry, not restated here; see
-        below for how each is used.
-      - agy: `event`-keyed; a `step_update` heartbeat with `state: "DONE"` and `step_type: "tool"`
-        marks one completed tool step -- shape measured live against agy 1.1.11
-        (AgyWorkerAdapter.TryParseProgressEvent's own #1088 doc comment). agy's `step_update` has no
-        `usage` field to read at all, so it never contributes to the token fields below.
+        message's `message.usage` object carries the cache split a context figure needs -- the exact
+        key names and where they were measured are spec/baton.md §6's `rooms[].live` entry, not
+        restated here; see below for how each is used. #1706: its `input_tokens`/`output_tokens` are
+        PLACEHOLDERS, not this message's real figures, and are read by nothing here.
+      - agy: `event`-keyed; a `step_update` heartbeat with `state` in `"DONE"`/`"ERROR"` (its terminal
+        lifecycle states) and `step_type: "tool"` marks one completed real tool step -- #1686 review
+        F3: mirrors the engine's own `ClaudeUsageParser.CountToolSteps` unit (spec/baton.md §3),
+        shape measured live against agy 1.1.11 (AgyWorkerAdapter.TryParseProgressEvent's own #1088
+        doc comment). A `step_update` with
+        `state: "DONE"` and `step_type: "agent_response"` carries its own `usage` object
+        (`input_tokens`/`output_tokens`) -- measured live against a real #1682 evidence capture
+        (`dispatch-implement-38c24d11`).
     A line that fails to parse as JSON is skipped, not an error -- the vendor CLI may have flushed
     a partial line at the exact moment this read caught the file mid-write.
 
     Returns `{"toolCalls": int}` always, plus:
-      - `"outputTokens"`: present only if at least one `assistant` line in THIS batch reported
-        `output_tokens` -- the SUM over the batch (additive: the caller accumulates this across
-        every batch it has ever read for the execution, spec/baton.md §6). Whole-tree, including
-        subagent `assistant` events (they carry `parent_tool_use_id` but are not filtered out) --
-        why that beats the terminal line's own total is spec/baton.md §6's `rooms[].live` entry,
-        not restated here.
-      - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST `assistant`
-        line in this batch that reports all three of `input_tokens`/`cache_read_input_tokens`/
-        `cache_creation_input_tokens` together -- a LEVEL (the caller replaces, never sums, its own
-        running value). Absent when no line in the batch reports the full trio: never a partial or
-        fabricated figure, and never built from `input_tokens` alone (summing that across turns
-        would re-count each turn's whole repeated context -- the trap this field exists to avoid).
+      - `"billedTokens"`: present only if at least one usage-bearing line in THIS batch reported
+        one -- the SUM over the batch (additive: the caller accumulates this across every batch it
+        has ever read for the execution, spec/baton.md §6), the same quantity the engine's own
+        `TokenBudgetMonitor` arrests on (#1682) and read by the same per-vendor rule: on agy
+        `input + output`, on claude `cache_creation` alone (#1706 -- the other two columns are
+        placeholders). NOT `thinking_tokens` on either vendor, which is a breakdown already counted
+        inside `output_tokens` (measured against real #1682 evidence: Σinput + Σoutput reproduces
+        agy's own Σ`total_tokens` exactly). Whole-tree on claude, including subagent `assistant`
+        events (they carry `parent_tool_use_id` but are not filtered out).
+      - `"billedIsFloor"`: `True`, and omitted entirely otherwise, when at least one line in this
+        batch contributed a claude cache-creation figure -- #1706: `billedTokens` is then a LOWER
+        BOUND on the execution's real spend, not a measurement of it, and the glass says so rather
+        than printing a number that reads as complete. The caller ORs this across batches, the same
+        stickiness the engine's own `TokenBudgetMonitor._billedIsFloor` has, because one incomplete
+        batch makes the accumulated total incomplete.
+      - `"turns"`: present alongside `billedTokens` -- the COUNT of usage-bearing lines in this batch
+        (additive, same convention).
+      - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST claude
+        `assistant` line in this batch that reports all three of `input_tokens`/
+        `cache_read_input_tokens`/`cache_creation_input_tokens` together -- a LEVEL (the caller
+        replaces, never sums, its own running value), claude-only (agy's step_update usage carries
+        no cache-creation figure to build a comparable trio from, docs/vendor-capabilities.md).
+        Absent when no line in the batch reports the full trio: never a partial or fabricated
+        figure, and never built from `input_tokens` alone (summing that across turns would
+        re-count each turn's whole repeated context -- the trap this field exists to avoid).
+
+    `seen_message_ids` (#1686 review F6): claude can split one API response's usage across several
+    consecutive `assistant` events sharing the SAME `message.id` and an IDENTICAL `message.usage`
+    object -- measured against real `.stdout.log` captures (spec/baton.md §3: up to ~60% of
+    usage-bearing lines on a real room are such repeats). Passing the SAME set across every batch this
+    process has ever read for an execution (the caller-owned `live_cache` state,
+    `live_telemetry_for_room` below) dedupes a repeat rather than summing it again; a line with no
+    `message.id` (agy; claude's own terminal line is never read here) always accumulates. `None`
+    (the default) dedupes only within this one call, for a caller with no cross-batch state to thread
+    (a one-shot read, or a test).
     """
     tool_calls = 0
-    output_tokens = 0
-    output_tokens_seen = False
+    billed_tokens = 0
+    turns = 0
+    usage_seen = False
+    billed_is_floor = False
     context = None
+    if seen_message_ids is None:
+        seen_message_ids = set()
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
@@ -512,29 +651,81 @@ def extract_live_counts(lines: list[str]) -> dict:
             if isinstance(content, list):
                 tool_calls += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
             usage = message.get("usage") if isinstance(message, dict) else None
-            if isinstance(usage, dict):
-                out = usage.get("output_tokens")
-                if isinstance(out, int) and not isinstance(out, bool):
-                    output_tokens += out
-                    output_tokens_seen = True
+            message_id = message.get("id") if isinstance(message, dict) else None
+            # #1686 review F6: a repeated message.id means this usage object was already summed off an
+            # earlier chunk of the SAME API response -- skip it rather than double-counting.
+            already_counted = isinstance(message_id, str) and message_id and message_id in seen_message_ids
+            # #1686 review F13: register the id only once a usage object is actually in hand -- an
+            # `assistant` line carrying an id but no usage must not poison the seen-set for the line
+            # that later carries that same id's real usage (the engine only reaches its own set for a
+            # line that already parsed as usage; this keeps both sides on the same registration point).
+            if isinstance(usage, dict) and isinstance(message_id, str) and message_id:
+                seen_message_ids.add(message_id)
+            if isinstance(usage, dict) and not already_counted:
                 in_tok = usage.get("input_tokens")
-                cache_read = usage.get("cache_read_input_tokens")
                 cache_creation = usage.get("cache_creation_input_tokens")
-                if (isinstance(in_tok, int) and not isinstance(in_tok, bool)
-                        and isinstance(cache_read, int) and not isinstance(cache_read, bool)
-                        and isinstance(cache_creation, int) and not isinstance(cache_creation, bool)):
+                cache_read = usage.get("cache_read_input_tokens")
+                numeric = lambda v: isinstance(v, int) and not isinstance(v, bool)
+                # #1706: `output_tokens` and `input_tokens` on this line are PLACEHOLDERS -- the same
+                # engine-side measurement `ClaudeUsageParser.TryParseIncrementalUsage` documents, and
+                # the reason this file's own `billedTokens` SAW only 28-91% of the real figure across
+                # the 126-room sweep in spec/baton.md §3 (i.e. under-read by 9-72%; the fraction seen
+                # and the fraction missed are easy to state backwards, so both are spelled out here).
+                # Only `cache_creation_input_tokens` is a real billed figure, so only it accumulates.
+                # The floor mark keys on EITHER cache column, not on cache_creation alone, so that this
+                # and the engine's `TryParseIncrementalUsage` -- which accepts a reading on either --
+                # agree about which lines are claude usage lines at all.
+                # #1706 review M5: the floor mark and the BILLED CONTRIBUTION key on different
+                # things, and conflating them made this file disagree with the engine on exactly one
+                # real line shape. A line carrying `cache_read_input_tokens` but no
+                # `cache_creation_input_tokens` IS a claude usage line -- so it marks the floor, the
+                # same reading the engine's `TryParseIncrementalUsage` accepts -- but it carries NO
+                # measurable billed component, so it must contribute no billed tokens and must not on
+                # its own make `billedTokens` reportable. It previously reported `billedTokens: 0`
+                # there while the engine reported nothing at all: same shape, two answers, and 0 is
+                # the fabricated zero both sides exist to refuse. Pinned from the shared fixture by
+                # `_selftest_claude_billing_gate` below and by `ClaudeEngineAndPusherBillingGateTests`.
+                if numeric(cache_creation) or numeric(cache_read):
+                    billed_is_floor = True
+                if numeric(cache_creation):
+                    billed_tokens += cache_creation
+                    turns += 1
+                    usage_seen = True
+                # #1666 review F5: a sub-agent's own turn (root `parent_tool_use_id` a string) never
+                # updates the reported context -- mirrors the engine's TokenBudgetMonitor, which tracks
+                # the sub-agent bucket separately and clears it on the next parent line rather than
+                # letting a smaller sub-agent reading replace the parent's (spec/baton.md §3).
+                if numeric(in_tok) and numeric(cache_read) and numeric(cache_creation) \
+                        and not isinstance(evt.get("parent_tool_use_id"), str):
+                    # The context LEVEL is unaffected: it is what the vendor loaded for this request,
+                    # and the placeholder `input_tokens` contributes 2 tokens to a six-figure sum.
                     context = {
                         "contextTokens": in_tok + cache_read + cache_creation,
                         "cacheReadTokens": cache_read,
                     }
         elif evt.get("event") == "step_update":
             step = evt.get("step_update")
-            if isinstance(step, dict) and step.get("state") == "DONE" and step.get("step_type") == "tool":
+            if isinstance(step, dict) and step.get("step_type") == "tool" \
+                    and step.get("state") in ("DONE", "ERROR"):
                 tool_calls += 1
+            elif isinstance(step, dict) and step.get("state") == "DONE":
+                if step.get("step_type") == "agent_response":
+                    usage = step.get("usage")
+                    if isinstance(usage, dict):
+                        out = usage.get("output_tokens")
+                        in_tok = usage.get("input_tokens")
+                        numeric = lambda v: isinstance(v, int) and not isinstance(v, bool)
+                        if numeric(out) or numeric(in_tok):
+                            billed_tokens += (out if numeric(out) else 0) + (in_tok if numeric(in_tok) else 0)
+                            turns += 1
+                            usage_seen = True
 
     result = {"toolCalls": tool_calls}
-    if output_tokens_seen:
-        result["outputTokens"] = output_tokens
+    if usage_seen:
+        result["billedTokens"] = billed_tokens
+        result["turns"] = turns
+    if billed_is_floor:
+        result["billedIsFloor"] = True
     if context is not None:
         result["context"] = context
     return result
@@ -542,14 +733,19 @@ def extract_live_counts(lines: list[str]) -> dict:
 
 def _apply_live_delta(state: dict, delta: dict) -> None:
     """Merge one parsed batch (a rollover file or newly-appended live-file bytes) into a
-    per-execution running state: `toolCalls`/`outputTokens` ACCUMULATE (#1613 review findings 3/4 --
-    every batch this process has ever read for the execution), `context` is the latest LEVEL seen --
-    only overwritten when the batch actually reports one, so an empty or tool-only batch never blanks
-    out a level that was already known."""
+    per-execution running state: `toolCalls`/`billedTokens`/`turns` ACCUMULATE (#1613 review findings
+    3/4, extended to the #1682 fields the same way -- every batch this process has ever read for the
+    execution), `billedIsFloor` is STICKY (#1706: once any batch's contribution was a lower bound, the
+    accumulated total is one, and no later complete batch can make it whole again), `context` is the
+    latest LEVEL seen -- only overwritten when the batch actually reports one, so an empty or tool-only
+    batch never blanks out a level that was already known."""
     counts = state["counts"]
     counts["toolCalls"] = counts.get("toolCalls", 0) + delta.get("toolCalls", 0)
-    if "outputTokens" in delta:
-        counts["outputTokens"] = counts.get("outputTokens", 0) + delta["outputTokens"]
+    if "billedTokens" in delta:
+        counts["billedTokens"] = counts.get("billedTokens", 0) + delta["billedTokens"]
+        counts["turns"] = counts.get("turns", 0) + delta["turns"]
+    if delta.get("billedIsFloor"):
+        counts["billedIsFloor"] = True
     if "context" in delta:
         state["context"] = delta["context"]
 
@@ -570,7 +766,391 @@ def _quantized_activity_iso(mtime: float, bucket_seconds: float = LAST_ACTIVITY_
     return datetime.fromtimestamp(bucketed, tz=timezone.utc).isoformat()
 
 
-def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict | None:
+STDOUT_TAIL_MAX_LINES = 40  # #1710: "last ~40 lines" per the issue's own design.
+STDOUT_TAIL_MAX_BYTES = 4_000  # #1710: hard cap per room, ~4 KB.
+STDOUT_TAIL_READ_WINDOW_BYTES = 65_536  # generous headroom read from EOF -- a run of unusually long
+                                          # lines still yields STDOUT_TAIL_MAX_LINES candidates before
+                                          # the byte cap below trims them. Never a whole-file read of a
+                                          # log that can run to megabytes -- the module docstring's
+                                          # "read the file the way extract_live_counts does" means the
+                                          # same bounded-read discipline, not literally that function
+                                          # (extract_live_counts parses JSON events off an incremental
+                                          # delta; this reads a fixed tail window off the whole file
+                                          # every cycle, since the tail is a snapshot of "now", not an
+                                          # accumulator).
+STDOUT_TAIL_TRUNCATION_MARK = "…"
+
+
+def _decode_utf8_boundary_safe(data: bytes) -> str:
+    """Strict UTF-8 decode, falling back to `errors="replace"` only for bytes that are genuinely
+    invalid (never for a straddled multi-byte character at a caller-chosen cut point -- callers of
+    this function are expected to have already trimmed to a real line boundary, so a
+    `UnicodeDecodeError` here means the log itself carries non-UTF-8 bytes, not a torn character)."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+def _read_tail_text(path: Path, window_bytes: int = STDOUT_TAIL_READ_WINDOW_BYTES) -> str:
+    """Last `window_bytes` bytes of `path`, decoded, with a possibly-torn leading line dropped (the
+    seek landed mid-line unless it started at byte 0). Bounds the read against a multi-megabyte log
+    -- #1710's own selftest arm (a 5 MB log) is what this window exists for.
+
+    #1723: the boundary is found on the RAW BYTES (searching for the `\\n` byte, which never appears
+    as part of a multi-byte UTF-8 sequence) before anything is decoded -- decoding first and then
+    slicing the decoded text, as the pre-#1723 version did, still worked here because the drop only
+    ever discarded text before the found newline, but doing the search byte-side is what makes the
+    same discipline safe to reuse below the max_bytes cut too, where decoding before slicing is
+    exactly the bug (see `stdout_tail_for_room`)."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    start = max(0, size - window_bytes)
+    try:
+        with path.open("rb") as f:
+            f.seek(start)
+            chunk = f.read()
+    except OSError:
+        return ""
+    if start > 0:
+        nl = chunk.find(b"\n")
+        chunk = chunk[nl + 1:] if nl != -1 else b""
+    return _decode_utf8_boundary_safe(chunk) if chunk else ""
+
+
+STDOUT_TAIL_BLOB_ELISION_THRESHOLD = 200  # #1723: a whitespace-free token this long (base64, a data
+                                            # URI, a hex dump) reads as noise, never as prose -- the
+                                            # operator's own words, "stdout by itself is unintelligible
+                                            # and useless".
+_BLOB_TOKEN_PATTERN = re.compile(r"\S{%d,}" % STDOUT_TAIL_BLOB_ELISION_THRESHOLD)
+
+
+def _elide_blob_tokens(text: str) -> str:
+    """Replaces any whitespace-free run of >= `STDOUT_TAIL_BLOB_ELISION_THRESHOLD` characters with a
+    byte-count marker (#1723). Applies to every surviving tail line, JSON-rendered or plain-text
+    alike -- a blob can show up embedded in ordinary non-JSON output just as easily as inside a
+    stream-json field."""
+    return _BLOB_TOKEN_PATTERN.sub(
+        lambda m: f"…[{len(m.group(0).encode('utf-8'))} bytes elided]…", text)
+
+
+STDOUT_TAIL_PROSE_FIELD_LIMIT = 200  # #1723: one prose line stays short even when the source field
+                                       # (an assistant message, a tool_result body) runs long.
+
+
+def _prose_first_line(text: str, limit: int = STDOUT_TAIL_PROSE_FIELD_LIMIT) -> str:
+    """First line of `text` (a multi-line assistant message or tool result renders as ONE prose line,
+    matching #1723's "one short prose line" per stream-json line), truncated to `limit` chars."""
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return first if len(first) <= limit else first[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
+def _cap_plain_line(line: str, limit: int = STDOUT_TAIL_PROSE_FIELD_LIMIT) -> str:
+    """Caps `line` to `limit` chars (review rev1738 F3). `stdout_tail_for_room` applies this, after
+    blob elision, to EVERY surviving tail line -- both `_render_tail_line`'s raw passthrough
+    (malformed/non-dict JSON, or a dict whose `type`/`event` this module's dispatch has no arm for)
+    and its rendered prose lines, most of which are already comfortably under `limit` via
+    `_prose_first_line`'s own cap and so pass through this unchanged. Applied BEFORE the `max_bytes`
+    cut: without this, a long plain-text line (a stack trace, a verbose crash message) with ordinary
+    spacing was capped by neither this nor `_elide_blob_tokens` (whitespace-free runs only), so when
+    it was the newest, still-open line and alone exceeded the remaining byte budget, the forward
+    boundary search found nothing ahead of it and the whole line -- possibly the only content a
+    Running room has to show -- was dropped, leaving just the truncation mark. Caveat: a rendered
+    line that runs past `limit` (e.g. a `[tool_result: ...]` line whose body is near
+    `STDOUT_TAIL_PROSE_FIELD_LIMIT` chars, plus the wrapping brackets) can lose its closing bracket
+    to the cut -- cosmetic, and strictly better than the pre-fix whole-line drop it replaces."""
+    return line if len(line) <= limit else line[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
+def _prose_summarize_tool_input(tool_input: object, limit: int = 120) -> str:
+    """`key=value, ...` one-liner off a `tool_use` block's `input` object, truncated -- the "one-line
+    summary of its input" #1723 asks for. Not a general JSON pretty-printer: values are stringified
+    plainly (JSON-encoded only when not already a string) and newlines are flattened, since this is a
+    glance summary, not a faithful re-serialization."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+    parts = []
+    for key, value in tool_input.items():
+        rendered = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"))
+        parts.append(f"{key}={rendered.replace(chr(10), ' ')}")
+    summary = ", ".join(parts)
+    return summary if len(summary) <= limit else summary[:limit] + STDOUT_TAIL_TRUNCATION_MARK
+
+
+class _Unrecognized:
+    """Sentinel `_render_stream_json_prose` returns when the envelope's OWN dispatch key (claude's
+    `type`, agy's `event`) carries a value this function has no arm for at all -- e.g. a vendor field
+    added tomorrow, or a shape neither vendor's adapter documents. Distinct from `None`, which means
+    the shape WAS recognized and #1723 deliberately judged it noise (see the list in this module's
+    docstring below). `_render_tail_line` echoes this sentinel's line raw, mirroring the C# renderer's
+    `EchoStreamJsonLine` fail-visible posture (`src/Baton.Cli/RunCommand.cs:589-593`) -- never
+    swallow a valid-JSON envelope this function does not recognize (review rev1738 F1/F4)."""
+
+
+_UNRECOGNIZED = _Unrecognized()
+
+
+def _render_stream_json_prose(evt: dict) -> str | None | _Unrecognized:
+    """One prose line for a parsed stream-json object; `None` if the line's shape IS recognized but
+    #1723 judged it deliberately silent -- a hook lifecycle marker, a thinking-only block, a
+    rate-limit ping, an agy heartbeat that isn't a DONE/ERROR step, each named at its own `return
+    None` below; or `_UNRECOGNIZED` if the envelope's own top-level `type`/`event` VALUE has no arm
+    here at all, in which case `_render_tail_line` echoes the raw line rather than dropping it
+    (review rev1738 F1/F4 -- see `_Unrecognized`'s own doc comment). This only covers the TOP-LEVEL
+    dispatch: a recognized `type`/`event` whose nested sub-shape doesn't match any arm (e.g. an
+    `assistant` message with a non-dict `message`) still falls through to that branch's own `return
+    None`, not `_UNRECOGNIZED` -- a narrower, pre-existing fail-silent gap this rev1738 round does not
+    close, left for a future pass rather than expanding this one's scope.
+
+    This is a Python sibling of `Baton.Cli`'s `RunCommand.EchoStreamJsonLine`/`WorkerStreamRendering`
+    (`src/Baton.Cli/RunCommand.cs`, `src/Baton.Cli/WorkerStreamRendering.cs`) and of
+    `AgyWorkerAdapter.TryParseProgressEvent` (`src/Baton.Vendors/AgyWorkerAdapter.cs:1257-1358`) by
+    necessity, not by choice: the pusher is Python until #1557 moves projection into the daemon, so
+    the same envelope shapes are recognized a second time here rather than shared. See those files
+    for the authoritative shape-by-shape rules; this function mirrors their overall SHAPE (which
+    events exist, which are noise) but NOT their exact output in every case. Three deliberate
+    divergences, disclosed rather than restated (review rev1738 F2):
+    - the claude `tool_use` arm below appends a `key=value` summary of the tool's `input` object that
+      the C# side never produces (`RunCommand.EchoStreamJsonLine`'s `tool` Kind carries only the tool
+      NAME, `src/Baton.Cli/RunCommand.cs:571`; the Kind itself is assigned by
+      `ClaudeWorkerAdapter.TryParseProgressEvent`, not `WorkerStreamRendering.cs`, which only
+      delegates rendering to `EchoStreamJsonLine`). Kept because it is materially more useful on a
+      bounded glance surface than a bare name -- and it is why raw tool-input values (paths, command
+      strings, arbitrary key/value pairs) reach this tail where the C# renderer never puts them;
+      `stdout_tail_for_room`'s secret gate (`_gate_tail_lines`) still runs AFTER this function, on the
+      rendered string, so a known-secret-shaped input value is still withheld, but anything else is
+      not
+    - the claude `user`/`tool_result` arm below has NO C# counterpart at all --
+      `ClaudeWorkerAdapter.TryParseProgressEvent` returns `false` for a `type: "user"` line
+      (`src/Baton.Vendors/ClaudeWorkerAdapter.cs:1299-1305`), so `EchoStreamJsonLine` echoes it raw;
+      this function instead renders it, a Python-only addition
+    - the agy `step_update` arm below renders `[tool: {step_type} — done|error]`, and also fires on
+      the ERROR state, where `AgyWorkerAdapter.TryParseProgressEvent` renders Kind `"status"` (→
+      `[status: {step_type}]`) and is DONE-only (`src/Baton.Vendors/AgyWorkerAdapter.cs:1292-1306`)
+    """
+    if "type" in evt:
+        evt_type = evt.get("type")
+
+        if evt_type == "assistant":
+            message = evt.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return _prose_first_line(text)
+                elif block_type == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and name:
+                        summary = _prose_summarize_tool_input(block.get("input"))
+                        return f"[tool: {name}({summary})]" if summary else f"[tool: {name}]"
+            return None  # a thinking-only block, or an empty content array -- nothing to show.
+
+        if evt_type == "user":
+            message = evt.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = next(
+                        (c.get("text") for c in body if isinstance(c, dict) and isinstance(c.get("text"), str)),
+                        None)
+                if isinstance(body, str) and body.strip():
+                    prefix = "[tool_result error: " if block.get("is_error") else "[tool_result: "
+                    return prefix + _prose_first_line(body) + "]"
+            return None
+
+        if evt_type == "result":
+            is_error = evt.get("is_error")
+            if not isinstance(is_error, bool):
+                return None
+            if is_error:
+                summary = evt.get("result")
+                text = summary if isinstance(summary, str) and summary else "no error detail in the result envelope"
+                return f"[result: error — {_prose_first_line(text)}]"
+            return "[result: success]"
+
+        if evt_type == "system":
+            subtype = evt.get("subtype")
+            if subtype == "init":
+                return "[status: Session started]"
+            if subtype == "status":
+                status = evt.get("status")
+                if isinstance(status, str) and status:
+                    return f"[status: {status}]"
+            return None  # every other subtype (hook lifecycle, thinking-token estimates, ...) is noise.
+
+        return _UNRECOGNIZED  # a claude "type" value this renderer has no arm for (e.g. rate_limit_event).
+
+    if "event" in evt:
+        # agy's envelope is keyed on "event" (init/step_update/result), NOT claude's "type" -- a
+        # genuinely different parse, mirroring AgyWorkerAdapter.TryParseProgressEvent's own shapes
+        # (src/Baton.Vendors/AgyWorkerAdapter.cs:1257-1358), same discipline as extract_live_counts'
+        # existing `evt.get("event") == "step_update"` branch a few hundred lines above (review
+        # rev1738 F1).
+        event = evt.get("event")
+
+        if event == "init":
+            return "[status: Session started]"
+
+        if event == "step_update":
+            step = evt.get("step_update")
+            if not isinstance(step, dict):
+                return None
+            state = step.get("state")
+            step_type = step.get("step_type")
+            if state in ("DONE", "ERROR") and isinstance(step_type, str) \
+                    and step_type not in ("unknown", "checkpoint", "user_input"):
+                marker = "done" if state == "DONE" else "error"
+                return f"[tool: {step_type} — {marker}]"
+            return None  # the ACTIVE edge, or a DONE/ERROR unknown/checkpoint/user_input step -- noise.
+
+        if event == "result":
+            # Mirrors AgyWorkerAdapter.TryParseProgressEvent's own priority (AgyWorkerAdapter.cs:1308-1347):
+            # a non-empty `response` wins regardless of status; only then does a non-SUCCESS `status`
+            # render as an error; a SUCCESS result with an empty response, or no status at all, is the
+            # bare `case "result":` -- ignore, no signal.
+            result = evt.get("result")
+            if not isinstance(result, dict):
+                return None
+            response = result.get("response")
+            if isinstance(response, str) and response.strip():
+                return _prose_first_line(response)
+            status = result.get("status")
+            if isinstance(status, str) and status and status != "SUCCESS":
+                error = result.get("error")
+                text = error if isinstance(error, str) and error else "no error detail in the result envelope"
+                return f"[result: error — {_prose_first_line(text)}]"
+            return None
+
+        return _UNRECOGNIZED  # an agy "event" value this renderer has no arm for.
+
+    return _UNRECOGNIZED  # neither claude's "type" key nor agy's "event" key present at all.
+
+
+def _render_tail_line(raw_line: str) -> str | None:
+    """One rendered tail line for `raw_line`, or `None` if it should be dropped entirely (#1723). A
+    line that parses as a JSON OBJECT routes through `_render_stream_json_prose`; anything else --
+    malformed JSON, valid JSON that is not an object (an array, a bare number), or an object whose
+    `type`/`event` this module doesn't recognize at all -- passes through UNCHANGED here, mirroring
+    `WorkerStreamLineRenderer`'s non-JSON and unrecognized-envelope fallbacks, both of which echo raw
+    rather than drop. The caller (`stdout_tail_for_room`) is responsible for capping this raw
+    passthrough to `STDOUT_TAIL_PROSE_FIELD_LIMIT` chars (`_cap_plain_line`, review rev1738 F3) AFTER
+    blob elision -- capping here first would feed `_elide_blob_tokens` an already-truncated line and
+    report the wrong elided byte count for a long whitespace-free blob."""
+    stripped = raw_line.strip()
+    if not stripped:
+        return raw_line
+    try:
+        evt = json.loads(stripped)
+    except json.JSONDecodeError:
+        return raw_line
+    if not isinstance(evt, dict):
+        return raw_line
+    rendered = _render_stream_json_prose(evt)
+    if rendered is _UNRECOGNIZED:
+        return raw_line
+    return rendered
+
+
+def _gate_tail_lines(lines: list[str], patterns: list[re.Pattern] | None) -> list[str]:
+    """Per-LINE secret gate for #1710's stdout tail -- never the whole-tail withholding
+    `_apply_secret_gate` does for a deliverable artifact: a matching line becomes `[withheld]`, every
+    other line rides through untouched, so one hit never blanks a room's whole tail. `patterns is
+    None` (the `load_secret_patterns` fail-closed sentinel -- missing/unreadable patterns file)
+    withholds every line, the same fail-closed posture the deliverables path takes on the same
+    condition (`_apply_secret_gate`'s own `patterns is None` branch)."""
+    if patterns is None:
+        return ["[withheld]" for _ in lines]
+    return ["[withheld]" if secret_hit_index(line, patterns) is not None else line for line in lines]
+
+
+def stdout_tail_for_room(room_path: str, execution_id: str, patterns: list[re.Pattern] | None,
+                          max_lines: int = STDOUT_TAIL_MAX_LINES,
+                          max_bytes: int = STDOUT_TAIL_MAX_BYTES) -> str | None:
+    """`live.stdoutTail` for one Running room (#1710, rendered as prose and blob-elided by #1723): the
+    last `max_lines` RAW lines of the CURRENT execution's `.stdout.log`, each rendered to prose
+    (`_render_tail_line` -- a stream-json object becomes one short human-readable line or is dropped;
+    a non-JSON line passes through), blob-elided (`_elide_blob_tokens`), then secret-gated per
+    surviving line (`_gate_tail_lines`), hard-capped at `max_bytes` by truncating from the FRONT (the
+    newest lines are what a live tail is for) and marking the cut with `STDOUT_TAIL_TRUNCATION_MARK`
+    on the first surviving line -- ON A LINE BOUNDARY, never mid-character (#1723: the pre-fix version
+    decoded the byte-truncated tail with `errors="replace"` and only dropped a *found* leading partial
+    line, so a cut landing inside a line with no earlier newline within the truncated budget left a
+    genuine U+FFFD at the front; this version finds the boundary on the raw bytes FIRST, so a strict
+    decode of what's kept never straddles a character, at the cost of possibly emitting less than
+    `max_bytes` when no boundary exists inside the budget at all -- in that case the newest surviving
+    line is kept alone rather than the tail collapsing to just the truncation mark, review rev1738
+    F3). None when there is no captured
+    stdout yet for this execution -- absent, never a fabricated empty string, matching
+    `live_telemetry_for_room`'s own never-fabricated convention."""
+    stdout_path, _rollover_path = _find_stdout_paths(room_path, execution_id)
+    if stdout_path is None:
+        return None
+    text = _read_tail_text(stdout_path)
+    if not text:
+        return None
+    raw_lines = text.splitlines()[-max_lines:]
+    rendered = []
+    for raw in raw_lines:
+        line = _render_tail_line(raw)
+        if line is not None:
+            # #1723: elide FIRST, off the full (possibly long) rendered/raw line, so a blob's
+            # reported byte count is the real one; THEN cap (review rev1738 F3) so no single
+            # surviving line -- rendered or raw passthrough -- can alone exceed the max_bytes budget
+            # below and get dropped whole by the forward boundary search.
+            rendered.append(_cap_plain_line(_elide_blob_tokens(line)))
+    gated = _gate_tail_lines(rendered, patterns)
+    tail = "\n".join(gated)
+    if not tail:
+        return None
+    encoded = tail.encode("utf-8")
+    if len(encoded) > max_bytes:
+        # Reserve the marker's own bytes out of the budget UP FRONT so the final, marker-prefixed
+        # tail never exceeds max_bytes -- computing the cut against the full budget and prepending
+        # the marker afterwards can overshoot by the marker's own length.
+        marker_bytes = STDOUT_TAIL_TRUNCATION_MARK.encode("utf-8")
+        content_budget = max(0, max_bytes - len(marker_bytes))
+        cut_start = len(encoded) - content_budget
+        # #1723: search for the boundary on the RAW BYTES, from the tentative cut point FORWARD, so
+        # the found `\n` is always a real line terminator (never a byte inside a multi-byte character
+        # -- `\n` cannot appear as a UTF-8 continuation or lead byte) and the subsequent decode is
+        # strict rather than papering over a straddle with `errors="replace"`.
+        nl_index = encoded.find(b"\n", max(0, cut_start))
+        if nl_index != -1:
+            body_bytes = encoded[nl_index + 1:]
+        else:
+            # No line boundary inside the budget at all -- rather than drop every surviving line
+            # (review rev1738 F3: the newest, still-open line may be the ONLY content a Running room
+            # has to show), keep the newest line alone. It is already capped to
+            # STDOUT_TAIL_PROSE_FIELD_LIMIT chars by the render loop above, so this only trims
+            # further on a genuinely tiny `max_bytes` (e.g. a selftest budget); trimmed from the end,
+            # on a UTF-8 lead-byte boundary, to keep the hard `max_bytes` contract.
+            body_bytes = gated[-1].encode("utf-8") if gated else b""
+            if len(body_bytes) > content_budget:
+                # `body_bytes[-content_budget:]` would slice to the WHOLE line if content_budget is
+                # ever 0 (max_bytes <= len(marker_bytes)) -- `-0` means "from index 0", not "keep
+                # nothing" -- so slice by the explicit start index instead.
+                body_bytes = body_bytes[len(body_bytes) - content_budget:]
+                while body_bytes and (body_bytes[0] & 0xC0) == 0x80:
+                    body_bytes = body_bytes[1:]
+        tail = STDOUT_TAIL_TRUNCATION_MARK + _decode_utf8_boundary_safe(body_bytes)
+    return tail
+
+
+def live_telemetry_for_room(room: dict, live_cache: dict | None = None,
+                             patterns: list[re.Pattern] | None = None) -> dict | None:
     """None when there is no Running step, or its execution has no captured stdout yet (dispatch
     just started) -- absent, never a fabricated zero, matching ExecutionUsageView's own
     never-null/never-fabricated convention on the engine side. `lastActivityAt`'s honesty property
@@ -603,6 +1183,9 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict 
     key = f"{room_path}::{execution_id}"
     state = live_cache.setdefault(key, {
         "stdout_offset": 0, "rollover_offset": 0, "counts": {"toolCalls": 0}, "context": None,
+        # #1686 review F6: persists across every batch read for this execution -- a message.id read in
+        # an earlier cycle's batch must still dedupe a repeat that shows up in a LATER cycle's batch.
+        "seen_message_ids": set(),
     })
 
     # #1613 review finding 3: `.stdout.log` rolls over to `.stdout.log.1` at 8 MiB and resets to
@@ -625,20 +1208,23 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None) -> dict 
             state["rollover_offset"] = 0
         rollover_lines, state["rollover_offset"] = _read_new_lines(rollover_path, state["rollover_offset"])
         if rollover_lines:
-            _apply_live_delta(state, extract_live_counts(rollover_lines))
+            _apply_live_delta(state, extract_live_counts(rollover_lines, state["seen_message_ids"]))
 
     new_lines, state["stdout_offset"] = _read_new_lines(stdout_path, state["stdout_offset"])
     if new_lines:
-        _apply_live_delta(state, extract_live_counts(new_lines))
+        _apply_live_delta(state, extract_live_counts(new_lines, state["seen_message_ids"]))
 
     result = dict(state["counts"])
     if state["context"] is not None:
         result.update(state["context"])
     result["lastActivityAt"] = _quantized_activity_iso(mtime)
+    tail = stdout_tail_for_room(room_path, execution_id, patterns)
+    if tail is not None:
+        result["stdoutTail"] = tail
     return result
 
 
-def attach_live_telemetry(room_list: list, live_cache: dict) -> None:
+def attach_live_telemetry(room_list: list, live_cache: dict, patterns: list[re.Pattern] | None = None) -> None:
     """Mutates each Running room in the (already stale-filtered) list in place, adding a `live`
     field. Gated on the pusher's own displayed `state`, not the raw engine state: a room
     fleet_status already downgraded to Stalled (#1513, a CONFIRMED-dead process) never gets a live
@@ -654,7 +1240,7 @@ def attach_live_telemetry(room_list: list, live_cache: dict) -> None:
     for room in room_list:
         if not isinstance(room, dict) or room.get("state") != "Running":
             continue
-        live = live_telemetry_for_room(room, live_cache)
+        live = live_telemetry_for_room(room, live_cache, patterns)
         if live is not None:
             room["live"] = live
 
@@ -672,6 +1258,142 @@ def prune_live_telemetry_cache(live_cache: dict, room_list: list) -> dict:
         if execution_id is not None and isinstance(room_path, str) and room_path:
             live_keys.add(f"{room_path}::{execution_id}")
     return {k: v for k, v in live_cache.items() if k in live_keys}
+
+
+PRUNED_ITEMS_CAP = 20  # #1155: newest N pruned execution dirs surfaced per room -- keeps the KV payload bounded.
+
+
+def pruned_info_for_room(room: dict, pruned_cache: dict | None = None) -> dict | None:
+    """`rooms[].pruned` -- shape and rationale are canonical in spec/baton.md §6 (#1155), not
+    restated here. `None` when there is nothing to report (no directory, or an unreadable one),
+    so an old consumer of the pushed snapshot sees no change. `items` caps at `PRUNED_ITEMS_CAP`,
+    newest-`prunedAt`-first; `count` is the true total.
+
+    `pruned_cache` is the caller-owned per-room cache (#1756 review F2) keyed on `room_path`,
+    storing the `(pruned/ dir mtime, child count)` this result was computed for -- a `rglob` walk
+    over a `pruned/` directory holding thousands of files is skipped whenever neither has changed
+    since the last call, mirroring `live_telemetry_cache`'s own incremental-avoids-rework shape. A
+    rename into `pruned/` changes the directory's own mtime, so the key still invalidates on a new
+    entry even though `rglob` never runs to notice it directly. Defaults to a fresh, single-call
+    dict when omitted (tests, and any caller that genuinely wants a one-shot walk)."""
+    if pruned_cache is None:
+        pruned_cache = {}
+    room_path = room.get("path")
+    if not isinstance(room_path, str) or not room_path:
+        return None
+    pruned_root = Path(room_path) / "artifacts" / "pruned"
+    if not pruned_root.is_dir():
+        return None
+
+    try:
+        dir_stat = pruned_root.stat()
+        children = list(pruned_root.iterdir())
+    except OSError:
+        return None
+
+    cache_key = (dir_stat.st_mtime, len(children))
+    cached = pruned_cache.get(room_path)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    entries = []
+    for child in children:
+        try:
+            stat = child.stat()
+            size = (sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+                    if child.is_dir() else stat.st_size)
+        except OSError:
+            continue
+        entries.append({
+            "name": child.name,
+            "bytes": size,
+            "prunedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+
+    if not entries:
+        result = None
+    else:
+        entries.sort(key=lambda e: e["prunedAt"], reverse=True)
+        result = {"count": len(entries), "items": entries[:PRUNED_ITEMS_CAP]}
+
+    pruned_cache[room_path] = (cache_key, result)
+    return result
+
+
+def attach_pruned_info(room_list: list, pruned_cache: dict) -> None:
+    """Mutates each room in `room_list` in place, adding a `pruned` field (see
+    `pruned_info_for_room`) when its `artifacts/pruned/` directory has anything in it. Mirrors
+    `attach_live_telemetry`'s own in-place-mutation shape; called after `drop_stale_rooms` in
+    main()'s loop for the same reason `attach_live_telemetry` is -- `prunedAt` is a real file
+    mtime, not a manufactured "now" stamp, so it plays no part in the staleness decision.
+    `pruned_cache` is main()'s own persisted dict (#1756 review F2), REQUIRED here for the same
+    reason `live_cache` is required by `attach_live_telemetry` -- a fresh dict every call would
+    defeat the whole point of caching across polls."""
+    if not isinstance(room_list, list):
+        return
+    for room in room_list:
+        if not isinstance(room, dict):
+            continue
+        pruned = pruned_info_for_room(room, pruned_cache)
+        if pruned is not None:
+            room["pruned"] = pruned
+
+
+def prune_pruned_info_cache(pruned_cache: dict, room_list: list) -> dict:
+    """New dict carrying forward only the cache entries for rooms still present in `room_list` --
+    a room dropped by `drop_stale_rooms` (or one whose path simply moved) must not linger forever
+    in a long-lived pusher process. Mirrors `prune_live_telemetry_cache`'s own per-cycle prune in
+    main()."""
+    room_paths = {r.get("path") for r in (room_list or [])
+                  if isinstance(r, dict) and isinstance(r.get("path"), str)}
+    return {k: v for k, v in pruned_cache.items() if k in room_paths}
+
+
+LIVE_TELEMETRY_HASH_BUCKET_SECONDS = 300  # #1690 item 3: telemetry churn gate -- spec/baton.md §6.
+LIVE_TELEMETRY_TOOLCALLS_GRAIN = 5      # F6 (2026-09-02 review): coarsen toolCalls to this grain.
+LIVE_TELEMETRY_TOKENS_GRAIN = 10_000    # F6: coarsen outputTokens to this grain.
+
+
+def _quantize_live_value(live: dict, bucket_seconds: float) -> dict:
+    """F6 (2026-09-02 review): quantize the telemetry VALUES themselves, never the wall clock a
+    caller happens to compute them at -- why the pre-fix (clock-bucketed) version was a churn
+    generator: spec/baton.md §6, "Fleet Glass write budget", not restated here. `lastActivityAt`
+    (already ISO, mtime-bucketed to 90s by `_quantized_activity_iso` before it reaches here) is
+    re-bucketed to the coarser `bucket_seconds` grain by its OWN parsed instant; `toolCalls`/
+    `outputTokens` are rounded down to their own grain."""
+    out = dict(live)
+    last_activity = live.get("lastActivityAt")
+    if isinstance(last_activity, str):
+        try:
+            instant = datetime.fromisoformat(last_activity).timestamp()
+        except ValueError:
+            pass
+        else:
+            out["lastActivityAt"] = (instant // bucket_seconds) * bucket_seconds
+    tool_calls = live.get("toolCalls")
+    if isinstance(tool_calls, (int, float)) and not isinstance(tool_calls, bool):
+        out["toolCalls"] = (int(tool_calls) // LIVE_TELEMETRY_TOOLCALLS_GRAIN) * LIVE_TELEMETRY_TOOLCALLS_GRAIN
+    output_tokens = live.get("outputTokens")
+    if isinstance(output_tokens, (int, float)) and not isinstance(output_tokens, bool):
+        out["outputTokens"] = (int(output_tokens) // LIVE_TELEMETRY_TOKENS_GRAIN) * LIVE_TELEMETRY_TOKENS_GRAIN
+    return out
+
+
+def quantize_live_for_hash(room_list: list, bucket_seconds: float = LIVE_TELEMETRY_HASH_BUCKET_SECONDS) -> list:
+    """A copy of `room_list` for HASHING ONLY (never posted -- the real `live` section rides the wire
+    every cycle unchanged): every room's `live` section, if present, has its VALUES quantized by
+    `_quantize_live_value` (F6). Everything OTHER than `live` is copied through untouched, so any
+    non-telemetry difference the change-gate already cared about still flips the hash on the very
+    next cycle."""
+    out = []
+    for room in room_list or []:
+        if isinstance(room, dict) and isinstance(room.get("live"), dict):
+            quantized = dict(room)
+            quantized["live"] = _quantize_live_value(room["live"], bucket_seconds)
+            out.append(quantized)
+        else:
+            out.append(room)
+    return out
 
 
 def resolve_room_timeline(room_path: str, is_terminal: bool, cache: dict, fetch_fn) -> list[dict]:
@@ -838,6 +1560,57 @@ def drop_stale_rooms(body: str, max_age_days: float) -> tuple[str, int]:
     return json.dumps(data), dropped
 
 
+# ---------------------------------------------------------------------------------------------
+# Hot-set capping (#1656) -- measurement and full contract: spec/baton.md §6, "Paging and the
+# terminal hot-set cap". Terminal rooms are frozen (terminal.json never changes once written) and
+# glass.html itself already only ever RENDERS the newest slice of them, so this moves the same cap
+# upstream: only the newest HOT_TERMINAL_CAP terminal rooms ride the plain fleet_status response;
+# the rest are still derived and pushed (as `terminal_archive`, a field worker.js's /push handler
+# stores under its own KV key, never inside "snapshot") but only served back a page at a time.
+# ---------------------------------------------------------------------------------------------
+
+HOT_TERMINAL_CAP = 40  # matches what glass.html already slices the Succeeded bucket to
+                        # client-side pre-#1656 (groupLanesHtml(visibleDone.slice(0,40), ...)) --
+                        # picked to keep the same "what an operator actually looks at" size, not a
+                        # new number.
+
+HOT_NONTERMINAL_WARN = 60  # F3 (2026-09-02 review): the cap above bounds only the terminal bucket
+                            # -- Running/Stalled/Indeterminate rooms ride the plain fleet_status
+                            # response in FULL, uncapped (spec/baton.md §6). This is a signal, not a
+                            # cap: one log line when concurrently-active rooms cross the threshold,
+                            # so an incident storm shows up in pusher.log rather than only as a
+                            # bigger push the day it happens.
+
+
+def nonterminal_warn_line(non_terminal_count: int) -> str | None:
+    """One log line when `non_terminal_count` exceeds HOT_NONTERMINAL_WARN, else None -- a signal,
+    not a cap. Full contract: spec/baton.md §6, "Paging and the terminal hot-set cap"."""
+    if non_terminal_count > HOT_NONTERMINAL_WARN:
+        return (f"non-terminal room count {non_terminal_count} exceeds HOT_NONTERMINAL_WARN "
+                f"({HOT_NONTERMINAL_WARN}) -- unbounded, no cap")
+    return None
+
+_TERMINAL_STATES = frozenset({"Succeeded", "Failed"})  # the two buckets glass.html's own Terminal
+                                                        # section covers (render()'s `termContent`)
+                                                        # -- Running/Stalled/Indeterminate/unreadable
+                                                        # rooms are never terminal by this measure.
+
+
+def split_hot_and_archive(room_list: list) -> tuple[list, list, int]:
+    """Splits `room_list` (fleet_status's own per-room objects) into `(hot_rooms, terminal_archive,
+    terminal_total)`. `hot_rooms` (non-terminal rooms plus the newest HOT_TERMINAL_CAP terminal
+    ones) is what rides the plain (no `page`) fleet_status response; `terminal_archive` is the FULL
+    terminal population (not just the tail beyond the cap -- a `page=0` fetch then returns the same
+    newest rooms `hot_rooms` already carried); `terminal_total` is the total terminal count. Full
+    contract, including the "newest" measure and why a malformed room degrades to non-terminal
+    rather than being dropped: spec/baton.md §6, "Paging and the terminal hot-set cap"."""
+    non_terminal = [r for r in room_list if not (isinstance(r, dict) and r.get("state") in _TERMINAL_STATES)]
+    terminal = [r for r in room_list if isinstance(r, dict) and r.get("state") in _TERMINAL_STATES]
+    terminal.sort(key=newest_timestamp, reverse=True)
+    hot_rooms = non_terminal + terminal[:HOT_TERMINAL_CAP]
+    return hot_rooms, terminal, len(terminal)
+
+
 def _git(cwd: str, *args: str) -> str:
     try:
         out = subprocess.run(
@@ -881,27 +1654,80 @@ def gather_underhood(cfg: dict) -> list:
     return entries
 
 
+class KvWriteCapError(RuntimeError):
+    """#1712: the Worker answered 429 {"reason": "kv-write-cap", "resets_at": ...} -- Cloudflare's
+    own daily KV write cap (spec/baton.md §6), not an ordinary push failure. Raised out of
+    post_json so every producer can back its own write-budget ledger sub-budget off immediately
+    (mark_kv_write_cap_exhausted below) rather than retrying into the same cap every cycle."""
+
+    def __init__(self, resets_at: str):
+        super().__init__(f"kv write cap hit -- resumes {resets_at}")
+        self.resets_at = resets_at
+
+
 def post_json(url: str, body: str) -> None:
     req = urllib.request.Request(
         url, data=body.encode("utf-8"), method="POST",
         # Cloudflare's edge 403s the default Python-urllib user-agent.
         headers={"content-type": "application/json", "user-agent": "fleet-pusher/0.2"},
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"push status {resp.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"push status {resp.status}")
+    except urllib.error.HTTPError as ex:
+        if ex.code == 429:
+            try:
+                payload = json.loads(ex.read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                payload = None
+            resets_at = payload.get("resets_at") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and payload.get("reason") == "kv-write-cap" \
+                    and isinstance(resets_at, str) and resets_at:
+                raise KvWriteCapError(resets_at) from ex
+        raise RuntimeError(f"push status {ex.code}") from ex
 
 
 SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 
-def build_wrapped(room_list, underhood, timelines, stale_hidden_count) -> dict:
+def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
+                   terminal_total: int = 0, terminal_archive: list | None = None,
+                   conductor: dict | None = None, pusher: dict | None = None,
+                   staleness: dict | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
-    path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review)."""
-    return {"rooms": room_list,
-            "underhood": underhood,
-            "timelines": timelines,
-            "stale_hidden_count": stale_hidden_count}
+    path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
+
+    `terminal_total`/`terminal_archive` (#1656) default to 0/None so every pre-existing call site
+    (this module's own hash/selftest fixtures) keeps working unchanged -- callers that care about
+    the hot-set split pass `room_list` as already-capped `hot_rooms` (see `split_hot_and_archive`)
+    and the FULL terminal population separately here. Post-#1690 item 2, `terminal_archive` rides
+    inside this SAME "snapshot" KV value (worker.js's /push handler no longer splits it into its own
+    key) -- the plain (no `page`) fleet_status response still hides it, by omission on the READ side
+    now rather than the write side.
+
+    `pusher` (#1690) is an optional small object the write-budget ledger attaches -- currently only
+    `{"writeBudgetExhaustedUntil": iso}` on the one final snapshot sent when the daily KV write
+    budget runs out (spec/baton.md §6, "Fleet Glass write budget"). Absent on every ordinary push,
+    same optional-field convention as `conductor` above -- glass.html's freshness strip reads it
+    absent-safe.
+
+    `staleness` (#1557 PR-B1) is `read_projection_file`'s own return value, forwarded verbatim
+    (spec/baton.md §6, the PR-B1 passage) -- absent on every ordinary push, same optional-field
+    convention as `pusher` above."""
+    wrapped = {"rooms": room_list,
+               "underhood": underhood,
+               "timelines": timelines,
+               "stale_hidden_count": stale_hidden_count,
+               "terminal_total": terminal_total,
+               "terminal_archive": terminal_archive or []}
+    if conductor is not None:
+        wrapped["conductor"] = conductor
+    if pusher is not None:
+        wrapped["pusher"] = pusher
+    if staleness is not None:
+        wrapped["staleness"] = staleness
+    return wrapped
 
 
 def snapshot_hash(wrapped: dict) -> str:
@@ -927,6 +1753,308 @@ def should_coalesce_push(state: dict, now_ts: float, min_interval_s: float = DEF
     if not isinstance(last, (int, float)):
         return False
     return (now_ts - last) < min_interval_s
+
+
+LAST_DELIVER_TS_KEY = "__last_deliver_ts__"
+
+
+def should_coalesce_producer(state: dict, ts_key: str, now_ts: float, min_interval_s: float) -> bool:
+    """F1 (2026-09-02 review): generalises should_coalesce_push to any producer's own last-sent
+    timestamp key -- deliver now gets its own adaptive pacing (`adaptive_deliver_interval_s`), not
+    just a sub-budget, so it needs the same coalescing check snapshot already had."""
+    last = state.get(ts_key)
+    if not isinstance(last, (int, float)):
+        return False
+    return (now_ts - last) < min_interval_s
+
+
+# ---------------------------------------------------------------------------------------------
+# WRITE BUDGET LEDGER (#1690, split into per-producer sub-budgets and pacing by the 2026-09-02
+# review's F1) -- a hard, pusher-owned daily cap on KV writes. Full design, the incident history,
+# and the per-producer cost table: spec/baton.md §6, "Fleet Glass write budget" -- this section is
+# the code that record cites, not a second copy of the reasoning.
+# ---------------------------------------------------------------------------------------------
+
+KV_DAILY_WRITE_TARGET = 700  # overall sanity ceiling, well under Cloudflare's 1,000/day free-tier KV
+                              # write cap -- headroom for the ledger's own inherent granularity (a
+                              # write can only be skipped whole, never partially) and anything this
+                              # arithmetic hasn't modeled, per aer-works/baton#1690's "Not this
+                              # issue" note (≥30% headroom or file the R2/Durable-Object exit). The
+                              # per-producer sub-budgets below are what actually gates a write.
+SNAPSHOT_DAILY_WRITES = 300   # F1 (2026-09-02 review): ≈288 pushes/day at the 300s coalescing
+                              # floor, plus slack for the exhaustion notice.
+DELIVER_DAILY_WRITES = 320    # F1: deliver's own share, paced independently so it can never out-race
+                              # snapshot for a shared pool the way it did pre-fix.
+HEARTBEAT_DAILY_WRITES = 60   # F1: 24 hourly beats plus room for the derived-freshness ping, now
+                              # paced against this same sub-budget (`adaptive_heartbeat_interval_s`).
+SNAPSHOT_KV_WRITE_COST = 1   # matches worker.js's /push handler post-#1690 item 2: ONE
+                              # env.FLEET.put("snapshot", ...) per push (terminal_archive rides
+                              # inside that same value, never a separate KV key or write).
+DELIVER_BATCH_KV_WRITE_COST = 3  # F3(a)/F5 (2026-09-02 review): the 2 puts worker.js's /deliver
+                              # always makes (inbox:batch:<id>, inbox:index), plus a conservative +1
+                              # for the delete path -- either a legacy inbox:item:<id> eviction, or
+                              # F5's refcounted orphaned inbox:batch:<id> reclaim. Why +1 is
+                              # conservative rather than exact, and what is unverified about it, is
+                              # spec/baton.md §6, "Fleet Glass write budget" -- not restated here.
+HEARTBEAT_KV_WRITE_COST = 1  # matches worker.js's /heartbeat handler: one
+                              # env.FLEET.put("heartbeat_at", ...) per POST, whichever of the two
+                              # cadences (hourly beat, derived-freshness ping) fired it.
+
+BUDGET_STATE_KEY = "__write_budget__"
+
+
+def utc_day_str(now_ts: float) -> str:
+    return datetime.fromtimestamp(now_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def next_utc_midnight_iso(now_ts: float) -> str:
+    """ISO-8601 instant of the next 00:00 UTC strictly after now_ts -- what a `writeBudgetExhaustedUntil`
+    value names (glass's freshness strip reads it verbatim, absent-safe)."""
+    now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return tomorrow.isoformat()
+
+
+def seconds_left_in_day(now_ts: float) -> float:
+    now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(0.0, (tomorrow - now).total_seconds())
+
+
+def load_budget_ledger(state: dict, now_ts: float) -> dict:
+    """Today's {date, snapshot, deliver, heartbeat, exhausted_notice_sent} counters. A missing/
+    corrupt persisted ledger returns a fresh, zeroed ledger for today. A stored date strictly EARLIER
+    than today rolls over to a fresh, zeroed ledger for today, same as always.
+
+    F10 (2026-09-02 review) monotonic guard against a clock rollback -- what it guards against and
+    why an all-zero stored ledger is exempt: spec/baton.md §6, "Fleet Glass write budget", not
+    restated here."""
+    today = utc_day_str(now_ts)
+    raw = state.get(BUDGET_STATE_KEY)
+    if isinstance(raw, dict) and isinstance(raw.get("date"), str):
+        def _count(key: str) -> int:
+            v = raw.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+        stored_date = raw["date"]
+        stored = {
+            "date": stored_date,
+            "snapshot": _count("snapshot"),
+            "deliver": _count("deliver"),
+            "heartbeat": _count("heartbeat"),
+            "exhausted_notice_sent": bool(raw.get("exhausted_notice_sent", False)),
+        }
+        if stored_date == today:
+            return stored
+        stored_used = stored["snapshot"] + stored["deliver"] + stored["heartbeat"]
+        if today > stored_date or stored_used == 0:
+            return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
+        return stored  # F10: refuse the rollback -- keep serving the later, already-spent day.
+    return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
+
+
+def mark_kv_write_cap_exhausted(state: dict, now_ts: float) -> dict:
+    """#1712: a live 429 (reason=kv-write-cap) from the Worker is stronger evidence than the
+    ledger's own count -- exhaust every producer's sub-budget for the rest of today outright, so
+    the existing #1690 exhausted/skip-producer paths (snapshot_pushes_allowed / deliver_allowed /
+    heartbeat_allowed) take over on the very next check for ALL THREE producers, not just whichever
+    one happened to hit the cap. Also marks `exhausted_notice_sent` so the day's one final
+    "budget exhausted" snapshot is never attempted -- it is exactly the write that cannot land
+    either. `max(...)` rather than a plain assignment: never regresses a sub-budget that has
+    already counted higher than its own daily target (shouldn't happen, but a real KV write already
+    recorded must never be un-recorded)."""
+    ledger = load_budget_ledger(state, now_ts)
+    ledger["snapshot"] = max(ledger.get("snapshot", 0), SNAPSHOT_DAILY_WRITES)
+    ledger["deliver"] = max(ledger.get("deliver", 0), DELIVER_DAILY_WRITES)
+    ledger["heartbeat"] = max(ledger.get("heartbeat", 0), HEARTBEAT_DAILY_WRITES)
+    ledger["exhausted_notice_sent"] = True
+    state[BUDGET_STATE_KEY] = ledger
+    return ledger
+
+
+def budget_used(ledger: dict) -> int:
+    return ledger.get("snapshot", 0) + ledger.get("deliver", 0) + ledger.get("heartbeat", 0)
+
+
+def budget_left(ledger: dict, target: int = KV_DAILY_WRITE_TARGET) -> int:
+    return max(0, target - budget_used(ledger))
+
+
+def record_budget_write(state: dict, now_ts: float, producer: str, cost: int) -> dict:
+    """Mutates `state[BUDGET_STATE_KEY]` in place (caller persists via save_push_state against the
+    ledger's own file, F4) and returns the updated ledger. `producer` is one of
+    "snapshot"/"deliver"/"heartbeat"."""
+    ledger = load_budget_ledger(state, now_ts)
+    ledger[producer] = ledger.get(producer, 0) + cost
+    state[BUDGET_STATE_KEY] = ledger
+    return ledger
+
+
+def snapshot_pushes_allowed(ledger: dict, daily_budget: int = SNAPSHOT_DAILY_WRITES) -> bool:
+    """False once the snapshot producer has spent its OWN sub-budget for the day -- F1 (2026-09-02
+    review): no longer a shared-pool reserve, since a shared pool let deliver spend snapshot's share
+    out from under it. Snapshot's sub-budget is deliberately the one that stops first: a stale but
+    still-fresh-enough fleet row is a smaller loss than a silently-stopped deliverables inbox."""
+    return ledger.get("snapshot", 0) < daily_budget
+
+
+def deliver_allowed(ledger: dict, daily_budget: int = DELIVER_DAILY_WRITES, cost: int = DELIVER_BATCH_KV_WRITE_COST) -> bool:
+    return ledger.get("deliver", 0) + cost <= daily_budget
+
+
+def heartbeat_allowed(ledger: dict, daily_budget: int = HEARTBEAT_DAILY_WRITES, cost: int = HEARTBEAT_KV_WRITE_COST) -> bool:
+    return ledger.get("heartbeat", 0) + cost <= daily_budget
+
+
+def adaptive_producer_interval_s(
+    ledger: dict, now_ts: float, producer: str, min_interval_s: float, daily_budget: int, cost: int,
+) -> float:
+    """F1 (2026-09-02 review): one adaptive-cadence formula shared by all three producers -- the
+    taper-vs-hard-stop rationale, and why only snapshot had this pre-fix: spec/baton.md §6, "Fleet
+    Glass write budget", not restated here."""
+    writes_left = max(0, daily_budget - ledger.get(producer, 0))
+    return max(min_interval_s, seconds_left_in_day(now_ts) / max(1, writes_left / max(1, cost)))
+
+
+def adaptive_snapshot_interval_s(
+    ledger: dict, now_ts: float,
+    min_push_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S,
+    daily_budget: int = SNAPSHOT_DAILY_WRITES,
+) -> float:
+    """Snapshot's own name for `adaptive_producer_interval_s` -- kept as its own function since
+    main() and the selftest both call it by this name (spec/baton.md §6 has why)."""
+    return adaptive_producer_interval_s(ledger, now_ts, "snapshot", min_push_interval_s, daily_budget, SNAPSHOT_KV_WRITE_COST)
+
+
+def adaptive_deliver_interval_s(
+    ledger: dict, now_ts: float,
+    min_deliver_interval_s: float = 0.0,
+    daily_budget: int = DELIVER_DAILY_WRITES,
+) -> float:
+    """F1 (2026-09-02 review): deliver's own pacing. Pre-fix, deliver had no floor of its own at all
+    -- a batch waiting every cycle spent its whole (shared-pool) share within the first couple of
+    hours of a busy day, which is exactly the failure mode that made the old reserve useless."""
+    return adaptive_producer_interval_s(ledger, now_ts, "deliver", min_deliver_interval_s, daily_budget, DELIVER_BATCH_KV_WRITE_COST)
+
+
+def adaptive_heartbeat_interval_s(
+    ledger: dict, now_ts: float,
+    min_interval_s: float = 300.0,  # DERIVED_PING_INTERVAL_SECONDS, kept a literal default so this
+                                     # function has no import-order dependency on it (defined later
+                                     # in this module).
+    daily_budget: int = HEARTBEAT_DAILY_WRITES,
+) -> float:
+    """F1 (2026-09-02 review): the derived-freshness ping's own pacing. Pre-fix, `should_send_
+    derived_ping`'s fixed 300s interval meant that once the snapshot half throttled past 300s (and so
+    stopped suppressing the ping via LAST_PUSH_TS_KEY), the ping fired every 300s all day -- 288
+    writes against what was meant to be a small, fixed share. The hourly heartbeat beat
+    (`should_send_heartbeat`) keeps its own fixed 3600s cadence -- only 24/day, a small and steady
+    draw this sub-budget can always afford -- so only the ping's own interval is paced adaptively
+    here; see main() and `simulate_worst_case_daily_writes` for how the two combine against one
+    shared "heartbeat" ledger counter."""
+    return adaptive_producer_interval_s(ledger, now_ts, "heartbeat", min_interval_s, daily_budget, HEARTBEAT_KV_WRITE_COST)
+
+
+def should_log_budget(state: dict, now_ts: float, interval: float = 3600) -> bool:
+    """True once at least `interval` seconds (default hourly) have elapsed since the last budget log
+    line -- same fail-toward-one-extra-log posture as should_send_heartbeat."""
+    last = state.get("__last_budget_log_ts__")
+    if not isinstance(last, (int, float)):
+        return True
+    return (now_ts - last) >= interval
+
+
+def format_budget_log_line(ledger: dict, interval_s: float, target: int = KV_DAILY_WRITE_TARGET) -> str:
+    return (f"budget: used {budget_used(ledger)}/{target} "
+            f"(snap {ledger.get('snapshot', 0)}, deliver {ledger.get('deliver', 0)}, "
+            f"beat {ledger.get('heartbeat', 0)}), interval now {int(interval_s)}s")
+
+
+def simulate_worst_case_daily_writes(
+    interval_seconds: float = 25,
+    min_push_interval_s: float = DEFAULT_MIN_PUSH_INTERVAL_S,
+    min_deliver_interval_s: float = 0.0,
+    ledger_enabled: bool = True,
+    snapshot_daily_writes: int = SNAPSHOT_DAILY_WRITES,
+    deliver_daily_writes: int = DELIVER_DAILY_WRITES,
+    heartbeat_daily_writes: int = HEARTBEAT_DAILY_WRITES,
+    snapshot_cost: int = SNAPSHOT_KV_WRITE_COST,
+    deliver_cost=DELIVER_BATCH_KV_WRITE_COST,  # int, OR (F2's pre-#1690 red control) a
+                                                # callable(batch_size) -> int for the K+1 shape.
+    deliver_batch_size: int = 10,              # only meaningful when deliver_cost is callable.
+    heartbeat_cost: int = HEARTBEAT_KV_WRITE_COST,
+    deliver_ping_interval_s: float = 300,  # DERIVED_PING_INTERVAL_SECONDS, kept a literal default so
+                                            # this function has no import-order dependency on it
+    heartbeat_interval_s: float = 3600,    # HEARTBEAT_INTERVAL_SECONDS, same reason
+) -> dict:
+    """#1690 item 4, the arithmetic gate -- widened by the 2026-09-02 review's F1/F2 from a single
+    total into per-producer write TIMESTAMPS; why a total alone cannot catch what F1 found: spec/
+    baton.md §6, "Fleet Glass write budget", not restated here. `main()`'s own gating functions drive
+    this simulation, so it cannot drift from what actually ships.
+
+    `ledger_enabled=False` (F2's red control) bypasses every gating check. Returns `{"ledger":
+    {...final counters...}, "snapshot_write_ts": [...], "deliver_write_ts": [...],
+    "heartbeat_write_ts": [...]}` -- the caller asserts both `budget_used(result["ledger"]) <=
+    KV_DAILY_WRITE_TARGET` and a distribution bound over the write-timestamp lists. A synthetic day
+    starting at epoch 0 -- any fixed UTC-day start works, since every gating function here only ever
+    measures elapsed time, never wall-clock identity."""
+    state: dict = {}
+    now_ts = 0.0
+    day_end = 86400.0
+    last_snapshot_push_ts: float | None = None
+    last_deliver_push_ts: float | None = None
+    snapshot_write_ts: list[float] = []
+    deliver_write_ts: list[float] = []
+    heartbeat_write_ts: list[float] = []
+
+    def _deliver_cost_now() -> int:
+        return deliver_cost(deliver_batch_size) if callable(deliver_cost) else deliver_cost
+
+    while now_ts < day_end:
+        ledger = load_budget_ledger(state, now_ts)
+        snap_ok = (not ledger_enabled) or snapshot_pushes_allowed(ledger, snapshot_daily_writes)
+        if snap_ok:
+            interval = (adaptive_snapshot_interval_s(ledger, now_ts, min_push_interval_s, snapshot_daily_writes)
+                        if ledger_enabled else min_push_interval_s)
+            if last_snapshot_push_ts is None or (now_ts - last_snapshot_push_ts) >= interval:
+                record_budget_write(state, now_ts, "snapshot", snapshot_cost)
+                last_snapshot_push_ts = now_ts
+                snapshot_write_ts.append(now_ts)
+                state[LAST_PUSH_TS_KEY] = now_ts  # mirrors push_snapshot_and_record's own side
+                                                    # effect -- suppresses a redundant derived-ping
+                                                    # below, exactly like the real loop.
+
+        ledger = load_budget_ledger(state, now_ts)
+        this_deliver_cost = _deliver_cost_now()
+        deliver_ok = (not ledger_enabled) or deliver_allowed(ledger, deliver_daily_writes, this_deliver_cost)
+        if deliver_ok:
+            d_interval = (adaptive_deliver_interval_s(ledger, now_ts, min_deliver_interval_s, deliver_daily_writes)
+                          if ledger_enabled else 0.0)
+            if last_deliver_push_ts is None or (now_ts - last_deliver_push_ts) >= d_interval:
+                record_budget_write(state, now_ts, "deliver", this_deliver_cost)
+                last_deliver_push_ts = now_ts
+                deliver_write_ts.append(now_ts)
+
+        ledger = load_budget_ledger(state, now_ts)
+        hb_interval = (adaptive_heartbeat_interval_s(ledger, now_ts, deliver_ping_interval_s, heartbeat_daily_writes)
+                       if ledger_enabled else deliver_ping_interval_s)
+        heartbeat_due = should_send_heartbeat(state, now_ts, heartbeat_interval_s)
+        ping_due = should_send_derived_ping(state, now_ts, hb_interval)
+        hb_ok = (not ledger_enabled) or heartbeat_allowed(ledger, heartbeat_daily_writes, heartbeat_cost)
+        if (heartbeat_due or ping_due) and hb_ok:
+            record_budget_write(state, now_ts, "heartbeat", heartbeat_cost)
+            heartbeat_write_ts.append(now_ts)
+            if heartbeat_due:
+                state[HEARTBEAT_STATE_KEY] = now_ts
+            if ping_due:
+                state[DERIVED_PING_STATE_KEY] = now_ts
+
+        now_ts += interval_seconds
+    return {
+        "ledger": load_budget_ledger(state, day_end - 1),
+        "snapshot_write_ts": snapshot_write_ts,
+        "deliver_write_ts": deliver_write_ts,
+        "heartbeat_write_ts": heartbeat_write_ts,
+    }
 
 
 def push_snapshot_and_record(post, body: str, state: dict, state_path, current_hash: str, now_ts: float | None = None) -> None:
@@ -960,10 +2088,10 @@ def derive_deliver_url(cfg: dict) -> str | None:
 
 
 HEARTBEAT_STATE_KEY = "__last_heartbeat_ts__"
-HEARTBEAT_INTERVAL_SECONDS = 3600  # hourly: 24 writes/day + the change-gated snapshot writes (worst
-                                    # case one per interval_seconds) against the 1,000/day KV
-                                    # free-tier cap the change-gate (#1457) protects -- see the
-                                    # module docstring's "THE HEARTBEAT HALF" section.
+HEARTBEAT_INTERVAL_SECONDS = 3600  # hourly cadence; gated against the write-budget ledger like every
+                                    # other producer (`heartbeat_allowed`) -- see the module
+                                    # docstring's "THE HEARTBEAT HALF" section and spec/baton.md §6,
+                                    # "Fleet Glass write budget".
 
 
 def derive_heartbeat_url(cfg: dict) -> str | None:
@@ -1008,15 +2136,14 @@ def send_heartbeat_and_record(post, state: dict, state_path, now_ts: float, extr
 #
 # Budget: derived_at must reach the server far more often than heartbeat_at's own hourly cadence to
 # be a useful "stuck" signal, but a naive fixed-interval ping alongside the change-gated snapshot
-# writes would blow the 1,000-writes/day KV free-tier cap this module's docstring already budgets
-# to the edge (~984/day between the snapshot and heartbeat alone). The two writes are made
-# mutually exclusive per cycle instead of additive: an actual snapshot PUSH already carries a fresh
-# derived_at in its own body (excluded from `snapshot_hash` so it never forces a push on its own --
-# see `main()`'s push branch), so `should_send_derived_ping` below only fires the dedicated ping
-# when NEITHER a push nor a prior ping has landed one recently. A day spent constantly pushing
-# (worst case ~960 writes) never also pays the ping's cost (it wouldn't fire); a quiet day (near
-# zero snapshot writes) pays the ping's cost instead (worst case ~288/day at this interval) --
-# never both at once, so the combined worst case stays close to the snapshot-alone worst case.
+# writes would blow the write-budget ledger's KV_DAILY_WRITE_TARGET (spec/baton.md §6, "Fleet Glass
+# write budget") on its own. The two writes are made mutually exclusive per cycle instead of
+# additive: an actual snapshot PUSH already carries a fresh derived_at in its own body (excluded
+# from `snapshot_hash` so it never forces a push on its own -- see `main()`'s push branch), so
+# `should_send_derived_ping` below only fires the dedicated ping when NEITHER a push nor a prior
+# ping has landed one recently -- and even then, only when `heartbeat_allowed` says the ledger still
+# has room. A day spent constantly pushing never also pays the ping's cost (it wouldn't fire); a
+# quiet day pays the ping's cost instead, capped by the same ledger either way.
 # ---------------------------------------------------------------------------------------------
 
 DERIVED_PING_STATE_KEY = "__last_derived_ping_ts__"
@@ -1112,6 +2239,19 @@ def extract_title(text: str, fallback: str) -> str:
     return fallback
 
 
+STATE_FORMAT_VERSION_KEY = "__format_version__"
+CURRENT_STATE_FORMAT_VERSION = 2
+DEFAULT_DELIVER_BATCH_COUNT_CEILING = 2000  # F13 (2026-09-02 review): a generous backstop on loop
+                                             # iterations only -- DEFAULT_DELIVER_BATCH_BYTES below
+                                             # is what actually constrains a batch now that a flat
+                                             # DELIVER_BATCH_KV_WRITE_COST no longer scales with item
+                                             # count. Kept under the parameter name `limit` for
+                                             # backward compatibility with existing callers/selftest.
+DEFAULT_DELIVER_BATCH_BYTES = 4_000_000     # F13: ~4MB, safely under worker.js's 5,000,000-char
+                                             # /deliver body cap (worker.js:190) with room for JSON
+                                             # structure/metadata overhead around each item's content.
+
+
 def load_push_state(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1120,11 +2260,67 @@ def load_push_state(path: Path) -> dict:
 
 
 def save_push_state(path: Path, state: dict) -> None:
-    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    """F4 (2026-09-02 review): write to a sibling temp file and `os.replace` it into place, atomic
+    on both Windows and POSIX -- why `write_text`'s truncate-then-write was unsafe here: spec/
+    baton.md §6, "Fleet Glass write budget", not restated here."""
+    if STATE_FORMAT_VERSION_KEY not in state:
+        state[STATE_FORMAT_VERSION_KEY] = CURRENT_STATE_FORMAT_VERSION
+    tmp_path = path.parent / f"{path.name}.tmp"
+    tmp_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
-def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, Path]]:
-    """(room_name, room_dir) for every room directory that carries a terminal.json.
+def migrate_push_state(
+    state: dict,
+    terminal_rooms: list[tuple[str, str, Path]],
+    state_path: Path | None = None,
+) -> bool:
+    """Migrate legacy push-state keys from f"{room_name}::{artifact}" to f"{room_path}::{artifact}".
+
+    For each terminal room:
+    - If a legacy key is present and the corresponding path key is absent, adopt the legacy value
+      under the path key and drop the legacy key, then persist.
+    - A legacy key whose name matches two current rooms (the exact collision #1617 is about)
+      must NOT be adopted for either — log it and let both re-push once.
+    - Also records the state-file format version (__format_version__ = 2).
+    """
+    name_to_rooms: dict[str, list[tuple[str, str, Path]]] = {}
+    for room_path, room_name, room_dir in terminal_rooms:
+        name_to_rooms.setdefault(room_name, []).append((room_path, room_name, room_dir))
+
+    changed = False
+    for k in list(state.keys()):
+        if k.startswith("__") or "::" not in k:
+            continue
+        prefix, artifact = k.split("::", 1)
+        if prefix in name_to_rooms:
+            rooms_for_name = name_to_rooms[prefix]
+            if len(rooms_for_name) == 1:
+                room_path, _, _ = rooms_for_name[0]
+                if prefix != room_path:
+                    path_key = f"{room_path}::{artifact}"
+                    if path_key not in state:
+                        state[path_key] = state[k]
+                    del state[k]
+                    changed = True
+            else:
+                paths_str = ", ".join(r[0] for r in rooms_for_name)
+                log(f"migration: legacy key '{k}' matches {len(rooms_for_name)} rooms ({paths_str}); not adopting, will re-push")
+                del state[k]
+                changed = True
+
+    if state.get(STATE_FORMAT_VERSION_KEY) != CURRENT_STATE_FORMAT_VERSION:
+        state[STATE_FORMAT_VERSION_KEY] = CURRENT_STATE_FORMAT_VERSION
+        changed = True
+
+    if changed and state_path is not None:
+        save_push_state(state_path, state)
+
+    return changed
+
+
+def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, str, Path]]:
+    """(room_path, room_name, room_dir) for every room directory that carries a terminal.json.
 
     A room with no terminal.json is still running (or was never dispatched) -- outside this
     function's job, which is only to find TERMINAL rooms; the fleet snapshot half already covers
@@ -1135,7 +2331,7 @@ def find_terminal_rooms(rooms_root: Path) -> list[tuple[str, Path]]:
     found = []
     for child in sorted(rooms_root.iterdir()):
         if child.is_dir() and (child / "terminal.json").is_file():
-            found.append((child.name, child))
+            found.append((str(child), child.name, child))
     return found
 
 
@@ -1184,11 +2380,16 @@ def _apply_secret_gate(content_bytes: bytes, local_path: str, patterns: list[re.
     return text, False, None, None
 
 
-def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
-                patterns: list[re.Pattern] | None) -> dict:
+def build_item(room_path: str, room_dir: Path, artifact_path: Path, verdict: dict,
+                patterns: list[re.Pattern] | None, room_name: str | None = None) -> dict:
     """One deliverable for a declared output artifact. `artifact_path` is absolute (terminal.json
     stores absolute paths); the item's "artifact" field is that path relative to the room dir, so
-    dedupe keys and inbox rows never carry the operator's home directory."""
+    dedupe keys and inbox rows never carry the operator's home directory.
+
+    Keyed by room PATH (#1617, matching the snapshot half's timeline join; room_name is kept for
+    display only)."""
+    if room_name is None:
+        room_name = room_dir.name if room_dir is not None else Path(room_path).name
     try:
         raw = artifact_path.read_bytes()
     except OSError as ex:
@@ -1201,8 +2402,9 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
     content, withheld, stub_reason, pattern_index = _apply_secret_gate(raw, str(artifact_path), patterns)
     title = extract_title(raw.decode("utf-8", errors="replace"), artifact_path.name) if not withheld else artifact_path.name
     item = {
-        "id": f"{room}::{rel}::{content_hash[:16]}",
-        "room": room,
+        "id": f"{room_path}::{rel}::{content_hash[:16]}",
+        "room": room_path,
+        "room_name": room_name,
         "artifact": rel,
         "title": title,
         "content_hash": content_hash,
@@ -1218,20 +2420,27 @@ def build_item(room: str, room_dir: Path, artifact_path: Path, verdict: dict,
     if stub_reason:
         item["stub_reason"] = stub_reason
     if pattern_index is not None:
-        log(f"secret-gate: {room}/{rel} matched pattern #{pattern_index}: withheld")
+        log(f"secret-gate: {room_name}/{rel} matched pattern #{pattern_index}: withheld")
     return item
 
 
-def build_verdict_only_item(room: str, verdict: dict, room_dir: Path | None = None) -> dict:
+def build_verdict_only_item(room_path: str, verdict: dict, room_dir: Path | None = None,
+                            room_name: str | None = None) -> dict:
     """A room with zero declared outputs (typically Failed) still gets one inbox entry, so a
-    failure with nothing to show is still visible rather than silently absent."""
+    failure with nothing to show is still visible rather than silently absent.
+
+    Keyed by room PATH (#1617, matching the snapshot half's timeline join; room_name is kept for
+    display only)."""
+    if room_name is None:
+        room_name = room_dir.name if room_dir is not None else Path(room_path).name
     text = json.dumps(verdict, indent=2, sort_keys=True)
     content_hash = sha256_hex(text.encode("utf-8"))
     item = {
-        "id": f"{room}::__verdict__::{content_hash[:16]}",
-        "room": room,
+        "id": f"{room_path}::__verdict__::{content_hash[:16]}",
+        "room": room_path,
+        "room_name": room_name,
         "artifact": None,
-        "title": f"{room} — {verdict.get('state') or 'unknown'}",
+        "title": f"{room_name} — {verdict.get('state') or 'unknown'}",
         "content_hash": content_hash,
         "withheld": False,
         "verdict": verdict,
@@ -1246,10 +2455,151 @@ def build_verdict_only_item(room: str, verdict: dict, room_dir: Path | None = No
     return item
 
 
-def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern] | None) -> list[dict]:
-    """Every not-yet-pushed deliverable across all terminal rooms under rooms_root.
+def _item_content_bytes(item: dict) -> int:
+    content = item.get("content")
+    return len(content.encode("utf-8")) if isinstance(content, str) else 0
 
-    "not yet pushed" is decided per (room, artifact) against `state[key] == content_hash` -- an
+
+def gather_conductor_deliverables(
+    rooms_root: Path,
+    state: dict,
+    patterns: list[re.Pattern] | None,
+    limit: int | None = DEFAULT_DELIVER_BATCH_COUNT_CEILING,
+    max_bytes: int = DEFAULT_DELIVER_BATCH_BYTES,
+) -> tuple[list[dict], int]:
+    """Scans manifest.jsonl from the standing conductor room (or any conductor room under rooms_root)
+    and gathers deliverable items with kind='conductor' and id derived from source_path (#1669).
+
+    F13 (2026-09-02 review): capped by cumulative content BYTES (`max_bytes`), not just item count --
+    `limit` remains a generous backstop on loop iterations. Returns `(items, total_bytes)` so a
+    caller batching conductor and terminal-room items together (`gather_deliverables`) can carry the
+    running byte total forward into its own loop rather than re-summing. At least one item is always
+    admitted even if it alone exceeds `max_bytes` (fail toward one oversized batch, never toward
+    silently dropping the only thing an operator has to look at)."""
+    items = []
+    total_bytes = 0
+    conductor_dirs = []
+    conductor_default = rooms_root / "conductor"
+    if conductor_default.is_dir():
+        conductor_dirs.append(conductor_default)
+
+    if rooms_root.is_dir():
+        try:
+            for child in rooms_root.iterdir():
+                if child.is_dir() and child != conductor_default:
+                    if (child / "artifacts" / "conductor" / "manifest.jsonl").is_file():
+                        conductor_dirs.append(child)
+        except OSError:
+            pass
+
+    for conductor_dir in conductor_dirs:
+        manifest_path = conductor_dir / "artifacts" / "conductor" / "manifest.jsonl"
+        if not manifest_path.is_file():
+            continue
+
+        conductor_room_path = str(conductor_dir)
+        conductor_artifacts_dir = conductor_dir / "artifacts" / "conductor"
+
+        try:
+            lines = manifest_path.read_text(encoding="utf-8-sig").splitlines()
+        except Exception as ex:  # noqa: BLE001
+            log(f"conductor manifest read error for {conductor_dir}: {type(ex).__name__}: {ex}")
+            continue
+
+        for line_num, line in enumerate(lines, start=1):
+            if (limit is not None and len(items) >= limit) or total_bytes >= max_bytes:
+                break
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as ex:
+                log(f"conductor manifest JSONDecodeError in {conductor_dir} line {line_num}: {ex}")
+                continue
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+
+            source_path = entry.get("source_path")
+            if not isinstance(source_path, str) or not source_path:
+                continue
+
+            # F1 (2026-09-02 review): artifact_file is read from the manifest line, never
+            # re-derived from the basename — DeliverCommand.cs keys the on-disk filename off a hash
+            # of source_path precisely so two sources sharing a basename land on two distinct files;
+            # re-deriving here would silently collapse them back onto one.
+            artifact_file_name = entry.get("artifact_file")
+            if not isinstance(artifact_file_name, str) or not artifact_file_name:
+                continue
+
+            basename = Path(source_path).name
+            artifact_file = conductor_artifacts_dir / artifact_file_name
+            if not artifact_file.is_file():
+                continue
+
+            try:
+                raw = artifact_file.read_bytes()
+            except Exception:
+                continue
+
+            content_hash = sha256_hex(raw)
+            key = f"{conductor_room_path}::artifacts/conductor/{artifact_file_name}"
+            if state.get(key) == content_hash:
+                continue
+
+            content, withheld, stub_reason, pattern_index = _apply_secret_gate(
+                raw, str(artifact_file), patterns)
+
+            title = entry.get("title") or basename
+            delivered_at = entry.get("delivered_at")
+            if not delivered_at:
+                try:
+                    st = artifact_file.stat()
+                    delivered_at = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
+                except (OSError, ValueError):
+                    delivered_at = datetime.now(timezone.utc).isoformat()
+
+            item = {
+                "id": f"{conductor_room_path}::conductor::{source_path}",
+                "kind": "conductor",
+                "room": conductor_room_path,
+                "room_name": "conductor",
+                "artifact": f"artifacts/conductor/{artifact_file_name}",
+                "source_path": source_path,
+                "title": title,
+                "content_hash": content_hash,
+                "withheld": withheld,
+                "verdict": {"state": "Succeeded"},
+                "content": content,
+                "created_at": delivered_at,
+            }
+            if stub_reason:
+                item["stub_reason"] = stub_reason
+            item_bytes = _item_content_bytes(item)
+            if items and total_bytes + item_bytes > max_bytes:
+                break
+            items.append(item)
+            total_bytes += item_bytes
+
+    return items, total_bytes
+
+
+def gather_deliverables(
+    rooms_root: Path,
+    state: dict,
+    patterns: list[re.Pattern] | None,
+    state_path: Path | None = None,
+    limit: int | None = DEFAULT_DELIVER_BATCH_COUNT_CEILING,
+    max_bytes: int = DEFAULT_DELIVER_BATCH_BYTES,
+) -> list[dict]:
+    """Every not-yet-pushed deliverable across all terminal rooms and conductor rooms under
+    rooms_root, capped by cumulative content BYTES (`max_bytes`, F13 -- 2026-09-02 review) with
+    `limit` as a generous item-count backstop, not the primary constraint -- why bytes rather than
+    count: spec/baton.md §6, "Fleet Glass write budget", not restated here.
+
+    Migrates legacy room_name-keyed state entries to room_path keys before lookup (#1617 / PR #1632).
+    "not yet pushed" is decided per (room_path, artifact) against `state[key] == content_hash` -- an
     unchanged hash is skipped. Deliberately NOT memorized into `state` here (the caller does that,
     only after a successful network push): when `patterns is None`, every item this run is withheld
     for that reason alone, and it must be re-offered on the NEXT run too, in case an operator has
@@ -1259,33 +2609,194 @@ def gather_deliverables(rooms_root: Path, state: dict, patterns: list[re.Pattern
         log("secret-gate: secret_patterns_file missing/unreadable — WITHHOLDING EVERYTHING this run (fail closed)")
 
     items = []
-    for room, room_dir in find_terminal_rooms(rooms_root):
+    conductor_items, total_bytes = gather_conductor_deliverables(rooms_root, state, patterns, limit=limit, max_bytes=max_bytes)
+    items.extend(conductor_items)
+
+    terminal_rooms = find_terminal_rooms(rooms_root)
+    migrate_push_state(state, terminal_rooms, state_path=state_path)
+
+    for room_path, room_name, room_dir in terminal_rooms:
+        if (limit is not None and len(items) >= limit) or total_bytes >= max_bytes:
+            break
         terminal = load_terminal(room_dir)
         if terminal is None:
             continue
         verdict = verdict_summary(terminal)
         outputs = declared_outputs(terminal)
         if not outputs:
-            item = build_verdict_only_item(room, verdict, room_dir)
-            key = f"{room}::{item['artifact']}"
+            item = build_verdict_only_item(room_path, verdict, room_dir, room_name=room_name)
+            key = f"{room_path}::{item['artifact']}"
             if state.get(key) != item["content_hash"]:
+                item_bytes = _item_content_bytes(item)
+                if items and total_bytes + item_bytes > max_bytes:
+                    break
                 items.append(item)
+                total_bytes += item_bytes
             continue
         for artifact_path in outputs:
-            item = build_item(room, room_dir, artifact_path, verdict, patterns)
-            key = f"{room}::{item['artifact']}"
+            if (limit is not None and len(items) >= limit) or total_bytes >= max_bytes:
+                break
+            item = build_item(room_path, room_dir, artifact_path, verdict, patterns, room_name=room_name)
+            key = f"{room_path}::{item['artifact']}"
             if state.get(key) != item["content_hash"]:
+                item_bytes = _item_content_bytes(item)
+                if items and total_bytes + item_bytes > max_bytes:
+                    break
                 items.append(item)
+                total_bytes += item_bytes
     return items
 
 
 def mark_pushed(state: dict, items: list[dict]) -> dict:
-    """New state dict with each item's (room, artifact) -> content_hash recorded. Pure, so callers
+    """New state dict with each item's (room_path, artifact) -> content_hash recorded. Pure, so callers
     control exactly when a successful push is allowed to count as "seen"."""
     updated = dict(state)
     for item in items:
         updated[f"{item['room']}::{item['artifact']}"] = item["content_hash"]
     return updated
+
+
+# ---------------------------------------------------------------------------------------------
+# Identity diff (#1557 PR-B1): runs BOTH the `derive` path and the `file` path once against the
+# SAME live rooms and diffs them field-by-field, so the switch above can be flipped on trust rather
+# than hope. `python pusher.py --compare-projection`.
+# ---------------------------------------------------------------------------------------------
+
+# Presence/shape-only fields (plan §4/item 3): the derive path never emitted these at all before
+# #1557, so there is nothing on that side to diff against -- excluded from the byte-identity
+# comparison below, checked for shape instead.
+_COMPARE_SHAPE_ONLY_KEYS = {
+    "processAlive": lambda v: isinstance(v, str) and v in ("alive", "dead", "unknown"),
+    "stdout_last_write_ago_sec": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+    "elapsed": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+}
+
+
+def _canonical(obj) -> str:
+    """Canonical JSON per the plan's "byte-for-byte after canonical JSON serialization (sorted
+    keys, same separators)" -- the ONE serialization both sides of every comparison below go
+    through, so a diff can never be an artifact of key order or whitespace."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_room_for_compare(room: dict) -> dict:
+    """Strips the fields excluded from strict equality (plan §4/item 3) before the canonical-JSON
+    comparison: the shape-only keys above, and `live.lastActivityAt` (see `_compare_last_activity`
+    -- diffed separately, on the unquantized instant, never on the bucketed string)."""
+    normalized = {k: v for k, v in room.items() if k not in _COMPARE_SHAPE_ONLY_KEYS}
+    live = normalized.get("live")
+    if isinstance(live, dict) and "lastActivityAt" in live:
+        live = dict(live)
+        del live["lastActivityAt"]
+        normalized["live"] = live
+    return normalized
+
+
+def _compare_last_activity(path: str, derive_room: dict, file_room: dict) -> list[str]:
+    """`rooms[].live.lastActivityAt` is excluded from strict equality (plan §4/item 3): both paths
+    bucket the SAME underlying `.stdout.log` mtime (`LAST_ACTIVITY_BUCKET_SECONDS`=90s) but sample
+    it at different instants -- the file can be up to `PROJECTION_STALE_AFTER_S` old, the derive
+    path reads it live -- so they can legitimately land in different buckets while both are
+    correct. Sanity-bounded instead: the two instants cannot honestly diverge by more than the
+    file's own staleness ceiling plus one bucket."""
+    d_live = derive_room.get("live")
+    f_live = file_room.get("live")
+    d_ts = d_live.get("lastActivityAt") if isinstance(d_live, dict) else None
+    f_ts = f_live.get("lastActivityAt") if isinstance(f_live, dict) else None
+    if d_ts is None or f_ts is None:
+        return []
+    try:
+        d_epoch = datetime.fromisoformat(d_ts.replace("Z", "+00:00")).timestamp()
+        f_epoch = datetime.fromisoformat(f_ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return [f"{path}: live.lastActivityAt not parseable: derive={d_ts!r} file={f_ts!r}"]
+    bound = PROJECTION_STALE_AFTER_S + LAST_ACTIVITY_BUCKET_SECONDS
+    if abs(d_epoch - f_epoch) > bound:
+        return [f"{path}: live.lastActivityAt diverges beyond the staleness bound ({bound}s): "
+                f"derive={d_ts} file={f_ts}"]
+    return []
+
+
+def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
+    """Every field-level difference between one room's derive-path and file-path projections,
+    after the plan §4/item 3 exclusions. Empty list means identical."""
+    diffs = _compare_last_activity(path, derive_room, file_room)
+
+    d_norm = _normalize_room_for_compare(derive_room)
+    f_norm = _normalize_room_for_compare(file_room)
+    if _canonical(d_norm) != _canonical(f_norm):
+        for key in sorted(set(d_norm) | set(f_norm)):
+            if key not in f_norm:
+                diffs.append(f"{path}: field {key!r} present in derive, absent in file")
+            elif key not in d_norm:
+                diffs.append(f"{path}: field {key!r} present in file, absent in derive")
+            elif _canonical(d_norm[key]) != _canonical(f_norm[key]):
+                diffs.append(f"{path}: field {key!r} differs: "
+                             f"derive={_canonical(d_norm[key])} file={_canonical(f_norm[key])}")
+
+    for key, shape_ok in _COMPARE_SHAPE_ONLY_KEYS.items():
+        if key in file_room and not shape_ok(file_room[key]):
+            diffs.append(f"{path}: field {key!r} present but shape-invalid: {file_room[key]!r}")
+
+    return diffs
+
+
+def compare_projection(dll: str, roots: list) -> int:
+    """Runs the `derive` path (spawn `dotnet mcp`, then `attach_live_telemetry`/
+    `attach_pruned_info` -- main()'s own pre-#1557 pipeline) and the `file` path (read
+    `BatonPaths.FleetProjectionFile`) ONCE each against the same live rooms, then diffs every room
+    both sides agree exists. Exit 0 on identical, 1 with the diff printed on mismatch."""
+    text, _timelines = derive_snapshot_and_timelines(dll, roots)
+    derive_parsed = json.loads(text)
+    derive_room_list = derive_parsed if isinstance(derive_parsed, list) else (derive_parsed.get("rooms") or [])
+    patterns = load_secret_patterns(DEFAULT_SECRET_PATTERNS_FILE)
+    attach_live_telemetry(derive_room_list, {}, patterns)
+    attach_pruned_info(derive_room_list, {})
+
+    projection_path = resolve_projection_file_path()
+    file_data, staleness = read_projection_file(projection_path, time.time(), max_age_s=float("inf"))
+    if file_data is None:
+        print(f"COMPARE: projection file unreadable/absent/malformed at {projection_path} -- "
+              f"{staleness}", file=sys.stderr)
+        return 1
+    file_room_list = file_data.get("rooms") or []
+
+    by_path_derive = {r["path"]: r for r in derive_room_list
+                       if isinstance(r, dict) and isinstance(r.get("path"), str)}
+    by_path_file = {r["path"]: r for r in file_room_list
+                     if isinstance(r, dict) and isinstance(r.get("path"), str)}
+
+    diffs = []
+    only_in_derive = sorted(set(by_path_derive) - set(by_path_file))
+    only_in_file = sorted(set(by_path_file) - set(by_path_derive))
+    if only_in_derive:
+        diffs.append(f"rooms only in derive path: {only_in_derive}")
+    if only_in_file:
+        diffs.append(f"rooms only in file path: {only_in_file}")
+
+    for path in sorted(set(by_path_derive) & set(by_path_file)):
+        diffs.extend(_diff_room(path, by_path_derive[path], by_path_file[path]))
+
+    # #1557 plan item 4: an installed daemon build that predates #1786 (PR-A2) never wrote
+    # `live.stdoutTail` at all -- that reds this diff on `stdoutTail` for every Running room, which
+    # is a version gap, not a bug. Called out separately; the diff below still reports it (and
+    # every other field) rather than swallowing it.
+    stdout_tail_gap = any("'stdoutTail'" in d and "present in derive, absent in file" in d for d in diffs)
+    if stdout_tail_gap:
+        print("NOTE: rooms[].live.stdoutTail is present in the derive path but absent from the "
+              "file for at least one Running room -- this looks like 'installed daemon predates "
+              "#1786 (PR-A2)', not a genuine bug. Re-run after redeploying the daemon build.",
+              file=sys.stderr)
+
+    if diffs:
+        print("COMPARE: MISMATCH", file=sys.stderr)
+        for d in diffs:
+            print(f"  !! {d}", file=sys.stderr)
+        return 1
+
+    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, "
+          f"{len(only_in_derive) + len(only_in_file)} room-set diff(s))")
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1295,12 +2806,21 @@ def mark_pushed(state: dict, items: list[dict]) -> dict:
 def main() -> None:
     cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
     once = "--once" in sys.argv
+    # #1557 PR-B1: unrecognized values fail toward "derive" (the always-worked path) rather than
+    # raising on a typo'd env var.
+    projection_source = os.environ.get(FLEET_GLASS_PROJECTION_SOURCE_ENV, "derive")
+    if projection_source not in ("file", "derive"):
+        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}={projection_source!r} not recognized -- using 'derive'")
+        projection_source = "derive"
     interval = cfg.get("interval_seconds", 25)
     min_push_interval_s = cfg.get("min_push_interval_s", DEFAULT_MIN_PUSH_INTERVAL_S)
     lock_path = Path(cfg["lock_file"]).expanduser() if cfg.get("lock_file") else DEFAULT_LOCK_FILE
     rooms_root = Path(cfg["rooms_root"]).expanduser() if cfg.get("rooms_root") else DEFAULT_ROOMS_ROOT
     patterns_path = Path(cfg["secret_patterns_file"]).expanduser() if cfg.get("secret_patterns_file") else DEFAULT_SECRET_PATTERNS_FILE
     state_path = Path(cfg["push_state_file"]).expanduser() if cfg.get("push_state_file") else DEFAULT_PUSH_STATE_FILE
+    # F4 (2026-09-02 review): the write-budget ledger's own file, separate from state_path -- see
+    # DEFAULT_BUDGET_STATE_FILE's own comment for why.
+    budget_path = Path(cfg["write_budget_file"]).expanduser() if cfg.get("write_budget_file") else DEFAULT_BUDGET_STATE_FILE
     deliver_url = derive_deliver_url(cfg)
     heartbeat_url = derive_heartbeat_url(cfg)
     skip_log_every = max(1, round(600 / interval)) if interval > 0 else 1
@@ -1313,6 +2833,11 @@ def main() -> None:
     # live telemetry -- see live_telemetry_for_room's own doc. In-memory only, same self-heals-on-
     # restart posture as terminal_timeline_cache above.
     live_telemetry_cache: dict = {}
+    # #1756 review F2: per-room (pruned/ dir mtime, child count) -> computed `pruned` result, so an
+    # uncached rglob walk isn't repeated every poll for a room whose pruned/ tree hasn't changed --
+    # see pruned_info_for_room's own doc. Same in-memory-only, self-heals-on-restart posture as
+    # live_telemetry_cache above.
+    pruned_info_cache: dict = {}
     # #1613 item 2: the wall-clock instant this process's OWN most recent `derive_snapshot_and_
     # timelines` call last completed successfully -- None until the first cycle succeeds. Carried
     # into the heartbeat/derived-ping section below regardless of whether THIS cycle's content
@@ -1322,6 +2847,10 @@ def main() -> None:
     # to go out -- None whenever nothing is pending (see pending_push_age_s). Carried forward
     # unchanged on a cycle whose derivation itself fails, same as last_derived_at above.
     pending_push_age: float | None = None
+    # #1690: the adaptive snapshot interval actually in effect this cycle, purely for the hourly
+    # budget log line -- carried forward so a cycle that skips the snapshot branch entirely (an
+    # exception, or the budget-exhausted early-out) still has a sane value to log.
+    effective_snapshot_interval = float(min_push_interval_s)
 
     acquire_lock(lock_path)
     atexit.register(release_lock, lock_path)
@@ -1329,49 +2858,188 @@ def main() -> None:
     try:
         while True:
             try:
-                body, timelines = derive_snapshot_and_timelines(
-                    cfg["dll"], cfg.get("roots", []), terminal_timeline_cache)
-                last_derived_at = datetime.now(timezone.utc).isoformat()
+                # #1557 PR-B1: `file` mode reads the daemon's own projection file instead of
+                # spawning `dotnet mcp` -- `used_file_this_cycle` is False whenever the file was
+                # stale/absent (or the switch is off), in which case this cycle falls back to the
+                # original derive path exactly as before. `staleness` rides into `wrapped` below
+                # ONLY on a fallback cycle -- plan §5's absent-safe convention, mirroring
+                # `pusher.writeBudgetExhaustedUntil`.
+                staleness = None
+                used_file_this_cycle = False
+                if projection_source == "file":
+                    projection_data, staleness = read_projection_file(
+                        resolve_projection_file_path(), time.time())
+                    if projection_data is not None:
+                        body = json.dumps(projection_data.get("rooms", []))
+                        timelines = {}
+                        last_derived_at = projection_data.get("derived_at")
+                        used_file_this_cycle = True
+                    else:
+                        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}=file: projection file stale or "
+                            f"absent (daemon_derived_at={staleness.get('daemon_derived_at')}, "
+                            f"age_s={staleness.get('age_s')}) -- falling back to derive this cycle")
+                if not used_file_this_cycle:
+                    body, timelines = derive_snapshot_and_timelines(
+                        cfg["dll"], cfg.get("roots", []), terminal_timeline_cache)
+                    last_derived_at = datetime.now(timezone.utc).isoformat()
                 body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
                 rooms = json.loads(body)
-                room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
-                # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
-                # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays no
-                # part in the staleness decision at all.
-                live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
-                attach_live_telemetry(room_list, live_telemetry_cache)
+                raw_room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+                conductor_info = None
+                filtered_room_list = []
+                for r in (raw_room_list or []):
+                    if isinstance(r, dict) and (r.get("role") == "conductor" or r.get("name") == "conductor"):
+                        c_path = r.get("path") or str(rooms_root / "conductor")
+                        conductor_info = {
+                            "path": c_path,
+                            "artifacts_path": str(Path(c_path) / "artifacts" / "conductor"),
+                        }
+                    else:
+                        filtered_room_list.append(r)
+                room_list = filtered_room_list
+                if conductor_info is None and (rooms_root / "conductor").is_dir():
+                    c_path = str(rooms_root / "conductor")
+                    conductor_info = {
+                        "path": c_path,
+                        "artifacts_path": str(Path(c_path) / "artifacts" / "conductor"),
+                    }
+                if not used_file_this_cycle:
+                    # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
+                    # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays
+                    # no part in the staleness decision at all.
+                    live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
+                    # #1710: same fail-closed patterns load the deliverables path below uses -- a
+                    # missing/unreadable patterns file withholds every stdout-tail line rather than
+                    # skipping the gate (load_secret_patterns' own None sentinel).
+                    stdout_tail_patterns = load_secret_patterns(patterns_path)
+                    attach_live_telemetry(room_list, live_telemetry_cache, stdout_tail_patterns)
+                    # #1155: same post-drop_stale_rooms placement as attach_live_telemetry above, for
+                    # the same reason -- prunedAt is a real mtime, so it never enters the staleness
+                    # scan. #1756 review F2: prune the cache first, same ordering as
+                    # live_telemetry_cache above.
+                    pruned_info_cache = prune_pruned_info_cache(pruned_info_cache, room_list)
+                    attach_pruned_info(room_list, pruned_info_cache)
+                # else: #1557 PR-B1 -- the projection file already carries `live`/`pruned` per room
+                # (FleetProjectionWriter, #1786/#1789), computed once by the daemon; recomputing them
+                # here would be the exact per-cycle duplicate work this switch exists to remove. The
+                # in-memory caches above simply idle while `file` mode is in effect.
                 # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
                 # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
                 # with it rather than riding along as orphaned payload.
                 surviving_paths = {r.get("path") for r in (room_list or []) if isinstance(r, dict)}
                 terminal_timeline_cache = {
                     p: t for p, t in terminal_timeline_cache.items() if p in surviving_paths}
+                # #1656: split BEFORE building the wrapped body, and filter `timelines` to
+                # `hot_paths` (not the wider `surviving_paths`) -- spec/baton.md §6, "Paging and the
+                # terminal hot-set cap".
+                hot_rooms, terminal_archive, terminal_total = split_hot_and_archive(room_list or [])
+                non_terminal_count = len(room_list or []) - terminal_total
+                warn_line = nonterminal_warn_line(non_terminal_count)
+                if warn_line:
+                    log(warn_line)
+                hot_paths = {r.get("path") for r in hot_rooms if isinstance(r, dict)}
                 wrapped = build_wrapped(
-                    room_list,
+                    hot_rooms,
                     gather_underhood(cfg),
-                    {p: t for p, t in timelines.items() if p in surviving_paths},
-                    stale_hidden_count)
-                current_hash = snapshot_hash(wrapped)
+                    {p: t for p, t in timelines.items() if p in hot_paths},
+                    stale_hidden_count,
+                    terminal_total=terminal_total,
+                    terminal_archive=terminal_archive,
+                    conductor=conductor_info,
+                    staleness=staleness)
+                # record-once-ok: #1690 spec/baton.md
+                # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
+                # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
+                # live values; only the hash's SENSITIVITY to telemetry-only churn is reduced.
+                now_ts = time.time()
+                hash_wrapped = dict(wrapped)
+                hash_wrapped["rooms"] = quantize_live_for_hash(hot_rooms)  # F6: values, not the clock
+                current_hash = snapshot_hash(hash_wrapped)
                 snap_state = load_push_state(state_path)
-                if should_push_snapshot(snap_state, current_hash):
-                    now_ts = time.time()
-                    if should_coalesce_push(snap_state, now_ts, min_push_interval_s):
+                ledger_state = load_push_state(budget_path)
+                ledger = load_budget_ledger(ledger_state, now_ts)
+                if not snapshot_pushes_allowed(ledger):
+                    if not ledger.get("exhausted_notice_sent"):
+                        exhausted_until = next_utc_midnight_iso(now_ts)
+                        notice_wrapped = build_wrapped(
+                            hot_rooms, gather_underhood(cfg),
+                            {p: t for p, t in timelines.items() if p in hot_paths},
+                            stale_hidden_count, terminal_total=terminal_total,
+                            terminal_archive=terminal_archive, conductor=conductor_info,
+                            pusher={"writeBudgetExhaustedUntil": exhausted_until},
+                            staleness=staleness)
+                        post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
+                        # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
+                        # response after a committed KV put is indistinguishable, from the client, from
+                        # a failure, so the only safe posture for a hard external cap is to over-charge
+                        # a genuine failure rather than risk under-charging a silent success
+                        # (spec/baton.md §6).
+                        ledger = record_budget_write(ledger_state, now_ts, "snapshot", SNAPSHOT_KV_WRITE_COST)
+                        ledger["exhausted_notice_sent"] = True
+                        ledger_state[BUDGET_STATE_KEY] = ledger
+                        save_push_state(budget_path, ledger_state)
+                        try:
+                            post_json(cfg["push_url"], post_body)
+                        except KvWriteCapError as ex:
+                            # #1712: the notice snapshot is itself a KV write -- if the Worker is
+                            # refusing writes for real, it cannot land either. Confirm the ledger is
+                            # fully exhausted (all three producers) and log the ONE line; do not
+                            # retry the notice.
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
+                        except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                            log(f"ERROR (push, budget-exhausted notice) {type(ex).__name__}: {ex}")
+                        else:
+                            # F11 (2026-09-02 review): never persist the notice's own hash under
+                            # SNAPSHOT_HASH_KEY -- the posted body was `notice_wrapped`, not `wrapped`,
+                            # so a stored `current_hash` here would gate every future cycle on a body
+                            # that was never actually sent as "current". Clearing it means the day's
+                            # first non-exhausted cycle always re-pushes, regardless of content match,
+                            # so the exhaustion banner can never outlive the instant it names.
+                            snap_state.pop(SNAPSHOT_HASH_KEY, None)
+                            snap_state[LAST_PUSH_TS_KEY] = now_ts
+                            save_push_state(state_path, snap_state)
+                            log(f"write budget exhausted for today -- sent final snapshot, "
+                                f"resumes {exhausted_until}")
+                    else:
+                        log("write budget exhausted -- snapshot pushes stopped for today")
+                elif should_push_snapshot(snap_state, current_hash):
+                    effective_snapshot_interval = adaptive_snapshot_interval_s(ledger, now_ts, min_push_interval_s)
+                    if should_coalesce_push(snap_state, now_ts, effective_snapshot_interval):
                         last_ts = snap_state[LAST_PUSH_TS_KEY]
                         elapsed = int(now_ts - last_ts)
-                        log(f"coalesced ({elapsed}s since last push)")
+                        log(f"coalesced ({elapsed}s since last push, interval now {int(effective_snapshot_interval)}s)")
                     else:
                         # derived_at rides the ACTUAL posted body but is excluded from current_hash
-                        # (computed above from `wrapped` alone) -- it must never make the change-gate
-                        # think an otherwise-unchanged snapshot changed.
+                        # (computed above from the quantized copy of `wrapped`) -- it must never make
+                        # the change-gate think an otherwise-unchanged snapshot changed.
                         post_body = json.dumps({**wrapped, "derived_at": last_derived_at})
+                        # F3(b): charge before the POST, same reasoning as the exhaustion-notice
+                        # branch above. push_snapshot_and_record's own POST-then-record-hash ordering
+                        # is unchanged -- only the ledger charge has moved ahead of the POST.
+                        record_budget_write(ledger_state, now_ts, "snapshot", SNAPSHOT_KV_WRITE_COST)
+                        save_push_state(budget_path, ledger_state)
                         try:
                             push_snapshot_and_record(
                                 lambda b: post_json(cfg["push_url"], b),
                                 post_body, snap_state, state_path, current_hash, now_ts=now_ts)
+                        except KvWriteCapError as ex:
+                            # #1712: exhaust every producer's sub-budget right now rather than
+                            # waiting for deliver/heartbeat to each independently rediscover the same
+                            # hard cap -- this producer's own SNAPSHOT_KV_WRITE_COST charge above
+                            # already stands (F3(b)); this widens it to all three.
+                            ledger_state = load_push_state(budget_path)
+                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            save_push_state(budget_path, ledger_state)
+                            log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                                f"no writes until {ex.resets_at}")
                         except Exception as ex:  # noqa: BLE001 — a failing push must not skip the
                             # pending-push-age computation below (finding 2's whole point), and the
                             # loop must survive regardless -- caught here, not the outer except, so
-                            # execution falls through to that computation either way.
+                            # execution falls through to that computation either way. The budget
+                            # charge above already stands even though this POST failed (F3(b)).
                             log(f"ERROR (push) {type(ex).__name__}: {ex}")
                         else:
                             if skip_streak:
@@ -1388,6 +3056,17 @@ def main() -> None:
                 # the hash matches and this comes back None; a coalesced or failed push leaves
                 # snap_state's hash stale, so this reports how long content has been waiting.
                 pending_push_age = pending_push_age_s(snap_state, current_hash, time.time())
+
+                # #1690: hourly ledger log line, gated the same way should_send_heartbeat is --
+                # reload the LEDGER's own file so this reflects every write recorded above (snapshot,
+                # and any deliver/heartbeat write from a PRIOR cycle already persisted to disk).
+                log_ledger_state = load_push_state(budget_path)
+                log_now_ts = time.time()
+                if should_log_budget(log_ledger_state, log_now_ts):
+                    log_ledger = load_budget_ledger(log_ledger_state, log_now_ts)
+                    log(format_budget_log_line(log_ledger, effective_snapshot_interval))
+                    log_ledger_state["__last_budget_log_ts__"] = log_now_ts
+                    save_push_state(budget_path, log_ledger_state)
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
 
@@ -1404,18 +3083,40 @@ def main() -> None:
                 else:
                     hb_state = load_push_state(state_path)
                     now_ts = time.time()
+                    ledger_state = load_push_state(budget_path)
+                    hb_ledger = load_budget_ledger(ledger_state, now_ts)
+                    # F1 (2026-09-02 review): the derived-freshness ping gets its OWN adaptive pacing
+                    # against the heartbeat sub-budget -- see adaptive_heartbeat_interval_s's own
+                    # docstring for why a fixed 300s interval alone blew the 60-write share once
+                    # snapshot throttled past 300s and stopped suppressing it.
+                    ping_interval = adaptive_heartbeat_interval_s(hb_ledger, now_ts)
                     heartbeat_due = should_send_heartbeat(hb_state, now_ts)
-                    derived_ping_due = should_send_derived_ping(hb_state, now_ts)
-                    if heartbeat_due or derived_ping_due:
+                    derived_ping_due = should_send_derived_ping(hb_state, now_ts, ping_interval)
+                    if (heartbeat_due or derived_ping_due) and not heartbeat_allowed(hb_ledger):
+                        log("write budget exhausted -- heartbeat/derived-ping skipped this cycle")
+                    elif heartbeat_due or derived_ping_due:
                         payload_dict = {"derived_at": last_derived_at}
                         if pending_push_age is not None:
                             payload_dict["pending_push_age_s"] = pending_push_age
                         payload = json.dumps(payload_dict)
                         extra_state = {DERIVED_PING_STATE_KEY: now_ts} if derived_ping_due else None
+                        # F3(b): charge before the POST -- send_heartbeat_and_record's own
+                        # POST-then-record ordering (for HEARTBEAT_STATE_KEY/DERIVED_PING_STATE_KEY)
+                        # is unchanged; only the ledger charge has moved ahead of it.
+                        record_budget_write(ledger_state, now_ts, "heartbeat", HEARTBEAT_KV_WRITE_COST)
+                        save_push_state(budget_path, ledger_state)
                         send_heartbeat_and_record(
                             lambda: post_json(heartbeat_url, payload),
                             hb_state, state_path, now_ts, extra_state=extra_state)
                         log("heartbeat sent" if heartbeat_due else "derived-freshness ping sent")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the snapshot producer above -- exhaust every
+                # producer's sub-budget right now, not just heartbeat's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
 
@@ -1425,13 +3126,50 @@ def main() -> None:
                 else:
                     state = load_push_state(state_path)
                     patterns = load_secret_patterns(patterns_path)
-                    items = gather_deliverables(rooms_root, state, patterns)
+                    items = gather_deliverables(
+                        rooms_root, state, patterns,
+                        state_path=state_path,
+                        limit=cfg.get("deliver_batch_cap", DEFAULT_DELIVER_BATCH_COUNT_CEILING),
+                        max_bytes=cfg.get("deliver_batch_max_bytes", DEFAULT_DELIVER_BATCH_BYTES),
+                    )
                     if items:
-                        post_json(deliver_url, json.dumps({"items": items}))
-                        if patterns is not None:
-                            save_push_state(state_path, mark_pushed(state, items))
-                        log(f"delivered {len(items)} item(s) "
-                            f"({sum(1 for i in items if i['withheld'])} withheld)")
+                        now_ts = time.time()
+                        ledger_state = load_push_state(budget_path)
+                        deliver_ledger = load_budget_ledger(ledger_state, now_ts)
+                        if not deliver_allowed(deliver_ledger):
+                            log(f"write budget exhausted -- withholding {len(items)} deliverable(s) this cycle")
+                        else:
+                            # F1 (2026-09-02 review): deliver gets its own adaptive pacing against its
+                            # own sub-budget, so a backlog can never out-race the other two producers
+                            # for a shared pool the way it did pre-fix.
+                            deliver_interval = adaptive_deliver_interval_s(deliver_ledger, now_ts)
+                            if should_coalesce_producer(state, LAST_DELIVER_TS_KEY, now_ts, deliver_interval):
+                                last_deliver_ts = state[LAST_DELIVER_TS_KEY]
+                                log(f"deliver coalesced ({int(now_ts - last_deliver_ts)}s since last "
+                                    f"batch, interval now {int(deliver_interval)}s, {len(items)} "
+                                    f"item(s) waiting)")
+                            else:
+                                # F3(b): charge before the POST -- mark_pushed's own content-dedupe
+                                # stays POST-gated (only recorded on success), same as before; only
+                                # the ledger charge (a hard external limit, not a content fact) moves
+                                # ahead of it.
+                                record_budget_write(ledger_state, now_ts, "deliver", DELIVER_BATCH_KV_WRITE_COST)
+                                save_push_state(budget_path, ledger_state)
+                                post_json(deliver_url, json.dumps({"items": items}))
+                                if patterns is not None:
+                                    state = mark_pushed(state, items)
+                                state[LAST_DELIVER_TS_KEY] = now_ts
+                                save_push_state(state_path, state)
+                                log(f"delivered {len(items)} item(s) "
+                                    f"({sum(1 for i in items if i['withheld'])} withheld)")
+            except KvWriteCapError as ex:
+                # #1712: same hard-cap posture as the other two producers -- exhaust every
+                # producer's sub-budget right now, not just deliver's own.
+                ledger_state = load_push_state(budget_path)
+                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                save_push_state(budget_path, ledger_state)
+                log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
+                    f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
 
@@ -1464,6 +3202,7 @@ def _make_room(root: Path, name: str, outputs_rel: list, state="Succeeded", erro
     return room_dir
 
 
+
 def _selftest() -> int:
     import tempfile
     failures = []
@@ -1484,7 +3223,11 @@ def _selftest() -> int:
         check("missing patterns file returns the None sentinel", missing_patterns is None)
 
         items = gather_deliverables(rooms_root, {}, missing_patterns)
-        by_room = {i["room"]: i for i in items if i["artifact"]}
+        by_room = {i["room_name"]: i for i in items if i["artifact"]}
+        check("deliverable item carries room path in 'room'",
+              by_room["room-a"]["room"] == str(rooms_root / "room-a"))
+        check("deliverable item carries room name in 'room_name'",
+              by_room["room-a"]["room_name"] == "room-a")
         check("fail-closed: room-a's real report is withheld when patterns are missing",
               by_room["room-a"]["withheld"] is True
               and "patterns file missing" in by_room["room-a"]["stub_reason"]
@@ -1493,7 +3236,7 @@ def _selftest() -> int:
               all("prompt" not in (i.get("artifact") or "") and "stdout" not in (i.get("artifact") or "")
                   for i in items))
         check("a room with zero declared outputs still yields one verdict-only item",
-              any(i["room"] == "room-b" and i["artifact"] is None and i["verdict"]["error"] == "boom"
+              any(i["room_name"] == "room-b" and i["artifact"] is None and i["verdict"]["error"] == "boom"
                   for i in items))
 
         # -- patterns present, no hit: real content passes through --
@@ -1503,13 +3246,13 @@ def _selftest() -> int:
         check("an empty-but-present patterns file parses to [] (not the fail-closed sentinel)",
               clean_patterns == [])
         items2 = gather_deliverables(rooms_root, {}, clean_patterns)
-        report = next(i for i in items2 if i["room"] == "room-a" and i["artifact"])
+        report = next(i for i in items2 if i["room_name"] == "room-a" and i["artifact"])
         check("clean content is uploaded verbatim when nothing matches",
               report["withheld"] is False and "Report A" in report["content"])
         check("title comes from the first markdown heading", report["title"] == "Report A")
         check("deliverable carries ISO-8601 created_at from artifact mtime",
               isinstance(report.get("created_at"), str) and "T" in report["created_at"])
-        verdict_only = next(i for i in items2 if i["room"] == "room-b")
+        verdict_only = next(i for i in items2 if i["room_name"] == "room-b")
         check("verdict-only deliverable carries created_at from terminal.json mtime",
               isinstance(verdict_only.get("created_at"), str) and "T" in verdict_only["created_at"])
         unreadable_item = build_item("room-x", tmp / "nonexistent", tmp / "nonexistent" / "missing.md", {}, [])
@@ -1523,7 +3266,7 @@ def _selftest() -> int:
         _make_room(rooms_root, "room-c", [("secret.md", "token: sk-abcdefghijklmnop\n")])
         hit_patterns = load_secret_patterns(hit_patterns_file)
         items3 = gather_deliverables(rooms_root, {}, hit_patterns)
-        secret_item = next(i for i in items3 if i["room"] == "room-c")
+        secret_item = next(i for i in items3 if i["room_name"] == "room-c")
         check("a pattern hit withholds the content", secret_item["withheld"] is True)
         check("the stub names the matched pattern's INDEX, not its text",
               secret_item["stub_reason"] == "matched pattern #0" and "sk-" not in secret_item["content"])
@@ -1532,7 +3275,7 @@ def _selftest() -> int:
         state_after = mark_pushed({}, items2)
         items4 = gather_deliverables(rooms_root, state_after, clean_patterns)
         check("dedupe skips an already-pushed, unchanged artifact",
-              not any(i["room"] == "room-a" and i["artifact"] == "artifacts/execution_x/report.md"
+              not any(i["room_name"] == "room-a" and i["artifact"] == "artifacts/execution_x/report.md"
                       for i in items4))
 
         # -- polarity: changed content is offered again despite matching state key --
@@ -1540,7 +3283,7 @@ def _selftest() -> int:
             "# Report A v2\n\nchanged\n", encoding="utf-8")
         items5 = gather_deliverables(rooms_root, state_after, clean_patterns)
         check("dedupe re-offers an artifact whose content changed",
-              any(i["room"] == "room-a" and i["title"] == "Report A v2" for i in items5))
+              any(i["room_name"] == "room-a" and i["title"] == "Report A v2" for i in items5))
 
         # -- fail-closed is never memorized: gather_deliverables only reads state, it never writes
         # it -- main() is what decides whether to persist, and it skips that when patterns is None
@@ -1552,6 +3295,141 @@ def _selftest() -> int:
         second = gather_deliverables(rooms_root, {}, still_missing)
         check("a fail-closed run offers the same items every time (nothing here marks it done)",
               [i["id"] for i in first] == [i["id"] for i in second] and len(first) > 0)
+
+        # -- #1617: deliverables join keyed by room path, not room name --
+        shared_root1 = tmp / "cluster1" / "rooms"
+        shared_root2 = tmp / "cluster2" / "rooms"
+        shared_root1.mkdir(parents=True)
+        shared_root2.mkdir(parents=True)
+        room1_dir = _make_room(shared_root1, "same-name", [("report.md", "# Same Content\n")])
+        room2_dir = _make_room(shared_root2, "same-name", [("report.md", "# Same Content\n")])
+
+        items_r1 = gather_deliverables(shared_root1, {}, clean_patterns)
+        items_r2 = gather_deliverables(shared_root2, {}, clean_patterns)
+        check("deliverable item 'room' is the full room path string",
+              items_r1[0]["room"] == str(room1_dir) and items_r2[0]["room"] == str(room2_dir))
+        check("deliverable item 'room_name' carries the directory name for display",
+              items_r1[0]["room_name"] == "same-name" and items_r2[0]["room_name"] == "same-name")
+        check("deliverable item ids are distinct between same-named rooms in different paths",
+              items_r1[0]["id"] != items_r2[0]["id"]
+              and str(room1_dir) in items_r1[0]["id"]
+              and str(room2_dir) in items_r2[0]["id"])
+
+        # Dedupe keying: mark room1 pushed into state.
+        state_with_r1 = mark_pushed({}, items_r1)
+        check("state keys dedupe by room path, not room name",
+              f"{room1_dir}::artifacts/execution_x/report.md" in state_with_r1
+              and "same-name::artifacts/execution_x/report.md" not in state_with_r1)
+
+        # Scanning room2 with state_with_r1 must NOT skip room2's deliverable (same name, same content, different path)
+        items_r2_after_r1 = gather_deliverables(shared_root2, state_with_r1, clean_patterns)
+        check("same-named room in different path is NOT skipped by dedupe when another room with same name and content was pushed",
+              len(items_r2_after_r1) == 1 and items_r2_after_r1[0]["room"] == str(room2_dir))
+
+        # (Control) scanning room1 again with state_with_r1 IS skipped by dedupe
+        items_r1_again = gather_deliverables(shared_root1, state_with_r1, clean_patterns)
+        check("(control) identical room path with unchanged content IS skipped by dedupe",
+              len(items_r1_again) == 0)
+
+        # -- Migration on load & format versioning (#1617 / PR #1632) --
+        mig_rooms_root = tmp / "mig_rooms"
+        mig_rooms_root.mkdir()
+        mig_room_dir = _make_room(mig_rooms_root, "room-legacy", [("report.md", "# Legacy Content\n")])
+        mig_hash = sha256_hex((mig_room_dir / "artifacts" / "execution_x" / "report.md").read_bytes())
+        mig_state_file = tmp / "mig-push-state.json"
+
+        # (a) an old-format state file with one legacy key migrates and the item is NOT re-pushed
+        old_state = {"room-legacy::artifacts/execution_x/report.md": mig_hash}
+        mig_state_file.write_text(json.dumps(old_state), encoding="utf-8")
+        loaded_state = load_push_state(mig_state_file)
+
+        mig_items = gather_deliverables(mig_rooms_root, loaded_state, clean_patterns, state_path=mig_state_file)
+        check("(a) old-format state migrates: item is NOT re-pushed", len(mig_items) == 0)
+        check("(a) old legacy key is removed from state", "room-legacy::artifacts/execution_x/report.md" not in loaded_state)
+        check("(a) path key is adopted in state", f"{mig_room_dir}::artifacts/execution_x/report.md" in loaded_state)
+        check("(a) state format version is recorded", loaded_state.get(STATE_FORMAT_VERSION_KEY) == CURRENT_STATE_FORMAT_VERSION)
+        persisted_state = load_push_state(mig_state_file)
+        check("(a) migrated state is persisted to disk",
+              f"{mig_room_dir}::artifacts/execution_x/report.md" in persisted_state
+              and "room-legacy::artifacts/execution_x/report.md" not in persisted_state
+              and persisted_state.get(STATE_FORMAT_VERSION_KEY) == CURRENT_STATE_FORMAT_VERSION)
+
+        # (b) a legacy key ambiguous between two same-named rooms is not adopted
+        ambig_root1 = tmp / "ambig1" / "rooms"
+        ambig_root2 = tmp / "ambig2" / "rooms"
+        ambig_root1.mkdir(parents=True)
+        ambig_root2.mkdir(parents=True)
+        ambig_r1 = _make_room(ambig_root1, "ambig-room", [("report.md", "# Clash\n")])
+        ambig_r2 = _make_room(ambig_root2, "ambig-room", [("report.md", "# Clash\n")])
+        ambig_hash = sha256_hex((ambig_r1 / "artifacts" / "execution_x" / "report.md").read_bytes())
+        ambig_state = {"ambig-room::artifacts/execution_x/report.md": ambig_hash}
+        terminal_ambig = [(str(ambig_r1), "ambig-room", ambig_r1), (str(ambig_r2), "ambig-room", ambig_r2)]
+        migrate_push_state(ambig_state, terminal_ambig)
+        check("(b) ambiguous legacy key is not adopted for room 1",
+              f"{ambig_r1}::artifacts/execution_x/report.md" not in ambig_state)
+        check("(b) ambiguous legacy key is not adopted for room 2",
+              f"{ambig_r2}::artifacts/execution_x/report.md" not in ambig_state)
+
+        ambig_items_1 = gather_deliverables(ambig_root1, ambig_state, clean_patterns)
+        ambig_items_2 = gather_deliverables(ambig_root2, ambig_state, clean_patterns)
+        check("(b) both colliding rooms re-push once",
+              len(ambig_items_1) == 1 and len(ambig_items_2) == 1)
+
+        # (c) item id for unchanged deliverable after migration equals id new code computes
+        expected_new_id = f"{mig_room_dir}::artifacts/execution_x/report.md::{mig_hash[:16]}"
+        verdict = verdict_summary(load_terminal(mig_room_dir))
+        computed_item = build_item(str(mig_room_dir), mig_room_dir, mig_room_dir / "artifacts" / "execution_x" / "report.md",
+                                   verdict, clean_patterns, room_name="room-legacy")
+        check("(c) item id equals the id new code computes (inbox:index dedupe in worker.js replaces rather than duplicates)",
+              computed_item["id"] == expected_new_id)
+
+        # -- Deliverables batch capping (#1617 / PR #1632) --
+        cap_root = tmp / "cap_rooms"
+        cap_root.mkdir()
+        for i in range(15):
+            _make_room(cap_root, f"room-batch-{i:02d}", [("report.md", f"# Batch {i}\n")])
+        capped_items = gather_deliverables(cap_root, {}, clean_patterns, limit=10)
+        check("gather_deliverables caps items at limit (default 10) to prevent retry storm",
+              len(capped_items) == 10)
+
+        # -- F13 (2026-09-02 review): cumulative-BYTES cap, not just item count -- a fixed count was
+        # only ever a proxy for the body size worker.js's own POST cap actually constrains.
+        bytes_root = tmp / "bytes_rooms"
+        bytes_root.mkdir()
+        big_text = "x" * 2_000_000  # 2MB per item -- 3 items would exceed a 4MB budget
+        for i in range(5):
+            _make_room(bytes_root, f"room-big-{i:02d}", [("report.md", big_text)])
+        byte_capped_items = gather_deliverables(bytes_root, {}, clean_patterns, max_bytes=4_000_000)
+        check("(F13) a cumulative-bytes cap admits only as many items as fit the byte budget",
+              1 <= len(byte_capped_items) <= 2)
+        oversized_root = tmp / "oversized_room"
+        oversized_root.mkdir()
+        _make_room(oversized_root, "room-huge", [("report.md", "y" * 5_000_000)])
+        oversized_items = gather_deliverables(oversized_root, {}, clean_patterns, max_bytes=4_000_000)
+        check("(F13) a SINGLE item larger than the byte budget is still admitted (fail toward one "
+              "oversized batch, never toward silently dropping the only thing to show)",
+              len(oversized_items) == 1)
+
+    # -- F4 (2026-09-02 review): save_push_state writes atomically (temp file + os.replace), and the
+    # write-budget ledger lives in its own file separate from push-state.local.json.
+    with tempfile.TemporaryDirectory() as atomic_tmp:
+        atomic_tmp = Path(atomic_tmp)
+        state_file = atomic_tmp / "push-state.local.json"
+        save_push_state(state_file, {"a": 1})
+        check("(F4) save_push_state leaves no leftover .tmp file behind",
+              not (atomic_tmp / "push-state.local.json.tmp").exists())
+        check("(F4) save_push_state's content round-trips through load_push_state",
+              load_push_state(state_file).get("a") == 1)
+        save_push_state(state_file, {"a": 2})
+        check("(F4) a second save_push_state call still round-trips (the atomic replace doesn't "
+              "wedge on a pre-existing target file)",
+              load_push_state(state_file).get("a") == 2)
+        ledger_file = atomic_tmp / "write-budget.local.json"
+        ledger_scratch: dict = {}
+        record_budget_write(ledger_scratch, 1000.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+        save_push_state(ledger_file, ledger_scratch)
+        check("(F4) the ledger's own file round-trips independent of push-state.local.json",
+              load_budget_ledger(load_push_state(ledger_file), 1000.0)["snapshot"] == 1)
 
     # -- deliver_url derivation --
     check("deliver_url derives from push_url by swapping the path segment",
@@ -1858,9 +3736,16 @@ def _selftest() -> int:
     check("extract_live_counts ignores a torn/unparseable last line instead of raising",
           extract_live_counts(['{"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}',
                                 '{"type": "assistant", "message": {"conte']) == {"toolCalls": 1})
-    # -- this review: live output/context tokens for claude, shipped on the shape a real capture
-    # confirmed 2026-09-01 (docs/vendor-capabilities.md) -- `message.usage` on every `assistant`
-    # line, not just the terminal `result` line the original ruling checked.
+    check("extract_live_counts also counts a tool step at its ERROR terminal state, not DONE only "
+          "(#1686 review F3 -- mirrors the engine's own ClaudeUsageParser/AgyUsageParser.CountToolSteps "
+          "DONE-or-ERROR unit; previously a failed agy tool call incremented the engine's arrest count "
+          "without incrementing the operator's lane-card count)",
+          extract_live_counts([
+              json.dumps({"event": "step_update", "step_update": {"state": "ERROR", "step_type": "tool"}}),
+          ]) == {"toolCalls": 1})
+    # -- #1682: billed tokens/turns for BOTH vendors, on the shape a real capture confirmed
+    # 2026-09-01/02 (docs/vendor-capabilities.md) -- `message.usage` on every claude `assistant`
+    # line and agy's DONE/agent_response `step_update.usage`, not just either vendor's terminal line.
     real_assistant_usage_line = json.dumps({
         "type": "assistant",
         "message": {
@@ -1873,20 +3758,60 @@ def _selftest() -> int:
         },
     })
     real_counts = extract_live_counts([real_assistant_usage_line])
-    check("outputTokens reads message.usage.output_tokens off the real captured envelope shape",
-          real_counts.get("outputTokens") == 4)
+    check("billedTokens is cache_creation ALONE off the real captured claude envelope shape (#1706 -- "
+          "NOT input/output, which are mid-stream placeholder values on this line; NOT thinking; and NOT "
+          "cache_read, which is display-only)",
+          real_counts.get("billedTokens") == 12066)
+    check("a claude batch marks billedTokens as a floor (#1706)", real_counts.get("billedIsFloor") is True)
+    check("turns is 1 for a single usage-bearing line", real_counts.get("turns") == 1)
     check("contextTokens sums the message's three input-side usage counts (fresh input plus both "
           "cache counters)",
           real_counts.get("context", {}).get("contextTokens") == 2 + 12066 + 15092)
     check("cacheReadTokens is cache_read_input_tokens alone",
           real_counts.get("context", {}).get("cacheReadTokens") == 15092)
 
-    check("outputTokens is ADDITIVE across multiple assistant messages in one batch (whole-tree, "
-          "including subagent assistant lines, which are never filtered out)",
-          extract_live_counts([
-              json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 100}}}),
-              json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 30}}}),
-          ]).get("outputTokens") == 130)
+    additive_claude_lines = [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 0}}}),
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": 60,
+            "cache_read_input_tokens": 0}}}),
+    ]
+    check("billedTokens/turns are ADDITIVE across multiple assistant messages in one batch "
+          "(whole-tree, including subagent assistant lines, which are never filtered out)",
+          extract_live_counts(additive_claude_lines).get("billedTokens") == 160
+          and extract_live_counts(additive_claude_lines).get("turns") == 2)
+
+    # -- #1706: the twin of the engine's own measurement, on a REAL consecutive line pair from room
+    # dispatch-implement-3dc5e21a's `.stdout.log` (the same pair
+    # TokenBudgetMonitorTests.The_dedupe_premise_holds_on_a_real_consecutive_pair_from_room_3dc5e21a
+    # uses -- one home for the fixture's provenance, two languages reading it). Its `input_tokens` of
+    # 2 and `output_tokens` of 1 are the placeholders; only the 39,901 cache-creation figure is real.
+    real_pair_1706 = [
+        json.dumps({"type": "assistant", "message": {
+            "id": "msg_011Cee7wqgwCecnuPg5NCH6y", "content": [{"type": "text"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 39901,
+                      "cache_read_input_tokens": 0, "output_tokens": 1}}}),
+        json.dumps({"type": "assistant", "message": {
+            "id": "msg_011Cee7wqgwCecnuPg5NCH6y", "content": [{"type": "tool_use"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 39901,
+                      "cache_read_input_tokens": 0, "output_tokens": 1}}}),
+    ]
+    real_pair_counts = extract_live_counts(real_pair_1706)
+    check("#1706: the real captured pair bills 39,901 -- cache_creation once, deduped, with neither "
+          "placeholder column added (pre-#1706 this read 2 + 1 + 39,901)",
+          real_pair_counts.get("billedTokens") == 39901)
+    check("#1706: that real pair is marked a floor", real_pair_counts.get("billedIsFloor") is True)
+    check("#1706: billedIsFloor is STICKY across batches -- a later batch with no claude usage at all "
+          "never clears a floor an earlier batch established",
+          (lambda state: (_apply_live_delta(state, extract_live_counts(real_pair_1706)),
+                          _apply_live_delta(state, extract_live_counts(
+                              [json.dumps({"event": "step_update", "step_update": {
+                                  "state": "DONE", "step_type": "agent_response",
+                                  "usage": {"input_tokens": 5, "output_tokens": 5}}})])),
+                          state["counts"].get("billedIsFloor"))[-1])(
+              {"counts": {"toolCalls": 0}, "context": None}) is True)
     check("context is the LATEST message's level within a batch, never summed across messages",
           extract_live_counts([
               json.dumps({"type": "assistant", "message": {"usage": {
@@ -1896,21 +3821,90 @@ def _selftest() -> int:
                   "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 200,
                   "cache_creation_input_tokens": 0}}}),
           ]).get("context") == {"contextTokens": 205, "cacheReadTokens": 200})
-    check("outputTokens is ABSENT, never a substituted zero, when no assistant line reports one",
-          "outputTokens" not in extract_live_counts([
+    # #1666 review F5: parent trio (300) -> sub-agent trio with a SMALLER context (40) -> parent trio
+    # with a SMALLER value than the first (100, e.g. a genuine post-compaction drop). Mirrors the
+    # engine's TokenBudgetMonitorTests same-bucket-drop arm: the sub-agent line must not touch
+    # `context` at all, but a later genuine parent drop still must.
+    context_bucket_lines = [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 290,
+            "cache_creation_input_tokens": 5}}}),
+        json.dumps({"type": "assistant", "parent_tool_use_id": "toolu_01subagent",
+                    "message": {"usage": {
+                        "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 30,
+                        "cache_creation_input_tokens": 5}}}),
+    ]
+    check("a sub-agent trio line (root parent_tool_use_id a string) leaves `context` UNCHANGED, "
+          "matching the engine's cleared-bucket rule that a sub-agent reading never sets the parent's "
+          "reported level",
+          extract_live_counts(context_bucket_lines).get("context")
+          == {"contextTokens": 300, "cacheReadTokens": 290})
+    context_bucket_lines_then_parent_drop = context_bucket_lines + [
+        json.dumps({"type": "assistant", "message": {"usage": {
+            "output_tokens": 1, "input_tokens": 5, "cache_read_input_tokens": 90,
+            "cache_creation_input_tokens": 5}}}),
+    ]
+    check("a later PARENT trio line with a smaller value still drops `context` -- a genuine drop is "
+          "never pinned by an earlier, larger sub-agent reading",
+          extract_live_counts(context_bucket_lines_then_parent_drop).get("context")
+          == {"contextTokens": 100, "cacheReadTokens": 90})
+    check("billedTokens/turns are ABSENT, never a substituted zero, when no line reports usage",
+          "billedTokens" not in extract_live_counts([
+              json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})])
+          and "turns" not in extract_live_counts([
               json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}})]))
     check("context is ABSENT when the cache fields aren't ALL present -- never a partial figure "
           "built from input_tokens alone (the trap the original ruling correctly named)",
           "context" not in extract_live_counts([
               json.dumps({"type": "assistant", "message": {"usage": {"output_tokens": 4, "input_tokens": 2}}})]))
-    check("agy step_update heartbeats never contribute token fields -- no usage field to read",
+    check("agy DONE/tool step_update heartbeats contribute no token fields (no usage on that step_type)",
           extract_live_counts([
               json.dumps({"event": "step_update", "step_update": {"state": "DONE", "step_type": "tool"}})
           ]) == {"toolCalls": 1})
-    check("a terminal `result` line's usage never leaks into live counts -- only type==assistant is read",
+    # #1682: corrects the prior claim that agy carries "no usage field to read at all" -- a real
+    # capture (dispatch-implement-38c24d11) shows DONE/agent_response step_updates DO carry one.
+    real_agy_usage_line = json.dumps({
+        "event": "step_update",
+        "step_update": {
+            "state": "DONE", "step_type": "agent_response",
+            "usage": {"input_tokens": 14205, "output_tokens": 443, "thinking_tokens": 349,
+                       "cache_read_tokens": 0, "total_tokens": 14648},
+        },
+    })
+    real_agy_counts = extract_live_counts([real_agy_usage_line])
+    check("billedTokens reads agy's DONE/agent_response step_update.usage (input + output, NOT thinking)",
+          real_agy_counts.get("billedTokens") == 14205 + 443)
+    check("turns is 1 for a single agy usage-bearing line", real_agy_counts.get("turns") == 1)
+    check("#1706 POLARITY: agy's step_update usage carries its REAL input/output, so its billed figure "
+          "is a measurement and billedIsFloor is absent -- without this arm a rule that marked every "
+          "batch a floor would pass every claude check above",
+          "billedIsFloor" not in real_agy_counts)
+    check("agy step_update contributes no `context` -- claude-only (no cache_creation figure to build a trio from)",
+          "context" not in real_agy_counts)
+    check("a terminal `result` line's usage never leaks into live counts -- only type==assistant/step_update are read",
           extract_live_counts([
               json.dumps({"type": "result", "usage": {"output_tokens": 999, "input_tokens": 999}})
           ]) == {"toolCalls": 0})
+
+    # #1686 review F6 -- extract_live_counts's own docstring above has the measured shape this
+    # reproduces; dedupe by message.id closes it.
+    def _dup_line(message_id: str, cache_creation: int) -> str:
+        return json.dumps({"type": "assistant", "message": {"id": message_id, "usage": {
+            "input_tokens": 2, "output_tokens": 3, "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": 0}}})
+
+    dup_message_lines = [_dup_line("msg_1", 110), _dup_line("msg_1", 110), _dup_line("msg_2", 55)]
+    dup_seen_ids: set = set()
+    dup_counts = extract_live_counts(dup_message_lines, dup_seen_ids)
+    check("billedTokens dedupes a repeated message.id instead of summing it twice",
+          dup_counts.get("billedTokens") == 110 + 55)
+    check("turns dedupes the same way", dup_counts.get("turns") == 2)
+
+    # A repeat that arrives in a LATER batch (a later poll cycle) must still dedupe against the SAME
+    # persistent seen_message_ids the caller threads through live_cache's per-execution state.
+    later_batch_counts = extract_live_counts([_dup_line("msg_1", 110)], dup_seen_ids)
+    check("a repeated message.id in a LATER batch (persistent seen-set) still dedupes",
+          "billedTokens" not in later_batch_counts)
 
     check("live_telemetry_for_room is None with no Running step",
           live_telemetry_for_room({"path": "/rooms/x", "steps": [{"id": "s1", "state": "Succeeded"}]}) is None)
@@ -1959,6 +3953,103 @@ def _selftest() -> int:
     check("attach_live_telemetry gates on the DISPLAYED state, never touching a Stalled room "
           "(#1513 confirmed-dead) even though its raw step still reads Running",
           "live" not in stalled_room)
+
+    # #1155: pruned_info_for_room / attach_pruned_info -- red first, the two selftest arms the
+    # issue asked for: directory absent -> no field; directory present with 25 -> count 25, 20 newest.
+    with tempfile.TemporaryDirectory() as tmp:
+        no_pruned_room_dir = Path(tmp) / "no-pruned-room"
+        (no_pruned_room_dir / "artifacts").mkdir(parents=True)
+        check("pruned_info_for_room is None when artifacts/pruned/ does not exist",
+              pruned_info_for_room({"path": str(no_pruned_room_dir)}) is None)
+
+        no_pruned_room = {"path": str(no_pruned_room_dir)}
+        attach_pruned_info([no_pruned_room], {})
+        check("attach_pruned_info never adds a `pruned` key it cannot back (no pruned/ dir)",
+              "pruned" not in no_pruned_room)
+
+        many_pruned_room_dir = Path(tmp) / "many-pruned-room"
+        pruned_root = many_pruned_room_dir / "artifacts" / "pruned"
+        pruned_root.mkdir(parents=True)
+        for i in range(25):
+            exec_dir = pruned_root / f"execution_{i:02d}"
+            exec_dir.mkdir()
+            (exec_dir / "report.md").write_text(f"pruned artifact {i}", encoding="utf-8")
+            mtime = time.time() - (25 - i)  # execution_00 oldest, execution_24 newest
+            os.utime(exec_dir, (mtime, mtime))
+
+        pruned_info = pruned_info_for_room({"path": str(many_pruned_room_dir)})
+        check("pruned_info_for_room reports the true total count (25), not just the capped list",
+              pruned_info is not None and pruned_info["count"] == 25)
+        check("pruned_info_for_room caps `items` at PRUNED_ITEMS_CAP (20)",
+              pruned_info is not None and len(pruned_info["items"]) == 20)
+        check("pruned_info_for_room's `items` are the 20 NEWEST by prunedAt, not the first 20 found",
+              pruned_info is not None
+              and {i["name"] for i in pruned_info["items"]}
+              == {f"execution_{n:02d}" for n in range(5, 25)})
+        check("pruned_info_for_room's items carry name/bytes/prunedAt",
+              pruned_info is not None
+              and all(isinstance(i["name"], str) and isinstance(i["bytes"], int)
+                      and isinstance(i["prunedAt"], str) and "T" in i["prunedAt"]
+                      for i in pruned_info["items"]))
+        check("pruned_info_for_room sums a pruned execution dir's bytes from its files",
+              pruned_info is not None
+              and next(i for i in pruned_info["items"] if i["name"] == "execution_24")["bytes"]
+              == len("pruned artifact 24"))
+
+        many_pruned_room = {"path": str(many_pruned_room_dir)}
+        attach_pruned_info([many_pruned_room], {})
+        check("attach_pruned_info attaches the same `pruned` shape in place",
+              many_pruned_room.get("pruned", {}).get("count") == 25)
+
+        empty_subdirs_room_dir = Path(tmp) / "empty-subdirs-room"
+        empty_pruned_root = empty_subdirs_room_dir / "artifacts" / "pruned"
+        empty_pruned_root.mkdir(parents=True)
+        (empty_pruned_root / "execution_empty-1").mkdir()
+        (empty_pruned_root / "execution_empty-2").mkdir()
+        empty_pruned_info = pruned_info_for_room({"path": str(empty_subdirs_room_dir)})
+        check("pruned_info_for_room attaches entries with bytes: 0 for pruned dirs holding only "
+              "empty subdirectories, rather than treating them as absent (#1756 review F3)",
+              empty_pruned_info is not None and empty_pruned_info["count"] == 2
+              and all(i["bytes"] == 0 for i in empty_pruned_info["items"]))
+
+    # #1756 review F2: pruned_info_cache -- a second call with an unchanged pruned/ dir hits the
+    # cache (no rglob walk); a new pruned entry changes the dir's (mtime, child count) key and
+    # invalidates it.
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_room_dir = Path(tmp) / "cache-room"
+        cache_pruned_root = cache_room_dir / "artifacts" / "pruned"
+        cache_pruned_root.mkdir(parents=True)
+        (cache_pruned_root / "execution_cache-1").mkdir()
+
+        rglob_calls = {"n": 0}
+        real_rglob = Path.rglob
+
+        def counting_rglob(self, pattern):
+            rglob_calls["n"] += 1
+            return real_rglob(self, pattern)
+
+        pruned_cache: dict = {}
+        cache_room = {"path": str(cache_room_dir)}
+        Path.rglob = counting_rglob
+        try:
+            first = pruned_info_for_room(cache_room, pruned_cache)
+            calls_after_first = rglob_calls["n"]
+            check("pruned_info_for_room walks the tree on the first call",
+                  first is not None and calls_after_first > 0)
+
+            second = pruned_info_for_room(cache_room, pruned_cache)
+            check("pruned_info_for_room's second call over an UNCHANGED pruned/ dir hits the "
+                  "cache -- no additional rglob walk (#1756 review F2)",
+                  second == first and rglob_calls["n"] == calls_after_first)
+
+            (cache_pruned_root / "execution_cache-2").mkdir()
+            third = pruned_info_for_room(cache_room, pruned_cache)
+            check("pruned_info_for_room's cache invalidates when a new pruned entry appears "
+                  "(child count changes the cache key)",
+                  third is not None and third["count"] == 2
+                  and rglob_calls["n"] > calls_after_first)
+        finally:
+            Path.rglob = real_rglob
 
     # -- this review, finding 4: incremental reading -- a second cycle over an UNCHANGED cache only
     # counts newly-appended bytes, never re-parses the whole file. --
@@ -2076,6 +4167,243 @@ def _selftest() -> int:
     check("pending_push_age_s is the elapsed time since the last SUCCESSFUL push, while content "
           "still differs from the persisted hash",
           pending_push_age_s({LAST_PUSH_TS_KEY: 9_000.0}, "h", 10_000.0) == 1_000.0)
+
+    # -- #1710: stdout tail for a Running room's detail pane -- the cap, the per-line secret gate, and
+    # absence on both a terminal room and a missing log. --
+    with tempfile.TemporaryDirectory() as tmp:
+        room_dir = Path(tmp) / "tail-room"
+        exec_dir = room_dir / "artifacts" / "execution_exec-tail-1"
+        exec_dir.mkdir(parents=True)
+        stdout_path = exec_dir / ".stdout.log"
+
+        # A 5 MB log: a giant early line neither the read window nor the line cap should ever
+        # surface, followed by 60 lines long enough (~150 bytes each) that the last 40 of them alone
+        # exceed STDOUT_TAIL_MAX_BYTES -- exercising the truncate-from-the-front path, not just the
+        # line-count cap.
+        big_line = "x" * (5 * 1024 * 1024)
+        tail_lines = [f"line-{i:03d}-" + "y" * 140 for i in range(60)]
+        stdout_path.write_text(big_line + "\n" + "\n".join(tail_lines) + "\n", encoding="utf-8")
+        tail = stdout_tail_for_room(str(room_dir), "exec-tail-1", [])
+        check("stdout_tail_for_room caps a 5 MB log at STDOUT_TAIL_MAX_BYTES",
+              tail is not None and len(tail.encode("utf-8")) <= STDOUT_TAIL_MAX_BYTES)
+        check("stdout_tail_for_room never surfaces the padding line that pushed the log to 5 MB",
+              tail is not None and "x" * 100 not in tail)
+        check("stdout_tail_for_room keeps only the newest lines (the last one written survives)",
+              tail is not None and "line-059" in tail)
+        check("truncating from the front marks the cut with STDOUT_TAIL_TRUNCATION_MARK on the "
+              "first surviving line, rather than silently dropping the earliest lines",
+              tail is not None and tail.startswith(STDOUT_TAIL_TRUNCATION_MARK))
+        check("the byte cap actually dropped lines (fewer than the STDOUT_TAIL_MAX_LINES the "
+              "line-count slice alone would have kept) -- proves the truncate-from-the-front path "
+              "ran, not just the line-count cap",
+              tail is not None and len(tail.split("\n")) < STDOUT_TAIL_MAX_LINES)
+
+        # The withheld line: one matching line becomes [withheld], the rest of the tail rides through.
+        secret_room_dir = Path(tmp) / "secret-room"
+        secret_exec_dir = secret_room_dir / "artifacts" / "execution_exec-secret-1"
+        secret_exec_dir.mkdir(parents=True)
+        secret_stdout = secret_exec_dir / ".stdout.log"
+        secret_stdout.write_text("plain line one\nAKIA_FAKE_SECRET_TOKEN\nplain line two\n", encoding="utf-8")
+        secret_patterns = [re.compile(r"AKIA_FAKE")]
+        secret_tail = stdout_tail_for_room(str(secret_room_dir), "exec-secret-1", secret_patterns)
+        check("a line matching a secret pattern is replaced with [withheld], never dropping the tail",
+              secret_tail is not None and "[withheld]" in secret_tail
+              and "plain line one" in secret_tail and "plain line two" in secret_tail
+              and "AKIA_FAKE_SECRET_TOKEN" not in secret_tail)
+        withheld_all_tail = stdout_tail_for_room(str(secret_room_dir), "exec-secret-1", None)
+        check("a missing/unreadable patterns file (None, the fail-closed sentinel) withholds every "
+              "line of the tail, matching the deliverables path's own fail-closed posture",
+              withheld_all_tail is not None
+              and all(ln == "[withheld]" for ln in withheld_all_tail.split("\n")))
+
+        # Absence: no captured stdout yet for this execution.
+        check("stdout_tail_for_room is absent (None), never a fabricated empty string, when the "
+              "execution has no captured .stdout.log yet",
+              stdout_tail_for_room(str(room_dir), "exec-never-started", []) is None)
+
+        # -- #1723: a multi-byte character straddling the max_bytes truncation cut yields no U+FFFD.
+        # Five short filler lines, then one long line of 2-byte UTF-8 characters (broken into
+        # sub-200-char runs by spaces, so the #1723 blob-elision arm below never touches it) with NO
+        # trailing newline (the log is still being written) -- the shape of the #1723 bug report: the
+        # truncation cut lands inside the newest, still-open line, with no newline anywhere ahead of
+        # the cut to recover a boundary from, so the pre-fix version left a genuine leading U+FFFD.
+        straddle_room_dir = Path(tmp) / "straddle-room"
+        straddle_exec_dir = straddle_room_dir / "artifacts" / "execution_exec-straddle-1"
+        straddle_exec_dir.mkdir(parents=True)
+        straddle_long_line = ("é" * 50 + " ") * 60
+        (straddle_exec_dir / ".stdout.log").write_text("short\n" * 5 + straddle_long_line, encoding="utf-8")
+        straddle_tail = stdout_tail_for_room(str(straddle_room_dir), "exec-straddle-1", [], max_bytes=106)
+        check("#1723: a multi-byte character straddling the byte-cap cut never yields a U+FFFD",
+              straddle_tail is not None and "�" not in straddle_tail)
+        check("rev1738 F3: with no line boundary anywhere ahead of the cut, the newest (already "
+              "capped) line is kept, trimmed to fit -- not dropped to just the truncation mark",
+              straddle_tail is not None and straddle_tail.startswith(STDOUT_TAIL_TRUNCATION_MARK)
+              and straddle_tail != STDOUT_TAIL_TRUNCATION_MARK
+              and len(straddle_tail.encode("utf-8")) <= 106)
+
+        # -- #1723: a stream-json assistant/tool_use/tool_result triple renders to three prose lines
+        # with no braces, mirroring Baton.Cli's WorkerStreamLineRenderer output shapes. --
+        prose_room_dir = Path(tmp) / "prose-room"
+        prose_exec_dir = prose_room_dir / "artifacts" / "execution_exec-prose-1"
+        prose_exec_dir.mkdir(parents=True)
+        prose_lines_in = [
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Reading the issue now."}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}}]}}),
+            json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "x", "is_error": False,
+                 "content": "total 0\ndrwxr-xr-x"}]}}),
+        ]
+        (prose_exec_dir / ".stdout.log").write_text("\n".join(prose_lines_in) + "\n", encoding="utf-8")
+        prose_tail = stdout_tail_for_room(str(prose_room_dir), "exec-prose-1", [])
+        prose_out_lines = prose_tail.split("\n") if prose_tail else []
+        check("#1723: an assistant/tool_use/tool_result triple renders to exactly three prose lines",
+              len(prose_out_lines) == 3)
+        check("#1723: none of the rendered prose lines carry a raw JSON brace",
+              prose_tail is not None and "{" not in prose_tail and "}" not in prose_tail)
+        check("#1723: assistant text renders as the plain text itself",
+              prose_out_lines[:1] == ["Reading the issue now."])
+        check("#1723: tool_use renders as the tool name plus a one-line input summary",
+              prose_out_lines[1:2] == ["[tool: Bash(command=ls -la)]"])
+        check("#1723: tool_result renders its first line",
+              prose_out_lines[2:3] == ["[tool_result: total 0]"])
+
+        # -- #1723: a 5 KB base64-shaped token (no whitespace) is elided, never shipped whole. --
+        blob_room_dir = Path(tmp) / "blob-room"
+        blob_exec_dir = blob_room_dir / "artifacts" / "execution_exec-blob-1"
+        blob_exec_dir.mkdir(parents=True)
+        blob_token = "Q" * 5000
+        (blob_exec_dir / ".stdout.log").write_text(f"before\n{blob_token}\nafter\n", encoding="utf-8")
+        blob_tail = stdout_tail_for_room(str(blob_room_dir), "exec-blob-1", [])
+        check("#1723: a long whitespace-free token is elided rather than shipped whole",
+              blob_tail is not None and blob_token not in blob_tail)
+        check("#1723: the elision marker names the elided byte count",
+              blob_tail is not None and "[5000 bytes elided]" in blob_tail)
+
+        # -- #1723: a plain (non-JSON) line passes through unchanged. --
+        plain_room_dir = Path(tmp) / "plain-room"
+        plain_exec_dir = plain_room_dir / "artifacts" / "execution_exec-plain-1"
+        plain_exec_dir.mkdir(parents=True)
+        plain_line = "just a normal stdout line, nothing special here"
+        (plain_exec_dir / ".stdout.log").write_text(plain_line + "\n", encoding="utf-8")
+        plain_tail = stdout_tail_for_room(str(plain_room_dir), "exec-plain-1", [])
+        check("#1723: a plain non-JSON line passes through unchanged", plain_tail == plain_line)
+
+        # -- review rev1738 F1: an agy step_update line renders to prose, not an absent tail. --
+        agy_room_dir = Path(tmp) / "agy-room"
+        agy_exec_dir = agy_room_dir / "artifacts" / "execution_exec-agy-1"
+        agy_exec_dir.mkdir(parents=True)
+        agy_line = json.dumps({"event": "step_update",
+                                "step_update": {"state": "DONE", "step_type": "tool"}})
+        (agy_exec_dir / ".stdout.log").write_text(agy_line + "\n", encoding="utf-8")
+        agy_tail = stdout_tail_for_room(str(agy_room_dir), "exec-agy-1", [])
+        check("rev1738 F1: an agy DONE/tool step_update line renders to a prose line, not None",
+              agy_tail == "[tool: tool — done]")
+
+        # -- review rev1738 F1/F4: an unknown-but-valid JSON dict (neither claude's `type` nor agy's
+        # `event` key) passes through raw rather than being dropped. --
+        unknown_room_dir = Path(tmp) / "unknown-room"
+        unknown_exec_dir = unknown_room_dir / "artifacts" / "execution_exec-unknown-1"
+        unknown_exec_dir.mkdir(parents=True)
+        unknown_line = json.dumps({"kind": "some_future_vendor_shape", "value": 1})
+        (unknown_exec_dir / ".stdout.log").write_text(unknown_line + "\n", encoding="utf-8")
+        unknown_tail = stdout_tail_for_room(str(unknown_room_dir), "exec-unknown-1", [])
+        check("rev1738 F1/F4: a valid JSON dict this renderer has no `type`/`event` arm for passes "
+              "through raw rather than being dropped from the tail",
+              unknown_tail == unknown_line)
+
+        # -- review rev1738 F3: a long plain-text open line at the newest position still yields a
+        # tail containing its (capped) head, not just the truncation mark. --
+        long_plain_room_dir = Path(tmp) / "long-plain-room"
+        long_plain_exec_dir = long_plain_room_dir / "artifacts" / "execution_exec-long-plain-1"
+        long_plain_exec_dir.mkdir(parents=True)
+        long_plain_line = "x " * 3000  # ~6 KB of ordinary spaced text, no trailing newline (still open).
+        (long_plain_exec_dir / ".stdout.log").write_text(long_plain_line, encoding="utf-8")
+        long_plain_tail = stdout_tail_for_room(str(long_plain_room_dir), "exec-long-plain-1", [])
+        check("rev1738 F3: a 6 KB plain-text open line is capped rather than dropped whole, so the "
+              "tail still carries its (capped) head instead of collapsing to just the truncation mark",
+              long_plain_tail is not None and long_plain_tail != STDOUT_TAIL_TRUNCATION_MARK
+              and long_plain_tail.startswith("x x x"))
+
+    # Absence on a terminal room: attach_live_telemetry never runs live_telemetry_for_room (and so
+    # never the stdout tail) for anything other than a Running room -- covered structurally by the
+    # same gate "attach_live_telemetry never adds a `live` key" above proves for the whole `live`
+    # section, restated here for the field #1710 adds specifically.
+    with tempfile.TemporaryDirectory() as tmp:
+        terminal_room_dir = Path(tmp) / "terminal-room"
+        terminal_exec_dir = terminal_room_dir / "artifacts" / "execution_exec-done-1"
+        terminal_exec_dir.mkdir(parents=True)
+        (terminal_exec_dir / ".stdout.log").write_text("last line before it finished\n", encoding="utf-8")
+        terminal_room = {"path": str(terminal_room_dir), "state": "Succeeded",
+                          "steps": [{"id": "s1", "state": "Succeeded", "execution": "exec-done-1"}]}
+        terminal_list = [terminal_room]
+        attach_live_telemetry(terminal_list, {}, [])
+        check("a terminal room never gets a `live` section, so it never gets a stdoutTail either",
+              "live" not in terminal_room)
+
+    # Payload growth bound: N Running rooms each carrying a full-cap stdout tail add at most
+    # N * STDOUT_TAIL_MAX_BYTES to the pushed payload -- #1710's own bound, summed off the real
+    # `live.stdoutTail` values `attach_live_telemetry` produced rather than asserted in the abstract.
+    with tempfile.TemporaryDirectory() as tmp:
+        running_rooms = []
+        for i in range(3):
+            room_dir = Path(tmp) / f"bound-room-{i}"
+            exec_dir = room_dir / "artifacts" / f"execution_exec-bound-{i}"
+            exec_dir.mkdir(parents=True)
+            (exec_dir / ".stdout.log").write_text(("z" * 200 + "\n") * 100, encoding="utf-8")
+            running_rooms.append({"path": str(room_dir), "state": "Running", "name": f"bound-{i}",
+                                   "steps": [{"id": "s1", "state": "Running", "execution": f"exec-bound-{i}"}]})
+        bare_rooms = [{"path": r["path"], "state": r["state"], "name": r["name"], "steps": r["steps"]}
+                      for r in running_rooms]
+        attach_live_telemetry(running_rooms, {}, [])
+        tail_bytes_total = sum(
+            len(r["live"]["stdoutTail"].encode("utf-8"))
+            for r in running_rooms if isinstance(r.get("live"), dict) and "stdoutTail" in r["live"])
+        bound = len(running_rooms) * STDOUT_TAIL_MAX_BYTES
+        print(f"pusher.py selftest: #1710 stdout-tail bytes across {len(running_rooms)} Running "
+              f"rooms = {tail_bytes_total} bytes (bound {bound} bytes)")
+        check("#1710: pushed-payload growth from Running rooms' stdout tails stays within "
+              "Running rooms x STDOUT_TAIL_MAX_BYTES -- the per-room cap `stdout_tail_for_room` "
+              "already enforces, summed across the fleet",
+              tail_bytes_total <= bound)
+
+    # Worst-day write count is unchanged with the tail present: SNAPSHOT_KV_WRITE_COST is a FLAT
+    # per-push charge (spec/baton.md §6) with no notion of payload bytes, so a push carrying Running
+    # rooms' stdout tails costs the identical ledger charge as one that does not -- the tail costs
+    # bytes and churn, never an extra write.
+    small_ledger_state: dict = {}
+    small_body = json.dumps(build_wrapped(bare_rooms, [], {}, 0))
+    record_budget_write(small_ledger_state, 0.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    small_used = budget_used(load_budget_ledger(small_ledger_state, 0.0))
+
+    tail_ledger_state: dict = {}
+    tail_body = json.dumps(build_wrapped(running_rooms, [], {}, 0))
+    record_budget_write(tail_ledger_state, 0.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    tail_used = budget_used(load_budget_ledger(tail_ledger_state, 0.0))
+
+    check("#1710: a push with Running rooms' stdout tails attached (a bigger payload) still charges "
+          "the identical flat SNAPSHOT_KV_WRITE_COST a push without them would charge",
+          len(tail_body) > len(small_body) and small_used == tail_used == SNAPSHOT_KV_WRITE_COST)
+
+    # -- #1710: the tail rides the hash as-is (never quantized) -- a Running room whose stdoutTail is
+    # the only thing that changed still flips snapshot_hash on the very next cycle, the same as any
+    # other structural change. Proven end-to-end through the real quantize_live_for_hash/
+    # build_wrapped/snapshot_hash path, not just by reading _quantize_live_value's field list. --
+    tail_room_a = {"path": "/r/tail", "state": "Running",
+                   "live": {"toolCalls": 1, "lastActivityAt": _quantized_activity_iso(1000.0),
+                             "stdoutTail": "line one\nline two"}}
+    tail_room_b = {"path": "/r/tail", "state": "Running",
+                   "live": {"toolCalls": 1, "lastActivityAt": _quantized_activity_iso(1000.0),
+                             "stdoutTail": "line one\nline two\nline three"}}
+    hash_tail_a = snapshot_hash(build_wrapped(quantize_live_for_hash([tail_room_a]), [], {}, 0))
+    hash_tail_b = snapshot_hash(build_wrapped(quantize_live_for_hash([tail_room_b]), [], {}, 0))
+    check("#1710: quantize_live_for_hash never touches stdoutTail -- a room whose tail is the ONLY "
+          "thing that changed (every quantized field identical) still changes the pushed hash",
+          hash_tail_a != hash_tail_b)
+    check("#1710: quantize_live_for_hash rides stdoutTail through byte-for-byte, unlike toolCalls/"
+          "lastActivityAt above it",
+          quantize_live_for_hash([tail_room_a])[0]["live"]["stdoutTail"] == "line one\nline two")
 
     with tempfile.TemporaryDirectory() as tmp:
         sp = Path(tmp) / "push-state.json"
@@ -2264,6 +4592,612 @@ def _selftest() -> int:
         check("cycle 5: state updated with new hash", state.get(SNAPSHOT_HASH_KEY) == h2)
         check("cycle 5: state updated with new push timestamp", state.get(LAST_PUSH_TS_KEY) == 95.0)
 
+    # -- #1656: hot-set capping (split_hot_and_archive) --
+    def _room(path, state, ts):
+        return {"path": path, "state": state, "steps": [{"id": "s1", "state": state, "timestamp": ts}]}
+
+    running_room = _room("/r/running", "Running", "2026-09-01T00:00:00Z")
+    terminal_rooms = [_room(f"/r/term-{i}", "Succeeded" if i % 2 else "Failed",
+                             f"2026-09-01T00:{i:02d}:00Z") for i in range(50)]
+    mixed = [running_room, *terminal_rooms]
+    hot, archive, total = split_hot_and_archive(mixed)
+    check("hot set keeps every non-terminal room", running_room in hot)
+    check("hot set caps terminal rooms at HOT_TERMINAL_CAP", sum(1 for r in hot if r is not running_room) == HOT_TERMINAL_CAP)
+    check("terminal_total counts every terminal room, not just the hot slice", total == 50)
+    check("archive carries the FULL terminal population, not just the tail beyond the cap", len(archive) == 50)
+    check("archive is sorted newest-first (same measure as drop_stale_rooms' newest_timestamp)",
+          archive[0]["path"] == "/r/term-49" and archive[-1]["path"] == "/r/term-0")
+    check("the hot set's terminal slice is the SAME newest rooms archive page 0 would return",
+          {r["path"] for r in hot if r is not running_room} == {r["path"] for r in archive[:HOT_TERMINAL_CAP]})
+
+    few_terminal = [running_room, terminal_rooms[0], terminal_rooms[1]]
+    hot2, archive2, total2 = split_hot_and_archive(few_terminal)
+    check("a fleet with fewer terminal rooms than the cap keeps all of them hot",
+          len(hot2) == 3 and total2 == 2)
+
+    malformed = [running_room, {"path": "/r/no-state"}, "not-a-dict"]
+    hot3, archive3, total3 = split_hot_and_archive(malformed)
+    check("a room missing 'state' degrades to non-terminal (kept, never silently dropped)",
+          any(r.get("path") == "/r/no-state" for r in hot3 if isinstance(r, dict)))
+    check("a non-dict list entry degrades to non-terminal too, never raises", "not-a-dict" in hot3)
+
+    empty_hot, empty_archive, empty_total = split_hot_and_archive([])
+    check("an empty room list yields an empty hot set, empty archive, zero total",
+          empty_hot == [] and empty_archive == [] and empty_total == 0)
+
+    wrapped_with_archive = build_wrapped(hot, [], {}, 0, terminal_total=total, terminal_archive=archive)
+    check("build_wrapped carries terminal_total/terminal_archive through to the pushed body",
+          wrapped_with_archive["terminal_total"] == 50 and len(wrapped_with_archive["terminal_archive"]) == 50)
+    check("build_wrapped defaults terminal_total/terminal_archive for callers that don't pass them "
+          "(every pre-#1656 call site keeps working unchanged)",
+          build_wrapped([], [], {}, 0) == {"rooms": [], "underhood": [], "timelines": {},
+                                            "stale_hidden_count": 0, "terminal_total": 0,
+                                            "terminal_archive": []})
+
+    # #1656 F2 (2026-09-02 review): worker_displayed_heartbeat_at, the hand-copied Python mirror of
+    # worker.js's maxIsoOrNull heartbeat merge, is deleted -- the real function now has executable
+    # coverage in tools/fleet-glass/worker.selftest.mjs (`node tools/fleet-glass/worker.selftest.mjs`
+    # / `pixi run fleet-glass-worker-selftest`), which discriminates against the actual worker.core.mjs
+    # code path instead of a copy that could drift from it silently.
+
+    # -- #1669: Conductor room deliverables and upsert identity --
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+        c_src = Path(td) / "original-notes.md"
+        c_src.write_bytes(b"# Plan Title\nSome content here")
+
+        dest_file = c_art / "original-notes.md"
+        dest_file.write_bytes(b"# Plan Title\nSome content here")
+
+        manifest_file = c_art / "manifest.jsonl"
+        manifest_entry = {
+            "title": "Plan Title",
+            "source_path": str(c_src),
+            "delivered_at": "2026-09-02T12:00:00Z",
+            "sha256": sha256_hex(b"# Plan Title\nSome content here"),
+            "artifact_file": "original-notes.md",
+        }
+        manifest_file.write_text(json.dumps(manifest_entry) + "\n", encoding="utf-8")
+
+        # 1. Gather fresh conductor deliverable
+        c_items = gather_deliverables(c_root, {}, [])
+        check("gather_deliverables gathers conductor deliverable from manifest", len(c_items) == 1)
+        if c_items:
+            c_item = c_items[0]
+            check("conductor deliverable has kind='conductor'", c_item.get("kind") == "conductor")
+            check("conductor deliverable id is derived from source_path",
+                  c_item.get("id") == f"{str(c_room)}::conductor::{str(c_src)}")
+            check("conductor deliverable carries title", c_item.get("title") == "Plan Title")
+            check("conductor deliverable carries content", c_item.get("content") == "# Plan Title\nSome content here")
+            check("conductor deliverable is not withheld without secret match", c_item.get("withheld") is False)
+
+        # 2. Dedupe against push state
+        c_state = mark_pushed({}, c_items)
+        c_items_deduped = gather_deliverables(c_root, c_state, [])
+        check("gather_deliverables skips already-pushed conductor deliverable with unchanged content",
+              len(c_items_deduped) == 0)
+
+        # 3. Re-delivery with updated content (upsert)
+        dest_file.write_bytes(b"# Plan Title\nUpdated content")
+        manifest_entry2 = {
+            "title": "Plan Title v2",
+            "source_path": str(c_src),
+            "delivered_at": "2026-09-02T12:30:00Z",
+            "sha256": sha256_hex(b"# Plan Title\nUpdated content"),
+            "artifact_file": "original-notes.md",
+        }
+        manifest_file.write_text(json.dumps(manifest_entry2) + "\n", encoding="utf-8")
+
+        c_items_updated = gather_deliverables(c_root, c_state, [])
+        check("gather_deliverables picks up updated conductor deliverable", len(c_items_updated) == 1)
+        if c_items_updated:
+            c_up = c_items_updated[0]
+            check("re-delivered item has identical id for upsert",
+                  c_up.get("id") == f"{str(c_room)}::conductor::{str(c_src)}")
+            check("re-delivered item has updated content hash",
+                  c_up.get("content_hash") == sha256_hex(b"# Plan Title\nUpdated content"))
+
+        # 4. Secret gate withholding on conductor deliverable
+        secret_pats = [re.compile(r"sk-[A-Za-z0-9]{10,}")]
+        dest_file.write_text("# Leaked\nsk-secretkey123456789", encoding="utf-8")
+        c_items_leaked = gather_deliverables(c_root, {}, secret_pats)
+        check("conductor deliverable with secret is withheld",
+              len(c_items_leaked) == 1 and c_items_leaked[0].get("withheld") is True)
+
+    # F1 (2026-09-02 review): two sources sharing a basename must not collide on one on-disk file --
+    # artifact_file is read from the manifest line, never re-derived from the basename, so two
+    # distinct hashed filenames stay two distinct files with two distinct byte payloads.
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        src_a = Path(td) / "projA" / "notes.md"
+        src_a.parent.mkdir(parents=True)
+        src_a.write_bytes(b"# A\nProject A content")
+
+        src_b = Path(td) / "projB" / "notes.md"
+        src_b.parent.mkdir(parents=True)
+        src_b.write_bytes(b"# B\nProject B content")
+
+        dest_a = c_art / "aaaaaaaa-notes.md"
+        dest_a.write_bytes(b"# A\nProject A content")
+        dest_b = c_art / "bbbbbbbb-notes.md"
+        dest_b.write_bytes(b"# B\nProject B content")
+
+        manifest_file = c_art / "manifest.jsonl"
+        entries = [
+            {
+                "title": "A",
+                "source_path": str(src_a),
+                "delivered_at": "2026-09-02T12:00:00Z",
+                "sha256": sha256_hex(b"# A\nProject A content"),
+                "artifact_file": "aaaaaaaa-notes.md",
+            },
+            {
+                "title": "B",
+                "source_path": str(src_b),
+                "delivered_at": "2026-09-02T12:00:01Z",
+                "sha256": sha256_hex(b"# B\nProject B content"),
+                "artifact_file": "bbbbbbbb-notes.md",
+            },
+        ]
+        manifest_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+        same_basename_items = gather_deliverables(c_root, {}, [])
+        check("same-basename sources produce two distinct conductor deliverables",
+              len(same_basename_items) == 2)
+        by_source = {i.get("source_path"): i for i in same_basename_items}
+        check("same-basename source A keeps its own bytes",
+              by_source.get(str(src_a), {}).get("content") == "# A\nProject A content")
+        check("same-basename source B keeps its own bytes",
+              by_source.get(str(src_b), {}).get("content") == "# B\nProject B content")
+        check("same-basename sources use distinct artifact paths",
+              by_source.get(str(src_a), {}).get("artifact") != by_source.get(str(src_b), {}).get("artifact"))
+
+    # -- #1673: Conductor manifest UTF-8 BOM tolerance, corrupt-line logging, and cross-language fixture --
+    with tempfile.TemporaryDirectory() as td:
+        c_root = Path(td)
+        c_room = c_root / "conductor"
+        c_art = c_room / "artifacts" / "conductor"
+        c_art.mkdir(parents=True)
+
+        c_src_bom = Path(td) / "bom-notes.md"
+        c_src_bom.write_bytes(b"# BOM Title\nContent with BOM")
+        dest_bom = c_art / "11111111-bom-notes.md"
+        dest_bom.write_bytes(b"# BOM Title\nContent with BOM")
+
+        manifest_file = c_art / "manifest.jsonl"
+        manifest_entry_bom = {
+            "title": "BOM Title",
+            "source_path": str(c_src_bom),
+            "delivered_at": "2026-09-02T12:00:00Z",
+            "sha256": sha256_hex(b"# BOM Title\nContent with BOM"),
+            "artifact_file": "11111111-bom-notes.md",
+        }
+        # (a) A manifest whose first line carries a UTF-8 BOM parses and yields the item
+        bom_bytes = b"\xef\xbb\xbf" + json.dumps(manifest_entry_bom).encode("utf-8") + b"\n"
+        manifest_file.write_bytes(bom_bytes)
+
+        bom_items = gather_deliverables(c_root, {}, [])
+        check("conductor manifest carrying UTF-8 BOM parses and yields deliverable (#1673 arm a)",
+              len(bom_items) == 1 and bom_items[0].get("title") == "BOM Title")
+
+        # (b) A garbage line is logged and skipped while good lines still yield
+        c_src_good = Path(td) / "good-notes.md"
+        c_src_good.write_bytes(b"# Good Title\nGood content")
+        dest_good = c_art / "22222222-good-notes.md"
+        dest_good.write_bytes(b"# Good Title\nGood content")
+
+        manifest_entry_good = {
+            "title": "Good Title",
+            "source_path": str(c_src_good),
+            "delivered_at": "2026-09-02T12:01:00Z",
+            "sha256": sha256_hex(b"# Good Title\nGood content"),
+            "artifact_file": "22222222-good-notes.md",
+        }
+        garbage_manifest = (
+            "corrupt garbage line that is not json\n"
+            + json.dumps(manifest_entry_bom) + "\n"
+            + "another { malformed json line\n"
+            + json.dumps(manifest_entry_good) + "\n"
+        )
+        manifest_file.write_text(garbage_manifest, encoding="utf-8")
+        garbage_items = gather_deliverables(c_root, {}, [])
+        check("garbage manifest line is skipped while good lines yield deliverables (#1673 arm b)",
+              len(garbage_items) == 2 and {i.get("title") for i in garbage_items} == {"BOM Title", "Good Title"})
+
+        # (3) Cross-language pin: parse checked-in fixture tests/fixtures/conductor-manifest.jsonl produced by C# path
+        fixture_path = HERE.parent.parent / "tests" / "fixtures" / "conductor-manifest.jsonl"
+        check("cross-language conductor manifest fixture file exists (#1673)", fixture_path.is_file())
+        fixture_raw = fixture_path.read_bytes()
+        check("cross-language fixture has no UTF-8 BOM and starts with '{'",
+              len(fixture_raw) > 0 and fixture_raw[0] == 0x7B and not fixture_raw.startswith(b"\xef\xbb\xbf"))
+
+        manifest_file.write_bytes(fixture_raw)
+        fixture_artifact = c_art / "c44a8b84-fixture-plan.md"
+        fixture_artifact.write_bytes(b"# Fixture Plan\nFixture content")
+
+        fixture_items = gather_deliverables(c_root, {}, [])
+        check("pusher selftest parses cross-language conductor manifest fixture (#1673)",
+              len(fixture_items) == 1 and fixture_items[0].get("title") == "Fixture Plan"
+              and fixture_items[0].get("kind") == "conductor")
+
+    # -- #1656 F3 (2026-09-02 review): nonterminal_warn_line threshold behavior, restored alongside
+    # the #1669 conductor block above rather than being displaced by it (F2, 2026-09-02 review) --
+    check("non_terminal_count at the threshold does not warn", nonterminal_warn_line(HOT_NONTERMINAL_WARN) is None)
+    check("non_terminal_count one over the threshold warns, naming the threshold",
+          nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1) is not None
+          and "HOT_NONTERMINAL_WARN" in nonterminal_warn_line(HOT_NONTERMINAL_WARN + 1))
+
+    conductor_obj = {"path": "/r/conductor", "artifacts_path": "/r/conductor/artifacts/conductor"}
+    wrapped_with_conductor = build_wrapped([], [], {}, 0, conductor=conductor_obj)
+    check("build_wrapped carries conductor object through to the snapshot",
+          wrapped_with_conductor.get("conductor") == conductor_obj)
+
+    # -- #1690 item 1: write budget ledger --
+    wrapped_with_pusher = build_wrapped([], [], {}, 0, pusher={"writeBudgetExhaustedUntil": "2026-09-03T00:00:00+00:00"})
+    check("build_wrapped carries the pusher block through to the snapshot, absent-safe otherwise",
+          wrapped_with_pusher.get("pusher") == {"writeBudgetExhaustedUntil": "2026-09-03T00:00:00+00:00"}
+          and "pusher" not in build_wrapped([], [], {}, 0))
+
+    check("next_utc_midnight_iso names the NEXT 00:00 UTC, not the current day's",
+          next_utc_midnight_iso(datetime(2026, 9, 2, 16, 50, tzinfo=timezone.utc).timestamp())
+          == datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc).isoformat())
+    check("seconds_left_in_day is under a day and positive for a mid-day instant",
+          0 < seconds_left_in_day(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc).timestamp()) < 86400)
+
+    fresh_ledger = load_budget_ledger({}, 1000.0)
+    check("a fresh/empty state produces a zeroed ledger for today",
+          fresh_ledger == {"date": utc_day_str(1000.0), "snapshot": 0, "deliver": 0, "heartbeat": 0,
+                            "exhausted_notice_sent": False})
+    ledger_state = {}
+    record_budget_write(ledger_state, 1000.0, "snapshot", SNAPSHOT_KV_WRITE_COST)
+    record_budget_write(ledger_state, 1001.0, "deliver", DELIVER_BATCH_KV_WRITE_COST)
+    record_budget_write(ledger_state, 1002.0, "heartbeat", HEARTBEAT_KV_WRITE_COST)
+    same_day_ledger = load_budget_ledger(ledger_state, 1003.0)
+    check("record_budget_write accumulates each producer's own counter",
+          same_day_ledger["snapshot"] == 1 and same_day_ledger["deliver"] == DELIVER_BATCH_KV_WRITE_COST
+          and same_day_ledger["heartbeat"] == 1)
+    check("budget_used sums every producer", budget_used(same_day_ledger) == 2 + DELIVER_BATCH_KV_WRITE_COST)
+    check("budget_left is the target minus used",
+          budget_left(same_day_ledger, target=700) == 700 - (2 + DELIVER_BATCH_KV_WRITE_COST))
+    next_day_ts = 1000.0 + 86400.0
+    next_day_ledger = load_budget_ledger(ledger_state, next_day_ts)
+    check("a UTC-day rollover resets the ledger to zero, never carrying yesterday's counts",
+          budget_used(next_day_ledger) == 0 and next_day_ledger["date"] != same_day_ledger["date"])
+    check("a corrupt/malformed persisted ledger degrades to zeroed, never crashes",
+          budget_used(load_budget_ledger({BUDGET_STATE_KEY: {"date": utc_day_str(5.0), "snapshot": "garbage"}}, 5.0)) == 0)
+
+    # -- F10 (2026-09-02 review): monotonic rollover guard against a clock that jumps backward
+    # across midnight (an NTP correction), which must never hand the same real day a second full
+    # budget.
+    day1 = utc_day_str(1000.0)
+    day1_spent = {BUDGET_STATE_KEY: {"date": day1, "snapshot": 250, "deliver": 0, "heartbeat": 0,
+                                      "exhausted_notice_sent": False}}
+    rolled_forward = load_budget_ledger(day1_spent, 1000.0 + 86400.0)
+    check("a genuine forward rollover still resets to zero for the new day",
+          rolled_forward["snapshot"] == 0 and rolled_forward["date"] != day1)
+    rolled_backward = load_budget_ledger(day1_spent, 1000.0 - 3600.0)  # clock jumped back pre-midnight
+    check("(F10) a clock jump BACKWARD across midnight, with real usage already spent, refuses to "
+          "roll over -- the ledger keeps serving the later, already-spent day rather than handing it "
+          "a second full budget",
+          rolled_backward["snapshot"] == 250 and rolled_backward["date"] == day1)
+    day1_untouched = {BUDGET_STATE_KEY: {"date": day1, "snapshot": 0, "deliver": 0, "heartbeat": 0,
+                                          "exhausted_notice_sent": False}}
+    rolled_backward_zero = load_budget_ledger(day1_untouched, 1000.0 - 3600.0)
+    check("a clock jump backward against an ALL-ZERO stored ledger is harmless and re-keys onto the "
+          "earlier day (nothing to double-count yet)",
+          rolled_backward_zero["snapshot"] == 0 and rolled_backward_zero["date"] != day1)
+
+    # -- #1712: post_json classifies a live 429 {"reason": "kv-write-cap", "resets_at": ...} into
+    # KvWriteCapError instead of a generic push-status RuntimeError, and mark_kv_write_cap_exhausted
+    # exhausts ALL THREE producers' sub-budgets in one step (not just whichever one hit the cap). --
+    def _fake_429(reason: str | None, resets_at: str | None) -> object:
+        body: dict = {}
+        if reason is not None:
+            body["reason"] = reason
+        if resets_at is not None:
+            body["resets_at"] = resets_at
+        payload = json.dumps(body).encode("utf-8")
+
+        class _FakeOpener:
+            def open(self, req, data=None, timeout=None):  # noqa: ARG002 — matches OpenerDirector.open's positional shape
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", None, BytesIO(payload))
+        return _FakeOpener()
+
+    real_opener = urllib.request._opener
+    try:
+        urllib.request.install_opener(_fake_429("kv-write-cap", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError", False)
+        except KvWriteCapError as caught:
+            check("(#1712) post_json classifies a 429 kv-write-cap body into KvWriteCapError", True)
+            check("(#1712) KvWriteCapError carries the body's resets_at verbatim",
+                  caught.resets_at == "2026-09-03T00:00:00+00:00")
+        except Exception:  # noqa: BLE001 — the check above already records failure either way
+            check("(#1712) a 429 kv-write-cap response raises KvWriteCapError, not some other error", False)
+
+        # (control) a 429 with a DIFFERENT reason (or none at all) is an ordinary push failure, not
+        # the write cap -- proves the classifier discriminates rather than treating every 429 alike.
+        urllib.request.install_opener(_fake_429("some-other-reason", "2026-09-03T00:00:00+00:00"))
+        try:
+            post_json("https://example.invalid/push/tok", "{}")
+            check("(control, #1712) a 429 with an unrelated reason still raises", False)
+        except KvWriteCapError:
+            check("(control, #1712) a 429 with an unrelated reason must NOT classify as kv-write-cap", False)
+        except RuntimeError:
+            check("(control, #1712) a 429 with an unrelated reason raises the ordinary RuntimeError", True)
+    finally:
+        urllib.request.install_opener(real_opener)
+
+    kv_cap_ledger_state: dict = {}
+    mark_kv_write_cap_exhausted(kv_cap_ledger_state, 1000.0)
+    kv_cap_ledger = load_budget_ledger(kv_cap_ledger_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted exhausts ALL THREE producers' sub-budgets in one call",
+          not snapshot_pushes_allowed(kv_cap_ledger) and not deliver_allowed(kv_cap_ledger)
+          and not heartbeat_allowed(kv_cap_ledger))
+    check("(#1712) mark_kv_write_cap_exhausted also marks exhausted_notice_sent, so the #1690 "
+          "exhaustion-notice snapshot (itself a KV write) is never attempted",
+          kv_cap_ledger["exhausted_notice_sent"] is True)
+    already_high_state: dict = {"__write_budget__": {"date": utc_day_str(1000.0),
+                                                       "snapshot": SNAPSHOT_DAILY_WRITES + 5,
+                                                       "deliver": 0, "heartbeat": 0,
+                                                       "exhausted_notice_sent": False}}
+    mark_kv_write_cap_exhausted(already_high_state, 1000.0)
+    check("(#1712) mark_kv_write_cap_exhausted never regresses a sub-budget already counted higher "
+          "than its own daily target",
+          already_high_state["__write_budget__"]["snapshot"] == SNAPSHOT_DAILY_WRITES + 5)
+
+    check("(control) an empty ledger allows every producer",
+          snapshot_pushes_allowed(fresh_ledger) and deliver_allowed(fresh_ledger) and heartbeat_allowed(fresh_ledger))
+    check("a snapshot sub-budget spent to its own daily cap stops snapshot pushes but leaves "
+          "deliver/heartbeat's OWN sub-budgets untouched -- F1's whole point: no shared pool",
+          not snapshot_pushes_allowed({"date": "x", "snapshot": SNAPSHOT_DAILY_WRITES, "deliver": 0, "heartbeat": 0})
+          and deliver_allowed({"date": "x", "snapshot": SNAPSHOT_DAILY_WRITES, "deliver": 0, "heartbeat": 0})
+          and heartbeat_allowed({"date": "x", "snapshot": SNAPSHOT_DAILY_WRITES, "deliver": 0, "heartbeat": 0}))
+    at_target = {"date": utc_day_str(0.0), "snapshot": SNAPSHOT_DAILY_WRITES, "deliver": DELIVER_DAILY_WRITES,
+                 "heartbeat": HEARTBEAT_DAILY_WRITES}
+    check("a ledger fully spent on every producer's own sub-budget disallows every producer",
+          not snapshot_pushes_allowed(at_target) and not deliver_allowed(at_target) and not heartbeat_allowed(at_target))
+    check("deliver_allowed needs room for its own full cost, not just >0 left",
+          not deliver_allowed({"date": "x", "snapshot": 0, "deliver": DELIVER_DAILY_WRITES - 1, "heartbeat": 0},
+                               cost=DELIVER_BATCH_KV_WRITE_COST))
+
+    check("adaptive_snapshot_interval_s never drops below the configured coalescing floor",
+          adaptive_snapshot_interval_s(fresh_ledger, 0.0, min_push_interval_s=90) >= 90)
+    check("adaptive_snapshot_interval_s widens as the spendable sub-budget shrinks (fewer writes "
+          "left, longer between pushes)",
+          adaptive_snapshot_interval_s({"date": "x", "snapshot": SNAPSHOT_DAILY_WRITES - 50, "deliver": 0, "heartbeat": 0}, 0.0, min_push_interval_s=90)
+          > adaptive_snapshot_interval_s({"date": "x", "snapshot": 0, "deliver": 0, "heartbeat": 0}, 0.0, min_push_interval_s=90))
+    check("(F1) adaptive_deliver_interval_s widens the same way against deliver's OWN sub-budget",
+          adaptive_deliver_interval_s({"date": "x", "snapshot": 0, "deliver": DELIVER_DAILY_WRITES - 6, "heartbeat": 0}, 0.0)
+          > adaptive_deliver_interval_s({"date": "x", "snapshot": 0, "deliver": 0, "heartbeat": 0}, 0.0))
+    check("(F1) adaptive_heartbeat_interval_s widens the same way against heartbeat's OWN sub-budget",
+          adaptive_heartbeat_interval_s({"date": "x", "snapshot": 0, "deliver": 0, "heartbeat": HEARTBEAT_DAILY_WRITES - 2}, 0.0)
+          > adaptive_heartbeat_interval_s({"date": "x", "snapshot": 0, "deliver": 0, "heartbeat": 0}, 0.0))
+
+    check("should_log_budget fires with no prior log (fail toward one extra log line)",
+          should_log_budget({}, 10_000.0) is True)
+    check("should_log_budget is quiet before the hour is up",
+          should_log_budget({"__last_budget_log_ts__": 10_000.0}, 10_000.0 + 3599, interval=3600) is False)
+    check("should_log_budget fires again once the hour has elapsed",
+          should_log_budget({"__last_budget_log_ts__": 10_000.0}, 10_000.0 + 3600, interval=3600) is True)
+    check("format_budget_log_line names every producer and the current interval",
+          format_budget_log_line({"snapshot": 5, "deliver": 2, "heartbeat": 1}, 123.4, target=700)
+          == "budget: used 8/700 (snap 5, deliver 2, beat 1), interval now 123s")
+
+    def _max_gap(write_ts: list, day_end: float = 86400.0) -> float:
+        """Largest gap between consecutive writes, INCLUDING from t=0 to the first write and from
+        the last write to day_end -- a producer that never writes until noon has a gap at the START
+        of the day that a bare max(diff(consecutive)) would miss entirely. F1 (2026-09-02 review)."""
+        if not write_ts:
+            return day_end
+        points = [0.0] + sorted(write_ts) + [day_end]
+        return max(b - a for a, b in zip(points, points[1:]))
+
+    def _legacy_shared_pool_worst_case(min_push_interval_s: float = 300, interval_seconds: float = 25) -> dict:
+        """F1 (2026-09-02 review) RED CONTROL, frozen rather than derived from the live gating
+        functions above (same "hardcode the shape you're proving is bad" reasoning as F2's own
+        `ledger_enabled=False` arm below) -- what it reproduces and why: spec/baton.md §6, not
+        restated here. Returns write-timestamp lists so the same distribution checks the new design
+        must pass can be run against the old one too."""
+        legacy_target, legacy_reserve = 700, 100
+        used = 0
+        now_ts = 0.0
+        day_end = 86400.0
+        last_snapshot_ts = None
+        snapshot_ts: list = []
+        deliver_ts: list = []
+        heartbeat_ts: list = []
+        hb_last = None
+        ping_last = None
+        while now_ts < day_end:
+            if (legacy_target - used) > legacy_reserve:
+                spendable = (legacy_target - used) - legacy_reserve
+                interval = max(min_push_interval_s, (day_end - now_ts) / max(1, spendable))
+                if last_snapshot_ts is None or (now_ts - last_snapshot_ts) >= interval:
+                    used += 1
+                    last_snapshot_ts = now_ts
+                    snapshot_ts.append(now_ts)
+                    ping_last = now_ts  # mirrors LAST_PUSH_TS_KEY suppressing the derived ping
+            if legacy_target - used >= 2:  # the pre-this-PR flat deliver cost
+                used += 2
+                deliver_ts.append(now_ts)
+            heartbeat_due = hb_last is None or (now_ts - hb_last) >= 3600
+            ping_due = ping_last is None or (now_ts - ping_last) >= 300
+            if (heartbeat_due or ping_due) and legacy_target - used >= 1:
+                used += 1
+                heartbeat_ts.append(now_ts)
+                if heartbeat_due:
+                    hb_last = now_ts
+                if ping_due:
+                    ping_last = now_ts
+            now_ts += interval_seconds
+        return {"used_total": used, "snapshot_write_ts": snapshot_ts,
+                "deliver_write_ts": deliver_ts, "heartbeat_write_ts": heartbeat_ts}
+
+    # -- F1 (2026-09-02 review) red control -- why a total-only gate could not have caught this,
+    # and what the two distribution assertions below actually check: spec/baton.md §6, "Fleet Glass
+    # write budget", not restated here.
+    legacy = _legacy_shared_pool_worst_case(min_push_interval_s=300)
+    legacy_max_gap = _max_gap(legacy["snapshot_write_ts"])
+    legacy_last_write = max(legacy["snapshot_write_ts"] + legacy["deliver_write_ts"] + legacy["heartbeat_write_ts"], default=0.0)
+    print(f"pusher.py selftest: RED (shared-pool design, {legacy['used_total']} writes total) "
+          f"max snapshot gap = {int(legacy_max_gap)}s, last write overall = {int(legacy_last_write)}s of 86400s")
+    check("(F1 red control) the shared-pool design this PR replaces DOES overshoot the 30-minute "
+          "max-gap bound -- proving a total-only gate could not have caught this",
+          legacy_max_gap > 1800)
+    check("(F1 red control) the shared-pool design this PR replaces DOES go dark before the day ends",
+          legacy_last_write < 86400 - 1800)
+
+    # F7 (2026-09-02 review): run the gate for BOTH the default (90s) and #1690's own deployed
+    # mitigation (300s) -- the PR body must name which one the deployed number describes.
+    for label, min_push in (("min_push_interval_s=90 (gate default)", 90),
+                             ("min_push_interval_s=300 (#1690's deployed mitigation)", 300)):
+        result = simulate_worst_case_daily_writes(min_push_interval_s=min_push)
+        result_ledger = result["ledger"]
+        total = budget_used(result_ledger)
+        max_gap = _max_gap(result["snapshot_write_ts"])
+        last_write = max(result["snapshot_write_ts"] + result["deliver_write_ts"] + result["heartbeat_write_ts"], default=0.0)
+        print(f"pusher.py selftest: worst-case daily KV writes, {label}: total {total} "
+              f"(snap {result_ledger['snapshot']}, deliver {result_ledger['deliver']}, "
+              f"heartbeat {result_ledger['heartbeat']}), max snapshot gap {int(max_gap)}s, "
+              f"last write {int(last_write)}s of 86400s")
+        check(f"arithmetic gate ({label}): worst-case daily writes stay at or under "
+              f"KV_DAILY_WRITE_TARGET ({KV_DAILY_WRITE_TARGET})", total <= KV_DAILY_WRITE_TARGET)
+        check(f"F1 GREEN: distribution gate ({label}) -- max gap between snapshot writes never "
+              f"exceeds 30 minutes, never a half-hour blind spot", max_gap <= 1800)
+        check(f"F1 GREEN: distribution gate ({label}) -- the day's last write lands within 30 "
+              f"minutes of midnight, the day ends still serving", last_write >= 86400 - 1800)
+
+    # F2 (2026-09-02 review): the pre-#1690 shape, hardcoded via ledger_enabled=False rather than
+    # derived from the shipped gating functions, so this control cannot pass for the same reason the
+    # real arm passes.
+    pre_1690 = simulate_worst_case_daily_writes(
+        ledger_enabled=False, snapshot_cost=2, deliver_cost=lambda k: k + 1)
+    pre_1690_total = budget_used(pre_1690["ledger"])
+    print(f"pusher.py selftest: pre-#1690 shape (ungated) worst-case daily writes = {pre_1690_total}")
+    check("(F2 control) the pre-#1690 write shape, ungated, DOES overshoot 1,000/day -- proves the "
+          "gate can discriminate a real overrun rather than always passing regardless of input",
+          pre_1690_total > 1000)
+
+    # -- F6 (2026-09-02 review) -- see quantize_live_for_hash's own docstring and spec/baton.md §6.
+    frozen_live = {"toolCalls": 3, "outputTokens": 1234, "lastActivityAt": _quantized_activity_iso(1000.0)}
+    frozen_room = {"path": "/r/a", "state": "Running", "live": dict(frozen_live)}
+    quantized_now = quantize_live_for_hash([frozen_room])
+    quantized_again = quantize_live_for_hash([frozen_room])
+    check("(F6 control) an IDLE room's quantized contribution is identical across two separate "
+          "calls -- there is no clock argument for it to have depended on",
+          json.dumps(quantized_now, sort_keys=True) == json.dumps(quantized_again, sort_keys=True))
+    advancing_room = {"path": "/r/a", "state": "Running",
+                       "live": {"toolCalls": 3, "outputTokens": 1234,
+                                "lastActivityAt": _quantized_activity_iso(1000.0 + LIVE_TELEMETRY_HASH_BUCKET_SECONDS)}}
+    check("a room whose lastActivityAt genuinely advances a full bucket DOES change the quantized "
+          "contribution -- proves this isn't just always collapsing to one constant value",
+          json.dumps(quantized_now, sort_keys=True) != json.dumps(quantize_live_for_hash([advancing_room]), sort_keys=True))
+    nudged_room = {"path": "/r/a", "state": "Running",
+                   "live": {"toolCalls": 4, "outputTokens": 1234, "lastActivityAt": frozen_live["lastActivityAt"]}}
+    check("a single toolCalls nudge within the same coarsening grain does not flip the hash",
+          json.dumps(quantized_now, sort_keys=True) == json.dumps(quantize_live_for_hash([nudged_room]), sort_keys=True))
+    jump_room = {"path": "/r/a", "state": "Running",
+                 "live": {"toolCalls": 8, "outputTokens": 1234, "lastActivityAt": frozen_live["lastActivityAt"]}}
+    check("a toolCalls jump that crosses the coarsening grain DOES flip the hash",
+          json.dumps(quantized_now, sort_keys=True) != json.dumps(quantize_live_for_hash([jump_room]), sort_keys=True))
+    no_live_room = {"path": "/r/b", "state": "Succeeded"}
+    check("a room with no `live` section passes through unchanged (structural fields never touched)",
+          quantize_live_for_hash([no_live_room]) == [no_live_room])
+    structural_change_a = quantize_live_for_hash([{"path": "/r/a", "state": "Running", "live": {"toolCalls": 1}}])
+    structural_change_b = quantize_live_for_hash([{"path": "/r/a", "state": "Succeeded", "live": {"toolCalls": 1}}])
+    check("a STRUCTURAL change (state) still changes the quantized contribution immediately",
+          json.dumps(structural_change_a, sort_keys=True) != json.dumps(structural_change_b, sort_keys=True))
+    full_hash_a = snapshot_hash(build_wrapped(quantize_live_for_hash([frozen_room]), [], {}, 0))
+    full_hash_b = snapshot_hash(build_wrapped(quantize_live_for_hash([frozen_room]), [], {}, 0))
+    check("end-to-end: snapshot_hash of the quantized rooms is identical for an idle room evaluated "
+          "twice, through the real build_wrapped/snapshot_hash path main() uses",
+          full_hash_a == full_hash_b)
+
+    # -- #1706 review M5: the SHARED cross-language billing gate ------------------------------------
+    # One fixture file, two consumers -- this and tests/Baton.Tests/Status/
+    # ClaudeEngineAndPusherBillingGateTests.cs. Every check above transcribes its line into this file;
+    # these read the engine's own fixture, so a rule change landing on only one side fails on both.
+    gate_path = Path(__file__).resolve().parent.parent.parent / "tests" / "Baton.Tests" / "Fixtures" / "claude-billing-gate.json"
+    check("the shared claude billing-gate fixture is where both consumers look for it (#1706 M5)",
+          gate_path.is_file())
+    if gate_path.is_file():
+        gate = json.loads(gate_path.read_text(encoding="utf-8"))
+        gate_cases = gate["cases"]
+        # Guard the instrument first: absent and zero must both appear in the fixture, or an
+        # implementation collapsing the two -- the exact defect this gate closes -- passes every arm
+        # below without the file being able to notice.
+        check("the shared fixture discriminates an ABSENT billed figure from a measured 0",
+              any(c["expectedBilledTokens"] is None for c in gate_cases)
+              and any(c["expectedBilledTokens"] == 0 for c in gate_cases)
+              and any(c["expectedBilledIsFloor"] is False for c in gate_cases))
+        for gate_case in gate_cases:
+            counts = extract_live_counts(gate_case["lines"], set())
+            expected_billed = gate_case["expectedBilledTokens"]
+            check(f"shared gate [{gate_case['name']}]: billedTokens matches the engine",
+                  counts.get("billedTokens") == expected_billed
+                  if expected_billed is not None else "billedTokens" not in counts)
+            check(f"shared gate [{gate_case['name']}]: billedIsFloor matches the engine",
+                  counts.get("billedIsFloor", False) == gate_case["expectedBilledIsFloor"])
+
+    # -- #1557 PR-B1: FLEET_GLASS_PROJECTION_SOURCE=file's read path + the compare's own exclusion
+    # logic. A synthetic projection file (never a real daemon/dotnet spawn -- see
+    # `compare_projection`'s own live-machine run for that half) exercises
+    # `read_projection_file`'s fresh/stale/absent arms; synthetic rooms exercise `_diff_room`'s
+    # identical-vs-planted-difference arms. --
+    with tempfile.TemporaryDirectory() as proj_tmp:
+        proj_tmp = Path(proj_tmp)
+        now = time.time()
+        fresh_projection = proj_tmp / "fresh-projection.json"
+        fresh_projection.write_text(json.dumps({
+            "derived_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "rooms": [{"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Succeeded"}],
+        }), encoding="utf-8")
+        data, staleness = read_projection_file(fresh_projection, now)
+        check("read_projection_file: a fresh file returns data with no staleness object",
+              data is not None and staleness is None and data["rooms"][0]["name"] == "room-a")
+
+        stale_derived_at = datetime.fromtimestamp(
+            now - PROJECTION_STALE_AFTER_S - 1, tz=timezone.utc).isoformat()
+        stale_projection = proj_tmp / "stale-projection.json"
+        stale_projection.write_text(json.dumps({"derived_at": stale_derived_at, "rooms": []}), encoding="utf-8")
+        data, staleness = read_projection_file(stale_projection, now)
+        check("read_projection_file: a file older than PROJECTION_STALE_AFTER_S falls back to derive (data is None)",
+              data is None)
+        check("read_projection_file: the stale fallback's staleness carries the daemon's own derived_at",
+              staleness is not None and staleness["stale"] is True
+              and staleness["daemon_derived_at"] == stale_derived_at)
+
+        data, staleness = read_projection_file(proj_tmp / "does-not-exist.json", now)
+        check("read_projection_file: an absent file falls back to derive with daemon_derived_at=None",
+              data is None and staleness is not None and staleness["stale"] is True
+              and staleness["daemon_derived_at"] is None)
+
+    identical_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                         "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:00:00+00:00"}}
+    identical_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                       "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
+    check("compare identity diff: identical rooms diff clean (lastActivityAt's own bucket excluded)",
+          _diff_room("C:\\rooms\\room-a", identical_derive, identical_file) == [])
+
+    planted_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                     "live": {"toolCalls": 4, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
+    planted_diff = _diff_room("C:\\rooms\\room-a", identical_derive, planted_file)
+    check("compare identity diff: a planted field difference is reported (exit 1 -- main() maps this to sys.exit)",
+          any("toolCalls" in d for d in planted_diff))
+
+    shape_invalid_file = {"processAlive": "not-a-real-status"}
+    check("compare identity diff: shape-only fields (never diffed against derive) are still shape-checked",
+          any("processAlive" in d for d in _diff_room("C:\\rooms\\room-a", {}, shape_invalid_file)))
+
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
         for f in failures:
@@ -2276,4 +5210,7 @@ def _selftest() -> int:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    if "--compare-projection" in sys.argv:
+        _cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
+        sys.exit(compare_projection(_cfg["dll"], _cfg.get("roots", [])))
     main()

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
 
 namespace Baton.Workspaces;
 
@@ -93,6 +94,36 @@ public static class WorktreeProvisioner
             NormalizeForComparison(commonDir),
             NormalizeForComparison(gitDir),
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// N2 (#1664 re-review): resolves <paramref name="reference"/> to a commit SHA against
+    /// <paramref name="repository"/> — never the worktree, and never after it exists — so the value
+    /// callers carry forward is fixed at provisioning time. A symbolic ref like <c>HEAD</c> read back
+    /// out of the *worktree* later is <c>HEAD..HEAD ≡ 0</c>, degenerate and unable to see a worker's
+    /// own commit; resolving to a SHA first, here, against the SOURCE repository, is what
+    /// <see cref="IsWorkspaceUntouched"/>'s <c>rev-list --count &lt;sha&gt;..HEAD</c> arm needs to mean
+    /// anything. Returns null (rather than throwing) on any git failure — a caller loses only the
+    /// stronger check and falls back to the reflog heuristic <see cref="IsWorkspaceUntouched"/> already
+    /// has for "no base ref available"; <see cref="Provision"/> itself is what surfaces a genuinely bad
+    /// ref as a refusal.
+    /// </summary>
+    public static string? ResolveBaseCommit(string repository, string reference)
+    {
+        try
+        {
+            var (exitCode, stdout, _) = RunGit(repository, "rev-parse", "--verify", $"{reference}^{{commit}}");
+            if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+            {
+                return null;
+            }
+
+            return stdout.Trim();
+        }
+        catch (WorktreeProvisioningException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -200,32 +231,287 @@ public static class WorktreeProvisioner
                     FailureReason: $"Grant audit failed: git status --porcelain failed (exit code {exitCode}): {stderr.Trim()}");
             }
 
-            var lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (lines.Length == 0)
+            var strayPaths = DescribeStrayPaths(stdout);
+            if (strayPaths is null)
             {
                 return new WorktreeAuditResult(IsClean: true, FailureReason: null);
             }
 
-            const int maxListed = 10;
-            var totalCount = lines.Length;
-            var strayPaths = lines
-                .Select(l => l.Length > 3 ? l[3..].Trim() : l)
-                .Take(maxListed)
-                .ToList();
-
-            var overflow = totalCount - strayPaths.Count;
-            var pathsFormatted = string.Join(", ", strayPaths);
-            var reason = overflow > 0
-                ? $"Grant audit failed: worktree carries {totalCount} uncommitted/stray path(s) outside declared outputs: {pathsFormatted} (+{overflow} more)."
-                : $"Grant audit failed: worktree carries {totalCount} uncommitted/stray path(s) outside declared outputs: {pathsFormatted}.";
-
-            return new WorktreeAuditResult(IsClean: false, FailureReason: reason);
+            return new WorktreeAuditResult(IsClean: false, FailureReason: $"Grant audit failed: worktree {strayPaths} outside declared outputs.");
         }
         catch (Exception ex)
         {
             return new WorktreeAuditResult(
                 IsClean: false,
                 FailureReason: $"Grant audit failed: exception running git status --porcelain ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// The bounded "carries N uncommitted/stray path(s): …" fragment <see cref="Audit"/> composes its
+    /// own message from — factored out so F2 (#1593 review) can reuse the identical git-status read and
+    /// formatting for a different audience (a room fact for a human, not a grant-enforcement refusal)
+    /// without duplicating the bounding logic. Null when <paramref name="porcelainOutput"/> names no
+    /// stray paths. Lists up to 10 paths, with the remaining count summarised as <c>(+N more)</c> —
+    /// same cap <see cref="Audit"/> already used before this refactor.
+    /// </summary>
+    private static string? DescribeStrayPaths(string porcelainOutput)
+    {
+        var lines = porcelainOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length == 0)
+        {
+            return null;
+        }
+
+        const int maxListed = 10;
+        var totalCount = lines.Length;
+        var strayPaths = lines
+            .Select(l => l.Length > 3 ? l[3..].Trim() : l)
+            .Take(maxListed)
+            // N1 (#1664 re-review): bounded by COUNT above, not by LENGTH — a real repo-relative path
+            // is unbounded, and ten of them past this point used to be able to blow the 500-char
+            // reason budget on their own. See Outcomes.ContractValidator.ClampRenderedValue's own
+            // remarks for the shared per-value clamp this reuses.
+            .Select(Outcomes.ContractValidator.ClampRenderedValue)
+            .ToList();
+
+        var overflow = totalCount - strayPaths.Count;
+        var pathsFormatted = string.Join(", ", strayPaths);
+        return overflow > 0
+            ? $"carries {totalCount} uncommitted/stray path(s): {pathsFormatted} (+{overflow} more)"
+            : $"carries {totalCount} uncommitted/stray path(s): {pathsFormatted}";
+    }
+
+    /// <summary>
+    /// F2 (#1593 review): a bounded, human-readable account of what survives in
+    /// <paramref name="worktreePath"/> — closes #1593's second acceptance bullet (spec/baton.md §3,
+    /// "Workspace evidence in the reason"), which <see cref="Audit"/> alone did not since its message
+    /// is grant-enforcement phrasing and this call site is descriptive, not a refusal. Deliberately NOT
+    /// the false-positive source <see cref="Outcomes.OutcomeClassifier.DescribeSubstantialWorkEvidence"/>'s
+    /// own remarks reject a worktree-dirty read for: this string decides nothing, so an operator's own
+    /// uncommitted edits showing up in it is noise for a human, not a behaviour-changing false positive.
+    /// Combines <see cref="DescribeStrayPaths"/> with a commits-over-<paramref name="baseRef"/> count.
+    /// Null when the workspace is null/missing, or genuinely has nothing to report.
+    /// </summary>
+    public static string? DescribeWorkspaceEvidence(string? worktreePath, string? baseRef)
+    {
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain");
+            var strayPaths = statusCode == 0 ? DescribeStrayPaths(statusOut) : "carries an unreadable git status";
+
+            string? commitsOverBase = null;
+            if (!string.IsNullOrWhiteSpace(baseRef) && IsWorktree(worktreePath))
+            {
+                var (countCode, countOut, _) = RunGit(worktreePath, "rev-list", "--count", $"{baseRef}..HEAD");
+                if (countCode == 0 && int.TryParse(countOut.Trim(), out var count) && count > 0)
+                {
+                    commitsOverBase = $"{count} commit(s) over base";
+                }
+            }
+
+            if (strayPaths is null && commitsOverBase is null)
+            {
+                return null;
+            }
+
+            return string.Join("; ", new[] { strayPaths, commitsOverBase }.Where(part => part is not null));
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            return $"carries unreadable workspace state ({ex.Message})";
+        }
+    }
+
+    /// <summary>
+    /// Checks whether <paramref name="worktreePath"/> is untouched (no commits over base, clean tree)
+    /// for #1593/#1622 (spec/baton.md §3 Producers): a dead worker that exited 0 without output may
+    /// keep the retry path only if untouched; otherwise it settles Indeterminate.
+    /// Fails closed (returns false) if <paramref name="worktreePath"/> is null/missing, not a git directory,
+    /// git fails, or changes/commits exist.
+    /// </summary>
+    /// <param name="baseRef">
+    /// F4/F5 (#1593 review): the ref this worktree was provisioned from (<see cref="Provision"/>'s own
+    /// <c>reference</c> argument), used to run <c>git rev-list --count &lt;baseRef&gt;..HEAD</c> rather
+    /// than reading the reflog's newest entry — a worker that commits and then does anything else that
+    /// moves HEAD (rebase, pull, a second checkout) is invisible to a reflog-head read but not to a
+    /// count against the real base. Null falls back to the reflog heuristic for a worktree (still
+    /// fail-closed on git failure, unlike before this fix) and to <c>@{upstream}</c> for a non-worktree
+    /// directory — the same "no ref to compare against" case F5 renamed from fail-OPEN to fail-closed:
+    /// an unset upstream is the normal state of a locally-created branch, not evidence nothing happened.
+    /// </param>
+    public static bool IsWorkspaceUntouched(string? worktreePath, string? baseRef = null)
+    {
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            // --untracked-files=normal is explicit rather than left to the ambient default: a host or
+            // repo config carrying `status.showUntrackedFiles = no` would otherwise make an
+            // untracked-only work product invisible to this probe (#1720 review Finding B).
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain", "--untracked-files=normal");
+            if (statusCode != 0 || !string.IsNullOrWhiteSpace(statusOut))
+            {
+                return false;
+            }
+
+            if (IsWorktree(worktreePath))
+            {
+                if (!string.IsNullOrWhiteSpace(baseRef))
+                {
+                    var (countCode, countOut, _) = RunGit(worktreePath, "rev-list", "--count", $"{baseRef}..HEAD");
+                    if (countCode != 0 || !int.TryParse(countOut.Trim(), out var count) || count > 0)
+                    {
+                        // F5: a git failure on the commit check must read as touched, not untouched —
+                        // the previous behaviour fell through to `return true` here, reporting a
+                        // workspace clean when the check that would have caught a commit could not run.
+                        return false;
+                    }
+
+                    return true;
+                }
+
+                // No provisioned base ref available (an older replayed journal, or a caller that never
+                // threaded one) — fall back to the reflog heuristic, but fail closed on git failure
+                // rather than the previous fall-through-to-true.
+                var (refCode, refOut, _) = RunGit(worktreePath, "log", "-g", "-n", "1", "--format=%gs");
+                if (refCode != 0)
+                {
+                    return false;
+                }
+
+                if (!string.IsNullOrWhiteSpace(refOut)
+                    && refOut.Trim().StartsWith("commit", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                return true;
+            }
+
+            // Not a worktree: the operator's own repository. Check upstream exists and whether there
+            // are commits ahead of it.
+            var (upCode, upOut, _) = RunGit(worktreePath, "rev-parse", "--abbrev-ref", "@{upstream}");
+            if (upCode != 0 || string.IsNullOrWhiteSpace(upOut))
+            {
+                // F5: an unset @{upstream} is the ordinary state of a locally-created branch, not
+                // evidence the workspace is untouched — fails closed rather than treating "nothing to
+                // compare against" as "nothing happened".
+                return false;
+            }
+
+            var (upstreamCountCode, upstreamCountOut, _) = RunGit(worktreePath, "rev-list", "--count", "@{upstream}..HEAD");
+            if (upstreamCountCode != 0 || !int.TryParse(upstreamCountOut.Trim(), out var upstreamCount) || upstreamCount > 0)
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The TRI-STATE reading of the same question <see cref="IsWorkspaceUntouched"/> answers, for the
+    /// #1390 work-product evidence (<c>workspaceChanged</c>/<c>hollow</c>, spec/baton.md §3): returns
+    /// false when git could not answer at all — <paramref name="worktreePath"/> null/missing, not a
+    /// git checkout, an unset <c>@{upstream}</c> on a plain checkout, any git failure — and otherwise
+    /// sets <paramref name="changed"/> to what was measured.
+    /// <para>
+    /// Deliberately NOT <c>!IsWorkspaceUntouched(...)</c> (#1720 review F2). That helper fails CLOSED
+    /// to false for its own consumer, the #1593 retry carve-out, where "could not measure" must read
+    /// as "do not take the carve-out"; negated for this consumer the same false becomes a FABRICATED
+    /// positive — the engine asserting the worker changed the tree on no evidence, and pinning
+    /// <c>hollow</c> false exactly where the probe is blind. Two consumers, opposite safe defaults,
+    /// so two entry points; the git reads themselves are the same ones, kept in the same order.
+    /// </para>
+    /// </summary>
+    public static bool TryReadWorkspaceChanged(string? worktreePath, string? baseRef, out bool changed)
+    {
+        changed = false;
+
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            // --untracked-files=normal, matching IsWorkspaceUntouched, so an ambient
+            // `status.showUntrackedFiles = no` cannot turn an untracked-only work product into a
+            // measured `changed: false` here (#1720 review Finding B).
+            var (statusCode, statusOut, _) = RunGit(worktreePath, "status", "--porcelain", "--untracked-files=normal");
+            if (statusCode != 0)
+            {
+                // Not a git checkout, or git could not run here: unmeasurable, not "unchanged".
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(statusOut))
+            {
+                // Uncommitted changes are conclusive on their own — no ref to compare against is
+                // needed, so this arm measures cleanly even where the commit probes below cannot.
+                changed = true;
+                return true;
+            }
+
+            if (IsWorktree(worktreePath))
+            {
+                if (!string.IsNullOrWhiteSpace(baseRef))
+                {
+                    var (countCode, countOut, _) = RunGit(worktreePath, "rev-list", "--count", $"{baseRef}..HEAD");
+                    if (countCode != 0 || !int.TryParse(countOut.Trim(), out var count))
+                    {
+                        return false;
+                    }
+
+                    changed = count > 0;
+                    return true;
+                }
+
+                var (refCode, refOut, _) = RunGit(worktreePath, "log", "-g", "-n", "1", "--format=%gs");
+                if (refCode != 0)
+                {
+                    return false;
+                }
+
+                changed = !string.IsNullOrWhiteSpace(refOut)
+                    && refOut.Trim().StartsWith("commit", StringComparison.OrdinalIgnoreCase);
+                return true;
+            }
+
+            var (upCode, upOut, _) = RunGit(worktreePath, "rev-parse", "--abbrev-ref", "@{upstream}");
+            if (upCode != 0 || string.IsNullOrWhiteSpace(upOut))
+            {
+                // The ordinary state of a locally-created branch: nothing to compare HEAD against,
+                // so whether it carries commits is unknown rather than known-false.
+                return false;
+            }
+
+            var (upstreamCountCode, upstreamCountOut, _) = RunGit(worktreePath, "rev-list", "--count", "@{upstream}..HEAD");
+            if (upstreamCountCode != 0 || !int.TryParse(upstreamCountOut.Trim(), out var upstreamCount))
+            {
+                return false;
+            }
+
+            changed = upstreamCount > 0;
+            return true;
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            changed = false;
+            return false;
         }
     }
 

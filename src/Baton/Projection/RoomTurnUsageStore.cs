@@ -5,6 +5,11 @@ using Baton.Store;
 namespace Baton.Projection;
 
 /// <summary>
+/// Usage counterpart to <see cref="RoomTurnThrottleLoad"/> -- same shape, same reason it exists.
+/// </summary>
+public sealed record RoomTurnUsageLoad(RoomTurnUsage Usage, IReadOnlyList<string> Warnings);
+
+/// <summary>
 /// Persistence store for engine usage counters under <c>{room}/.baton/turn-usage.json</c> (#778).
 /// </summary>
 public static class RoomTurnUsageStore
@@ -29,21 +34,37 @@ public static class RoomTurnUsageStore
     };
 
     /// <summary>
-    /// Reads usage fresh from <c>{room}/.baton/turn-usage.json</c>.
-    /// Missing file → returns <see cref="RoomTurnUsage.Empty"/> silently.
-    /// Present-but-invalid (corrupt JSON or negative consecutive failures) → LOUD stderr message + returns <see cref="RoomTurnUsage.Empty"/>.
+    /// Reads usage fresh from <c>{room}/.baton/turn-usage.json</c>. Same split as
+    /// <see cref="RoomTurnThrottleStore.Load"/>/<see cref="RoomTurnThrottleStore.LoadWithDiagnostics"/>:
+    /// this is the printing wrapper, <see cref="LoadWithDiagnostics"/> is the console-free variant.
     /// </summary>
     public static RoomTurnUsage Load(string roomDirectoryPath)
     {
+        var (usage, warnings) = LoadWithDiagnostics(roomDirectoryPath);
+        foreach (var warning in warnings)
+        {
+            Console.Error.WriteLine(warning);
+        }
+
+        return usage;
+    }
+
+    /// <summary>
+    /// Console-free sibling of <see cref="Load"/>: returns <see cref="RoomTurnUsage.Empty"/> on a
+    /// missing, corrupt, or otherwise invalid file, with the diagnostics <see cref="Load"/> would
+    /// print carried on the result instead.
+    /// </summary>
+    public static RoomTurnUsageLoad LoadWithDiagnostics(string roomDirectoryPath)
+    {
         if (string.IsNullOrEmpty(roomDirectoryPath))
         {
-            return RoomTurnUsage.Empty;
+            return new RoomTurnUsageLoad(RoomTurnUsage.Empty, []);
         }
 
         var filePath = GetUsageFilePath(roomDirectoryPath);
         if (!File.Exists(filePath))
         {
-            return RoomTurnUsage.Empty;
+            return new RoomTurnUsageLoad(RoomTurnUsage.Empty, []);
         }
 
         try
@@ -52,18 +73,19 @@ public static class RoomTurnUsageStore
             var dto = JsonSerializer.Deserialize<UsageDto>(json, ReadOptions);
             if (dto is null)
             {
-                Console.Error.WriteLine($"[RoomTurnUsage] Loud fallback to empty usage: Usage file '{filePath}' deserialized to null.");
-                return RoomTurnUsage.Empty;
+                return new RoomTurnUsageLoad(RoomTurnUsage.Empty,
+                    [$"[RoomTurnUsage] Loud fallback to empty usage: Usage file '{filePath}' deserialized to null."]);
             }
 
             var consecutiveFailed = dto.ConsecutiveFailedTurns ?? 0;
             if (consecutiveFailed < 0)
             {
-                Console.Error.WriteLine($"[RoomTurnUsage] Loud fallback to empty usage: Usage file '{filePath}' has negative consecutive failed turns ({consecutiveFailed}).");
-                return RoomTurnUsage.Empty;
+                return new RoomTurnUsageLoad(RoomTurnUsage.Empty,
+                    [$"[RoomTurnUsage] Loud fallback to empty usage: Usage file '{filePath}' has negative consecutive failed turns ({consecutiveFailed})."]);
             }
 
             var timestamps = dto.RecentMachineTurnTimestamps ?? [];
+            var warnings = new List<string>();
 
             // The two fields are one fact stored twice (the newest list entry IS the last turn),
             // and nothing else prevents a hand edit or partial write making them disagree --
@@ -77,21 +99,20 @@ public static class RoomTurnUsageStore
             var lastTurn = dto.LastMachineTurnAt;
             if (newestListed is { } newest && (lastTurn is null || lastTurn < newest))
             {
-                Console.Error.WriteLine(
+                warnings.Add(
                     $"[RoomTurnUsage] Inconsistent usage file '{filePath}' RECONCILED loudly: lastMachineTurnAt "
                     + $"({(lastTurn is null ? "absent" : lastTurn.ToString())}) is older than the newest recorded turn ({newest}); using the newest.");
                 lastTurn = newest;
             }
 
-            return new RoomTurnUsage(
-                timestamps.AsReadOnly(),
-                lastTurn,
-                consecutiveFailed);
+            return new RoomTurnUsageLoad(
+                new RoomTurnUsage(timestamps.AsReadOnly(), lastTurn, consecutiveFailed),
+                warnings);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[RoomTurnUsage] Loud fallback to empty usage: Failed to load usage from '{filePath}': {ex.Message}");
-            return RoomTurnUsage.Empty;
+            return new RoomTurnUsageLoad(RoomTurnUsage.Empty,
+                [$"[RoomTurnUsage] Loud fallback to empty usage: Failed to load usage from '{filePath}': {ex.Message}"]);
         }
     }
 

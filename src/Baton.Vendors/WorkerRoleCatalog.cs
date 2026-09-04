@@ -21,6 +21,51 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// <see cref="Effort"/>) is resolved from the role's <see cref="Tier"/> in <c>WorkerTiers.json</c>.
 /// A role never names a vendor or model directly, so a model swap never touches a role's capability.
 /// </summary>
+/// <param name="VerifyPixiTask">
+/// #1623 (contract: <c>spec/baton.md</c> §3, "Engine-run verify and the token budget", which states
+/// the actual build-lock mechanism -- not restated here): the <c>pixi run &lt;task&gt;</c> task name
+/// the ENGINE runs once, itself holding no lock across the run, once this role's worker has exited 0
+/// with a satisfied output contract -- never the worker itself. Null (every role but
+/// <c>implement</c>) means no verify step; the worker's own exit-0 + satisfied-contract IS the whole
+/// story for that role, same as before this issue.
+/// </param>
+/// <param name="TokenBudget">
+/// #1623 (contract: <c>spec/baton.md</c> §3): the default per-execution token ceiling for this role
+/// (measured from the same usage the vendor's stream-json reports mid-execution, not just the
+/// terminal line) -- crossing it arrests the execution. Null means no budget is enforced for a role
+/// that declares none; <c>--token-budget</c> overrides this per dispatch
+/// (<see cref="RoleDispatch.ToBinding"/>'s own parameter). #1745: see <see cref="TokenBudgetSpec"/> for
+/// the two shapes this field can now take and how each resolves.
+/// </param>
+/// <param name="MaxToolSteps">
+/// #1682 (contract: <c>spec/baton.md</c> §3): the default per-execution tool-step ceiling -- a second
+/// arrest trigger, independent of <see cref="TokenBudget"/>, fired by <c>Mutation.TokenBudgetMonitor</c>
+/// on tool-step LINE COUNT rather than token volume. Null means no cap for a role that declares none;
+/// <c>--max-tool-steps</c> overrides this per dispatch (#1686 review F11,
+/// <see cref="RoleDispatch.ToBinding"/>'s own parameter).
+/// </param>
+/// <param name="BilledRateLimit">
+/// #1691 (contract: <c>spec/baton.md</c> §3): the default per-execution ceiling on Σ billed tokens
+/// inside one trailing <c>Mutation.TokenBudgetMonitor.BilledRateWindow</c> — a third arrest trigger,
+/// independent of <see cref="TokenBudget"/> and <see cref="MaxToolSteps"/>, on RATE rather than total
+/// volume. EVERY role in <c>WorkerRoles.json</c> leaves this null on purpose, and that is a measurement
+/// rather than an omission — <c>spec/baton.md</c> §3 is where the measurement lives, and
+/// <c>tools/room-rate-sweep/sweep.py</c> is what re-runs it. <c>--billed-rate-limit</c> supplies one per
+/// dispatch (<see cref="RoleDispatch.ToBinding"/>'s own parameter), the only way one is ever set today.
+/// </param>
+/// <param name="DeliversBranch">
+/// #1788: whether <see cref="Mutation.DeliveryVerifier"/>'s own post-exit delivery check
+/// (<c>spec/baton.md</c> §3) runs for this role after its worker exits 0. False for every
+/// read-shaped role (<c>review</c>,
+/// <c>advise</c>, <c>fact-check</c>, <c>patch</c>, <c>orchestrate</c>) — <c>WorkerRoleCatalogTests</c>'
+/// lockstep test pins the direction this DOES assert, every role with this true also has
+/// <see cref="PermissionGrant.WriteFiles"/>. <c>janitor</c> writes and commits but stays false too: this
+/// field has no independent PR-half switch of its own (<see cref="Mutation.WorkerBinding.Process.ExpectPr"/>
+/// is derived entirely from it, per-dispatch override aside), so marking it here would force the PR half
+/// on for every janitor dispatch with no per-role way to turn it off — a catalog schema gap, not a
+/// judgement that janitor's own stranded-local-commits case doesn't matter. Only <c>implement</c> sets
+/// this true today.
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -31,12 +76,18 @@ public sealed record WorkerRole(
     TimeSpan Timeout,
     bool ProducesVerdict,
     string Purpose,
-    IReadOnlyList<WorkerRoleOutput> Outputs);
+    IReadOnlyList<WorkerRoleOutput> Outputs,
+    string? VerifyPixiTask = null,
+    TokenBudgetSpec? TokenBudget = null,
+    int? MaxToolSteps = null,
+    long? BilledRateLimit = null,
+    bool DeliversBranch = false);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
-/// form of what <c>tools/baton-agy-loop/dispatch.py</c> spells out inline today. The front door (#887)
-/// declares it as a <see cref="ProducedOutput"/> the engine's <c>ContractValidator</c> checks, and
+/// form of what <c>tools/baton-agy-loop/dispatch.py</c> used to spell out inline, before #1759
+/// retired it. The front door (#887) declares it as a <see cref="ProducedOutput"/> the engine's
+/// <c>ContractValidator</c> checks, and
 /// appends <see cref="Instruction"/> to the dispatch prompt so the worker is told to produce exactly
 /// what the contract asserts — the name, the shape, and the instruction single-sourced here so a spec
 /// prompt stays just the task.
@@ -49,17 +100,17 @@ public sealed record WorkerRoleOutput(string Name, OutputSchema Schema, string I
 
 /// <summary>
 /// The single, shared worker-role catalog — the same <c>WorkerRoles.json</c>/<c>WorkerTiers.json</c>
-/// that <c>tools/baton-agy-loop/dispatch.py</c> reads (#888, the #836 shared-source pattern). Read at
-/// runtime, never embedded, so the operator can retune tiers without a rebuild.
+/// <c>tools/baton-agy-loop/dispatch.py</c> read until #1759 retired it (#888, the #836 shared-source
+/// pattern); <c>tools/audit-completeness/completeness.py</c> still reads <c>WorkerTiers.json</c>
+/// directly today. Read at runtime, never embedded, so the operator can retune tiers without a rebuild.
 /// </summary>
 /// <remarks>
 /// Resolution order per file:
 /// <list type="number">
 /// <item>the <c>BATON_WORKER_*_PATH</c> environment override, when set — for a one-off experiment.
-///   This step alone is still evaluated fresh on every access, the "resolve, never capture"
-///   discipline <see cref="BatonPaths"/> used to keep before #1496 froze <em>its</em> read — this
-///   catalog's own env-override lookup is deliberately NOT folded into
-///   <see cref="BatonEnvironmentSnapshot"/>; see the exempt comment on <c>ResolvePath</c>;</item>
+///   Folded into <see cref="BatonEnvironmentSnapshot"/> (#1524): resolved once per process (or per
+///   active <see cref="BatonEnvironmentSnapshot.BeginScope"/> in a test), not re-read on every
+///   access;</item>
 /// <item><c>{BatonPaths.Root}/worker-tiers.json</c> (or <c>worker-roles.json</c>) when it exists — the
 ///   operator's durable, rebuild-free override. <see cref="BatonPaths.Root"/> itself is frozen per
 ///   process since #1496, so this step no longer observes a <c>BATON_HOME</c> change made after the
@@ -73,14 +124,26 @@ public static class WorkerRoleCatalog
     public const string TiersPathEnvironmentVariable = "BATON_WORKER_TIERS_PATH";
     public const string RolesPathEnvironmentVariable = "BATON_WORKER_ROLES_PATH";
 
+    /// <summary>
+    /// #1745: the only adapter names a role's per-adapter <c>token_budget</c> map may key on. Not
+    /// <see cref="WorkerAdapterRegistry.Default"/>'s full key set -- that also carries the no-op,
+    /// capture, and command test/composition adapters, none of which bill tokens or ever run a role
+    /// dispatched through this catalog, so admitting them here would let a typo in a real vendor's name
+    /// (e.g. "cluade") pass as a config for a fake one instead of failing loudly at load.
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> KnownTokenBudgetAdapters = ["claude", "agy"];
+
     private const string TiersDefaultFileName = "WorkerTiers.json";
     private const string RolesDefaultFileName = "WorkerRoles.json";
     private const string TiersOverrideFileName = "worker-tiers.json";
     private const string RolesOverrideFileName = "worker-roles.json";
 
-    // Plain JSON only — no comments, no trailing commas. dispatch.py reads the same two files through
-    // stdlib json.loads, which tolerates neither; matching that here keeps "one shared source" a real
-    // guarantee rather than a file only the C# side can parse (#888 finding).
+    // Plain JSON only — no comments, no trailing commas. #1759: verified by grep, the surviving
+    // Python reader is `tools/audit-completeness/completeness.py`'s step 9 (WorkerTiers.json only,
+    // via stdlib `json.load`, which tolerates neither) — dispatch.py read both files this way too
+    // until #1759 retired it, and no other Python tool (fleet-glass's pusher included) reads either
+    // file. Kept for WorkerRoles.json as well, both files sharing this one JsonOptions, rather than
+    // splitting the constraint per file for a reader step 9 does not have today.
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -100,10 +163,11 @@ public static class WorkerRoleCatalog
 
     private static IReadOnlyList<WorkerRole> Load()
     {
+        var snapshot = BatonEnvironmentSnapshot.Current;
         var tiers = ReadJson<Dictionary<string, WorkerTier>>(
-            ResolvePath(TiersPathEnvironmentVariable, TiersOverrideFileName, TiersDefaultFileName), "tier map");
+            ResolvePath(snapshot.WorkerTiersPathOverride, TiersOverrideFileName, TiersDefaultFileName), "tier map");
         var rawRoles = ReadJson<List<RawRole>>(
-            ResolvePath(RolesPathEnvironmentVariable, RolesOverrideFileName, RolesDefaultFileName), "role list");
+            ResolvePath(snapshot.WorkerRolesPathOverride, RolesOverrideFileName, RolesDefaultFileName), "role list");
 
         if (rawRoles.Count == 0)
         {
@@ -151,11 +215,17 @@ public static class WorkerRoleCatalog
                     ShellCommandPatterns: raw.ShellCommandPatterns,
                     NetworkAccess: raw.NetworkAccess,
                     DeniedShellCommandPatterns: raw.DeniedShellCommandPatterns,
-                    ShellCommandsAreReadOnly: raw.ShellCommandsAreReadOnly),
+                    ShellCommandsAreReadOnly: raw.ShellCommandsAreReadOnly,
+                    DeniedShellOptionTokens: raw.DeniedShellOptionTokens),
                 Timeout: TimeSpan.FromMinutes(raw.TimeoutMinutes),
                 ProducesVerdict: raw.VerdictSchema,
                 Purpose: raw.Purpose,
-                Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList()));
+                Outputs: raw.Outputs.Select(o => ResolveOutput(raw.Id, o)).ToList(),
+                VerifyPixiTask: raw.VerifyPixiTask,
+                TokenBudget: ParseTokenBudget(raw.Id, raw.TokenBudget),
+                MaxToolSteps: raw.MaxToolSteps,
+                BilledRateLimit: raw.BilledRateLimit,
+                DeliversBranch: raw.DeliversBranch));
         }
 
         return roles;
@@ -180,8 +250,8 @@ public static class WorkerRoleCatalog
         }
 
         // Mapped explicitly rather than deserialized straight into OutputSchema: the catalog's wire
-        // form is snake_case (dispatch.py reads the same file), and an unknown value must fail loudly
-        // at load — a silently-defaulted OutputSchema.None would drop a verdict's schema check and
+        // form is snake_case (matching every other Python/JSON reader of this file), and an unknown
+        // value must fail loudly at load — a silently-defaulted OutputSchema.None would drop a verdict's schema check and
         // pass a file that is not a verdict, the exact false capability the RawRole discipline forbids.
         var schema = raw.Schema switch
         {
@@ -196,15 +266,67 @@ public static class WorkerRoleCatalog
         return new WorkerRoleOutput(raw.Name, schema, raw.Instruction);
     }
 
-    // record-once-ok: #1496 src/Baton/Status/BatonEnvironmentSnapshot.cs
-    // #1496 exempt: NOT folded into BatonEnvironmentSnapshot. See the canonical "why" on
-    // BatonEnvironmentSnapshot's own remarks.
-    private static string ResolvePath(string envVar, string overrideFileName, string defaultFileName)
+    // #1745: parsed separately from RawRole's plain deserialization, the same way ResolveOutput below
+    // hand-validates a role's outputs, because the shape check ("int or adapter map?") AND the
+    // per-key validation ("is this adapter name real, is this value a whole number?") both need to
+    // name the OFFENDING role -- a JsonConverter attached to the type has no such context, only the
+    // bare property value.
+    private static TokenBudgetSpec? ParseTokenBudget(string roleId, JsonElement? raw)
     {
-        var env = Environment.GetEnvironmentVariable(envVar);
-        if (!string.IsNullOrWhiteSpace(env))
+        if (raw is not { } element || element.ValueKind == JsonValueKind.Null)
         {
-            return env;
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number)
+        {
+            if (!element.TryGetInt64(out var fixedValue))
+            {
+                throw new InvalidOperationException(
+                    $"Worker role '{roleId}' declares 'token_budget' {element.GetRawText()}, which is not a whole number of tokens.");
+            }
+
+            return new TokenBudgetSpec.Fixed(fixedValue);
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var byAdapter = new Dictionary<string, long>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!KnownTokenBudgetAdapters.Contains(property.Name))
+                {
+                    throw new InvalidOperationException(
+                        $"Worker role '{roleId}' 'token_budget' names unknown adapter '{property.Name}'. " +
+                        $"Known adapters: {string.Join(", ", KnownTokenBudgetAdapters)}.");
+                }
+
+                if (property.Value.ValueKind != JsonValueKind.Number || !property.Value.TryGetInt64(out var perAdapterValue))
+                {
+                    throw new InvalidOperationException(
+                        $"Worker role '{roleId}' 'token_budget.{property.Name}' is not a whole number of tokens.");
+                }
+
+                byAdapter[property.Name] = perAdapterValue;
+            }
+
+            return new TokenBudgetSpec.PerAdapter(byAdapter);
+        }
+
+        throw new InvalidOperationException(
+            $"Worker role '{roleId}' declares 'token_budget' as {element.ValueKind}, which is neither a " +
+            "whole number nor an object mapping adapter name to a whole number of tokens.");
+    }
+
+    // record-once-ok: #1524 src/Baton/Status/BatonEnvironmentSnapshot.cs
+    // #1524: folded into BatonEnvironmentSnapshot -- envOverride is BatonEnvironmentSnapshot.Current's
+    // WorkerTiersPathOverride/WorkerRolesPathOverride, resolved once by the caller rather than a
+    // per-access Environment.GetEnvironmentVariable here.
+    private static string ResolvePath(string? envOverride, string overrideFileName, string defaultFileName)
+    {
+        if (!string.IsNullOrWhiteSpace(envOverride))
+        {
+            return envOverride;
         }
 
         var configOverride = Path.Combine(BatonPaths.Root, overrideFileName);
@@ -249,7 +371,26 @@ public static class WorkerRoleCatalog
         // capability only `review` uses.
         IReadOnlyList<string>? ShellCommandPatterns = null,
         IReadOnlyList<string>? DeniedShellCommandPatterns = null,
-        bool ShellCommandsAreReadOnly = false);
+        bool ShellCommandsAreReadOnly = false,
+        // #1683 F2: optional for the same reason as the three above -- only `review` scopes a shell at
+        // all, and omitting this key is exactly PermissionGrant's own "no option tokens denied".
+        IReadOnlyList<string>? DeniedShellOptionTokens = null,
+        // #1623: optional like the three above, for the same reason -- most roles declare neither and
+        // omitting them is exactly "no engine-run verify, no token budget", the WorkerRole defaults.
+        string? VerifyPixiTask = null,
+        // #1745: raw JsonElement, not long? -- the wire shape is now `int | {adapter: int}`, and
+        // ParseTokenBudget above is what turns this into a TokenBudgetSpec, naming the offending role
+        // if the shape or a map entry is invalid.
+        JsonElement? TokenBudget = null,
+        // #1682: optional for the same reason -- most roles declare no tool-step cap.
+        int? MaxToolSteps = null,
+        // #1691: optional for the same reason, and here NO role declares one -- the key is readable
+        // from the catalog so an operator can pin a rate limit durably in their own worker-roles.json
+        // override, but spec/baton.md §3's calibration found no defensible shipped default.
+        long? BilledRateLimit = null,
+        // #1788: optional like the flags above -- omitting it is exactly "this role's brief does not
+        // end in a push", the WorkerRole default.
+        bool DeliversBranch = false);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

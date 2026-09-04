@@ -342,8 +342,9 @@ public class MutationInterfaceCrashRecoveryTests
 
             Assert.Equal(StepStatus.Failed, state.Steps.Single(s => s.StepId == A).Status);
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            Assert.Single(events, e => e is FlowEvent.ExecutionFailed ef && ef.ExecutionId == executionId);
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
             Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionSucceeded);
+            Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionFailed);
         }
         finally
         {
@@ -435,8 +436,537 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task StartWorkflowAsync_journals_StepRebound_when_resubmitting_through_a_divergent_adapter()
+    {
+        // Issue #1583 (operator ruling 2026-09-01): when an unstarted accepted execution is resubmitted
+        // after crash-recovery with a binding whose Adapter differs from the request's recorded Adapter,
+        // Flow must journal FlowEvent.StepRebound (old->new) before dispatching.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy", model: "gemini-3-pro");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebound = Assert.Single(events.OfType<FlowEvent.StepRebound>());
+            Assert.Equal(A, rebound.StepId);
+            Assert.Equal(executionId, rebound.ForExecutionId);
+            Assert.Equal("agy", rebound.PreviousAdapter);
+            Assert.Equal("gemini-3-pro", rebound.PreviousModel);
+            Assert.Equal("claude", rebound.NewAdapter);
+            Assert.Equal("sonnet", rebound.NewModel);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_journals_StepRebound_when_resubmitting_through_a_divergent_model()
+    {
+        // Issue #1583: model divergence (same adapter, different model) also journals StepRebound.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "opus");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: "sonnet");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebound = Assert.Single(events.OfType<FlowEvent.StepRebound>());
+            Assert.Equal(A, rebound.StepId);
+            Assert.Equal(executionId, rebound.ForExecutionId);
+            Assert.Equal("claude", rebound.PreviousAdapter);
+            Assert.Equal("sonnet", rebound.PreviousModel);
+            Assert.Equal("claude", rebound.NewAdapter);
+            Assert.Equal("opus", rebound.NewModel);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_does_not_journal_StepRebound_for_a_legacy_request_with_no_recorded_Adapter()
+    {
+        // #1583 MEDIUM: a request accepted before #1567 added ExecutionRequest.Adapter/Model has both
+        // fields null -- absence of a record, not absence of an adapter (ExecutionRequest.Adapter's own
+        // doc). Comparing null against the current binding's "claude" must not read as a divergence:
+        // nobody rebound anything, and journaling StepRebound(null->claude) would durably assert a
+        // failover that never happened.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: null, model: null);
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.StepRebound>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_journals_a_second_StepRebound_when_a_rebind_reverts_after_a_pre_spawn_crash()
+    {
+        // #1583 HIGH, review scenario B: pump P1 accepted on "claude"; pump P2 rebound to "agy" and
+        // journaled StepRebound(claude->agy) but crashed pre-spawn (never appended a Core outcome), so
+        // this fixture manufactures exactly that log tail directly, the same way every other fixture
+        // in this file manufactures its crash window. Pump P3 (this call) sees the binding reverted
+        // back to "claude". Without StateProjector projecting the first StepRebound as an override on
+        // AcceptedRequestByExecutionId, P3's replay still reads request.Adapter == "claude" (the
+        // original accept), sees no divergence against the current "claude" binding, and journals
+        // nothing -- silently reintroducing the exact misattribution #1583 exists to fix. With the
+        // projection arm in place, P3 sees the request as bound to "agy" (the first StepRebound's
+        // override), detects divergence against the current "claude" binding, and journals a SECOND
+        // StepRebound naming agy->claude.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: null);
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: null);
+            await writer.AppendAsync(
+                new FlowEvent.StepRebound(A, executionId, PreviousAdapter: "claude", PreviousModel: null, NewAdapter: "agy", NewModel: null),
+                TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var rebounds = events.OfType<FlowEvent.StepRebound>().ToList();
+            Assert.Equal(2, rebounds.Count);
+            var second = rebounds[1];
+            Assert.Equal(executionId, second.ForExecutionId);
+            Assert.Equal("agy", second.PreviousAdapter);
+            Assert.Equal("claude", second.NewAdapter);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_dispatches_a_divergent_resubmit_with_the_rebound_Adapter_and_Model_in_the_same_round()
+    {
+        // #1583 MEDIUM: MutationInterface.cs's in-memory `request with { Adapter, Model }` update
+        // (kept alongside the StateProjector override as the same-round fast path) has to actually
+        // reach Core -- DispatchAndRecordOutcomeAsync's live classification reads prepared.Request.Adapter,
+        // not the binding, so a dispatch still carrying the pre-crash Adapter/Model would pick the wrong
+        // usage parser for this round's own outcome classification even though the journaled event is
+        // correct. Deleting the in-memory update (MutationInterface.cs:907-912) makes this fail.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy", model: "gemini-3-pro");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            await runTask;
+
+            Assert.NotNull(stub.LastDispatchedRequest);
+            Assert.Equal("claude", stub.LastDispatchedRequest!.Adapter);
+            Assert.Equal("sonnet", stub.LastDispatchedRequest.Model);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_does_not_journal_StepRebound_when_resubmitting_through_an_identical_binding()
+    {
+        // Control / non-divergent case: when the binding matches the request's recorded Adapter and Model,
+        // no FlowEvent.StepRebound is emitted.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings(adapter: "claude", model: "sonnet");
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "claude", model: "sonnet");
+
+            var stub = new StubCoreDispatcher();
+            var aResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            aResult.SetResult(Succeeded);
+            var state = await runTask;
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single().Status);
+            Assert.Equal(executionId, state.Steps.Single().LatestExecutionId);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.StepRebound>());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_settles_unmatched_VerifyStarted_Indeterminate_across_engine_restart()
+    {
+        // #1623 F2 crash recovery arm: see MutationInterface.cs ToClassify reconciliation.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings();
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.VerifyStarted(executionId), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.NotNull(stepState.IndeterminateReason);
+            Assert.Contains("engine restart", stepState.IndeterminateReason);
+            Assert.True(stepState.RetryForeclosed);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            var verifyFailed = Assert.Single(events.OfType<FlowEvent.VerifyFailed>());
+            Assert.Equal(VerifyFailedKind.EngineRestart, verifyFailed.Kind);
+            Assert.Equal("verify did not complete across an engine restart", verifyFailed.Tail);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_settles_a_replayed_natural_exit0_with_tool_calls_and_an_empty_ledger_Indeterminate()
+    {
+        // #1732 review N3 acceptance test -- see MutationInterface.cs's own comment at the
+        // crash-recovery classify call for the ruling this pins. A natural exit 0, contract satisfied
+        // (ProcessContract declares no outputs), at least one tool call recorded in the rolled-forward
+        // stdout log, and a hook verdict ledger reporting zero must settle Indeterminate across an
+        // engine restart exactly as it would live.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var target = new CoreDispatchTarget("stub", [], CountHookVerdicts: _ => 0);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(ProcessContract, target, Timeout),
+            };
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy");
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            // ContractFailure is the producer whose diagnostic lives on LatestFailureReason, not
+            // IndeterminateReason (FlowState.cs's own doc on IndeterminateReason: only the
+            // VerifyFailed/Arrested producers populate that field).
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts", stepState.LatestFailureReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_counts_a_tool_step_that_only_survives_in_the_rolled_over_stdout_segment()
+    {
+        // #1732 review N4: ExecutionStreamLogger performs a single 8 MiB rollover into
+        // .stdout.log.1 -- a long run's earliest tool steps live there, not in the current
+        // .stdout.log tail. This writes the one tool-step line ONLY into the rollover file (an
+        // empty current .stdout.log, as a real post-roll run would have between rolls) and asserts
+        // the canary still counts it and fires -- proving CountToolCallsFromStdoutLog does not miss
+        // the rolled segment, on the same crash-recovery path N3 wires it into.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: []));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+
+            var target = new CoreDispatchTarget("stub", [], CountHookVerdicts: _ => 0);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["stub-worker"] = new WorkerBinding.Process(ProcessContract, target, Timeout),
+            };
+            var workflowId = new WorkflowId("wf");
+
+            var executionId = await AcceptRequestAsync(writer, workflowId, artifactsRoot, A, adapter: "agy");
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), string.Empty);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutRolloverFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+
+            // The canary firing at all is the discriminating signal: it only fires when toolCallCount
+            // > 0, so if the rolled-over segment were skipped this would settle Succeeded instead.
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts across 1 tool call", stepState.LatestFailureReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_arms_the_replay_canary_from_the_recorded_request_when_todays_binding_refuses_to_resolve()
+    {
+        // #1741 acceptance test: the RECORDED HookCanaryArmed fact -- not today's binding
+        // resolution -- decides whether the crash-recovery replay's first-verdict canary can fire.
+        // The binding here REFUSES to resolve on restart (RefusingBindings, the #710 shape
+        // ExecutionRequest.HookCanaryArmed's own doc names), which before this fix un-armed the
+        // canary entirely and settled Succeeded (spec/baton.md §9's former residual). The recorded
+        // request already says this execution ran under sole-hook narrowing, so the replay still
+        // counts and still settles Indeterminate.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: [], worker: "unresolvable-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var workflowId = new WorkflowId("wf");
+            var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+            // The empty ledger: the hook's own verdict channel recorded nothing for this execution.
+            File.WriteAllText(Path.Combine(outputDirectory, "verdicts.ndjson"), string.Empty);
+
+            var request = new ExecutionRequest(
+                executionId, workflowId, A, "unresolvable-worker", Inputs: [], Outputs: [], Timeout,
+                ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                Adapter: "agy",
+                HookCanaryArmed: true,
+                HookVerdictLedgerFileName: "verdicts.ndjson");
+
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, new RefusingBindings(), artifactsRoot, reader, writer,
+                new StubCoreDispatcher(), cancellationToken: TestContext.Current.CancellationToken);
+
+            var stepState = Assert.Single(state.Steps);
+            Assert.Equal(StepStatus.Failed, stepState.Status);
+            Assert.True(stepState.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, stepState.IndeterminateProducer);
+            Assert.NotNull(stepState.LatestFailureReason);
+            Assert.Contains("PreToolUse hook recorded zero verdicts", stepState.LatestFailureReason);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.ExecutionSucceeded>());
+            Assert.Single(events, e => e is FlowEvent.ExecutionIndeterminate ei && ei.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_settles_succeeded_when_the_recorded_canary_is_armed_and_the_ledger_is_healthy()
+    {
+        // Companion to the arm-from-the-recorded-request test above: same recorded arming fact,
+        // same refusing binding (no dependency on today's binding resolving either way), but a
+        // HEALTHY ledger -- at least one recorded verdict -- so the canary does not fire and the
+        // naturally-exited, contract-satisfied run settles Succeeded exactly as it would live.
+        //
+        // #1753 review F3: this is a forward regression guard, not a test that discriminates pre-#1741
+        // code from post-#1741 code -- under a REFUSING binding, pre-#1741 code takes the
+        // `countHookVerdicts is not null` branch, which BatonFlowException's catch above it leaves
+        // permanently null regardless of ledger content, so it settles Succeeded unconditionally here
+        // too. The discrimination between the two code states is carried entirely by the sibling test
+        // above (StartWorkflowAsync_arms_the_replay_canary_...), which flips Succeeded -> Indeterminate
+        // across the fix; this test only pins that a HEALTHY ledger keeps settling Succeeded once armed.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: [], worker: "unresolvable-worker"));
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var workflowId = new WorkflowId("wf");
+            var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                """{"event":"step_update","step_update":{"step_type":"tool","tool_name":"run_command","state":"DONE"}}""" + "\n");
+            File.WriteAllText(Path.Combine(outputDirectory, "verdicts.ndjson"), "{\"decision\":\"allow\"}\n");
+
+            var request = new ExecutionRequest(
+                executionId, workflowId, A, "unresolvable-worker", Inputs: [], Outputs: [], Timeout,
+                ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+                Adapter: "agy",
+                HookCanaryArmed: true,
+                HookVerdictLedgerFileName: "verdicts.ndjson");
+
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new CoreEvent.ExecutionExited(executionId, ExitCode: 0, CoreExitReason.Natural), TestContext.Current.CancellationToken);
+
+            var state = await MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, new RefusingBindings(), artifactsRoot, reader, writer,
+                new StubCoreDispatcher(), cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(StepStatus.Succeeded, state.Steps.Single(s => s.StepId == A).Status);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(events, e => e is FlowEvent.ExecutionSucceeded es && es.ExecutionId == executionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     private static async Task<ExecutionId> AcceptRequestAsync(
-        FlowEventLogWriter writer, WorkflowId workflowId, string artifactsRoot, StepId stepId)
+        FlowEventLogWriter writer,
+        WorkflowId workflowId,
+        string artifactsRoot,
+        StepId stepId,
+        string? adapter = null,
+        string? model = null)
     {
         var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
@@ -449,7 +979,9 @@ public class MutationInterfaceCrashRecoveryTests
             Outputs: [],
             Timeout,
             ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
-            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+            Adapter: adapter,
+            Model: model);
 
         await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(request));
         return executionId;
@@ -468,9 +1000,9 @@ public class MutationInterfaceCrashRecoveryTests
         WorkflowTemplateVersion: 1,
         Steps: steps);
 
-    private static Dictionary<string, WorkerBinding> MakeBindings() => new()
+    private static Dictionary<string, WorkerBinding> MakeBindings(string? adapter = null, string? model = null) => new()
     {
-        ["stub-worker"] = new WorkerBinding.Process(ProcessContract, Target, Timeout),
+        ["stub-worker"] = new WorkerBinding.Process(ProcessContract, Target, Timeout, Adapter: adapter, Model: model),
     };
 
     /// <summary>

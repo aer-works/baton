@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Projection;
 using Baton.Scheduling;
 
 namespace Baton.Status;
@@ -75,9 +76,12 @@ public sealed record WorkflowStatusStepView(
     [property: JsonPropertyName("retryEligible")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     bool? RetryEligible = null,
-    // #1551: StepState.RetryNotBefore verbatim (ISO-8601, UTC), the vendor-reported instant an
-    // ExhaustedUntil park auto-resumes -- the same value FormatVendorQuotaParkNotice/
-    // StatusCommand.FormatParkedStatus already render as "resumes at HH:mm". Gated on
+    // #1551: StepState.RetryNotBefore verbatim (ISO-8601, UTC) -- the instant an ExhaustedUntil park
+    // auto-resumes, same value FormatVendorQuotaParkNotice/StatusCommand.FormatParkedStatus already
+    // render as "resumes at HH:mm". Usually the vendor-reported reset instant, but not always: #1183
+    // caps a far-future instant to MaxExhaustionParkHorizon and paces an already-past one to
+    // PastResetInstantRetryFloor before GetRetryObligations ever records it here, so a degenerate
+    // vendor value shows the engine's capped/floored instant, not the raw one. Gated on
     // FailureKind == "ExhaustedUntil" specifically (not any Failed step with a pending retry): an
     // ordinary Retryable backoff has a RetryNotBefore too, but this field answers "when does the
     // vendor-quota park lift", not "when is the next attempt". Present only when the engine
@@ -99,7 +103,59 @@ public sealed record WorkflowStatusStepView(
     // StepState.LatestUnsatisfiedOutputNames, carried the same hop.
     [property: JsonPropertyName("unsatisfiedOutputs")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<string>? UnsatisfiedOutputs = null);
+    IReadOnlyList<string>? UnsatisfiedOutputs = null,
+    // F1/F10 (#1593 review): StepState.IndeterminateProducer's enum member name verbatim, gated the
+    // same way CapturedResponseFile is above -- present only for a currently-Failed step. A consumer
+    // (RedispatchCommand's Indeterminate-parent remedy) needs this to tell a ContractFailure parent
+    // (which `baton resolve --reject --reason` can still resolve) from a VerifyFailed/Arrested one
+    // (which `baton resolve --close --reason` resolves instead, #1622 (d)) without guessing from
+    // CapturedResponseFile alone,
+    // which both VerifyFailed/Arrested AND a not-yet-indeterminate step share as null.
+    [property: JsonPropertyName("indeterminateProducer")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? IndeterminateProducerKind = null,
+    // #1701: StepState.IndeterminateVerifyTail verbatim -- see that field's own remarks (FlowState.cs)
+    // for why it exists and what it carries. Gated the same way IndeterminateProducerKind is above
+    // (present only for a currently-Failed step). In practice only non-null when
+    // IndeterminateProducerKind is VerifyFailed -- ApplyIndeterminate (StateProjector.cs) writes null
+    // for every other producer -- but that invariant is enforced there, not by this gate; this field
+    // carries whatever StepState.IndeterminateVerifyTail records.
+    [property: JsonPropertyName("verifyTail")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyTail = null,
+    // #1622 (c)/(d): mirrors StepState.ResolvedByConductor. Present per-step (as well as the
+    // room-level WorkflowStatusView.Rejected/ResolvedBy below) so a multi-step room's caller can tell
+    // WHICH step was resolved.
+    [property: JsonPropertyName("resolvedByConductor")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool ResolvedByConductor = false,
+    // #1622/#1390: mirrors StepState.WorkspaceChanged.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    // #1622/#1390: mirrors StepState.Hollow. Present under the identical gate as WorkspaceChanged
+    // above, never without it.
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    // #1622/#1390: StepState.HollowReason verbatim -- non-null only when Hollow is true.
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null,
+    // #1702: StepState.VerifyNotRunReason's mere presence, not its text -- the one machine-readable
+    // token a status/glass consumer branches on ("this step ran unverified"), the same "bare token,
+    // never prose" shape State/liveness/failureKind already keep. Always "not-run" when present; no
+    // other value exists yet (an ordinary verify pass/fail carries no field here at all -- ordinary
+    // Succeeded/Failed already say everything a consumer needs). Omitted, never null, for every step
+    // whose latest attempt did not hit the pre-flight "not runnable" check.
+    [property: JsonPropertyName("verify")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Verify = null,
+    // #1702: the pre-flight verdict text (e.g. "task absent: gates-quiet") -- present only alongside
+    // Verify above.
+    [property: JsonPropertyName("verifyReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyReason = null);
 
 /// <summary>
 /// The one JSON object <c>baton status --json</c> writes to stdout (#1356's machine completion
@@ -127,14 +183,22 @@ public sealed record WorkflowStatusView(
     [property: JsonPropertyName("outputs")] IReadOnlyList<string> Outputs,
     [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("try")] string? Try = null,
-    // #1377: true when at least one step settled via `DecisionType.Reject` -- the one structural
-    // fact this contract can honestly assert about a rejection. There is no recorded-reason text to
-    // surface alongside it: `FlowEvent.ExternalDecisionRecorded` carries no operator-supplied reason
-    // field today, so a `reason` field here would always read `null` and this deliberately does not
-    // invent one. Lets a caller reading `state: "Failed"`/`error: null` tell "a person said no" apart
-    // from "the worker crashed and nobody recorded why" without parsing prose; the branching recipe
-    // and the which-step pointer live in spec/baton.md §3.
-    [property: JsonPropertyName("rejected")] bool Rejected = false);
+    // #1377, widened by #1622 (c)/(d): see spec/baton.md §3's `rejected` entry for the full branching
+    // recipe (which two verbs settle it, and why no `reason` field is invented for the
+    // DecisionType.Reject half). The `baton resolve` half's reason is instead folded into `Error`
+    // (see Projection.StateProjector.BuildConductorResolvedReason) and named by `ResolvedBy` below.
+    [property: JsonPropertyName("rejected")] bool Rejected = false,
+    // #1622 (c)/(d): see spec/baton.md §3's `resolvedBy` entry. Non-null for either `baton resolve`
+    // verb — it is the wider fact, so it is set on `--close` runs where `Rejected` stays false.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null,
+    // #1157: when this run ended (ISO-8601, UTC) -- Projection.TerminalInstantResolver's answer off
+    // the journal's own writer stamps, never a file's mtime. What it means, and every case it is
+    // absent in: spec/baton.md §3.
+    [property: JsonPropertyName("terminalAt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TerminalAt = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -202,6 +266,7 @@ public static class WorkflowStatusProjector
         var outputs = new List<string>();
         string? firstFailureReason = null;
         var anyRejected = false;
+        string? resolvedBy = null;
 
         foreach (var step in state.Steps)
         {
@@ -275,11 +340,20 @@ public static class WorkflowStatusProjector
             // clears them), so only a currently-Failed step is allowed to surface a capture.
             string? capturedResponseFile = step.Status == StepStatus.Failed ? step.LatestCapturedResponseFile : null;
             IReadOnlyList<string>? unsatisfiedOutputs = step.Status == StepStatus.Failed ? step.LatestUnsatisfiedOutputNames : null;
+            string? indeterminateProducerKind = step.Status == StepStatus.Failed ? step.IndeterminateProducer?.ToString() : null;
+            string? verifyTail = step.Status == StepStatus.Failed ? step.IndeterminateVerifyTail : null;
+
+            // #1702: gated on the reason being present at all, not on Status -- unlike failureKind/
+            // capturedResponseFile above, a not-run verify step is ordinarily Succeeded, never Failed.
+            string? verify = step.VerifyNotRunReason is not null ? "not-run" : null;
+            string? verifyReason = step.VerifyNotRunReason;
 
             steps.Add(new WorkflowStatusStepView(
                 step.StepId.Value, step.Status.ToString(), step.LatestExecutionId?.Value, step.LinkedFromExecutionId?.Value,
                 usage, linkedFromUsage, liveness, attempt, maxAttempts, failureKind, retryEligible,
-                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs));
+                exhaustedUntil, capturedResponseFile, unsatisfiedOutputs, indeterminateProducerKind, verifyTail,
+                step.ResolvedByConductor, step.WorkspaceChanged, step.Hollow, step.HollowReason,
+                verify, verifyReason));
 
             if (firstFailureReason is null && step.Status is StepStatus.Failed or StepStatus.Rejected
                 && !string.IsNullOrWhiteSpace(step.LatestFailureReason))
@@ -287,9 +361,19 @@ public static class WorkflowStatusProjector
                 firstFailureReason = step.LatestFailureReason;
             }
 
-            if (step.Status == StepStatus.Rejected)
+            // F11 (#1720 review, conductor ruling): `rejected` is the human "no" — a decide-time
+            // Rejected step or a `baton resolve --reject`. A `--close` is an administrative
+            // settlement whose own remedy text says the work already landed, so it sets `resolvedBy`
+            // WITHOUT setting `rejected`; a harness branching on `rejected` to mean "a person refused
+            // this work" would otherwise read a closed lane as refused. spec/baton.md §3.
+            if (step.Status == StepStatus.Rejected || step.ConductorRejected)
             {
                 anyRejected = true;
+            }
+
+            if (step.ResolvedByConductor)
+            {
+                resolvedBy = "conductor";
             }
 
             // #740's rule via StepOutputResolver, the one place it is implemented (#1374 F5) — this
@@ -300,7 +384,20 @@ public static class WorkflowStatusProjector
             }
         }
 
-        return new WorkflowStatusView(WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected);
+        // #1157: only a terminal run has an instant to report, and only a caller that handed in the
+        // entries can source one -- a `usage`-less caller (entries omitted) gets the field omitted
+        // too rather than a second read of flow.jsonl this projector is documented never to do.
+        // The prefix replays TerminalInstantResolver does are pure, so that documented no-I/O
+        // property is unaffected; the non-terminal path pays nothing for them.
+        string? terminalAt = null;
+        if (state.Status == WorkflowStatus.Terminal && entries is { Count: > 0 })
+        {
+            terminalAt = TerminalInstantResolver.Resolve(entries, snapshot).AtUtc?.ToString("O");
+        }
+
+        return new WorkflowStatusView(
+            WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected,
+            ResolvedBy: resolvedBy, TerminalAt: terminalAt);
     }
 
     /// <summary>
@@ -324,6 +421,18 @@ public static class WorkflowStatusProjector
                         FlowEvent.ExecutionRequestAccepted accepted => accepted.Request.ExecutionId.Value,
                         FlowEvent.ExecutionSucceeded succeeded => succeeded.ExecutionId.Value,
                         FlowEvent.ExecutionFailed failed => failed.ExecutionId.Value,
+                        FlowEvent.ExecutionCancelled cancelled => cancelled.ExecutionId.Value,
+                        // #1608 review finding 8 / #1623: same terminal-event timestamp as
+                        // ExecutionFailed above — without these arms a settle that ended in an
+                        // Indeterminate (whichever of its three producers) fell back to
+                        // CoreEvent.ExecutionExited (a few ms earlier), not a staleness bug but an
+                        // unnecessary inconsistency with ExecutionSucceeded/ExecutionFailed above. The
+                        // switch is still not exhaustive over every FlowEvent even with these arms:
+                        // CaptureResolved (#1608 review finding 7) and #1623/#1702's own diagnostic-only
+                        // VerifyStarted/VerifyPassed/VerifyNotRun all still fall to `_ => null` below.
+                        FlowEvent.ExecutionIndeterminate indeterminate => indeterminate.ExecutionId.Value,
+                        FlowEvent.ExecutionArrested arrested => arrested.ExecutionId.Value,
+                        FlowEvent.VerifyFailed verifyFailed => verifyFailed.ExecutionId.Value,
                         _ => null,
                     };
                     break;

@@ -11,6 +11,7 @@ namespace Baton.Cli.Tests;
 /// rejecting with the #1530 reason, poller reject branches for <c>latest</c> with reason in body,
 /// and <see cref="CancelRequestPoller.RunAsync"/>'s own resilience contract.
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class CancelRequestPollerTests
 {
     private static readonly WorkflowDefinitionSnapshot Snapshot = new(
@@ -194,6 +195,13 @@ public class CancelRequestPollerTests
             Assert.NotNull(rejected);
             Assert.Equal("exec-non-process", rejected.Target);
             Assert.Contains("target still running but not reachable through the in-flight registry (likely non-process work, #1530)", rejected.Reason);
+
+            // #1549: this rejection resolved a concrete ExecutionId, so it also becomes a content-free
+            // journal fact alongside the file-and-stderr rejection above.
+            var reader = new FlowEventLogReader(logPath);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
+            Assert.Equal(execId, cancellationRejected.ExecutionId);
         }
         finally
         {
@@ -231,6 +239,53 @@ public class CancelRequestPollerTests
 
             // Not bound to any pump — mirrors production, where the poller only ever holds the
             // in-process handle to whatever pump started it; marking must not require a live process.
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.True(File.Exists(requestPath), "request must remain pending until the pump actually settles the park");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+            Assert.Contains(execId, registry.DrainParkedCancelIntents());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1607: the same parked shape as the test above, but requested via the <c>latest</c> literal
+    /// rather than the execution id spelled out explicitly — proving the widened
+    /// <see cref="RunningExecutionResolver"/> is what makes a bare <c>baton cancel &lt;room&gt;</c>
+    /// reach a parked lane through this poller's <c>latest</c> resolution at
+    /// <see cref="CancelRequestPoller"/>'s own line above. Everything past resolution (the
+    /// <c>isParked</c> re-check and <c>MarkParkedCancelIntent</c> call) is identical to the explicit-id
+    /// test — this test's own value is entirely in reaching that machinery via <c>latest</c> at all,
+    /// which the pre-#1607 resolver could never do for a parked-only room.
+    /// </summary>
+    [Fact]
+    public async Task A_latest_request_against_a_quota_parked_only_room_is_marked_on_the_registry()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-parked-latest");
+            var reset = DateTimeOffset.UtcNow.AddHours(2);
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionFailed(execId, FailureClassification.ExhaustedUntil, "quota exhausted", reset), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.StepRetryScheduled(new StepId("a"), execId, reset, RetryDelayMs: (int)TimeSpan.FromHours(2).TotalMilliseconds), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, CancelRequestFile.LatestTarget, TestContext.Current.CancellationToken);
+
             var registry = new InFlightExecutionRegistry();
 
             await CancelRequestPoller.TickAsync(
@@ -370,7 +425,10 @@ public class CancelRequestPollerTests
             var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
             Assert.NotNull(rejected);
             Assert.Equal(CancelRequestFile.LatestTarget, rejected.Target);
-            Assert.Contains("'latest' requested, but no execution is currently Running", rejected.Reason);
+            // #1607: the full wording, not just a prefix -- "Running" widened to "Running or
+            // quota-parked" and a prefix-only assertion here would pass unchanged against the
+            // pre-widening message too, which would defeat the point of this test.
+            Assert.Contains("'latest' requested, but no execution is currently Running or quota-parked", rejected.Reason);
         }
         finally
         {
@@ -409,7 +467,7 @@ public class CancelRequestPollerTests
             var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
             Assert.NotNull(rejected);
             Assert.Equal(CancelRequestFile.LatestTarget, rejected.Target);
-            Assert.Contains("2 executions are currently Running", rejected.Reason);
+            Assert.Contains("2 executions are currently Running or quota-parked", rejected.Reason);
             Assert.Contains("ambiguous", rejected.Reason);
         }
         finally

@@ -1,5 +1,8 @@
 # Deploys the fleet mailbox Worker (worker.js) using wrangler's stored OAuth credentials, and
-# registers the fleet-glass-pusher scheduled task that runs pusher.py locally (#1548).
+# registers the fleet-glass-pusher scheduled task that runs pusher.py locally (#1548). The sibling
+# `baton-daemon` scheduled task (same convention, different action) is registered separately by
+# `tools/tool-refresh/register-daemon-task.ps1` (#1557) -- run that once too, it is not part of
+# this script.
 # Secrets (PUSH_TOKEN, READ_SEGMENT) are generated once into secrets.local.json and never printed.
 # secrets.local.json is gitignored (#1413) -- run this locally; it is not part of any CI job.
 #
@@ -65,7 +68,7 @@ $action = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$pusherScrip
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
 $taskSettings = New-ScheduledTaskSettingsSet `
-    -MultipleInstances IgnoreNew -DisallowStartIfOnBatteries -StopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `

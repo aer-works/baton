@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Cli;
 using Baton.Vendors;
 using Baton.Domain;
 using Baton.Status;
@@ -81,6 +82,47 @@ public sealed class FleetStatusToolTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1619 LOW-3: a harness that ever passes a by-workstream slug directory as a <c>roots</c> entry
+    /// must not double-count the room already found by the default <see cref="BatonPaths.Rooms"/>
+    /// scan -- everything under <see cref="BatonPaths.ByWorkstream"/> is a junction back into a room
+    /// the default scan already found by its real path, and <c>seenRooms</c> dedupes on the path
+    /// string (<see cref="BatonPaths.RecordKey"/>), not the resolved target.
+    /// </summary>
+    [Fact]
+    public async Task Enumeration_SkipsAByWorkstreamRoot_SoAJunctionedRoomIsNotDoubleCounted()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "room-grouped");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        WorkstreamJunctionLinker.CreateIfRequested("w1619", room);
+        var slugDir = Path.Combine(BatonPaths.ByWorkstream, "w1619");
+        try
+        {
+            var tool = new FleetStatusTool();
+            var escapedSlugDir = slugDir.Replace("\\", "\\\\");
+            var result = await tool.CallAsync(Parse($$"""{ "roots": ["{{escapedSlugDir}}"] }"""), TestContext.Current.CancellationToken);
+
+            Assert.False(result.IsError);
+            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            Assert.NotNull(rooms);
+            Assert.Single(rooms!);
+        }
+        finally
+        {
+            // Unlink before Dispose() tears down _tempHome and the room the junction points at.
+            var linkPath = WorkstreamJunctionLinker.ResolveLinkPath("w1619", room);
+            if (Directory.Exists(linkPath))
+            {
+                Directory.Delete(linkPath, recursive: false);
+            }
+        }
+    }
+
     [Fact]
     public async Task TerminalFastPath_UsesSentinelWithoutReadingSnapshotOrLedger()
     {
@@ -109,6 +151,60 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleStep.Timestamp);
         Assert.Equal(["/tmp/out.txt"], singleRoom.Outputs);
         Assert.Null(singleRoom.Error);
+    }
+
+    /// <summary>
+    /// #734: `delivery` surfaces the room's latest journaled `FlowEvent.Delivery*` fact even though
+    /// the room's own workflow is Terminal -- the poller keeps tracking the PR after the room's own
+    /// DAG finishes, so this must read `flow.jsonl` rather than trust the frozen terminal sentinel.
+    /// </summary>
+    [Fact]
+    public async Task TerminalRoom_SurfacesTheLatestDeliveryFact_FromFlowJsonlNotTheFrozenSentinel()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "delivery-room");
+        Directory.CreateDirectory(room);
+
+        var prPath = Path.Combine(room, DeliveryReferenceOutputNames.PullRequest);
+        await File.WriteAllTextAsync(prPath, "99", TestContext.Current.CancellationToken);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [prPath], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, BatonPaths.FlowLogFileName);
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(new FlowEvent.DeliveryPrOpened(99, "734-lane"), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.DeliveryChecksGreen(99), TestContext.Current.CancellationToken);
+        }
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.NotNull(singleRoom.Delivery);
+        Assert.Equal(99, singleRoom.Delivery!.Pr);
+        Assert.Equal("ChecksGreen", singleRoom.Delivery.State);
+    }
+
+    /// <summary>The control: a room with no declared delivery output surfaces no `delivery` field at all.</summary>
+    [Fact]
+    public async Task ARoomWithNoDeclaredDeliveryOutput_SurfacesNoDeliveryField()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "no-delivery-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], ["/tmp/plan.md"], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.Null(Assert.Single(rooms!).Delivery);
     }
 
     [Fact]
@@ -968,6 +1064,58 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.DoesNotContain("\"rejected\"", JsonSerializer.Serialize(crashed));
     }
 
+    /// <summary>
+    /// F10/F11 (#1720 review): a conductor `baton resolve --close` settles a room Failed with
+    /// `resolvedBy: "conductor"` and `rejected` unset (spec/baton.md §3), so without mirroring
+    /// `ResolvedBy` the glass could not tell that room from an ordinary crash at all. Three rooms one
+    /// field apart, which is what makes this discriminate rather than merely pass.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSentinel_ConductorClosedRoom_ReportsResolvedBy_WithoutRejected()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var closedRoom = Path.Combine(defaultRoomsDir, "closed-room");
+        var rejectedRoom = Path.Combine(defaultRoomsDir, "conductor-rejected-room");
+        var crashedRoom = Path.Combine(defaultRoomsDir, "plain-crashed-room");
+        Directory.CreateDirectory(closedRoom);
+        Directory.CreateDirectory(rejectedRoom);
+        Directory.CreateDirectory(crashedRoom);
+
+        await TerminalSentinelWriter.WriteAsync(
+            closedRoom,
+            new WorkflowStatusView("Failed", [], [], "Resolved by the conductor: overlap flake", null, Rejected: false, ResolvedBy: "conductor"),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            rejectedRoom,
+            new WorkflowStatusView("Failed", [], [], "Resolved by the conductor: not honest work", null, Rejected: true, ResolvedBy: "conductor"),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            crashedRoom,
+            new WorkflowStatusView("Failed", [], [], "the worker crashed", null),
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.NotNull(rooms);
+
+        var closed = rooms!.First(r => r.Name == "closed-room");
+        Assert.Equal("conductor", closed.ResolvedBy);
+        Assert.False(closed.Rejected);
+
+        var rejected = rooms.First(r => r.Name == "conductor-rejected-room");
+        Assert.Equal("conductor", rejected.ResolvedBy);
+        Assert.True(rejected.Rejected);
+
+        var crashed = rooms.First(r => r.Name == "plain-crashed-room");
+        Assert.Null(crashed.ResolvedBy);
+        // Wire-level, same reasoning as the `rejected` omission above.
+        Assert.DoesNotContain("\"resolvedBy\"", JsonSerializer.Serialize(crashed));
+        Assert.Contains("\"resolvedBy\":\"conductor\"", JsonSerializer.Serialize(closed));
+    }
+
     [Fact]
     public async Task IncludeTerminalFalse_FiltersOutTerminalRooms()
     {
@@ -1075,6 +1223,141 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("Running", singleRoom.State);
         Assert.Equal("architect", singleRoom.Role);
         Assert.Equal("claude", singleRoom.Adapter);
+        Assert.Equal("claude-opus-4", singleRoom.Model);
+        Assert.Equal("high", singleRoom.Effort);
+        Assert.Equal((long)TimeSpan.FromMinutes(5).TotalMilliseconds, singleRoom.TimeoutMs);
+    }
+
+    /// <summary>
+    /// #1584: after a failover rebind, <see cref="FleetRoomStatusView.Adapter"/> and
+    /// <see cref="FleetRoomStatusView.Model"/> prefer the running step's recorded-at-accept
+    /// <see cref="ExecutionRequest"/> values rather than the room's current <c>bindings.json</c>,
+    /// agreeing with <see cref="ExecutionUsageProjector"/>'s usage attribution.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithRecordedAdapterAndModel_PrefersRecordedValuesOverReboundBindingsJson()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "rebound-running-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-rebound"), "architect", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("rebound-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        // Rebound bindings.json (current state after failover to claude):
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("architect", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Draft a plan.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4",
+                Effort: "high"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        // Recorded execution request accepted earlier under agy:
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-rebound-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("rebound-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromMinutes(5),
+            [],
+            new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy",
+            Model: "gemini-3-flash");
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new CoreEvent.ExecutionStarted(execId, Pid: 6002), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Equal("architect", singleRoom.Role);
+        // Recorded request values win over rebound bindings.json:
+        Assert.Equal("agy", singleRoom.Adapter);
+        Assert.Equal("gemini-3-flash", singleRoom.Model);
+        // Effort and TimeoutMs come from the resolved binding:
+        Assert.Equal("high", singleRoom.Effort);
+        Assert.Equal((long)TimeSpan.FromMinutes(5).TotalMilliseconds, singleRoom.TimeoutMs);
+    }
+
+    /// <summary>
+    /// #1584: when the recorded request carries an <see cref="ExecutionRequest.Adapter"/> but no explicit
+    /// <see cref="ExecutionRequest.Model"/> (e.g. vendor swap defaulting model), the adapter comes from
+    /// the recorded request while model falls back to the binding.
+    /// </summary>
+    [Fact]
+    public async Task ActiveRoom_RunningStepWithRecordedAdapterAndNullModel_PrefersRecordedAdapterAndFallsBackToBindingModel()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "rebound-null-model-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-partial"), "architect", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("partial-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("architect", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Draft a plan.",
+                TimeSpan.FromMinutes(5),
+                Model: "claude-opus-4",
+                Effort: "high"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, "flow.jsonl");
+        var writer = new FlowEventLogWriter(logPath);
+        var execId = new ExecutionId("exec-partial-1");
+        var req = new ExecutionRequest(
+            execId,
+            new WorkflowId("partial-wf"),
+            stepDef.StepId,
+            stepDef.Worker,
+            [],
+            [],
+            TimeSpan.FromMinutes(5),
+            [],
+            new Dictionary<StepId, ExecutionId>(),
+            Adapter: "agy",
+            Model: null);
+
+        await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
+        await writer.AppendAsync(new CoreEvent.ExecutionStarted(execId, Pid: 6003), TestContext.Current.CancellationToken);
+        await writer.DisposeAsync();
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Running", singleRoom.State);
+        Assert.Equal("architect", singleRoom.Role);
+        Assert.Equal("agy", singleRoom.Adapter);
         Assert.Equal("claude-opus-4", singleRoom.Model);
         Assert.Equal("high", singleRoom.Effort);
         Assert.Equal((long)TimeSpan.FromMinutes(5).TotalMilliseconds, singleRoom.TimeoutMs);
@@ -1331,7 +1614,8 @@ public sealed class FleetStatusToolTests : IDisposable
             await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
 
             await RoomRegistryStore.AppendAsync(
-                room, unlistedProjectDir, BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+                room, unlistedProjectDir, BatonPaths.RoomRegistryFile,
+                explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
 
             var tool = new FleetStatusTool();
             // Deliberately no "roots" entry for unlistedProjectDir -- the whole point of the test.
@@ -1362,7 +1646,8 @@ public sealed class FleetStatusToolTests : IDisposable
         {
             Directory.CreateDirectory(deletedRoom);
             await RoomRegistryStore.AppendAsync(
-                deletedRoom, deletedRoomProjectDir, BatonPaths.RoomRegistryFile, TestContext.Current.CancellationToken);
+                deletedRoom, deletedRoomProjectDir, BatonPaths.RoomRegistryFile,
+                explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
             DirectoryCleanup.DeleteRecursively(deletedRoom);
 
             var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
@@ -1571,6 +1856,205 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(Assert.Single(rooms!).Label);
     }
 
+    /// <summary>#1619, spec/baton.md §6 schema: the terminal-sentinel fast path still surfaces a workstream.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithWorkstreamInBindings_ReportsWorkstream()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "workstream-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Workstream: "w1619"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Equal("w1619", singleRoom.Workstream);
+    }
+
+    [Fact]
+    public async Task TerminalFastPath_WithNoBindingsFile_OmitsWorkstreamFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ungrouped-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
+        // the real wire text is the thing a JsonIgnore regression would actually change.
+        Assert.DoesNotContain("\"workstream\"", result.Text);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.Null(Assert.Single(rooms!).Workstream);
+    }
+
+    /// <summary>#1441/#1620, spec/baton.md §6 schema: the terminal-sentinel fast path surfaces redispatch lineage.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithLineageMarker_ReportsParentRoomPathAndExecutionId()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "redispatched-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var parentRoomPath = Path.Combine(defaultRoomsDir, "parent-room");
+        await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+            room, parentRoomDirectoryPath: parentRoomPath, parentExecutionId: "exec-parent-1",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
+        Assert.Equal("exec-parent-1", singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>An ordinary `baton dispatch` room writes no marker at all -- both lineage fields stay absent from the wire.</summary>
+    [Fact]
+    public async Task TerminalFastPath_WithNoRoomMarker_OmitsLineageFieldsFromTheWire()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ordinary-dispatch-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        Assert.DoesNotContain("\"parentRoomPath\"", result.Text);
+        Assert.DoesNotContain("\"parentExecutionId\"", result.Text);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Null(singleRoom.ParentRoomPath);
+        Assert.Null(singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>
+    /// The fail-open half of #1620's own claim: a corrupt <c>.baton/room.json</c> marker (no enclosing
+    /// try/catch of its own around the lineage read on the terminal fast path) must degrade to absent
+    /// lineage, not an exception that drops the row -- the same posture #1499's label read already has.
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithCorruptRoomMarker_OmitsLineageButStillRendersRow()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "corrupt-marker-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var markerDir = Path.Combine(room, ".baton");
+        Directory.CreateDirectory(markerDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(markerDir, BatonPaths.RoomMetadataFileName), "{ not valid json",
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", singleRoom.State);
+        Assert.Null(singleRoom.ParentRoomPath);
+        Assert.Null(singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>#1441/#1620: the active-room path reports lineage too -- it is written once at redispatch and never depends on run progress.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithLineageMarker_ReportsParentRoomPathAndExecutionId()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "redispatched-active-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var parentRoomPath = Path.Combine(defaultRoomsDir, "parent-room");
+        await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+            room, parentRoomDirectoryPath: parentRoomPath, parentExecutionId: "exec-parent-2",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
+        Assert.Equal("exec-parent-2", singleRoom.ParentExecutionId);
+    }
+
+    /// <summary>#1619: a Pending room (no Running step) still reports its workstream on the active path.</summary>
+    [Fact]
+    public async Task ActiveRoom_WithNoRunningStep_StillReportsWorkstream()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "pending-workstream-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-pending"), "advise", [], [], [], new RetryPolicy(1));
+        var def = new WorkflowDefinition(new WorkflowTemplateId("pending-wf"), 1, [stepDef]);
+        var snapshot = SnapshotBinder.Bind(def);
+        var snapshotPath = Path.Combine(room, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var bindings = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advise"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                Workstream: "w1619"),
+        };
+        await WorkerBindingConfigWriter.SaveToFileAsync(
+            bindings, BatonPaths.RoomBindingsFile(room), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal("w1619", singleRoom.Workstream);
+    }
+
     /// <summary>#1499: a Pending room (no <c>flow.jsonl</c>, so no step is Running) still reports its label.</summary>
     [Fact]
     public async Task ActiveRoom_WithNoRunningStep_StillReportsLabelButNotTheRunningStepQuartet()
@@ -1613,6 +2097,157 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("env-snapshot lane", singleRoom.Label);
         Assert.Null(singleRoom.Role);
         Assert.Null(singleRoom.Adapter);
+    }
+
+    /// <summary>
+    /// #1708 L1: <see cref="FleetStatusTool"/> hand-copies <see cref="WorkflowStatusStepView"/> into
+    /// <see cref="FleetStepStatusView"/> at two separate sites, and nothing until now noticed when the
+    /// two field sets drifted — the next field added would silently reach <c>status --json</c> and not
+    /// <c>fleet_status</c>. Same guard shape as
+    /// <c>FlowEventLogJsonTests.Every_FlowEvent_variant_is_covered_by_these_tests</c>: a new property on
+    /// the source view fails here until it is either mirrored or listed below as a deliberate omission.
+    /// <para>
+    /// This checks the two records' VOCABULARY, not that either copy site assigns correctly — the copy
+    /// sites are private, and their values are asserted by the field-level tests above. The measured
+    /// failure was a missing field, not a mis-assigned one.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Every_step_view_property_is_either_mirrored_onto_the_fleet_view_or_deliberately_omitted()
+    {
+        // Deliberate omissions, each with its reason. fleet_status is a fleet-wide glance, not a
+        // resolution surface: the first three exist to drive `baton resolve`'s admission test against
+        // ONE room, which a caller reads from `baton status --json` on that room (spec/baton.md §3).
+        // VerifyTail (#1701) is omitted for the same reason plus a size one: it is a failing gate
+        // member's own captured output, bounded at VerifyRunner.MaxTailChars (4000 chars) PER STEP, so
+        // mirroring it would put a multi-kilobyte diagnostic blob into every room's entry of a
+        // fleet-wide listing. The short verify/verifyReason tokens are mirrored; the blob is read from
+        // `baton status --json` on the one room being diagnosed.
+        // ResolvedByConductor (#1622 (c)/(d)) is omitted for the same "fleet glance, not a resolution
+        // surface" reason: FleetRoomStatusView carries the room-level Rejected/ResolvedBy pair this
+        // mirrors coarsely (F10, #1720 review: `ResolvedBy` was added to that view in the same change
+        // this comment was corrected in -- it previously cited a field the fleet view did not have),
+        // and WHICH step was resolved is a `baton status --json` question on the one room a caller is
+        // already diagnosing, same as the other three above.
+        var deliberatelyOmitted = new HashSet<string>(StringComparer.Ordinal)
+        {
+            nameof(WorkflowStatusStepView.CapturedResponseFile),
+            nameof(WorkflowStatusStepView.UnsatisfiedOutputs),
+            nameof(WorkflowStatusStepView.IndeterminateProducerKind),
+            nameof(WorkflowStatusStepView.VerifyTail),
+            nameof(WorkflowStatusStepView.ResolvedByConductor),
+        };
+
+        var source = typeof(WorkflowStatusStepView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        var mirrored = typeof(FleetStepStatusView).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+
+        var unmirrored = source.Except(mirrored).Except(deliberatelyOmitted).OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Empty(unmirrored);
+
+        // And the omission list itself cannot go stale: a name removed from (or renamed on) the source
+        // view has to leave this list too, rather than sit here excusing a field that no longer exists.
+        Assert.Empty(deliberatelyOmitted.Except(source).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// #1157: a terminal room reports when its run ENDED, off the journal's own writer stamps — not
+    /// when anything last touched a file. This drives the projection path (no sentinel), where a room
+    /// whose journal was written hours ago but whose directory was created seconds ago is the clearest
+    /// separation of the two answers available.
+    /// </summary>
+    [Fact]
+    public async Task TerminalRoom_ReportsTheTerminalInstant_NotTheJournalsTouchTime()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "ended-room");
+        Directory.CreateDirectory(room);
+
+        var stepDef = new WorkflowStepDefinition(new StepId("step-done"), "agent-worker", [], [], [], new RetryPolicy(1));
+        var snapshot = SnapshotBinder.Bind(new WorkflowDefinition(new WorkflowTemplateId("ended-wf"), 1, [stepDef]));
+        await SnapshotBinder.PersistAsync(snapshot, Path.Combine(room, "snapshot.json"), TestContext.Current.CancellationToken);
+
+        var execId = new ExecutionId("exec-ended-1");
+        var req = new ExecutionRequest(
+            execId, new WorkflowId("ended-wf"), stepDef.StepId, stepDef.Worker,
+            [], [], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>());
+
+        var endedAt = new DateTime(2026, 8, 20, 9, 30, 0, DateTimeKind.Utc);
+        var logPath = Path.Combine(room, "flow.jsonl");
+        await WriteStampedJournalAsync(
+            logPath,
+            (new FlowEvent.ExecutionRequestAccepted(req), endedAt.AddMinutes(-10)),
+            (new FlowEvent.ExecutionSucceeded(execId), endedAt));
+
+        // The control that makes this discriminate: the file itself was written just now, so anything
+        // reading a touch time would report today rather than the recorded ending.
+        Assert.True(DateTime.UtcNow - File.GetLastWriteTimeUtc(logPath) < TimeSpan.FromMinutes(5));
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var ended = Assert.Single(rooms!);
+        Assert.Equal("Succeeded", ended.State);
+        Assert.Equal(endedAt, DateTime.Parse(ended.TerminalAt!, null, System.Globalization.DateTimeStyles.RoundtripKind));
+    }
+
+    /// <summary>
+    /// #1157's legacy-sentinel arm, and the polarity opposite of the test above: pins the
+    /// omit-rather-than-back-fill clause of spec/baton.md §3.
+    /// </summary>
+    [Fact]
+    public async Task TerminalSentinelWrittenBeforeTheField_OmitsTerminalAt_RatherThanUsingItsMtime()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var legacyRoom = Path.Combine(defaultRoomsDir, "legacy-sentinel-room");
+        var currentRoom = Path.Combine(defaultRoomsDir, "current-sentinel-room");
+        Directory.CreateDirectory(legacyRoom);
+        Directory.CreateDirectory(currentRoom);
+
+        await TerminalSentinelWriter.WriteAsync(
+            legacyRoom,
+            new WorkflowStatusView("Succeeded", [], [], null),
+            TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            currentRoom,
+            new WorkflowStatusView("Succeeded", [], [], null, TerminalAt: "2026-08-20T09:30:00.0000000Z"),
+            TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+
+        Assert.NotNull(rooms);
+        var legacy = rooms!.First(r => r.Name == "legacy-sentinel-room");
+        Assert.Null(legacy.TerminalAt);
+        // Wire-level: omitted, never emitted null -- the omission rests on JsonIgnoreCondition and
+        // only a serialized assertion catches that attribute breaking.
+        Assert.DoesNotContain("\"terminalAt\"", JsonSerializer.Serialize(legacy));
+
+        // The arm that proves the assertion above is about the ABSENT field and not about the fast
+        // path never carrying one.
+        var current = rooms.First(r => r.Name == "current-sentinel-room");
+        Assert.Equal("2026-08-20T09:30:00.0000000Z", current.TerminalAt);
+    }
+
+    /// <summary>
+    /// Writes journal lines carrying chosen writer stamps — <see cref="FlowEventLogWriter"/> stamps
+    /// <c>DateTime.UtcNow</c>, so no test built through it can tell a run's ending apart from the
+    /// moment its fixture was written. Same wire contract, same one-complete-line-per-entry shape.
+    /// </summary>
+    private static async Task WriteStampedJournalAsync(
+        string logPath, params (FlowEvent Event, DateTime Stamp)[] entries)
+    {
+        var text = string.Concat(entries.Select(entry =>
+            JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(entry.Event, entry.Stamp),
+                typeof(LogEntry),
+                FlowEventLogJson.Options) + "\n"));
+
+        await File.WriteAllTextAsync(logPath, text, TestContext.Current.CancellationToken);
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;

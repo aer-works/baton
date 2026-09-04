@@ -1,24 +1,44 @@
+using System.Text.RegularExpressions;
+
 namespace Baton.Cli;
 
 /// <summary>
-/// Parses <c>baton dispatch</c>'s arguments: <c>baton dispatch &lt;name&gt; [--spec &lt;spec-file&gt;]
-/// [--adapter &lt;name&gt;] [--room-dir &lt;dir&gt;] [--workflow-id &lt;id&gt;]</c>. <c>--spec</c> is
-/// optional here because whether it is required depends on whether <c>&lt;name&gt;</c> resolves to a
-/// role (needs one) or a workflow template (rejects one) — a catalog question <see cref="DispatchCommand"/>
-/// answers, not the parser. Every malformed invocation is a <see cref="CliArgumentException"/>
-/// (CLAUDE.md's error-handling rules), never a bare <see cref="InvalidOperationException"/>.
+/// Parses <c>baton dispatch</c>'s arguments — see <see cref="Usage"/> for the full, authoritative flag
+/// list (not restated here, record-once), and spec/baton.md's dispatch entry for why the spec has
+/// three sources (#1518). None is required here because whether one is required at all depends on
+/// whether <c>&lt;name&gt;</c> resolves to a role (needs one) or a workflow template (rejects all
+/// three) — a catalog question <see cref="DispatchCommand"/> answers, not the parser. Every malformed
+/// invocation is a <see cref="CliArgumentException"/> (CLAUDE.md's error-handling rules), never a bare
+/// <see cref="InvalidOperationException"/>.
 /// </summary>
 public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--label <text>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true|false>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
     /// #1496 env-snapshot lane" and short enough to stay legible in a lane card next to the state chips.
     /// </summary>
     public const int MaxLabelLength = 60;
+
+    /// <summary>
+    /// <c>--workstream</c>'s cap (#1619) — matches <see cref="MaxLabelLength"/> so a workstream group
+    /// heading never dwarfs the label it sits beside in Fleet Glass.
+    /// </summary>
+    public const int MaxWorkstreamLength = 60;
+
+    /// <summary>
+    /// <c>--workstream</c>'s slug grammar (#1619): starts with a letter or digit, then any run of
+    /// letters, digits, <c>.</c>, <c>_</c>, or <c>-</c>. Unlike <c>--label</c>'s free text, this value
+    /// is later used verbatim as a Windows directory name
+    /// (<see cref="WorkstreamJunctionLinker"/>, under <c>BatonPaths.ByWorkstream</c>), so it is
+    /// restricted to characters safe as one path segment rather than sanitized/folded like a label —
+    /// the allowlist also rules out <c>.</c>/<c>..</c> and every character cmd.exe or the filesystem
+    /// would treat specially.
+    /// </summary>
+    private static readonly Regex WorkstreamSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9._-]*$", RegexOptions.Compiled);
 
     /// <summary>
     /// The hard ceiling <c>--timeout</c> refuses outright (#1442) — why refuse rather than confirm:
@@ -36,6 +56,8 @@ public static class DispatchOptionsParser
     {
         string? name = null;
         string? specFilePath = null;
+        string? specText = null;
+        var specFromStdin = false;
         string? adapter = null;
         string? model = null;
         string? effort = null;
@@ -44,7 +66,14 @@ public static class DispatchOptionsParser
         string? workflowId = null;
         string? outputPath = null;
         TimeSpan? timeout = null;
+        long? tokenBudget = null;
+        int? maxToolSteps = null;
+        long? billedRateLimit = null;
+        string? verifyCommand = null;
+        bool? expectPr = null;
         string? label = null;
+        string? workstream = null;
+        string? repoPath = null;
         var attachments = new List<string>();
         var listCapabilities = false;
 
@@ -55,7 +84,30 @@ public static class DispatchOptionsParser
             switch (arg)
             {
                 case "--spec":
-                    specFilePath = RequireValue(args, ref i, arg);
+                    var specValue = RequireValue(args, ref i, arg);
+                    if (specValue == "-")
+                    {
+                        specFromStdin = true;
+                        specFilePath = null;
+                    }
+                    else
+                    {
+                        specFromStdin = false;
+                        specFilePath = specValue;
+                    }
+
+                    break;
+                case "--spec-text":
+                    var specTextValue = RequireValue(args, ref i, arg);
+                    if (specTextValue.Trim().Length == 0)
+                    {
+                        throw new CliArgumentException(
+                            $"'--spec-text' is blank — pass the task prompt text inline, or use --spec "
+                            + $"<spec-file> for a brief that already lives in a file. {Usage}",
+                            "pass a non-blank string after --spec-text.");
+                    }
+
+                    specText = specTextValue;
                     break;
                 case "--attach":
                     attachments.Add(RequireValue(args, ref i, arg));
@@ -84,8 +136,29 @@ public static class DispatchOptionsParser
                 case "--timeout":
                     timeout = ParseTimeout(RequireValue(args, ref i, arg));
                     break;
+                case "--token-budget":
+                    tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
+                    break;
+                case "--max-tool-steps":
+                    maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
+                    break;
+                case "--billed-rate-limit":
+                    billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
+                    break;
+                case "--verify":
+                    verifyCommand = RequireValue(args, ref i, arg);
+                    break;
+                case "--expect-pr":
+                    expectPr = ParseExpectPr(RequireValue(args, ref i, arg));
+                    break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
+                    break;
+                case "--workstream":
+                    workstream = SanitizeWorkstream(RequireValue(args, ref i, arg));
+                    break;
+                case "--repo":
+                    repoPath = RequireValue(args, ref i, arg);
                     break;
                 case "--list-capabilities":
                     listCapabilities = true;
@@ -129,6 +202,21 @@ public static class DispatchOptionsParser
                 "run 'baton templates' to see available role and template names.");
         }
 
+        // #1518: --spec <file>, --spec -, and --spec-text are three sources for the same one task
+        // prompt — a repeat of the SAME flag is last-wins (specFilePath/specFromStdin above already
+        // implement that for --spec), but naming two DIFFERENT sources is very likely a mistake with no
+        // sane resolution (which one did the operator mean?), so it is refused outright rather than
+        // silently picking a winner. Whether at least one is required at all is a catalog question
+        // (a template takes none) DispatchCommand answers, not the parser — same reason --spec alone
+        // was already optional here before this issue.
+        if ((specFilePath is not null || specFromStdin) && specText is not null)
+        {
+            throw new CliArgumentException(
+                $"Pass at most one of --spec <spec-file>, --spec -, or --spec-text <text> — not more "
+                + $"than one source for the same task prompt. {Usage}",
+                "drop --spec-text to use the file/stdin source, or drop --spec to use --spec-text.");
+        }
+
         // Fresh and unique per invocation unless pinned: a dispatch is one-shot, and deriving a stable
         // directory from the name (the way `baton run` derives one from the workflow file) would make a
         // second `baton dispatch review` resume — and so replay — the first's terminal snapshot rather
@@ -150,9 +238,89 @@ public static class DispatchOptionsParser
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             model, effort,
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label,
+            timeout, label, workstream,
             attachments.Count > 0 ? attachments : null,
-            listCapabilities);
+            listCapabilities,
+            tokenBudget,
+            repoPath is null ? null : Path.GetFullPath(repoPath),
+            maxToolSteps,
+            billedRateLimit,
+            verifyCommand,
+            specText,
+            specFromStdin,
+            expectPr);
+    }
+
+    /// <summary>
+    /// Parses <c>--expect-pr</c>'s value (#1788): a literal <c>true</c>/<c>false</c>, case-insensitive.
+    /// Unlike most escape hatches here this is not a free-form value — the delivery check's PR half is a
+    /// binary switch, and a typo'd value (e.g. a stray <c>1</c>) failing loudly beats it silently
+    /// resolving to whichever of true/false <see cref="bool.TryParse(string?, out bool)"/> happens not to throw for.
+    /// </summary>
+    private static bool ParseExpectPr(string rawValue)
+    {
+        if (!bool.TryParse(rawValue, out var expectPr))
+        {
+            throw new CliArgumentException(
+                $"'--expect-pr {rawValue}' is not 'true' or 'false'. {Usage}",
+                "pass --expect-pr true or --expect-pr false.");
+        }
+
+        return expectPr;
+    }
+
+    /// <summary>
+    /// Parses <c>--token-budget</c>'s value (#1623): a positive whole number of tokens. No ceiling like
+    /// <c>--timeout</c>'s <see cref="MaxTimeoutMinutes"/> — an operator raising their own role's budget
+    /// is not the runaway-consumption failure mode this issue exists to arrest; only a role with no
+    /// budget declared and no override runs unwatched.
+    /// </summary>
+    private static long ParseTokenBudget(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--token-budget {rawValue}' is not a positive whole number of tokens. {Usage}",
+                "pass a positive integer, e.g. --token-budget 600000.");
+        }
+
+        return tokens;
+    }
+
+    /// <summary>
+    /// Parses <c>--max-tool-steps</c>'s value (#1686 review F11): a positive whole number of real tool
+    /// calls (the fixed cross-vendor unit, spec/baton.md §3), same shape and no-ceiling rationale as
+    /// <see cref="ParseTokenBudget"/>.
+    /// </summary>
+    private static int ParseMaxToolSteps(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var steps) || steps <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--max-tool-steps {rawValue}' is not a positive whole number of tool calls. {Usage}",
+                "pass a positive integer, e.g. --max-tool-steps 100.");
+        }
+
+        return steps;
+    }
+
+    /// <summary>
+    /// Parses <c>--billed-rate-limit</c>'s value (#1691): a positive whole number of billed tokens per
+    /// trailing <c>Baton.Mutation.TokenBudgetMonitor.BilledRateWindow</c> (5 minutes — the window is
+    /// fixed, only the ceiling is an argument), same shape and no-ceiling rationale as
+    /// <see cref="ParseTokenBudget"/>. spec/baton.md §3 states why this flag is the only source a rate
+    /// limit ever has.
+    /// </summary>
+    private static long ParseBilledRateLimit(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--billed-rate-limit {rawValue}' is not a positive whole number of billed tokens per 5 minutes. {Usage}",
+                "pass a positive integer, e.g. --billed-rate-limit 250000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>
@@ -179,6 +347,40 @@ public static class DispatchOptionsParser
         return folded.Length == 0
             ? null
             : Baton.Outcomes.ContractValidator.TrimWithoutSplittingSurrogatePair(folded, MaxLabelLength);
+    }
+
+    /// <summary>
+    /// <c>--workstream</c>'s sanitization (#1619): trimmed, then checked against
+    /// <see cref="WorkstreamSlugPattern"/> and <see cref="MaxWorkstreamLength"/>. A blank result after
+    /// trimming is treated the same as never passing the flag, matching <see cref="SanitizeLabel"/>'s
+    /// convention — but unlike a label, a non-blank value that fails the slug grammar or exceeds the
+    /// cap is refused outright rather than silently folded/truncated: this value is a grouping *key*
+    /// (two different long slugs truncated to the same prefix would silently merge two workstreams)
+    /// and later becomes a literal directory name under <c>BatonPaths.ByWorkstream</c>
+    /// (<see cref="WorkstreamJunctionLinker"/>), so a value the filesystem can't use as one path
+    /// segment must fail loud at parse time, the same non-interactive-CLI doctrine
+    /// <see cref="ParseTimeout"/>'s ceiling rests on. Folded to lowercase after the grammar check
+    /// passes — spec/baton.md §2 has the NTFS-vs-Fleet-Glass rationale. Shared with
+    /// <see cref="RedispatchOptionsParser"/>, which parses the identical flag.
+    /// </summary>
+    internal static string? SanitizeWorkstream(string rawValue)
+    {
+        var trimmed = rawValue.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed.Length > MaxWorkstreamLength || !WorkstreamSlugPattern.IsMatch(trimmed))
+        {
+            throw new CliArgumentException(
+                $"'--workstream {rawValue}' is not a valid slug. It becomes a Windows directory name "
+                + $"under '~/.baton/by-workstream/', so it must be 1-{MaxWorkstreamLength} characters, start "
+                + "with a letter or digit, and contain only letters, digits, '.', '_', or '-'.",
+                "pass a short slug, e.g. --workstream 1619 or --workstream w1619.");
+        }
+
+        return trimmed.ToLowerInvariant();
     }
 
     /// <summary>

@@ -20,6 +20,23 @@ narrowed daemon, and bindings/permissions. If this README and the spec disagree,
   ask, every claim observed rather than assumed.
 - [Runbooks](docs/runbooks/) - Manual, key-gated operational procedures not covered by CI.
 
+## Verbs
+
+| Verb | What it does |
+|---|---|
+| `baton run` / `baton dispatch` / `baton redispatch` | Start a workflow room, or rerun a terminal one with an amended brief. |
+| `baton cancel` / `baton decide` / `baton resolve` / `baton resume` / `baton supply` | Mutate an already-started room — cancel a lane, record a pause decision, resolve a captured response, resume a stalled pump, supply a supplementary output. |
+| `baton status` | Read-only projection of a room's current state. |
+| `baton keep` / `baton unkeep` | Mark/unmark a room exempt from `RoomRetentionSweep`'s artifact pruning. |
+| `baton deliver <file> [--title <text>] [--room <room-dir>]` (`--room-dir` also accepted) | Deliver an orchestrator artifact into a room (defaults to standing conductor room) so it reaches the Fleet Glass inbox. |
+| `baton room delete <room-dir> [--keep-deliverables] [--force]` | Remove one room for good: its directory, its `room-registry.jsonl` lines, and (best-effort) a deliverables tombstone. Refuses a non-terminal room unless `--force` — see `spec/baton.md` §8. |
+| `baton rooms prune --terminal [--older-than <days>] [--state <state>] [--dry-run] [--yes]` | Batch form of `room delete`, plus unconditional registry hygiene (dedupe, drop lines whose directory is gone). Lists candidates by default; `--yes` actually deletes. |
+| `baton templates` | List the built-in workflow template catalog. |
+| `baton mcp` / `baton daemon` | The stdio MCP server workers connect to, and the narrowed background daemon (`spec/baton.md` §7). |
+
+`spec/baton.md` is the authority on every verb's exact contract — this table is an index, not a
+restatement.
+
 ## Vendor authentication
 
 Baton does not authenticate to any model provider. It spawns the vendor's own first-party CLI
@@ -56,21 +73,13 @@ pixi run fmt
 ## Installing `baton`
 
 `baton` is distributed as a self-built, unpublished `dotnet tool` — there is no public NuGet feed;
-a single-developer project doesn't need one. Build a local nupkg and install from it directly:
+a single-developer project doesn't need one.
 
-```bash
-# Build the nupkg (pure managed code since #1474; win-x64 only, #1405)
-pixi run pack
+**First install, or refreshing an already-installed tool: `pixi run tool-refresh`.** Installs side-by-side
+per-commit versions under `~/.baton/tools/<sha>` with a lightweight PATH launcher in `~/.dotnet/tools`
+resolving `current` at process start — see [`spec/baton.md`](spec/baton.md) §8 (*Installation and versioning*)
+for the authoritative directory structure, launcher details, and automatic pruning policy.
 
-# Install it as a global tool from that local folder
-dotnet tool install --global --add-source bin/pack baton
-
-# Run it
-baton run <workflow-file> --bindings <bindings-file>
-
-# Remove it
-dotnet tool uninstall --global baton
-```
-
-`pixi run verify-pack` runs this exact install → run → uninstall round trip end to end against a
+`pixi run verify-pack` runs the underlying install → run → uninstall round trip end to end against a
 trivial fixture (no live vendor call) — it's the same check CI runs unattended on every push.
+

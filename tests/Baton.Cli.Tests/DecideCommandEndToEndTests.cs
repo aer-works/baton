@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
+using Baton.Concurrency;
 using Baton.Domain;
 using Baton.Mutation;
 using Baton.Store;
@@ -78,6 +79,110 @@ public class DecideCommandEndToEndTests
 
             await Assert.ThrowsAsync<FlowJournalHeldException>(
                 () => DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1650 F1, the journal arm. #1646's own fix did not close the window it was filed for: it stopped
+    /// <c>WorktreeWorkspaces.Walk</c> contending <c>flow.lock</c>, but a live <c>baton run --wait</c>
+    /// pump releases that lock and only <em>then</em> disposes its <c>FlowEventLogWriter</c>, so the
+    /// journal handle is the LAST resource to clear and a concurrent <c>decide</c> was refused over
+    /// exactly the same interval — with a different exception name. This holds the journal the way the
+    /// pump does and releases it well inside <see cref="RoutineHoldBudget"/>, deterministically injecting
+    /// the interleaving CI hit under load; <c>decide</c> must land, not be renamed-and-refused.
+    /// <para>
+    /// Discriminating against the fix's other half: this test leaves <c>flow.lock</c> entirely free, so
+    /// only the bounded <c>FlowEventLogWriter</c> open can make it pass. Its sibling below does the
+    /// converse.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Decide_lands_when_the_journal_is_released_shortly_after_it_starts_waiting()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; on Unix the second open never blocks at all (see the Unix arm below)");
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var pausedResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cancellationToken);
+            Assert.Equal(WorkflowStatus.Paused, pausedResult.State.Status);
+            var pausedExecutionId = pausedResult.State.Steps.Single(s => s.StepId.Value == "a").LatestExecutionId!.Value;
+
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var liveEngineHolder = new FileStream(
+                logPath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 1, useAsync: true);
+            // wait-ok: injected interleaving, not a wait on anything external — see RoutineHoldBudget.
+            var releaseAfterDelay = Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken)
+                .ContinueWith(_ => liveEngineHolder.Dispose(), cancellationToken);
+
+            var decideOptions = new DecideOptions(
+                roomDirectory, pausedExecutionId.Value, DecisionType.Resume, TargetStepId: null,
+                SupplementaryExecutionId: null, bindingsFilePath);
+
+            // Task.Run: the bounded open blocks its own thread (Thread.Sleep, matching ConcurrencyGuard),
+            // so the release above must not be sitting behind this call on the same one.
+            var result = await Task.Run(
+                () => DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: cancellationToken),
+                cancellationToken);
+            await releaseAfterDelay;
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.All(result.State.Steps, FlowAssert.Succeeded);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1650 F1, the flow-lock arm — the converse control for the journal test above. The pump releases
+    /// <c>flow.lock</c> BEFORE its journal handle, so a <c>decide</c> arriving early enough loses on the
+    /// lock instead, at <c>MutationInterface.RecordDecisionAsync</c>'s own guard. Here the journal is
+    /// left entirely free, so only that guard being bounded can make this pass.
+    /// </summary>
+    [Fact]
+    public async Task Decide_lands_when_the_flow_lock_is_released_shortly_after_it_starts_waiting()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "ConcurrencyGuard rests on FileShare.None, which .NET only OS-enforces on Windows; CI is Windows-only (#1405)");
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
+            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
+            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
+
+            var pausedResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: cancellationToken);
+            Assert.Equal(WorkflowStatus.Paused, pausedResult.State.Status);
+            var pausedExecutionId = pausedResult.State.Steps.Single(s => s.StepId.Value == "a").LatestExecutionId!.Value;
+
+            var guard = ConcurrencyGuard.Acquire(roomDirectory, "baton run pump");
+            // wait-ok: as in the sibling above, aimed at the lock's release point instead.
+            var releaseAfterDelay = Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken)
+                .ContinueWith(_ => guard.Dispose(), cancellationToken);
+
+            var decideOptions = new DecideOptions(
+                roomDirectory, pausedExecutionId.Value, DecisionType.Resume, TargetStepId: null,
+                SupplementaryExecutionId: null, bindingsFilePath);
+
+            var result = await Task.Run(
+                () => DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: cancellationToken),
+                cancellationToken);
+            await releaseAfterDelay;
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.All(result.State.Steps, FlowAssert.Succeeded);
         }
         finally
         {

@@ -20,6 +20,14 @@ namespace Baton.Mutation;
 /// </summary>
 public static class MutationInterface
 {
+    // #1183: the longest single Task.Delay the deferral waits below will ever issue, however far out
+    // the deadline they are waiting on actually is -- distinct from MaxExhaustionParkHorizon (the
+    // longest reset instant GetRetryObligations will trust), since a change to one must not silently
+    // move the other. Task.Delay's TimeSpan overload throws past ~49.7 days; the loop's `continue`
+    // after each wait re-checks readiness and re-issues the remainder, so any value safely under that
+    // ceiling works here.
+    private static readonly TimeSpan MaxParkWaitChunk = TimeSpan.FromDays(1);
+
     /// <summary>
     /// Acquires the room's concurrency guard, then repeatedly projects <see cref="FlowState"/>,
     /// resolves every ready step (retry-aware), and dispatches all of them to Core
@@ -64,7 +72,13 @@ public static class MutationInterface
         Action<DateTimeOffset>? onVendorQuotaPark = null,
         // #1184 / 0026 §4: when true (attended session turn), an ExhaustedUntil step settles immediately
         // rather than scheduling a paced retry obligation. Defaults to false (unattended workflow steps).
-        bool settleOnVendorExhaustion = false)
+        bool settleOnVendorExhaustion = false,
+        // #1767: test-observable only, null in every production call site. Fired each time the pump
+        // re-reads the clock and re-arms a deferral wait (either the idle-deferral branch or the
+        // busy-wait branch below) — never on any other path, and never changes production timing
+        // itself, since it fires after the delay task is already constructed. Mirrors
+        // CancelRequestPoller's per-tick shape: a plain callback, absent cost when null.
+        Action? onDeferralWaitArmed = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -79,7 +93,8 @@ public static class MutationInterface
         return await PumpToFixedPointAsync(
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
-                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion)
+                timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion,
+                onDeferralWaitArmed)
             .ConfigureAwait(false);
     }
 
@@ -91,7 +106,12 @@ public static class MutationInterface
     /// appending anything — an invalid decision throws and leaves the log untouched.
     /// </summary>
     /// <exception cref="WorkflowLockedException">
-    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// Another Flow instance still held <paramref name="roomDirectoryPath"/>'s lock after
+    /// <see cref="RoutineHoldBudget"/> elapsed. #1650 F1: bounded rather than fail-fast, unlike
+    /// <see cref="StartWorkflowAsync"/>'s guard — a decision is the operator-facing half of a
+    /// <c>run --wait</c> handoff, and the holder it normally loses to is that same run's pump in the
+    /// act of releasing. Failing fast here turns the routine tail into a refusal the operator can
+    /// only answer by retrying the identical command. A second live pump mid-step still refuses.
     /// </exception>
     /// <exception cref="InvalidExternalDecisionException">The decision violates one of the validation rules.</exception>
     public static async Task<FlowState> RecordDecisionAsync(
@@ -122,7 +142,10 @@ public static class MutationInterface
         ArgumentNullException.ThrowIfNull(eventLogWriter);
         ArgumentNullException.ThrowIfNull(dispatcher);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+        // #1650 F1: AcquireWithin, not the fail-fast Acquire every other entry point here takes —
+        // see this method's own <exception> doc and RoutineHoldBudget for why the decision path is
+        // the one that must absorb a routine overlap rather than refuse it.
+        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, RoutineHoldBudget.Duration, holderDescription);
 
         var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
         var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
@@ -134,7 +157,8 @@ public static class MutationInterface
         var succeededExecutionIds = latestCheckpoint.State.SucceededExecutionIds;
 
         ExternalDecisionValidator.Validate(
-            state, snapshot, succeededExecutionIds, referencedExecutionId, decisionType, targetStepId, supplementaryExecutionId);
+            state, snapshot, succeededExecutionIds, referencedExecutionId, decisionType, targetStepId, supplementaryExecutionId,
+            roomDirectoryPath);
 
         var decisionId = new DecisionId(Guid.NewGuid().ToString("n"));
 
@@ -152,6 +176,342 @@ public static class MutationInterface
                 timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()),
                 settleOnVendorExhaustion: settleOnVendorExhaustion)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// #1608: the conductor resolution surface — <c>baton resolve</c>'s own mutation-surface entry
+    /// point; see <see cref="FlowEvent.CaptureResolved"/>'s own remarks for the exclusivity claim this
+    /// enforces. Unlike every other entry point above, this never pumps.
+    /// <para>
+    /// A step with no declared <see cref="PausePoint"/> keeps an unresolved
+    /// <see cref="FlowEvent.ExecutionIndeterminate"/> entirely unreachable from <c>baton decide</c>
+    /// (<see cref="ExternalDecisionValidator"/> only ever admits a Paused step, or a step parked on a
+    /// pending retry deadline), so nothing downstream is waiting on this call the way a paused workflow
+    /// waits on <see cref="RecordDecisionAsync"/>. A step that DOES declare <see cref="PausePoint"/> is
+    /// the exception: <see cref="Scheduling.PauseEngine.GetPauseObligations"/> reaches it through the
+    /// ordinary <c>Failed &amp;&amp; !MayRetry</c> path regardless of why retry is refused, so it becomes
+    /// <see cref="StepStatus.Paused"/> with <see cref="StepState.IndeterminateAwaitingResolution"/>
+    /// still set — and IS reachable from <c>baton decide</c> in that state (#1608 review finding 3).
+    /// This verb does not special-case that step; a conductor deciding not to resolve first gets
+    /// whatever ordinary pause-decision consequence follows, still carrying the unresolved flag.
+    /// </para>
+    /// A follow-up <c>baton run --room-dir</c> is what re-drives
+    /// the DAG once a rejection leaves the step retry-eligible again.
+    /// </summary>
+    /// <param name="accepted">
+    /// Same boolean as <see cref="FlowEvent.CaptureResolved.Accepted"/> — see its remarks for what
+    /// each value means and why the prose-safe/all-or-nothing rule (spec/baton.md §3, "Consumer
+    /// obligations") is not re-derived here. When the unsatisfied-output list names more than one
+    /// output, every name gets the SAME captured body verbatim on acceptance — there is only ever
+    /// one captured response per execution, never one per declared name, so a two-name capture (e.g.
+    /// two prose-safe `.md` outputs on one contract) produces two identical files. No shipped role
+    /// hits this today (every multi-output role's second output is structured, which blocks the
+    /// capture from forming at all per <see cref="Outcomes.OutputMaterializer"/>'s own gate), so this
+    /// is latent rather than live. <c>false</c>: no file is written; <paramref name="reason"/> is
+    /// required.
+    /// </param>
+    /// <exception cref="InvalidCaptureResolutionException">
+    /// <paramref name="executionId"/> names no step this verb admits for the requested
+    /// <paramref name="accepted"/> value — see the guard's own comment for
+    /// <see cref="Domain.IndeterminateProducer"/>'s per-verb admission table (F1, #1593 review): an
+    /// Indeterminate settled by <see cref="FlowEvent.VerifyFailed"/> or
+    /// <see cref="FlowEvent.ExecutionArrested"/> is never a target of either verb, and one settled by
+    /// this class's own #1593 contract-failure arm (<see cref="Outcomes.OutcomeClassifier"/>, no
+    /// captured response) admits <c>--reject</c> only. <paramref name="accepted"/> is <c>false</c> and
+    /// <paramref name="reason"/> is null/whitespace, or reading/writing a captured or declared output
+    /// file failed.
+    /// </exception>
+    /// <exception cref="Baton.Concurrency.WorkflowLockedException">
+    /// Another Flow instance already holds <paramref name="roomDirectoryPath"/>'s lock.
+    /// </exception>
+    public static async Task<FlowState> RecordCaptureResolutionAsync(
+        string roomDirectoryPath,
+        WorkflowDefinitionSnapshot snapshot,
+        string artifactsRootPath,
+        IEventLogReader eventLogReader,
+        IEventLogWriter eventLogWriter,
+        ExecutionId executionId,
+        bool accepted,
+        string? reason,
+        bool close = false,
+        CancellationToken cancellationToken = default,
+        string? holderDescription = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentException.ThrowIfNullOrEmpty(artifactsRootPath);
+        ArgumentNullException.ThrowIfNull(eventLogReader);
+        ArgumentNullException.ThrowIfNull(eventLogWriter);
+
+        if (!accepted && string.IsNullOrWhiteSpace(reason))
+        {
+            throw new InvalidCaptureResolutionException(
+                close
+                    ? "Closing an Indeterminate settle requires --reason: the conductor's justification " +
+                      "is itself the room fact this verb exists to record."
+                    : "Rejecting a captured response requires --reason: the conductor's justification is " +
+                      "itself the room fact this verb exists to record.");
+        }
+
+        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, holderDescription);
+
+        var checkpoint = ProjectionCheckpointStore.Load(roomDirectoryPath);
+        var log = await eventLogReader.ReadSnapshotFromOffsetAsync(checkpoint?.ByteOffset ?? 0, cancellationToken).ConfigureAwait(false);
+        if (log.IsFallbackToFull)
+        {
+            checkpoint = null;
+        }
+
+        var (state, _) = StateProjector.ProjectAndCheckpoint(log.FlowEvents, snapshot, checkpoint, log.ByteOffset);
+
+        var target = state.Steps.FirstOrDefault(step => step.LatestExecutionId == executionId);
+
+        // F1 (#1593 review): IndeterminateProducer, not a bare LatestCapturedResponseFile null/not-null
+        // read, is what makes a step a target of this verb, and which of the two verbs. Mirrors
+        // ResolveCommand's own admission check one layer up.
+        // N3 (#1664 re-review): a null IndeterminateProducer on a step that IS awaiting resolution and
+        // DOES carry a captured response file is the legacy pre-#1593 shape — the same fallback
+        // RedispatchCommand.cs already applies to a pre-field terminal.json — not "a producer no verb
+        // admits". ProjectionCheckpointStore's Version bump (checkpoint.Version < 4) means this can now
+        // only be reached via a full replay off an old flow.jsonl that genuinely predates the field, so
+        // treating it as CapturedResponse is a correct read of the journal, not a workaround for a stale
+        // checkpoint.
+        var effectiveProducer = target?.IndeterminateProducer
+            ?? (target?.LatestCapturedResponseFile is not null ? IndeterminateProducer.CapturedResponse : (IndeterminateProducer?)null);
+        // #1622 (d)/#1700: --close admits exactly the producers --accept-capture/--reject never did —
+        // VerifyFailed/Arrested/null — mirroring ResolveCommand's own widened admission one layer up.
+        var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
+            && (close
+                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                : effectiveProducer == IndeterminateProducer.CapturedResponse
+                    || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
+        if (!admitsThisVerb)
+        {
+            // #1608 review finding 5: an explicit --execution naming a step whose latest attempt
+            // already recorded an ACCEPTED CaptureResolved for this exact execution is a repair
+            // request, not an invalid target — see ReconcileAcceptedCaptureAsync's own remarks for why
+            // "already resolved" must not always mean "refuse" now that the fact is journaled before
+            // the files it describes. Reads the full log rather than the checkpoint-relative slice
+            // above: this branch is rare (a crash-repair path) and the prior resolution can predate
+            // the checkpoint this call happened to load. Gated on `accepted` too: a --reject against
+            // an already-accepted execution must still refuse, not silently reinterpret the caller's
+            // explicit reject as a repair of someone else's earlier accept.
+            if (target is not null && accepted)
+            {
+                var fullEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                var priorResolution = fullEvents.OfType<FlowEvent.CaptureResolved>()
+                    .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == target.StepId);
+                if (priorResolution is { Accepted: true })
+                {
+                    var outcome = await ReconcileAcceptedCaptureAsync(priorResolution, artifactsRootPath, cancellationToken)
+                        .ConfigureAwait(false);
+                    switch (outcome)
+                    {
+                        case ReconciliationOutcome.Repaired:
+                            return StateProjector.Project(fullEvents, snapshot);
+                        case ReconciliationOutcome.Unrecoverable:
+                            throw new InvalidCaptureResolutionException(
+                                $"Execution '{executionId.Value}' was already accepted in room '{roomDirectoryPath}', but its " +
+                                "declared output(s) are missing on disk AND its captured response is also gone — nothing " +
+                                "left to re-materialize from; this room needs manual repair.");
+                        case ReconciliationOutcome.NothingToRepair:
+                        default:
+                            // Every declared output is already on disk -- an ordinary duplicate
+                            // resolution attempt, not a crash to repair. Falls through to the
+                            // exactly-once refusal below, unchanged from before this repair path
+                            // existed (MutationInterfaceCaptureResolutionTests' own
+                            // "second resolution throws" pin).
+                            break;
+                    }
+                }
+            }
+
+            throw new InvalidCaptureResolutionException(
+                $"Execution '{executionId.Value}' has no unresolved indeterminate capture in room " +
+                $"'{roomDirectoryPath}' — 'baton resolve' only targets a step still awaiting conductor resolution.");
+        }
+
+        IReadOnlyList<string> resolvedOutputNames = target!.LatestUnsatisfiedOutputNames ?? [];
+
+        if (accepted)
+        {
+            if (target.LatestCapturedResponseFile is null || resolvedOutputNames.Count == 0)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Execution '{executionId.Value}' has no captured response body to accept in room '{roomDirectoryPath}'.");
+            }
+
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, executionId);
+            var capturedPath = Path.Combine(outputDirectory, target.LatestCapturedResponseFile);
+            string capturedContent;
+            try
+            {
+                capturedContent = await File.ReadAllTextAsync(capturedPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Could not read captured response '{capturedPath}' for execution '{executionId.Value}': {ex.Message}.", ex);
+            }
+
+            var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
+
+            // #1608 review finding 3: validated in its own pass, entirely before the fact is journaled
+            // below — sharing one foreach with the write pass meant a later name's reserved/traversal
+            // failure could leave an earlier name already written to disk with no
+            // FlowEvent.CaptureResolved ever appended (InvalidCaptureResolutionException's own remarks
+            // promise "no file is written" when it's thrown, and a declared output sitting on disk
+            // while the room still reads Indeterminate is exactly the filesystem-level false-Succeeded
+            // gap OutputMaterializer's class remarks exist to prevent). Every name here already passed
+            // ProducedOutput's own reserved/traversal checks at contract-declaration time
+            // (WorkerContract.cs) and OutputMaterializer's prose-safe/all-or-nothing gate at capture
+            // time — this is defense-in-depth on the one permitted writer under a declared name
+            // (spec/baton.md §3), not re-validation of either.
+            foreach (var outputName in resolvedOutputNames)
+            {
+                if (ReservedOutputNames.IsReserved(outputName) || ReservedOutputNames.IsPathTraversal(outputName))
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Declared output name '{outputName}' for execution '{executionId.Value}' is not " +
+                        "a bare, non-reserved file name — refusing to write it.");
+                }
+            }
+
+            // #1608 review finding 5: "fact then files" — this append deliberately precedes the writes
+            // below, trading a self-healing gap (ledger Succeeded, declared output still missing) for
+            // the un-healable one the reverse order left open. spec/baton.md §3 holds why; the healing
+            // half is ReconcileAcceptedCaptureAsync below, which a later explicit --execution re-enters.
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var outputName in resolvedOutputNames)
+            {
+                var outputPath = Path.Combine(outputDirectory, outputName);
+                try
+                {
+                    await File.WriteAllTextAsync(outputPath, body, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidCaptureResolutionException(
+                        $"Could not write declared output '{outputPath}' for execution '{executionId.Value}': {ex.Message}. " +
+                        "The resolution itself is already durably recorded — re-run 'baton resolve' naming this same " +
+                        "--execution once the environment issue is fixed to re-materialize the missing output(s).", ex);
+                }
+            }
+
+            var acceptedFinalEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            return StateProjector.Project(acceptedFinalEvents, snapshot);
+        }
+
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CaptureResolved(target.StepId, executionId, accepted, reason, resolvedOutputNames),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var finalEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+        return StateProjector.Project(finalEvents, snapshot);
+    }
+
+    /// <summary>
+    /// #1608 review finding 5: repairs the one crash window "fact then files" (above) can leave open
+    /// — a durable <see cref="FlowEvent.CaptureResolved"/> with <c>Accepted: true</c> whose write(s)
+    /// never completed, or completed only partially, because the process died between the append and
+    /// the writes it describes. Never called automatically: an explicit <c>baton resolve --execution
+    /// &lt;id&gt;</c> naming an execution whose step is no longer
+    /// <see cref="StepState.IndeterminateAwaitingResolution"/> re-enters here (see
+    /// <see cref="RecordCaptureResolutionAsync"/>'s own remarks) rather than being refused outright,
+    /// the same "just run it again" idempotent-retry shape the pre-#1608-review write order already
+    /// promised — restored, not abandoned, by moving what "again" means past the fact instead of
+    /// before it.
+    /// <para>
+    /// #1608 re-review finding 3 — what "missing" means, and its two edges. A declared output counts as
+    /// missing when it is absent <b>or</b> zero-length, so the likeliest crash shape (killed mid-write,
+    /// leaving an empty file <see cref="File.Exists"/> reports as present) is repairable rather than
+    /// reported as nothing-to-repair. A <b>torn but non-empty</b> write is NOT detected and needs manual
+    /// repair: nothing recorded on <see cref="FlowEvent.CaptureResolved"/> says how long the body should
+    /// have been, and re-deriving it by re-reading the capture on every call would clobber a declared
+    /// output a human deliberately edited after acceptance — the case this same existence-only predicate
+    /// is what protects. In the other direction, an output that is legitimately empty would read as
+    /// permanently repairable (and, with the capture also gone, as needing manual repair) — reachable
+    /// only by hand: <see cref="Outcomes.OutputMaterializer.TryCaptureFinalResponse"/> refuses to
+    /// capture a blank response at all, and it is the only producer of the unresolved captures this
+    /// path repairs, so an engine-produced accepted capture always has a non-empty body. Stated rather
+    /// than defended against, since the repair is idempotent and appends no second fact — but it is
+    /// also why that capture-time gate must not be relaxed without revisiting this predicate.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// <see cref="ReconciliationOutcome.NothingToRepair"/> when every declared output the resolving
+    /// <see cref="FlowEvent.CaptureResolved"/> named is already on disk — an ordinary duplicate
+    /// resolution attempt, not a crash, and the caller's exactly-once refusal applies unchanged.
+    /// <see cref="ReconciliationOutcome.Repaired"/> once this call has re-materialized every name that
+    /// was missing. <see cref="ReconciliationOutcome.Unrecoverable"/> when outputs are missing AND the
+    /// underlying captured-response file this resolution was accepted from is ALSO gone — nothing left
+    /// to re-derive from; the caller fails closed on that result.
+    /// </returns>
+    private static async Task<ReconciliationOutcome> ReconcileAcceptedCaptureAsync(
+        FlowEvent.CaptureResolved resolution,
+        string artifactsRootPath,
+        CancellationToken cancellationToken)
+    {
+        var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, resolution.ExecutionId);
+        var outputNames = resolution.ResolvedOutputNames ?? [];
+        var missingNames = outputNames.Where(name =>
+        {
+            // #1608 re-review finding 3: absent OR zero-length. File.WriteAllTextAsync opens with
+            // FileMode.Create, so a kill DURING the write -- not merely between the append and the
+            // loop -- leaves a file that exists and is empty; existence alone would report that as
+            // NothingToRepair and the caller would tell the operator the room has nothing to fix.
+            // One FileInfo stat answers both, rather than an Exists check the Length read could race.
+            var info = new FileInfo(Path.Combine(outputDirectory, name));
+            return !info.Exists || info.Length == 0;
+        }).ToList();
+
+        if (missingNames.Count == 0)
+        {
+            return ReconciliationOutcome.NothingToRepair;
+        }
+
+        // Deliberately re-derived from the well-known capture path rather than
+        // StepState.LatestCapturedResponseFile — StateProjector's CaptureResolved(Accepted: true) case
+        // clears that field from projected state (it belongs to the audit trail of an UNresolved
+        // capture, not a resolved one), so this repair must read the raw file, not projected state.
+        var capturedPath = Path.Combine(outputDirectory, Outcomes.OutputMaterializer.CapturedResponseFileName);
+        if (!File.Exists(capturedPath))
+        {
+            return ReconciliationOutcome.Unrecoverable;
+        }
+
+        var capturedContent = await File.ReadAllTextAsync(capturedPath, cancellationToken).ConfigureAwait(false);
+        var body = Outcomes.OutputMaterializer.StripCapturedResponseHeader(capturedContent);
+
+        foreach (var outputName in missingNames)
+        {
+            var outputPath = Path.Combine(outputDirectory, outputName);
+            try
+            {
+                await File.WriteAllTextAsync(outputPath, body, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidCaptureResolutionException(
+                    $"Could not re-materialize declared output '{outputPath}' for execution " +
+                    $"'{resolution.ExecutionId.Value}': {ex.Message}.", ex);
+            }
+        }
+
+        return ReconciliationOutcome.Repaired;
+    }
+
+    /// <summary>See <see cref="ReconcileAcceptedCaptureAsync"/>'s own remarks for each member.</summary>
+    private enum ReconciliationOutcome
+    {
+        NothingToRepair,
+        Repaired,
+        Unrecoverable,
     }
 
     /// <summary>
@@ -295,7 +655,8 @@ public static class MutationInterface
         // The write-sequence discipline: recorded and fsync'd before anything else, whether the
         // target turns out to be a live process, a pending non-process execution, or already
         // terminal (the record itself is the too-late outcome; nothing else changes).
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
 
         return await PumpToFixedPointAsync(
@@ -496,6 +857,7 @@ public static class MutationInterface
         var inputPaths = ArtifactManager.ResolveInputPaths(stepDefinition, snapshot, state, artifactsRootPath);
         var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
         var environment = ArtifactManager.BuildEnvironment(inputPaths, outputDirectory, artifactsRootPath);
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBinding);
 
         var request = new ExecutionRequest(
             executionId,
@@ -511,7 +873,9 @@ public static class MutationInterface
             LinkedFromExecutionId: previousExecutionId,
             SessionId: sessionId,
             Adapter: processBinding.Adapter,
-            Model: processBinding.Model);
+            Model: processBinding.Model,
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken).ConfigureAwait(false);
@@ -572,7 +936,8 @@ public static class MutationInterface
         TimeProvider timeProvider,
         Func<double> jitterSource,
         Action<DateTimeOffset>? onVendorQuotaPark = null,
-        bool settleOnVendorExhaustion = false)
+        bool settleOnVendorExhaustion = false,
+        Action? onDeferralWaitArmed = null)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
@@ -582,6 +947,14 @@ public static class MutationInterface
         // #1094: dedupes the vendor-quota park notice to the reset instant currently being waited on,
         // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
         DateTimeOffset? lastQuotaParkNotified = null;
+
+        // #1634/#1762: this pump's own view of the ledger's Origin: Operator CancellationRequested
+        // targets, re-accumulated every round the same way lastQuotaParkNotified above persists
+        // across rounds. Scope (checkpoint-window, not "this call's own writes"), why
+        // FlowState.CancellationRequestedExecutionIds/ProjectionCheckpoint.State's equivalent were
+        // passed over, and why Origin had to become a durable field rather than staying an in-memory
+        // gate: spec/baton.md §2.
+        var cancellationRequestedExecutionIds = new HashSet<ExecutionId>();
 
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
         // host stop is detected below (M10 Phase 2): every read/write this loop performs to reach
@@ -620,6 +993,18 @@ public static class MutationInterface
                 state = projection.State;
                 latestCheckpoint = projection.Checkpoint;
                 currentCheckpoint = latestCheckpoint;
+
+                // #1634/#1762: this round's slice of the raw ledger, Origin: Operator only — a
+                // HostStop or legacy (null-Origin) line is never added, which is what makes the block
+                // below correct without also needing !hostStopRequested's help across a process
+                // boundary. spec/baton.md §2.
+                foreach (var flowEvent in events)
+                {
+                    if (flowEvent is FlowEvent.CancellationRequested { Origin: CancellationOrigin.Operator } cancellationRequested)
+                    {
+                        cancellationRequestedExecutionIds.Add(cancellationRequested.ExecutionId);
+                    }
+                }
 
                 var acceptedRequestByExecutionId = latestCheckpoint.State.AcceptedRequestByExecutionId;
 
@@ -664,6 +1049,22 @@ public static class MutationInterface
                 {
                     foreach (var (executionId, exit) in crashRecovery.ToClassify)
                     {
+                        // #1623 / F2: an execution carrying an unmatched VerifyStarted must NOT settle by
+                        // classification (which would see exit 0 with contract satisfied and append
+                        // ExecutionSucceeded, failing open). Replaying a verify subprocess across an engine
+                        // restart belongs only to live dispatch; here we settle Indeterminate via VerifyFailed.
+                        if (state.UnmatchedVerifyExecutionIds.Contains(executionId))
+                        {
+                            await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyFailed(
+                                    executionId,
+                                    FailingMembers: null,
+                                    Tail: "verify did not complete across an engine restart",
+                                    Kind: VerifyFailedKind.EngineRestart),
+                                ioCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
                         var request = acceptedRequestByExecutionId[executionId];
                         var contract = GetContractForClassification(request, workerBindings);
                         var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRootPath, executionId);
@@ -673,13 +1074,44 @@ public static class MutationInterface
                         // (and fail-closed against a worktree that may be long gone).
                         var grantAuditMode = request.GrantAuditMode ?? GrantAuditMode.Enforced;
                         string? worktreePath = null;
+                        string? worktreeBaseRef = null;
                         IWorkerResponseParser? responseParser = null;
+                        var changesTree = false;
+                        string? changesTreeWorkingDirectory = null;
+                        Func<string, int>? countHookVerdicts = null;
                         try
                         {
                             if (workerBindings.TryGetValue(request.Worker, out var b) && b is WorkerBinding.Process p)
                             {
-                                worktreePath = p.Target.WorkingDirectory;
+                                // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the
+                                // operator's own repository — see WorkerBinding.Process.IsWorktree's
+                                // remarks for why a retry decision must not see that directory at all.
+                                if (p.IsWorktree)
+                                {
+                                    worktreePath = p.Target.WorkingDirectory;
+                                    worktreeBaseRef = p.WorktreeBaseSha;
+                                }
+
                                 responseParser = p.ResponseParser;
+                                // #1622/#1390: the same bit the live-dispatch path reads off
+                                // `binding.ChangesTree` below. 7c (#1720 review) corrects the
+                                // mechanism this used to state: the binding is NOT re-derived from
+                                // the role catalog here -- ChangesTree is a serialized field of
+                                // WorkerBindingConfigEntry, written into the room's own bindings.json
+                                // at dispatch and read back from that file, so this is the value
+                                // recorded at dispatch and a catalog grant that changed since then
+                                // cannot diverge the two.
+                                changesTree = p.ChangesTree;
+                                // #1622/#1390: deliberately NOT gated on p.IsWorktree the way worktreePath
+                                // above is -- see OutcomeClassifier.Classify's own parameter doc for why a
+                                // tree-changing role never gets an auto-provisioned worktree, so that gate
+                                // would leave this permanently null for every real run.
+                                changesTreeWorkingDirectory = changesTree ? p.Target.WorkingDirectory : null;
+                                // #1741: still captured as a fallback for a PRE-#1741 journal line
+                                // (request.HookCanaryArmed is null, below) -- a current line no longer
+                                // relies on this, since HookCanaryArmed/HookVerdictLedgerFileName are
+                                // now the recorded facts the canary arms from.
+                                countHookVerdicts = p.Target.CountHookVerdicts;
                             }
                         }
                         catch (BatonFlowException)
@@ -689,7 +1121,10 @@ public static class MutationInterface
                             // pinning this: StartWorkflowAsync_classifies_crash_recovery_candidate_
                             // when_its_worker_binding_refuses_to_resolve). The consequence is not a
                             // skip: if the journal promised an audit, Classify fails closed on the
-                            // null worktree path.
+                            // null worktree path. countHookVerdicts also stays null on this path, which
+                            // only matters for a pre-#1741 journal line (ExecutionRequest.HookCanaryArmed's
+                            // own doc has the full #1741 reasoning) -- see the counting block below for
+                            // a line that already recorded arming.
                         }
 
                         // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own
@@ -700,11 +1135,38 @@ public static class MutationInterface
                             ? StandardWorkerUsageParsers.Default.GetValueOrDefault(recoveryAdapter)
                             : null;
 
+                        // #1741: arms from the RECORDED request fact, never from today's binding --
+                        // see ExecutionRequest.HookCanaryArmed's own doc for why (spec/baton.md §9).
+                        int? toolCallCount = null;
+                        int? hookVerdictCount = null;
+                        if (request.HookCanaryArmed is { } armed)
+                        {
+                            if (armed)
+                            {
+                                toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
+                                hookVerdictCount = request.HookVerdictLedgerFileName is { } ledgerFileName
+                                    ? HookVerdictLedger.CountLines(Path.Combine(outputDirectory, ledgerFileName))
+                                    : 0;
+                            }
+                        }
+                        else if (countHookVerdicts is not null)
+                        {
+                            // request.HookCanaryArmed is null: a journal line predating #1741, kept on
+                            // its old path (ExecutionRequest.HookCanaryArmed's own doc has the rule).
+                            toolCallCount = CountToolCallsFromStdoutLog(usageParser, outputDirectory);
+                            hookVerdictCount = countHookVerdicts(outputDirectory);
+                        }
+
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
-                            usageParser: usageParser);
+                            usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
+                            changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
+                            hookVerdictCount: hookVerdictCount);
 
+                        // #1709: no TokenBudgetMonitor in scope on this path -- this classifies a
+                        // RECORDED exit from a possibly-defunct workspace, never a live process, so
+                        // ToOutcomeEvent's peakBilledInWindow stays at its null default.
                         await eventLogWriter.AppendAsync(ToOutcomeEvent(executionId, classification), ioCancellationToken)
                             .ConfigureAwait(false);
                         await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, executionId, classification, ioCancellationToken)
@@ -807,6 +1269,39 @@ public static class MutationInterface
                     continue;
                 }
 
+                // #1634/#1762: a poller-less pump (e.g. CancelCommand's DIRECT path) never delivers a
+                // parked step's cancel through MarkParkedCancelIntent/SettleParkedCancelIntentsAsync,
+                // so read the ledger directly here, before GetRetryObligations/
+                // DependencyResolver.GetReadySteps get a chance to redispatch it instead. Sourced from
+                // cancellationRequestedExecutionIds -- already Origin: Operator only, see its own
+                // remarks -- filtered through IsParkedRetryTarget, the same terminal
+                // SettleParkedCancelIntentsAsync would produce. Also gated on !hostStopRequested, same
+                // guard readyStepIds uses below -- why both this gate AND Origin: spec/baton.md §2.
+                // Filters state.Steps directly
+                // rather than the accumulator's own HashSet -- state.Steps is itself built by
+                // iterating snapshot.Steps in order (StateProjector), so this gives the
+                // ExecutionCancelled appends below the same deterministic-emission discipline the
+                // ready-step loop further down uses, with no separate join back through
+                // snapshot.Steps that could silently drop a match if that 1:1 shape ever changed.
+                var parkedCancelExecutionIds = hostStopRequested
+                    ? []
+                    : state.Steps
+                        .Where(s => s.LatestExecutionId is { } latestExecutionId
+                            && cancellationRequestedExecutionIds.Contains(latestExecutionId)
+                            && IsParkedRetryTarget(state, latestExecutionId))
+                        .Select(s => s.LatestExecutionId!.Value)
+                        .ToList();
+                if (parkedCancelExecutionIds.Count > 0)
+                {
+                    foreach (var executionId in parkedCancelExecutionIds)
+                    {
+                        await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
                 // A derived obligation (#712), re-evaluated from projected state on every round for
                 // the same crash-safety reason the pause obligation above is: evaluated after pause obligations
                 // and before readiness.
@@ -887,6 +1382,40 @@ public static class MutationInterface
                 {
                     var request = acceptedRequestByExecutionId[executionId];
                     var processBinding = (WorkerBinding.Process)workerBindings[request.Worker];
+
+                    // #1583 (spec/baton.md §3, pulling S6 / #802 section 3.3 forward): when the resubmit's current binding differs
+                    // from the request's recorded Adapter/Model, journal FlowEvent.StepRebound naming old->new
+                    // before dispatching so that usage projection attributes this execution to the new binding.
+                    // request.Adapter is null both for a pre-#1567 journal line (no Adapter field existed yet)
+                    // and for a real rebind's dropped model string (#1082) — the two are told apart by Model:
+                    // a pre-#1567 line has neither field recorded, so require both null before treating the
+                    // absence as "no prior binding recorded" rather than a divergence to journal.
+                    var isLegacyUnrecordedBinding = request.Adapter is null && request.Model is null;
+                    if (!isLegacyUnrecordedBinding
+                        && (request.Adapter != processBinding.Adapter || request.Model != processBinding.Model))
+                    {
+                        var stepId = request.StepId
+                            ?? throw new InvalidRoomMutationException(
+                                $"Crash-recovery resubmit for execution {executionId} has no recorded StepId; a step-less request must never reach the resubmit loop.");
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.StepRebound(
+                                stepId,
+                                executionId,
+                                PreviousAdapter: request.Adapter,
+                                PreviousModel: request.Model,
+                                NewAdapter: processBinding.Adapter,
+                                NewModel: processBinding.Model,
+                                Reason: "crash-recovery resubmit: binding changed since accept"),
+                            ioCancellationToken).ConfigureAwait(false);
+
+                        request = request with
+                        {
+                            Adapter = processBinding.Adapter,
+                            Model = processBinding.Model,
+                        };
+                        acceptedRequestByExecutionId[executionId] = request;
+                    }
+
                     var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRootPath, executionId);
                     var prepared = new PreparedExecution(request, outputDirectory);
 
@@ -927,19 +1456,38 @@ public static class MutationInterface
                         if (delay > TimeSpan.Zero)
                         {
                             // #1094: surface a vendor-quota park to the foreground before the (possibly
-                            // day-long) paced wait, so it does not read as a hang. Deduped to the instant
-                            // being waited on; ordinary retry backoff is not a quota park and stays quiet.
-                            // Notification only — the 0026 wait below is unchanged.
-                            if (onVendorQuotaPark is not null
-                                && lastQuotaParkNotified != minNotBefore
-                                && state.Steps.Any(s => s.RetryNotBefore == minNotBefore
-                                    && s.LatestFailureClassification == FailureClassification.ExhaustedUntil))
+                            // day-long) paced wait, so it does not read as a hang. Ordinary retry backoff
+                            // is not a quota park and stays quiet. Notification only — the 0026 wait below
+                            // is unchanged.
+                            var quotaParkStep = state.Steps.FirstOrDefault(s => s.RetryNotBefore == minNotBefore
+                                && s.LatestFailureClassification == FailureClassification.ExhaustedUntil);
+                            if (onVendorQuotaPark is not null && quotaParkStep is not null)
                             {
-                                lastQuotaParkNotified = minNotBefore;
-                                onVendorQuotaPark(minNotBefore);
+                                // #1183: deduped on the RAW vendor-reported instant
+                                // (LatestExecutionFailedRetryNotBefore), not the paced `minNotBefore` —
+                                // PastResetInstantRetryFloor recomputes a fresh `now + 1s` obligation on
+                                // every retry of a repeating stale instant, so deduping on the paced value
+                                // would re-notify (and re-print) once per second forever instead of once
+                                // per distinct vendor refusal.
+                                var dedupeInstant = quotaParkStep.LatestExecutionFailedRetryNotBefore ?? minNotBefore;
+                                if (lastQuotaParkNotified != dedupeInstant)
+                                {
+                                    lastQuotaParkNotified = dedupeInstant;
+                                    onVendorQuotaPark(minNotBefore);
+                                }
                             }
 
-                            var delayTask = Task.Delay(delay, timeProvider, ioCancellationToken);
+                            // #1183: Task.Delay's TimeSpan overload throws past ~49.7 days -- clamp
+                            // to a chunk and let the loop's `continue` below re-check readiness and
+                            // re-issue the remainder, rather than trust `delay` to already be sane.
+                            // GetRetryObligations caps every obligation it schedules, so this is
+                            // belt-and-suspenders for the wait itself, not the only guard.
+                            var chunkedDelay = delay > MaxParkWaitChunk ? MaxParkWaitChunk : delay;
+                            var delayTask = Task.Delay(chunkedDelay, timeProvider, ioCancellationToken);
+                            // #1767: fires after nowAtCheck's clock read and the delay task's
+                            // construction above, never before — a test awaiting this signal is
+                            // guaranteed the pump has already re-armed on the current time.
+                            onDeferralWaitArmed?.Invoke();
                             var deferralHostStopWatcher = cancellationToken.CanBeCanceled
                                 ? Task.Delay(Timeout.Infinite, cancellationToken)
                                 : null;
@@ -978,10 +1526,11 @@ public static class MutationInterface
                             // none), and the in-memory mark itself does not survive process exit.
                             // Accepted, not fixed: this pump call is exiting either way, the parked
                             // step was never going to settle through it once a host stop lands, and
-                            // CancelRequestFile.DeleteStalePendingRequest sweeps any still-pending
-                            // request file on the room's next `baton run` regardless — so the worst
-                            // case is the operator re-issuing `baton cancel` once that run starts, not
-                            // a request that silently vanishes with no trace.
+                            // CancelRequestFile.DeleteStalePendingRequestAsync sweeps this still-pending
+                            // request file on the room's next `baton run` once it can confirm (#1649)
+                            // the request predates that run and its writer is no longer alive — so the
+                            // worst case is the operator re-issuing `baton cancel` once that run starts,
+                            // not a request that silently vanishes with no trace.
                             if (completedWait == deferralHostStopWatcher || cancellationToken.IsCancellationRequested)
                             {
                                 hostStopRequested = true;
@@ -1076,8 +1625,16 @@ public static class MutationInterface
                         var wakeDelay = pendingRetryDeadlines.Min() - timeProvider.GetUtcNow();
                         if (wakeDelay > TimeSpan.Zero)
                         {
-                            deferralWakeup = Task.Delay(wakeDelay, timeProvider, ioCancellationToken);
+                            // #1183: same clamp as the idle branch's delayTask above -- an early
+                            // wakeup here is harmless, `completed == deferralWakeup` below already
+                            // just `continue`s to re-check readiness against the real deadline.
+                            var chunkedWakeDelay = wakeDelay > MaxParkWaitChunk ? MaxParkWaitChunk : wakeDelay;
+                            deferralWakeup = Task.Delay(chunkedWakeDelay, timeProvider, ioCancellationToken);
                             waitCandidates.Add(deferralWakeup);
+                            // #1767: same signal as the idle branch's onDeferralWaitArmed call above —
+                            // fires after this branch's own clock read (timeProvider.GetUtcNow() feeding
+                            // wakeDelay) and re-arm, never before.
+                            onDeferralWaitArmed?.Invoke();
                         }
                     }
                 }
@@ -1171,6 +1728,9 @@ public static class MutationInterface
             upstreamExecutionIds[dependencyStepId] = stateByStepId[dependencyStepId].LatestExecutionId!.Value;
         }
 
+        var processBindingForRequest = binding as WorkerBinding.Process;
+        var (hookCanaryArmed, hookVerdictLedgerFileName) = CaptureHookCanaryArmingFields(processBindingForRequest);
+
         var request = new ExecutionRequest(
             executionId,
             workflowId,
@@ -1178,12 +1738,14 @@ public static class MutationInterface
             step.Worker,
             inputPaths,
             step.Outputs,
-            binding is WorkerBinding.Process processBinding ? processBinding.Timeout : null,
+            processBindingForRequest?.Timeout,
             environment,
             upstreamExecutionIds,
             GrantAuditMode: binding.GrantAuditMode,
-            Adapter: (binding as WorkerBinding.Process)?.Adapter,
-            Model: (binding as WorkerBinding.Process)?.Model);
+            Adapter: processBindingForRequest?.Adapter,
+            Model: processBindingForRequest?.Model,
+            HookCanaryArmed: hookCanaryArmed,
+            HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
 
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
@@ -1192,6 +1754,14 @@ public static class MutationInterface
 
         return new PreparedExecution(request, outputDirectory);
     }
+
+    // #1741: the one fact every Process-dispatch ExecutionRequest construction site must journal --
+    // see ExecutionRequest.HookCanaryArmed's own doc for why (spec/baton.md §9). Shared so the two
+    // sites (a fresh step dispatch here, a `baton resume` dispatch in RecordResumeAsync) can't drift
+    // the way the #1753 review found RecordResumeAsync had.
+    private static (bool? HookCanaryArmed, string? HookVerdictLedgerFileName) CaptureHookCanaryArmingFields(
+        WorkerBinding.Process? processBinding) =>
+        (processBinding?.Target.CountHookVerdicts is not null, processBinding?.Target.HookVerdictLedgerFileName);
 
     private static FlowEvent.ExecutionRequestAccepted CreateExecutionRequestAccepted(ExecutionRequest request)
     {
@@ -1211,19 +1781,6 @@ public static class MutationInterface
     {
         try
         {
-            // Rests on ICoreDispatcher's contract that cancellation via dispatchCancellationToken
-            // comes back as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
-            // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
-            // down. If an implementation (or a test double) ever let OCE escape here, the outcome
-            // append below would be skipped and, with the ambient token also cancelled, the pump's
-            // round-level catch would absorb the evidence. There is deliberately no local catch:
-            // that would convert a contract violation into a fabricated outcome.
-            var dispatchResult = await dispatcher.DispatchAsync(prepared.Request, binding.Target, dispatchCancellationToken)
-                .ConfigureAwait(false);
-            // The request's mode was set from this binding at preparation; null can only mean a
-            // request shape that predates the mode, and those were never promised an audit.
-            var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
-            var worktreePath = binding.Target.WorkingDirectory;
             // #1586 S1: the same recorded-adapter preference ExecutionUsageProjector's own #1567
             // comment explains — prepared.Request.Adapter, not the binding, so this site and the
             // crash-recovery site below both read the same source (identical value here, since
@@ -1231,15 +1788,268 @@ public static class MutationInterface
             var usageParser = prepared.Request.Adapter is { } liveAdapter
                 ? StandardWorkerUsageParsers.Default.GetValueOrDefault(liveAdapter)
                 : null;
+
+            // #1623 ruling addendum: a live token-budget watch, wired the same way
+            // CoreDispatcher.DetectsTerminalSuccess composes onto an existing OnStdoutLine sink —
+            // never replacing whatever a caller (e.g. the M24 live-streaming seam) already wired.
+            // Only possible when the adapter is known: with no usage parser there is nothing to read
+            // usage from, so an execution with a role budget but an unrecognized adapter simply runs
+            // unwatched rather than refusing to dispatch.
+            TokenBudgetMonitor? budgetMonitor = null;
+            var target = binding.Target;
+            // #1682: a monitor now arms on EITHER trigger existing -- a role with only a tool-step cap
+            // and no token budget still watches, where before this issue a budget was required for a
+            // monitor to be constructed at all.
+            // #1691: the billed-rate trigger joins the same disjunction -- a dispatch carrying only
+            // --billed-rate-limit still watches.
+            if ((binding.TokenBudget is not null || binding.MaxToolSteps is not null || binding.BilledRateLimit is not null)
+                && usageParser is not null)
+            {
+                budgetMonitor = new TokenBudgetMonitor(
+                    binding.TokenBudget, binding.MaxToolSteps, binding.BilledRateLimit, usageParser);
+                var innerOnStdoutLine = target.OnStdoutLine;
+                target = target with
+                {
+                    OnStdoutLine = line =>
+                    {
+                        innerOnStdoutLine?.Invoke(line);
+                        budgetMonitor.OnStdoutLine(line);
+                    },
+                };
+            }
+
+            using var linkedCancellation = budgetMonitor is not null
+                ? CancellationTokenSource.CreateLinkedTokenSource(dispatchCancellationToken, budgetMonitor.ArrestRequested)
+                : null;
+            var effectiveCancellationToken = linkedCancellation?.Token ?? dispatchCancellationToken;
+
+            // #1708 H1/M1: the workspace's REVIEWED .baton/verify is read HERE, before the worker is
+            // spawned -- not in the verify block below, which runs against a working tree the worker has
+            // just had write access to. Both halves matter: the merge-base with origin/main (so neither
+            // an edit to the working tree nor a commit on the lane's own branch is inside it) and
+            // pre-dispatch. See VerifyCommandResolver.ReadCommittedRepoDeclarationAsync for what a failed
+            // read falls back to, and for the one shape (no merge-base) that is announced as unreviewed.
+            var committedVerify = await VerifyCommandResolver
+                .ReadCommittedRepoDeclarationAsync(binding.Target.WorkingDirectory, dispatchCancellationToken)
+                .ConfigureAwait(false);
+            var committedVerifyDeclaration = committedVerify.CommandLine;
+            if (committedVerify.Unreviewed)
+            {
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationUnreviewed(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
+            // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
+            // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
+            // down, agnostic to which linked source actually fired. If an implementation (or a test
+            // double) ever let OCE escape here, the outcome append below would be skipped and, with
+            // the ambient token also cancelled, the pump's round-level catch would absorb the
+            // evidence. There is deliberately no local catch: that would convert a contract violation
+            // into a fabricated outcome.
+            var dispatchResult = await dispatcher.DispatchAsync(prepared.Request, target, effectiveCancellationToken)
+                .ConfigureAwait(false);
+
+            if (budgetMonitor is { Arrested: true })
+            {
+                // The budget's own token fired, not the caller's dispatchCancellationToken -- an
+                // engine-initiated arrest, never operator intent, so this is FlowEvent.ExecutionArrested,
+                // never FlowEvent.CancellationRequested/ExecutionCancelled (those mean the operator
+                // asked). No OutcomeClassifier.Classify call at all: classifying a cancelled-out-from-
+                // under-it process would only produce a Cancelled/Failed verdict that this replaces
+                // wholesale, never Succeeded.
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.ExecutionArrested(
+                        prepared.Request.ExecutionId,
+                        budgetMonitor.SnapshotUsage(),
+                        budgetMonitor.SnapshotLastToolNames(),
+                        budgetMonitor.ArrestReasonValue,
+                        budgetMonitor.SnapshotToolStepCount(),
+                        // #1691: recorded on EVERY arrest, not only a BilledRate one -- see
+                        // TokenBudgetMonitor.SnapshotPeakBilledInWindow for why.
+                        budgetMonitor.SnapshotPeakBilledInWindow(),
+                        binding.BilledRateLimit,
+                        // #1745: same recorded-adapter preference as usageParser above -- the LIVE
+                        // adapter this execution actually ran on, not binding.Adapter (the CATALOG's
+                        // pre-crash-recovery value), so a rebound execution's arrest text names the
+                        // vendor whose figure actually fired.
+                        prepared.Request.Adapter),
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            // The request's mode was set from this binding at preparation; null can only mean a
+            // request shape that predates the mode, and those were never promised an audit.
+            var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
+            // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
+            // repository — see WorkerBinding.Process.IsWorktree's remarks.
+            var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
+            // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
+            // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
+            var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
+
+            // #1680/#1732 review WIRING: the first-verdict canary's two counts. Both stay null unless
+            // this dispatch's own CoreDispatchTarget carries a live CountHookVerdicts delegate --
+            // AgyWorkerAdapter.Resolve only wires that up for an agy grant whose PreToolUse hook is the
+            // sole narrowing (RequiresHookAsSoleNarrowing), so a claude binding or a fully-granted agy
+            // one keeps passing null/null here exactly like every call site before this PR (Adapter
+            // Isolation: this file never names "agy" -- the vendor decided applicability at resolve
+            // time, this file only asks the target it was handed).
+            int? toolCallCount = null;
+            int? hookVerdictCount = null;
+            if (target.CountHookVerdicts is { } countHookVerdicts)
+            {
+                toolCallCount = CountToolCallsFromStdoutLog(usageParser, prepared.OutputDirectory);
+                hookVerdictCount = countHookVerdicts(prepared.OutputDirectory);
+            }
+
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
-                grantAuditMode, worktreePath, binding.ResponseParser, usageParser);
+                grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
+                changesTreeWorkingDirectory, toolCallCount, hookVerdictCount);
+
+            // #1623 (contract: spec/baton.md §3): the engine's own verify
+            // step, spawned here -- between Classify returning Succeeded and the outcome event append
+            // below -- rather than inside OutcomeClassifier.Classify itself, because Classify also runs
+            // on the crash-recovery ToClassify branch (PumpToFixedPointAsync above) replaying a
+            // recorded exit from a possibly-defunct workspace; a real subprocess belongs only on the
+            // live-dispatch path.
+            // #1702: the resolution order lives on VerifyCommandResolver's own doc, not restated here.
+            // #1708 H1: the repo-declaration arm is the pre-dispatch committed snapshot above; a
+            // redispatch still re-reads it (a fresh dispatch takes a fresh snapshot), which is the
+            // no-stale-command property spec/baton.md §3 states.
+            // #1708 L1: appended on DRIFT, whatever the verdict -- not only on a Succeeded execution,
+            // and whatever the precedence outcome, including when --verify would have won anyway. The
+            // operator-facing fact is "the file in your workspace is not what graded this run", which is
+            // true either way; spec/baton.md §3 states why it is owed after a failed, arrested or
+            // cancelled run too.
+            var workingTreeDeclaration = VerifyCommandResolver.ReadWorkingTreeRepoDeclaration(binding.Target.WorkingDirectory);
+            if (!string.Equals(workingTreeDeclaration, committedVerifyDeclaration, StringComparison.Ordinal))
+            {
+                await eventLogWriter.AppendAsync(
+                    new FlowEvent.VerifyDeclarationIgnored(
+                        prepared.Request.ExecutionId,
+                        VerifyCommandResolver.DeclarationDigest(committedVerifyDeclaration),
+                        VerifyCommandResolver.DeclarationDigest(workingTreeDeclaration)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            ResolvedVerifyCommand? resolvedVerify = classification.Verdict == OutcomeVerdict.Succeeded
+                ? VerifyCommandResolver.Resolve(
+                    committedVerifyDeclaration, binding.VerifyCommandOverride, binding.VerifyPixiTask)
+                : null;
+
+            if (resolvedVerify is not null)
+            {
+                var (runnable, notRunnableReason) = await VerifyCommandResolver.CheckRunnableAsync(
+                    resolvedVerify, binding.Target.WorkingDirectory, dispatchCancellationToken).ConfigureAwait(false);
+                if (!runnable)
+                {
+                    // #1702: see FlowEvent.VerifyNotRun's own doc for what this settles to and why.
+                    // No VerifyStarted here: it never started.
+                    await eventLogWriter.AppendAsync(
+                        new FlowEvent.VerifyNotRun(prepared.Request.ExecutionId, notRunnableReason ?? "verify command not runnable"),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    await eventLogWriter.AppendAsync(new FlowEvent.VerifyStarted(prepared.Request.ExecutionId), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var verifyOutcome = await VerifyRunner.RunProcessAsync(
+                        resolvedVerify.Program, resolvedVerify.Args, binding.Target.WorkingDirectory, dispatchCancellationToken)
+                        .ConfigureAwait(false);
+                    if (verifyOutcome.Passed)
+                    {
+                        await eventLogWriter.AppendAsync(new FlowEvent.VerifyPassed(prepared.Request.ExecutionId), CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    else if (verifyOutcome.Kind == VerifyFailedKind.Cancelled && dispatchCancellationToken.IsCancellationRequested)
+                    {
+                        // The operator's own cancel landed inside the verify window: VerifyStarted above
+                        // stays as the diagnostic record of what was running, but the settlement is
+                        // ExecutionCancelled, not VerifyFailed -- the journal *can* decide here (it holds
+                        // the cancel), so this must not fall into ApplyIndeterminate's retry-foreclosed,
+                        // no-discharge-verb path (#1623 re-review N3). A verify TIMEOUT still settles
+                        // Indeterminate via the VerifyFailed branch below -- only an operator-driven cancel
+                        // gets this arm.
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
+                    else
+                    {
+                        // Never a blind retry (the ruling's own words): this IS the terminal event for this
+                        // execution -- no FlowEvent.ExecutionSucceeded, no ZeroOutputsTripwire check, the
+                        // step settles Indeterminate via StateProjector.ApplyIndeterminate instead.
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.VerifyFailed(
+                                prepared.Request.ExecutionId,
+                                verifyOutcome.FailingMembers,
+                                verifyOutcome.Tail,
+                                verifyOutcome.Kind ?? VerifyFailedKind.GatesFailed),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
+                }
+            }
+
+            // #1788: DeliveryVerifier.CheckAsync's own doc names the contract (spec/baton.md §3). Placed
+            // here so it only runs once the block above has fallen through without an early return
+            // (verify passed, was not runnable, or the role declares none) -- never after a VerifyFailed
+            // return.
+            if (classification.Verdict == OutcomeVerdict.Succeeded && binding.DeliversBranch)
+            {
+                var deliveryOutcome = await DeliveryVerifier.CheckAsync(
+                    binding.Target.WorkingDirectory, binding.ExpectPr, dispatchCancellationToken).ConfigureAwait(false);
+                switch (deliveryOutcome.Status)
+                {
+                    // #1788 review: the operator's own cancel landing inside this check's own window --
+                    // mirrors the ordinary verify block's identical arm a few lines up. Never a
+                    // VerifyFailed/VerifyNotRun (both would be a misleading account of an execution the
+                    // operator asked to stop, not one the delivery check itself judged), and never a
+                    // silent fall-through to the Succeeded outcome append below.
+                    case DeliveryCheckStatus.Cancelled when dispatchCancellationToken.IsCancellationRequested:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                                CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    case DeliveryCheckStatus.Failed:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyFailed(
+                                    prepared.Request.ExecutionId,
+                                    deliveryOutcome.FailingMembers,
+                                    deliveryOutcome.Tail,
+                                    VerifyFailedKind.DeliveryFailed),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        return;
+                    case DeliveryCheckStatus.NotRun:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyNotRun(prepared.Request.ExecutionId, deliveryOutcome.NotRunReason!),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        break;
+                    case DeliveryCheckStatus.Passed:
+                    default:
+                        break;
+                }
+            }
 
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
             // dispatch has returned.
-            await eventLogWriter.AppendAsync(ToOutcomeEvent(prepared.Request.ExecutionId, classification), CancellationToken.None)
+            //
+            // #1709: budgetMonitor is in scope here (never for the crash-recovery caller below), so a
+            // live dispatch's Succeeded/Failed outcome carries the same peak an arrest would have --
+            // the false-positive-side lanes spec/baton.md §3's calibration needs.
+            await eventLogWriter.AppendAsync(
+                    ToOutcomeEvent(prepared.Request.ExecutionId, classification, budgetMonitor?.SnapshotPeakBilledInWindow()),
+                    CancellationToken.None)
                 .ConfigureAwait(false);
             await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -1286,14 +2096,25 @@ public static class MutationInterface
     /// a fresh dispatch's own completion (<see cref="DispatchAndRecordOutcomeAsync"/>) and M10 Phase
     /// 3's from-the-log classification of a recorded exit — the same mapping either way.
     /// </summary>
-    private static FlowEvent ToOutcomeEvent(ExecutionId executionId, OutcomeClassification classification) =>
+    /// <param name="peakBilledInWindow">
+    /// #1709: <see cref="FlowEvent.ExecutionSucceeded.PeakBilledInWindow"/>/
+    /// <see cref="FlowEvent.ExecutionFailed.PeakBilledInWindow"/>'s reading. Only the live-dispatch
+    /// caller has a <c>TokenBudgetMonitor</c> in scope to pass one; the crash-recovery caller classifies
+    /// a recorded exit with no live monitor and always passes null.
+    /// </param>
+    private static FlowEvent ToOutcomeEvent(
+        ExecutionId executionId, OutcomeClassification classification, long? peakBilledInWindow = null) =>
         classification.Verdict switch
         {
-            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(executionId),
+            OutcomeVerdict.Succeeded => new FlowEvent.ExecutionSucceeded(
+                executionId, classification.WorkspaceChanged, classification.Hollow, classification.HollowReason,
+                peakBilledInWindow),
             OutcomeVerdict.Failed => new FlowEvent.ExecutionFailed(
                 executionId, classification.FailureClassification, classification.Reason, classification.RetryNotBefore,
-                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
+                classification.CapturedResponseFile, classification.UnsatisfiedOutputNames, peakBilledInWindow),
             OutcomeVerdict.Cancelled => new FlowEvent.ExecutionCancelled(executionId),
+            OutcomeVerdict.Indeterminate => new FlowEvent.ExecutionIndeterminate(
+                executionId, classification.Reason, classification.CapturedResponseFile, classification.UnsatisfiedOutputNames),
             _ => throw new ArgumentOutOfRangeException(nameof(classification), classification.Verdict, "Unknown OutcomeVerdict."),
         };
 
@@ -1375,17 +2196,23 @@ public static class MutationInterface
                 // redispatch minting a new ExecutionId — dropping the stale id silently here instead
                 // of settling it. Known, not fixed here. It is NOT silently lost end to end: the
                 // poller never consumed the request file for a parked mark (its own isParked branch
-                // just re-marks, never consumes), and the request's Target is always the ORIGINAL
-                // literal execution id in this scenario ('latest' can never resolve to a parked step
-                // in the first place — RunningExecutionResolver only sees Running steps, F2's own
-                // point). So the poller's next tick re-checks that same stale id, finds it no longer
-                // matches any step's LatestExecutionId, and reports the ordinary "too late (it already
-                // settled)" verdict — an honest, if imprecise, outcome (the intent was not wrong, just
-                // reported as arriving after the fact), not a request that vanishes with no trace.
+                // just re-marks, never consumes), so the poller's next tick re-resolves the request
+                // and reacts to whatever it now finds. For a request naming a literal execution id,
+                // that id no longer matches any step's LatestExecutionId, so it reports the ordinary
+                // "too late (it already settled)" verdict — an honest, if imprecise, outcome (the
+                // intent was not wrong, just reported as arriving after the fact). #1607 widened
+                // RunningExecutionResolver so a 'latest' request CAN now have resolved to a parked
+                // step in the first place (pre-#1607, F2's point, it never could) — for that case the
+                // next tick's re-resolution instead finds the step's fresh, just-redispatched
+                // execution as the new Running candidate and arrests that one, rather than reporting
+                // "too late". Different outcome than the literal-id case, not a worse one: the operator
+                // asked to stop whatever this room is doing, and it does, just against the attempt
+                // that actually exists by the time the poller looks again.
                 continue;
             }
 
-            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), ioCancellationToken)
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CancellationRequested(executionId, CancellationOrigin.Operator), ioCancellationToken)
                 .ConfigureAwait(false);
             await eventLogWriter.AppendAsync(new FlowEvent.ExecutionCancelled(executionId), ioCancellationToken)
                 .ConfigureAwait(false);
@@ -1412,6 +2239,19 @@ public static class MutationInterface
         ExecutionId ForExecutionId,
         DateTimeOffset RetryNotBefore,
         int RetryDelayMs);
+
+    // #1183: a vendor never legitimately reports a quota reset this far out (the instant comes from
+    // PARSING vendor prose/fields, and a parse bug or garbage value must not become a pump crash) --
+    // an ExhaustedUntil reset instant beyond this horizon is treated as bogus and capped rather than
+    // trusted wholesale. Chosen comfortably under both the ~24.8-day int-ms cast range this obligation's
+    // own RetryDelayMs is computed into, and the ~49.7-day range Task.Delay's TimeSpan overload accepts.
+    private static readonly TimeSpan MaxExhaustionParkHorizon = TimeSpan.FromDays(14);
+
+    // #1183: an ExhaustedUntil reset instant already at or in the past collapsed to a zero-delay
+    // retry -- with ConsecutiveFailureCount frozen at 0 for quota hits, a vendor that keeps reporting
+    // the same stale instant machine-guns the pump in a tight spend-nothing-but-CPU loop. A floor
+    // makes the retry rate bounded instead, whether or not the instant is genuinely repeating.
+    private static readonly TimeSpan PastResetInstantRetryFloor = TimeSpan.FromSeconds(1);
 
     private static List<RetryObligation> GetRetryObligations(
         FlowState state,
@@ -1475,8 +2315,36 @@ public static class MutationInterface
             if (stepState.LatestFailureClassification == FailureClassification.ExhaustedUntil &&
                 stepState.LatestExecutionFailedRetryNotBefore is { } resetMoment)
             {
-                notBefore = resetMoment;
-                delayMs = (int)Math.Max(0, Math.Round((notBefore - timeProvider.GetUtcNow()).TotalMilliseconds));
+                var utcNow = timeProvider.GetUtcNow();
+
+                // #1183: cap an absurd (parse-bug/garbage) far-future instant to the sane horizon
+                // rather than trust it wholesale -- keeps RetryNotBefore and RetryDelayMs mutually
+                // consistent for DependencyResolver's #712 backwards-clock-jump clamp below, and keeps
+                // every downstream wait on this obligation's RetryNotBefore inside a range Task.Delay
+                // actually accepts.
+                var cappedResetMoment = resetMoment - utcNow > MaxExhaustionParkHorizon
+                    ? utcNow + MaxExhaustionParkHorizon
+                    : resetMoment;
+                var rawDelay = cappedResetMoment - utcNow;
+
+                // #1183: an instant less than PastResetInstantRetryFloor away -- already at or before
+                // now (including one repeating unchanged), or legitimately future but imminent -- is
+                // paced up to the floor instead of collapsing to a near-zero-delay retry. This branch
+                // does not and need not distinguish "already past" from "about to hit": both would
+                // otherwise machine-gun the pump the same way.
+                if (rawDelay < PastResetInstantRetryFloor)
+                {
+                    notBefore = utcNow + PastResetInstantRetryFloor;
+                    delayMs = (int)PastResetInstantRetryFloor.TotalMilliseconds;
+                }
+                else
+                {
+                    notBefore = cappedResetMoment;
+                    // #1183: Ceiling, not Round -- DependencyResolver's #712 clamp needs
+                    // delayMs >= the real notBefore-utcNow gap so a sub-millisecond rounddown can never
+                    // make `remaining > maxDelay` misfire and release this step before cappedResetMoment.
+                    delayMs = (int)Math.Ceiling(rawDelay.TotalMilliseconds);
+                }
             }
             else
             {
@@ -1530,4 +2398,40 @@ public static class MutationInterface
             ProducedOutputs: [.. request.Outputs.Select(o => new ProducedOutput(o))],
             OptionalMetadata: []);
     }
+
+    /// <summary>
+    /// The first-verdict canary's tool-call count, shared by the live-dispatch and crash-recovery
+    /// replay call sites (#1732 review N4). Reads <see cref="ExecutionStreamLogger.StdoutRolloverFileName"/>
+    /// first, when it exists, before <see cref="ExecutionStreamLogger.StdoutLogFileName"/> --
+    /// <c>ExecutionStreamLogger</c> performs a single 8 MiB rollover per stream, so a long run's
+    /// earliest segment (the rolled-out <c>.stdout.log.1</c>) and its current tail (<c>.stdout.log</c>)
+    /// are two separate files, and skipping the first would undercount a run whose terminal tool
+    /// steps happened to land before the roll. The canary only needs "&gt; 0", so summing both
+    /// segments in file order is sufficient without reconstructing one contiguous stream.
+    /// </summary>
+    private static int CountToolCallsFromStdoutLog(IWorkerUsageParser? usageParser, string outputDirectory)
+    {
+        var toolCallCount = 0;
+        if (usageParser is null)
+        {
+            return toolCallCount;
+        }
+
+        foreach (var fileName in new[] { ExecutionStreamLogger.StdoutRolloverFileName, ExecutionStreamLogger.StdoutLogFileName })
+        {
+            var path = Path.Combine(outputDirectory, fileName);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (var line in File.ReadLines(path))
+            {
+                toolCallCount += usageParser.CountToolSteps(line);
+            }
+        }
+
+        return toolCallCount;
+    }
+
 }

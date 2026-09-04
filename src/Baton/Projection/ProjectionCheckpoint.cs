@@ -12,7 +12,15 @@ public sealed record ProjectionCheckpoint(
     long EventOffset,
     ProjectionCheckpointState State,
     long ByteOffset = 0,
-    int Version = 3);
+    // N3 (#1664 re-review): bumped from 3 to 4 because IndeterminateProducerByStepId is new in this
+    // PR and its absence from an already-shipped checkpoint is NOT the ordinary
+    // trailing-optional-coalesces-to-empty shape the other members above document — an empty map here
+    // means "no producer for a step that IS awaiting resolution", which every admission predicate
+    // reads as a producer no verb admits, not as "unknown, go find out". A pre-existing awaiting-
+    // resolution room's checkpoint would otherwise deserialize as permanently unresolvable.
+    // ProjectionCheckpointStore.Load's version gate is what actually forces the full replay this
+    // depends on.
+    int Version = 4);
 
 /// <summary>
 /// Serializable snapshot of <see cref="StateProjector"/>'s internal working dictionaries and sets.
@@ -46,7 +54,18 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, int>? ExecutionCountByStepId = null,
     Dictionary<StepId, string?>? LatestCapturedResponseFileByStepId = null,
     Dictionary<StepId, List<string>?>? LatestUnsatisfiedOutputNamesByStepId = null,
-    HashSet<StepId>? RetryForeclosedStepIds = null)
+    HashSet<StepId>? RetryForeclosedStepIds = null,
+    HashSet<StepId>? IndeterminateAwaitingResolutionStepIds = null,
+    Dictionary<StepId, string?>? IndeterminateReasonByStepId = null,
+    HashSet<ExecutionId>? UnmatchedVerifyExecutionIds = null,
+    Dictionary<StepId, IndeterminateProducer?>? IndeterminateProducerByStepId = null,
+    Dictionary<StepId, string?>? IndeterminateVerifyTailByStepId = null,
+    HashSet<StepId>? ResolvedByConductorStepIds = null,
+    Dictionary<StepId, bool?>? WorkspaceChangedByStepId = null,
+    Dictionary<StepId, bool?>? HollowByStepId = null,
+    Dictionary<StepId, string?>? HollowReasonByStepId = null,
+    Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null,
+    HashSet<StepId>? ConductorRejectedStepIds = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -67,6 +86,101 @@ public sealed record ProjectionCheckpointState(
     /// first (#1606).
     /// </summary>
     public HashSet<StepId> RetryForeclosedStepIds { get; init; } = RetryForeclosedStepIds ?? new();
+
+    /// <summary>
+    /// Which steps carry an unresolved <see cref="Status.WorkflowOutcome.Indeterminate"/> settle, from
+    /// any of its three producers: a projected <see cref="FlowEvent.ExecutionIndeterminate"/> not since
+    /// resolved by a <see cref="FlowEvent.CaptureResolved"/> (#1608), or a projected
+    /// <see cref="FlowEvent.VerifyFailed"/>/<see cref="FlowEvent.ExecutionArrested"/> not since
+    /// reopened (#1623). Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, including that member's own <b>load-bearing in
+    /// <see cref="DeepCopy"/></b> warning — this hit the identical hazard the same day it was added,
+    /// not a fresh one.
+    /// </summary>
+    public HashSet<StepId> IndeterminateAwaitingResolutionStepIds { get; init; } = IndeterminateAwaitingResolutionStepIds ?? new();
+
+    /// <summary>
+    /// #1623: the diagnostic text to show for a verify-failure/arrest Indeterminate — a companion to
+    /// <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a second flag, and always written
+    /// and cleared in the same breath as it. Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing
+    /// note applies.
+    /// </summary>
+    public Dictionary<StepId, string?> IndeterminateReasonByStepId { get; init; } = IndeterminateReasonByStepId ?? new();
+
+    /// <summary>
+    /// #1623 / F2: executions carrying an unmatched <see cref="FlowEvent.VerifyStarted"/> not since
+    /// resolved by verify outcome or terminal Flow event — same trailing-optional replay-safety shape.
+    /// </summary>
+    public HashSet<ExecutionId> UnmatchedVerifyExecutionIds { get; init; } = UnmatchedVerifyExecutionIds ?? new();
+
+    /// <summary>
+    /// F1 (#1593 review): a companion to <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a
+    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised it, for
+    /// <c>baton resolve</c>'s admission test. Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing note
+    /// applies.
+    /// </summary>
+    public Dictionary<StepId, IndeterminateProducer?> IndeterminateProducerByStepId { get; init; } = IndeterminateProducerByStepId ?? new();
+
+    /// <summary>
+    /// #1701: a companion to <see cref="IndeterminateReasonByStepId"/> for the
+    /// <see cref="Domain.IndeterminateProducer.VerifyFailed"/> producer specifically — the failing
+    /// member(s)' own captured output (<see cref="FlowEvent.VerifyFailed.Tail"/>), not the one-line
+    /// member-name summary <see cref="IndeterminateReasonByStepId"/> already carries. Same
+    /// trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and the
+    /// same <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, string?> IndeterminateVerifyTailByStepId { get; init; } = IndeterminateVerifyTailByStepId ?? new();
+
+    /// <summary>
+    /// #1622 (c)/(d): backs `resolvedByConductor` in the status/terminal-sentinel projection —
+    /// see `Domain.FlowState.StepState.ResolvedByConductor`'s remarks for what it means.
+    /// Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above; no
+    /// <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
+    /// </summary>
+    public HashSet<StepId> ResolvedByConductorStepIds { get; init; } = ResolvedByConductorStepIds ?? new();
+
+    /// <summary>
+    /// F11 (#1720 review): the <c>--reject</c> SUBSET of <see cref="ResolvedByConductorStepIds"/> —
+    /// see `Domain.FlowState.StepState.ConductorRejected`'s remarks for why the two are not the same
+    /// set. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/> above;
+    /// no <see cref="ProjectionCheckpoint.Version"/> bump needed. Same <see cref="DeepCopy"/>
+    /// load-bearing note applies.
+    /// </summary>
+    public HashSet<StepId> ConductorRejectedStepIds { get; init; } = ConductorRejectedStepIds ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `workspaceChanged` entry. Same trailing-optional
+    /// replay-safety shape as <see cref="RetryForeclosedStepIds"/> above, and the same
+    /// <see cref="DeepCopy"/> load-bearing note applies.
+    /// </summary>
+    public Dictionary<StepId, bool?> WorkspaceChangedByStepId { get; init; } = WorkspaceChangedByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `hollow` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
+    /// </summary>
+    public Dictionary<StepId, bool?> HollowByStepId { get; init; } = HollowByStepId ?? new();
+
+    /// <summary>
+    /// #1622/#1390: see spec/baton.md §3's `hollowReason` entry. Same replay-safety shape and
+    /// <see cref="DeepCopy"/> load-bearing note as <see cref="WorkspaceChangedByStepId"/> above.
+    /// </summary>
+    public Dictionary<StepId, string?> HollowReasonByStepId { get; init; } = HollowReasonByStepId ?? new();
+
+    /// <summary>
+    /// #1702: which steps' latest attempt recorded a <see cref="FlowEvent.VerifyNotRun"/> — the
+    /// pre-flight "not runnable" reason, surfaced on <see cref="Status.WorkflowStatusStepView"/> as
+    /// <c>verify: "not-run"</c> so a conductor can tell "this ran unverified" apart from an ordinary
+    /// Succeeded step. Same trailing-optional replay-safety shape as <see cref="RetryForeclosedStepIds"/>
+    /// above, and the same <see cref="DeepCopy"/> load-bearing note applies. Cleared on a fresh
+    /// <see cref="FlowEvent.ExecutionRequestAccepted"/> for the step, the same "the pump is dispatching
+    /// it, so the prior attempt's diagnostic is stale" reasoning <see cref="IndeterminateReasonByStepId"/>
+    /// already follows.
+    /// </summary>
+    public Dictionary<StepId, string?> VerifyNotRunReasonByStepId { get; init; } = VerifyNotRunReasonByStepId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -125,5 +239,16 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, int>(ExecutionCountByStepId),
         new Dictionary<StepId, string?>(LatestCapturedResponseFileByStepId),
         LatestUnsatisfiedOutputNamesByStepId.ToDictionary(kvp => kvp.Key, kvp => kvp.Value is null ? null : new List<string>(kvp.Value)),
-        new HashSet<StepId>(RetryForeclosedStepIds));
+        new HashSet<StepId>(RetryForeclosedStepIds),
+        new HashSet<StepId>(IndeterminateAwaitingResolutionStepIds),
+        new Dictionary<StepId, string?>(IndeterminateReasonByStepId),
+        new HashSet<ExecutionId>(UnmatchedVerifyExecutionIds),
+        new Dictionary<StepId, IndeterminateProducer?>(IndeterminateProducerByStepId),
+        new Dictionary<StepId, string?>(IndeterminateVerifyTailByStepId),
+        new HashSet<StepId>(ResolvedByConductorStepIds),
+        new Dictionary<StepId, bool?>(WorkspaceChangedByStepId),
+        new Dictionary<StepId, bool?>(HollowByStepId),
+        new Dictionary<StepId, string?>(HollowReasonByStepId),
+        new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId),
+        new HashSet<StepId>(ConductorRejectedStepIds));
 }

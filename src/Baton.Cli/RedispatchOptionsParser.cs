@@ -12,8 +12,9 @@ public static class RedispatchOptionsParser
 {
     /// <summary><c>baton redispatch</c>'s usage string, same role as <see cref="DispatchOptionsParser"/>'s own.</summary>
     public const string Usage =
-        "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--adapter <name>] [--model <name>] "
-        + "[--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--label <text>]";
+        "Usage: baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] "
+        + "[--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] "
+        + "[--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]";
 
     public static RedispatchOptions Parse(IReadOnlyList<string> args)
     {
@@ -25,8 +26,15 @@ public static class RedispatchOptionsParser
         string? workspaceDirectory = null;
         string? outputPath = null;
         TimeSpan? timeout = null;
+        long? tokenBudget = null;
+        int? maxToolSteps = null;
+        long? billedRateLimit = null;
+        string? verifyCommand = null;
         string? label = null;
         var labelSpecified = false;
+        string? workstream = null;
+        var workstreamSpecified = false;
+        var attachments = new List<string>();
 
         var i = 0;
         while (i < args.Count)
@@ -36,6 +44,9 @@ public static class RedispatchOptionsParser
             {
                 case "--spec":
                     specFilePath = RequireValue(args, ref i, arg);
+                    break;
+                case "--attach":
+                    attachments.Add(RequireValue(args, ref i, arg));
                     break;
                 case "--adapter":
                     adapter = RequireValue(args, ref i, arg);
@@ -55,9 +66,25 @@ public static class RedispatchOptionsParser
                 case "--timeout":
                     timeout = ParseTimeout(RequireValue(args, ref i, arg));
                     break;
+                case "--token-budget":
+                    tokenBudget = ParseTokenBudget(RequireValue(args, ref i, arg));
+                    break;
+                case "--max-tool-steps":
+                    maxToolSteps = ParseMaxToolSteps(RequireValue(args, ref i, arg));
+                    break;
+                case "--billed-rate-limit":
+                    billedRateLimit = ParseBilledRateLimit(RequireValue(args, ref i, arg));
+                    break;
+                case "--verify":
+                    verifyCommand = RequireValue(args, ref i, arg);
+                    break;
                 case "--label":
                     label = DispatchOptionsParser.SanitizeLabel(RequireValue(args, ref i, arg));
                     labelSpecified = true;
+                    break;
+                case "--workstream":
+                    workstream = DispatchOptionsParser.SanitizeWorkstream(RequireValue(args, ref i, arg));
+                    workstreamSpecified = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -96,7 +123,47 @@ public static class RedispatchOptionsParser
             adapter, model, effort,
             workspaceDirectory is null ? null : Path.GetFullPath(workspaceDirectory),
             outputPath is null ? null : Path.GetFullPath(outputPath),
-            timeout, label, labelSpecified);
+            timeout, label, labelSpecified, tokenBudget, workstream, workstreamSpecified,
+            attachments.Count > 0 ? attachments : null, maxToolSteps, billedRateLimit, verifyCommand);
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--token-budget</c> (#1623).</summary>
+    private static long ParseTokenBudget(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--token-budget {rawValue}' is not a positive whole number of tokens. {Usage}",
+                "pass a positive integer, e.g. --token-budget 600000.");
+        }
+
+        return tokens;
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--max-tool-steps</c> (#1686 review F2).</summary>
+    private static int ParseMaxToolSteps(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var steps) || steps <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--max-tool-steps {rawValue}' is not a positive whole number of tool calls. {Usage}",
+                "pass a positive integer, e.g. --max-tool-steps 100.");
+        }
+
+        return steps;
+    }
+
+    /// <summary>Same shape and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--billed-rate-limit</c> (#1691).</summary>
+    private static long ParseBilledRateLimit(string rawValue)
+    {
+        if (!long.TryParse(rawValue, out var tokens) || tokens <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--billed-rate-limit {rawValue}' is not a positive whole number of billed tokens per 5 minutes. {Usage}",
+                "pass a positive integer, e.g. --billed-rate-limit 250000.");
+        }
+
+        return tokens;
     }
 
     /// <summary>Same ceiling/warn thresholds and rationale as <see cref="DispatchOptionsParser"/>'s own <c>--timeout</c> (#1442).</summary>

@@ -113,7 +113,18 @@ public static class WorktreeWorkspaces
             };
         }
 
-        return entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true };
+        // N2 (#1664 re-review): resolved against spec.Repository/spec.Ref BEFORE Worktree is nulled
+        // below — the same SHA-not-symbolic-ref fix Walk applies for a fresh provision.
+        var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
+
+        return entry with
+        {
+            WorkingDirectory = worktreePath,
+            Worktree = null,
+            IsWorktree = true,
+            WorktreeBaseSha = baseSha,
+            WorktreeSourceRepository = spec.Repository,
+        };
     }
 
     /// <summary>
@@ -129,7 +140,21 @@ public static class WorktreeWorkspaces
         ArgumentNullException.ThrowIfNull(bindings);
         ArgumentException.ThrowIfNullOrWhiteSpace(roomDirectoryPath);
 
-        using var guard = ConcurrencyGuard.Acquire(roomDirectoryPath, "worktree provisioning");
+        // #1646 / CancelCommand's #1495 finding: this used to acquire the flow lock unconditionally,
+        // even when no entry declares a worktree at all — the common case, and the exact shape
+        // RunWaitEndToEndTests hit (an ordinary shell-worker bindings file with zero Worktree
+        // entries). Nothing below the guard does anything for such a walk, so there is nothing here
+        // to serialize and no reason to contend a live pump's lock over it.
+        if (!bindings.Values.Any(entry => entry.Worktree is not null))
+        {
+            return (bindings, [], []);
+        }
+
+        // #1646: bounded rather than fail-fast for the rarer walk that does have a worktree to
+        // provision — the same live-pump exit tail every sibling command loses to, sized once in
+        // RoutineHoldBudget rather than restated here. Still bounded: a room genuinely held by a
+        // second live pump must surface as a refusal, not be waited on for that pump's whole step.
+        using var guard = ConcurrencyGuard.AcquireWithin(roomDirectoryPath, RoutineHoldBudget.Duration, "worktree provisioning");
 
         Dictionary<string, WorkerBindingConfigEntry>? rewritten = null;
         var provisioned = new List<ProvisionedWorktree>();
@@ -170,7 +195,19 @@ public static class WorktreeWorkspaces
 
                 provisioned.Add(new ProvisionedWorktree(spec.Repository, worktreePath));
                 rewritten ??= new Dictionary<string, WorkerBindingConfigEntry>(bindings);
-                rewritten[workerName] = entry with { WorkingDirectory = worktreePath, Worktree = null, IsWorktree = true };
+
+                // N2 (#1664 re-review): resolved BEFORE Worktree is nulled below — see
+                // WorktreeProvisioner.ResolveBaseCommit's own remarks for why this has to run against
+                // the source repository rather than the symbolic ref it replaces.
+                var baseSha = WorktreeProvisioner.ResolveBaseCommit(spec.Repository, spec.Ref);
+                rewritten[workerName] = entry with
+                {
+                    WorkingDirectory = worktreePath,
+                    Worktree = null,
+                    IsWorktree = true,
+                    WorktreeBaseSha = baseSha,
+                    WorktreeSourceRepository = spec.Repository,
+                };
             }
             catch (Exception ex) when (!throwOnFailure
                 && ex is InvalidWorkspaceSpecException or WorktreeProvisioningException)

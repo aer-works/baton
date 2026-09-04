@@ -32,6 +32,13 @@ public static class RedispatchCommand
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
 
+        // #1645: first statement of the method so the child room this verb would create does not exist
+        // before the refusal. DrainMarker has the rest.
+        if (DrainMarker.RefusalMessage("redispatch") is { } drainRefusal)
+        {
+            throw new CliArgumentException(drainRefusal, DrainMarker.AbortInvocation);
+        }
+
         if (!Directory.Exists(options.ParentRoomDirectoryPath))
         {
             throw new CliArgumentException($"Parent room '{options.ParentRoomDirectoryPath}' does not exist.");
@@ -64,31 +71,10 @@ public static class RedispatchCommand
         var parentTerminal = await TerminalSentinelWriter.TryReadAsync(options.ParentRoomDirectoryPath, cancellationToken)
             .ConfigureAwait(false);
 
-        // #1586 S1 (ratified amendment, consumer obligation item 2): an Indeterminate parent refuses
-        // bare, mirroring #1604's signage pattern (a diagnosis plus a concrete next step) rather than
-        // the ordinary warn-and-proceed a Failed/Cancelled parent gets below. "Indeterminate" means
-        // journal facts alone could not decide success vs failure — redispatching it silently would
-        // treat an unresolved room as though it were an ordinary failed one, discarding the exact
-        // ambiguity the state exists to preserve. Unconditional in this slice: there is no
-        // conductor-resolution verb yet (#1608) and no `--force` escape hatch to name — S2/#1608
-        // landing is what turns this from "always refuses" into "refuses unless resolved".
-        if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
-        {
-            throw new CliArgumentException(
-                $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
-                + "alone could not decide whether it succeeded or failed, so redispatching it would "
-                + "silently discard that ambiguity rather than resolve it.",
-                "a conductor must resolve the room first (recording a justification) before it can be "
-                + "redispatched — see spec/baton.md §3. That resolution verb does not exist yet (#1608).");
-        }
-
-        if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))
-        {
-            Console.Error.WriteLine(
-                $"Warning: parent room '{options.ParentRoomDirectoryPath}' did not succeed "
-                + $"(state: {parentTerminal.State}) — redispatching it anyway.");
-        }
-
+        // Loaded ahead of the Indeterminate refusal below so the refusal's own remedy string can name
+        // the parent's recorded flags (adapter/model/timeout/workspace) rather than the dead-end
+        // "re-dispatch the parent" (#1623 re-review U1) — the same bindings.json read this method
+        // needs later regardless, for the ordinary redispatch path.
         var parentBindingsPath = BatonPaths.RoomBindingsFile(options.ParentRoomDirectoryPath);
         var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(parentBindingsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -102,6 +88,78 @@ public static class RedispatchCommand
         }
 
         var (workerName, parentEntry) = parentBindings.Single();
+
+        // #1586 S1 (ratified amendment, consumer obligation item 2): an Indeterminate parent refuses
+        // bare, mirroring #1604's signage pattern (a diagnosis plus a concrete next step) rather than
+        // the ordinary warn-and-proceed a Failed/Cancelled parent gets below. "Indeterminate" means
+        // journal facts alone could not decide success vs failure — redispatching it silently would
+        // treat an unresolved room as though it were an ordinary failed one, discarding the exact
+        // ambiguity the state exists to preserve. No `--force` escape hatch: `baton resolve` (#1608)
+        // is the only sanctioned way to clear this refusal.
+        if (parentTerminal is not null && string.Equals(parentTerminal.State, WorkflowOutcome.Indeterminate, StringComparison.Ordinal))
+        {
+            // F1 (#1593 review): the refusal is unconditional, but the remedy is picked per producer
+            // (spec/baton.md §3's "Consumer obligations" has the reasoning; not restated here).
+            // A terminal.json written before IndeterminateProducerKind existed falls back to the
+            // pre-F1 hasCapture read.
+            // N7 (#1664 re-review): a REJECTED step keeps CapturedResponseFile as its audit trail
+            // (StateProjector.cs's CaptureResolved apply clears IndeterminateProducerKind but not the
+            // file) while carrying no producer — FirstOrDefault must prefer a step whose
+            // IndeterminateProducerKind is non-null over one that only has a stale CapturedResponseFile,
+            // or a rejected step sorted ahead of the actually-pending ContractFailure step would win and
+            // offer --accept-capture for a room where it throws.
+            var indeterminateStep = parentTerminal.Steps.FirstOrDefault(
+                    step => step.State == nameof(StepStatus.Failed) && step.IndeterminateProducerKind is not null)
+                ?? parentTerminal.Steps.FirstOrDefault(
+                    step => step.State == nameof(StepStatus.Failed) && step.CapturedResponseFile is not null);
+            var producerKind = indeterminateStep?.IndeterminateProducerKind
+                ?? (indeterminateStep?.CapturedResponseFile is not null ? nameof(IndeterminateProducer.CapturedResponse) : null);
+
+            throw new CliArgumentException(
+                $"Parent room '{options.ParentRoomDirectoryPath}' settled Indeterminate — journal facts "
+                + "alone could not decide whether it succeeded or failed, so redispatching it would "
+                + "silently discard that ambiguity rather than resolve it.",
+                producerKind switch
+                {
+                    nameof(IndeterminateProducer.CapturedResponse) =>
+                        $"run `baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                        + "--accept-capture | --reject --reason <text>` first, then redispatch — see spec/baton.md §3.",
+                    nameof(IndeterminateProducer.ContractFailure) =>
+                        $"this room settled Indeterminate with no captured response (an exit-0 contract "
+                        + "failure, or a dead worker on a mutated workspace) — `baton resolve --accept-capture` "
+                        + $"refuses it (nothing to accept), but `baton resolve {options.ParentRoomDirectoryPath} "
+                        + "[--execution <id>] --reject --reason <text>` still resolves it; redispatch the "
+                        + "resulting room, or, once resolved, redispatch this one — see spec/baton.md §3.",
+                    _ =>
+                        "this room settled Indeterminate without a captured response (a verify failure or a "
+                        + "token-budget arrest), so there is nothing to accept or reject — "
+                        + $"`baton resolve {options.ParentRoomDirectoryPath} [--execution <id>] "
+                        + "--close --reason <text>` (#1622 (d)) settles it resolved-but-Failed, which "
+                        + "rewrites this room's terminal.json and lifts this refusal; then redispatch this "
+                        + "room, or dispatch fresh. Read "
+                        + $"`baton status {options.ParentRoomDirectoryPath} --json` for the step's reason and "
+                        + "fix the underlying cause first — a fresh room is "
+                        + $"{DescribeFreshDispatchRemedy(workerName, parentEntry)}. See spec/baton.md §3.",
+                });
+        }
+
+        if (parentTerminal is not null && !string.Equals(parentTerminal.State, WorkflowOutcome.Succeeded, StringComparison.Ordinal))
+        {
+            Console.Error.WriteLine(
+                $"Warning: parent room '{options.ParentRoomDirectoryPath}' did not succeed "
+                + $"(state: {parentTerminal.State}) — redispatching it anyway.");
+        }
+
+        if (options.SpecFilePath is null && options.Attachments is { Count: > 0 })
+        {
+            // #1576: mirrors DispatchCommand's own "--attach does not apply" refusals (a template's
+            // phases, or a role with no --spec). spec/baton.md §2 states the underlying reason a
+            // --spec-omitted redispatch cannot take an attachment; record-once, not restated here.
+            throw new CliArgumentException(
+                "'baton redispatch' without --spec reuses the parent room's already-built prompt "
+                + "verbatim, so --attach has no prompt to attach into. Pass --attach only together with --spec.",
+                "pass --spec <amended-brief> --attach <file>, or drop --attach to reuse the parent's prompt as-is.");
+        }
 
         WorkflowDefinition definition;
         WorkerBindingConfigEntry entry;
@@ -125,10 +183,13 @@ public static class RedispatchCommand
         {
             (definition, entry) = await RebuildFromAmendedSpecAsync(workerName, parentEntry, options, cancellationToken)
                 .ConfigureAwait(false);
-            // #1499: RoleDispatch.Materialize knows nothing of labels -- apply InheritBinding's rule here too.
+            // #1499/#1619/#1668: RoleDispatch.Materialize knows nothing of labels, workstreams, or tool shas -- apply
+            // InheritBinding's own rule for both here too.
             entry = entry with
             {
-                Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label
+                Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label,
+                Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream,
+                ToolSha = BatonPaths.TryResolveCurrentToolSha() ?? parentEntry.ToolSha,
             };
         }
 
@@ -140,6 +201,15 @@ public static class RedispatchCommand
         }
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+
+        // #1619: the navigational half of the ruling -- the redispatched room's workstream is whatever
+        // InheritBinding just resolved onto `entry` (inherited from the parent, cleared, or overridden),
+        // not the raw `options.Workstream` a bare `baton redispatch` never passes at all.
+        WorkstreamJunctionLinker.CreateIfRequested(entry.Workstream, options.RoomDirectoryPath);
+
+        // #1576: the same copy DispatchCommand's own --attach path runs -- reached only via the
+        // --spec + --attach combination refused above, so this is unreachable on the bare-redispatch path.
+        RoleSpecMaterializer.CopyAttachmentsIntoRoom(options.Attachments, options.RoomDirectoryPath);
 
         Console.Out.WriteLine($"Room directory: {options.RoomDirectoryPath}");
         Console.Out.WriteLine($"Redispatched from: {options.ParentRoomDirectoryPath}");
@@ -161,7 +231,9 @@ public static class RedispatchCommand
             .ConfigureAwait(false);
 
         var workspace = entry.WorkingDirectory ?? entry.Worktree?.Repository ?? Directory.GetCurrentDirectory();
-        var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, ProjectRootDirectory: workspace);
+        // Register: true -- same rationale as DispatchCommand's own RunOptions construction (spec/baton.md §8, #1657).
+        var runOptions = new RunOptions(
+            workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, ProjectRootDirectory: workspace, Register: true);
         return await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -171,7 +243,8 @@ public static class RedispatchCommand
     /// <paramref name="options"/> actually set, falling back to the parent's own recorded value for
     /// every axis left null -- adapter, model, effort, workspace, timeout. Public so it is unit-testable
     /// against a hand-built <see cref="WorkerBindingConfigEntry"/> without a room on disk, the same
-    /// reusability <see cref="RoleDispatch.ToBinding"/> is public for.
+    /// reusability <see cref="RoleDispatch.ToBinding"/> is public for. #1623 added <c>--token-budget</c>
+    /// to the same axis list -- null keeps the parent's.
     /// </summary>
     public static WorkerBindingConfigEntry InheritBinding(WorkerBindingConfigEntry parentEntry, RedispatchOptions options)
     {
@@ -213,7 +286,13 @@ public static class RedispatchCommand
             WorkingDirectory = workingDirectory,
             Worktree = worktree,
             Timeout = options.Timeout ?? parentEntry.Timeout,
+            TokenBudget = options.TokenBudget ?? parentEntry.TokenBudget,
+            MaxToolSteps = options.MaxToolSteps ?? parentEntry.MaxToolSteps,
+            BilledRateLimit = options.BilledRateLimit ?? parentEntry.BilledRateLimit, // #1691
+            VerifyCommandOverride = options.VerifyCommand ?? parentEntry.VerifyCommandOverride,
             Label = (options.LabelSpecified || options.Label is not null) ? options.Label : parentEntry.Label, // #1499, spec/baton.md §2
+            Workstream = (options.WorkstreamSpecified || options.Workstream is not null) ? options.Workstream : parentEntry.Workstream, // #1619, spec/baton.md §2
+            ToolSha = BatonPaths.TryResolveCurrentToolSha() ?? parentEntry.ToolSha, // #1668
             // Adapter-derived, not role-derived, so it CAN be recomputed here — carrying the parent's
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
@@ -239,14 +318,26 @@ public static class RedispatchCommand
             var spec = await File.ReadAllTextAsync(options.SpecFilePath!, cancellationToken).ConfigureAwait(false);
             var workspace = options.WorkspaceDirectory ?? parentEntry.WorkingDirectory ?? parentEntry.Worktree?.Repository;
 
-            var (definition, bindings) = RoleDispatch.Materialize(
+            // #1576: the same seam DispatchCommand's role path uses -- --attach validation and the
+            // spec/grant lint (#1500) now apply here too, rather than the amended-spec path skipping
+            // both by calling RoleDispatch.Materialize directly.
+            var (definition, bindings) = RoleSpecMaterializer.Materialize(
                 role, spec,
                 adapterOverride: options.Adapter ?? parentEntry.Adapter,
                 workingDirectory: workspace,
                 modelOverride: options.Model ?? parentEntry.Model,
                 effortOverride: options.Effort ?? parentEntry.Effort,
                 outputOverride: options.OutputPath,
-                timeoutOverride: options.Timeout ?? parentEntry.Timeout);
+                timeoutOverride: options.Timeout ?? parentEntry.Timeout,
+                attachments: options.Attachments,
+                roomDirectoryPath: options.RoomDirectoryPath,
+                tokenBudgetOverride: options.TokenBudget ?? parentEntry.TokenBudget,
+                maxToolStepsOverride: options.MaxToolSteps ?? parentEntry.MaxToolSteps,
+                // #1691: threaded on the amended-spec path too, which is exactly where #1686 review F2
+                // found --max-tool-steps silently dropped. Both paths, or the override does not survive
+                // a redispatch.
+                billedRateLimitOverride: options.BilledRateLimit ?? parentEntry.BilledRateLimit,
+                verifyCommandOverride: options.VerifyCommand ?? parentEntry.VerifyCommandOverride);
 
             return (definition, bindings[role.Id]);
         }
@@ -256,5 +347,31 @@ public static class RedispatchCommand
             // Program's typed boundary as a CliArgumentException, never a raw crash.
             throw new CliArgumentException(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// #1623 re-review U1: the escape a verify-failed or arrested Indeterminate parent's refusal
+    /// points at — a fresh `baton dispatch` (a *new* room, whose own ExecutionRequestAccepted clears
+    /// the projector's Indeterminate tracking, <see cref="Baton.Projection.StateProjector"/>), carrying
+    /// the parent's own recorded flags forward the same way <see cref="RebuildFromAmendedSpecAsync"/>
+    /// does for an ordinary redispatch. Never "re-dispatch the parent" — that names the refused command
+    /// itself, a closed loop this method exists to stop printing.
+    /// </summary>
+    private static string DescribeFreshDispatchRemedy(string workerName, WorkerBindingConfigEntry parentEntry)
+    {
+        var workspace = parentEntry.WorkingDirectory ?? parentEntry.Worktree?.Repository;
+        var timeoutMinutes = Math.Max(1, (int)Math.Ceiling(parentEntry.Timeout.TotalMinutes));
+        var flags = $"--adapter {parentEntry.Adapter} --timeout {timeoutMinutes}";
+        if (parentEntry.Model is { } model)
+        {
+            flags += $" --model {model}";
+        }
+
+        if (workspace is { } dir)
+        {
+            flags += $" --workspace {dir}";
+        }
+
+        return $"`baton dispatch {workerName} --spec <brief> {flags}`";
     }
 }

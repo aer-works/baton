@@ -75,10 +75,6 @@ public static class ArtifactPruner
         }
 
         var executionDirs = Directory.GetDirectories(artifactsRootPath, "execution_*", SearchOption.TopDirectoryOnly);
-        if (executionDirs.Length == 0)
-        {
-            return false;
-        }
 
         var prunedAny = false;
         foreach (var execDir in executionDirs)
@@ -88,6 +84,11 @@ public static class ArtifactPruner
 
             prunedAny |= PruneDirectory(execDir, targetDir);
         }
+
+        // #496 (spec/baton.md §2): reuses the terminal+not-kept+lock gate above for named-artifact
+        // version history too. Unconditional even when executionDirs was empty -- a room's named
+        // artifacts do not depend on it having run a workflow step.
+        prunedAny |= RoomArtifacts.PruneVersionHistory(artifactsRootPath);
 
         return prunedAny;
     }

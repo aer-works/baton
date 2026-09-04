@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text.Json;
+using Baton.Outcomes;
 
 namespace Baton.Cli;
 
@@ -24,13 +26,25 @@ public static class CancelRequestFile
 {
     public const string FileName = "cancel.request";
 
-    /// <summary>The literal <see cref="Content.Target"/> meaning "whichever single execution is Running right now" — resolved at poll time by <see cref="RunningExecutionResolver"/>, not at write time.</summary>
+    /// <summary>The literal <see cref="Content.Target"/> meaning "whichever single execution is the room's target lane right now" (Running, or #1607's quota-parked candidate) — resolved at poll time by <see cref="RunningExecutionResolver"/>, not at write time.</summary>
     public const string LatestTarget = "latest";
 
     private static readonly JsonSerializerOptions JsonOptions = new();
 
     /// <param name="Target">Either <see cref="LatestTarget"/> or an explicit <c>ExecutionId</c> value.</param>
-    public sealed record Content(string Target);
+    /// <param name="WriterPid">
+    /// #1649: the writing process's own pid, stamped by <see cref="WriteAsync"/> — together with
+    /// <paramref name="WriterProcessStartTimeUtc"/>, what <see cref="DeleteStalePendingRequestAsync"/>
+    /// feeds <see cref="EngineLivenessProbe"/> to tell a still-plausibly-live writer apart from a
+    /// crashed prior pump's leftover. <c>null</c> for a request written before this field existed.
+    /// </param>
+    /// <param name="WriterProcessStartTimeUtc">The writer's own process start time, the same pid-recycling discriminator <see cref="EngineLivenessProbe"/> uses everywhere else in this codebase.</param>
+    /// <param name="WrittenAtUtc">
+    /// #1649: when this request was written, stamped by <see cref="WriteAsync"/>. The primary
+    /// discriminant <see cref="DeleteStalePendingRequestAsync"/> uses: a request written at or after
+    /// the sweeping process's own start cannot be a leftover from a PRIOR pump.
+    /// </param>
+    public sealed record Content(string Target, int? WriterPid = null, DateTimeOffset? WriterProcessStartTimeUtc = null, DateTimeOffset? WrittenAtUtc = null);
 
     /// <param name="Target">The original target (either <see cref="LatestTarget"/>, an explicit <c>ExecutionId</c>, or empty if unparsed).</param>
     /// <param name="Reason">The diagnostic explanation of why the request was rejected.</param>
@@ -47,7 +61,9 @@ public static class CancelRequestFile
         Directory.CreateDirectory(roomDirectoryPath);
         var path = GetPath(roomDirectoryPath);
         var tempPath = Path.Combine(roomDirectoryPath, $"{FileName}.{Guid.NewGuid():N}.tmp");
-        var json = JsonSerializer.Serialize(new Content(target), JsonOptions);
+        var writerProcessStartTimeUtc = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+        var content = new Content(target, Environment.ProcessId, writerProcessStartTimeUtc, DateTimeOffset.UtcNow);
+        var json = JsonSerializer.Serialize(content, JsonOptions);
         await File.WriteAllTextAsync(tempPath, json, cancellationToken).ConfigureAwait(false);
         File.Move(tempPath, path, overwrite: true);
     }
@@ -95,20 +111,58 @@ public static class CancelRequestFile
 
     /// <summary>
     /// Best-effort rename to <c>.swept</c> of any PENDING request left over from a prior pump (#1495 review finding 5, F8):
-    /// the file carries no timestamp/pid/generation, and a crash-recovery resubmission
-    /// (<c>ProcessCrashRecoveryDetector</c>) can re-dispatch a step under the SAME <c>ExecutionId</c> a
-    /// stale request already named — letting that request survive into the fresh pump risks arresting
-    /// the resubmission instead of whatever it was actually asking to cancel. Called once, at pump
-    /// start, before this pump's own <see cref="CancelRequestPoller"/> begins — renames to <c>.swept</c>
-    /// rather than deleting outright to keep the inspect-the-record discipline, and never touches an
-    /// already-settled <c>.consumed</c>/<c>.rejected</c>/<c>.swept</c> sibling, which is historical record,
-    /// not a pending request.
+    /// a crash-recovery resubmission (<c>ProcessCrashRecoveryDetector</c>) can re-dispatch a step under
+    /// the SAME <c>ExecutionId</c> a stale request already named — letting that request survive into
+    /// the fresh pump risks arresting the resubmission instead of whatever it was actually asking to
+    /// cancel. Called once, at pump start, before this pump's own <see cref="CancelRequestPoller"/>
+    /// begins — renames to <c>.swept</c> rather than deleting outright to keep the inspect-the-record
+    /// discipline, and never touches an already-settled <c>.consumed</c>/<c>.rejected</c>/<c>.swept</c>
+    /// sibling, which is historical record, not a pending request.
     /// </summary>
-    public static void DeleteStalePendingRequest(string roomDirectoryPath)
+    /// <param name="invocationStartUtc">
+    /// #1649: this pump's own start, captured BEFORE <c>WorktreeWorkspaces.Provision</c> runs — i.e.
+    /// before this call. <c>RunCommand.ExecuteAsync</c>'s transient worktree-provisioning lock
+    /// acquire/release happens between that capture and this sweep, and a concurrent <c>baton cancel</c>
+    /// that observes the released lock can land its own, live <c>cancel.request</c> write in that same
+    /// narrow window — indistinguishable from a crashed prior pump's leftover by file existence alone.
+    /// A request whose own <see cref="Content.WrittenAtUtc"/> is at or after this value cannot be that
+    /// leftover (it was written no earlier than THIS invocation started), so it is left for the poller
+    /// rather than swept.
+    /// </param>
+    /// <remarks>
+    /// A request with no <see cref="Content.WrittenAtUtc"/>/<see cref="Content.WriterPid"/> recorded
+    /// (malformed content, or written before #1649) cannot be discriminated at all — swept
+    /// unconditionally, matching the pre-#1649 behaviour, since a live <see cref="WriteAsync"/> write
+    /// always stamps both fields and so never reaches that branch.
+    /// </remarks>
+    public static async Task DeleteStalePendingRequestAsync(
+        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = GetPath(roomDirectoryPath);
         if (!File.Exists(path))
+        {
+            return;
+        }
+
+        var content = await TryReadAsync(path, cancellationToken).ConfigureAwait(false);
+        if (content is not { WrittenAtUtc: { } writtenAtUtc, WriterPid: { } writerPid })
+        {
+            RenameBestEffort(path, $"{path}.swept");
+            return;
+        }
+
+        // Fail closed toward NOT sweeping: only a request that both predates this invocation's own
+        // start AND whose recorded writer process is confirmed no longer running is provably a
+        // leftover, not a live concurrent write racing the window above. Unknown liveness (no
+        // confirmable process identity) is deliberately NOT treated as "not alive" here — the same
+        // direction CancelCommand's own dead-holder gate takes, just aimed at the opposite outcome
+        // (there, Unknown blocks an action; here, it blocks a deletion).
+        var predatesThisInvocation = writtenAtUtc < invocationStartUtc;
+        var writerConfirmedDead = EngineLivenessProbe.Probe(writerPid, content.WriterProcessStartTimeUtc).Status
+            == EngineLivenessStatus.Dead;
+
+        if (!predatesThisInvocation || !writerConfirmedDead)
         {
             return;
         }
@@ -161,8 +215,9 @@ public static class CancelRequestFile
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort, same doctrine as TerminalSentinelWriter.DeleteStaleSentinel: a rename that
-            // cannot land (the file vanished, or is transiently held) must not crash the poll loop —
+            // Best-effort, the same shape TerminalSentinelWriter.DeleteStaleSentinel's opt-in
+            // `bestEffort: true` takes (its default fails closed): a rename that cannot land
+            // (the file vanished, or is transiently held) must not crash the poll loop —
             // the worst case is this same request being read again next tick.
             try
             {

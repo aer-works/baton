@@ -93,6 +93,33 @@ public class RoleDispatchTests
         Assert.NotEqual(Review.Timeout, overridden);
     }
 
+    /// <summary>
+    /// #1686 review F12: nothing in the tree asserted a parsed --max-tool-steps value actually reaches
+    /// a WorkerBindingConfigEntry -- a build that dropped maxToolStepsOverride in RoleDispatch.ToBinding
+    /// (below) would have passed the whole suite before this.
+    /// </summary>
+    [Fact]
+    public void A_max_tool_steps_override_wins_over_the_roles_own_catalog_cap()
+    {
+        Assert.Equal(Review.MaxToolSteps, RoleDispatch.ToBinding(Review, "spec").MaxToolSteps);
+        Assert.Equal(500, RoleDispatch.ToBinding(Review, "spec", maxToolStepsOverride: 500).MaxToolSteps);
+        Assert.NotEqual(Review.MaxToolSteps, 500);
+    }
+
+    /// <summary>
+    /// #1691: the same threading proof for --billed-rate-limit. The role's own value is null (no role
+    /// declares one), so the discriminating arm is that an override REACHES the entry — a build
+    /// dropping billedRateLimitOverride would leave null here and, unlike the two axes above, there is
+    /// no catalog default to mask it.
+    /// </summary>
+    [Fact]
+    public void A_billed_rate_limit_override_reaches_the_binding_where_the_role_declares_none()
+    {
+        Assert.Null(Review.BilledRateLimit);
+        Assert.Null(RoleDispatch.ToBinding(Review, "spec").BilledRateLimit);
+        Assert.Equal(250_000, RoleDispatch.ToBinding(Review, "spec", billedRateLimitOverride: 250_000).BilledRateLimit);
+    }
+
     [Fact]
     public void The_adapter_defaults_to_the_roles_tier_but_an_override_wins()
     {
@@ -256,6 +283,127 @@ public class RoleDispatchTests
             attachmentsDirectory: "C:/room/artifacts/attachments");
 
         Assert.Contains("Attached files (in C:/room/artifacts/attachments): file1.txt, file2.md", binding.PromptTemplate);
+    }
+
+    /// <summary>
+    /// #1622 (b)/#1390: pins the exact role set <see cref="WorkerBindingConfigEntry.ChangesTree"/>
+    /// derives against the live <see cref="WorkerRoleCatalog.All"/> (never a second hardcoded list,
+    /// per that field's own remarks), including that no <c>fix</c> role exists to derive against.
+    /// </summary>
+    [Fact]
+    public void ChangesTree_is_derived_from_the_catalogs_own_write_and_shell_grant_for_every_role()
+    {
+        var expected = new Dictionary<string, bool>
+        {
+            ["advise"] = false,
+            ["implement"] = true,
+            ["review"] = false,
+            ["patch"] = false,
+            ["fact-check"] = false,
+            ["janitor"] = true,
+            ["orchestrate"] = false,
+        };
+
+        var actualRoleIds = WorkerRoleCatalog.All.Select(role => role.Id).OrderBy(id => id, StringComparer.Ordinal).ToList();
+        Assert.Equal(expected.Keys.OrderBy(id => id, StringComparer.Ordinal).ToList(), actualRoleIds);
+
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            var binding = RoleDispatch.ToBinding(role, "spec");
+            Assert.Equal(expected[role.Id], binding.ChangesTree);
+        }
+    }
+
+    /// <summary>
+    /// The specific defect the derivation avoids, per <see cref="WorkerBindingConfigEntry.ChangesTree"/>'s
+    /// own remarks: <c>fact-check</c> forced onto an adapter without outbox support reaches the
+    /// widened-grant shape those remarks describe, and <c>ChangesTree</c> must still read false.
+    /// </summary>
+    [Fact]
+    public void ChangesTree_stays_false_even_when_the_grant_widens_write_files_for_a_non_outbox_adapter()
+    {
+        var factCheck = WorkerRoleCatalog.For("fact-check");
+        var binding = RoleDispatch.ToBinding(factCheck, "spec", adapterOverride: "agy");
+
+        Assert.Equal(GrantAuditMode.AuditedNotEnforced, binding.GrantAuditMode);
+        Assert.True(binding.PermissionGrant!.WriteFiles, "the widened grant this test targets must actually have fired");
+        Assert.False(binding.ChangesTree);
+    }
+
+    // #1745: a synthetic role, not a catalog fixture -- ToBinding's resolution of TokenBudgetSpec
+    // against the winning adapter needs no JSON, only a WorkerRole with a TokenBudget set.
+    private static WorkerRole MakeRole(string id, string tier, string adapter, TokenBudgetSpec? tokenBudget) => new(
+        Id: id,
+        Tier: tier,
+        Adapter: adapter,
+        Model: null,
+        Effort: null,
+        Grant: new PermissionGrant(ReadFiles: true, WriteFiles: true),
+        Timeout: TimeSpan.FromMinutes(10),
+        ProducesVerdict: false,
+        Purpose: "p",
+        Outputs: [new WorkerRoleOutput("out.md", OutputSchema.None, "Write to out.md.")],
+        TokenBudget: tokenBudget);
+
+    /// <summary>#1745: a role with a single figure keeps resolving to that figure regardless of adapter.</summary>
+    [Fact]
+    public void A_single_number_token_budget_resolves_the_same_for_every_adapter()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.Fixed(500_000));
+
+        Assert.Equal(500_000, RoleDispatch.ToBinding(role, "spec").TokenBudget);
+        Assert.Equal(500_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy").TokenBudget);
+    }
+
+    /// <summary>#1745: a role with a per-adapter map resolves the dispatched adapter's own figure.</summary>
+    [Fact]
+    public void A_per_adapter_token_budget_map_resolves_the_dispatched_adapters_own_figure()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000, ["agy"] = 900_000 }));
+
+        Assert.Equal(300_000, RoleDispatch.ToBinding(role, "spec").TokenBudget);
+        Assert.Equal(300_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "claude").TokenBudget);
+        Assert.Equal(900_000, RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy").TokenBudget);
+    }
+
+    /// <summary>#1745: see TokenBudgetSpec.Resolve's own remarks for the fail-closed case this pins.</summary>
+    [Fact]
+    public void A_per_adapter_map_missing_the_dispatched_adapter_refuses_at_dispatch()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000 }));
+
+        var ex = Assert.Throws<TokenBudgetAdapterNotConfiguredException>(
+            () => RoleDispatch.ToBinding(role, "spec", adapterOverride: "agy"));
+
+        Assert.Equal("r", ex.RoleId);
+        Assert.Equal("agy", ex.Adapter);
+        Assert.Contains("agy", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>#1745: see TokenBudgetSpec.Resolve's own remarks for the unwatched case this pins.</summary>
+    [Fact]
+    public void A_per_adapter_map_run_on_an_unrecognized_adapter_resolves_to_no_budget_rather_than_refusing()
+    {
+        var role = MakeRole("r", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000, ["agy"] = 900_000 }));
+
+        Assert.Null(RoleDispatch.ToBinding(role, "spec", adapterOverride: "fake").TokenBudget);
+    }
+
+    /// <summary>#1745: --token-budget wins outright, whether the role carries a single figure or a map.</summary>
+    [Fact]
+    public void A_token_budget_override_wins_over_either_shape()
+    {
+        var fixedRole = MakeRole("r1", "t", "claude", new TokenBudgetSpec.Fixed(500_000));
+        var mapRole = MakeRole("r2", "t", "claude", new TokenBudgetSpec.PerAdapter(
+            new Dictionary<string, long> { ["claude"] = 300_000 }));
+
+        Assert.Equal(1, RoleDispatch.ToBinding(fixedRole, "spec", tokenBudgetOverride: 1).TokenBudget);
+        Assert.Equal(2, RoleDispatch.ToBinding(mapRole, "spec", tokenBudgetOverride: 2).TokenBudget);
+        // Even an adapter the map has no entry for is never consulted once an override is supplied.
+        Assert.Equal(3, RoleDispatch.ToBinding(mapRole, "spec", adapterOverride: "agy", tokenBudgetOverride: 3).TokenBudget);
     }
 }
 

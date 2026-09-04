@@ -36,8 +36,13 @@ public class MutationInterfaceConcurrencyTests
     /// </summary>
     private static readonly TimeSpan DispatchCeiling = TimeSpan.FromSeconds(60);
 
-    /// <summary>How many times the deferral fact advances the fake clock before calling it stuck.</summary>
-    private const int AdvancePasses = 50;
+    /// <summary>
+    /// Real-time ceiling on waiting for the pump's #1767 <c>onDeferralWaitArmed</c> signal, and
+    /// separately on waiting for a dispatch once the clock has been advanced past a known deadline.
+    /// A few seconds, not the 30-60s ceilings above: a healthy pump reaches both practically
+    /// instantly, so a genuinely stuck one still fails loudly well inside a test run.
+    /// </summary>
+    private static readonly TimeSpan DeferralWaitArmedGuard = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// A backoff long enough that no real-clock accident could satisfy the deferral fact — it only
@@ -209,12 +214,18 @@ public class MutationInterfaceConcurrencyTests
             var reader = new FlowEventLogReader(logPath);
             var fakeTime = new FakeTimeProvider(new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero));
 
+            // #1767: released by MutationInterface's onDeferralWaitArmed (see its doc comment for
+            // when) — the signal the rewritten AdvanceUntilDispatchAsync below waits on before ever
+            // touching the clock, so the test's own advance can never race the pump's registration of it.
+            using var waitArmedSignal = new SemaphoreSlim(0, int.MaxValue);
+
             var workflowTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf"), roomDirectory, snapshot, MakeBindings(), artifactsRoot, reader, writer, stub,
                 cancellationToken: TestContext.Current.CancellationToken,
                 timeProvider: fakeTime,
                 // No jitter: the deadline this fact advances past has to be the one it can name.
-                jitterSource: () => 1.0);
+                jitterSource: () => 1.0,
+                onDeferralWaitArmed: () => waitArmedSignal.Release());
 
             var firstRound = new[] { await ReadNextDispatchAsync(stub), await ReadNextDispatchAsync(stub) };
             Assert.Equal(new HashSet<StepId> { slow, flaky }, new HashSet<StepId>(firstRound));
@@ -226,7 +237,7 @@ public class MutationInterfaceConcurrencyTests
             // assertion below purely by being early.
             await AssertNoFurtherDispatchAsync(stub);
 
-            Assert.Equal(flaky, await AdvanceUntilDispatchAsync(stub, fakeTime));
+            Assert.Equal(flaky, await AdvanceUntilDispatchAsync(stub, fakeTime, waitArmedSignal));
 
             flakyAttempt2.SetResult(Succeeded);
             slowResult.SetResult(Succeeded);
@@ -330,36 +341,45 @@ public class MutationInterfaceConcurrencyTests
     }
 
     /// <summary>
-    /// Advances <paramref name="fakeTime"/> until a dispatch begins, or the ceiling is reached.
-    /// The loop exists because the pump must already be parked on its deferral timer for an advance
-    /// to fire it, and nothing here can observe the moment it parks; every pass is instant, so this
-    /// bounds on iterations rather than on elapsed real time.
+    /// Waits for the pump's own <c>onDeferralWaitArmed</c> signal (#1767) before ever advancing
+    /// <paramref name="fakeTime"/>, then advances well past the known backoff window in one shot.
     /// </summary>
-    private static async Task<StepId> AdvanceUntilDispatchAsync(StubCoreDispatcher stub, FakeTimeProvider fakeTime)
+    /// <remarks>
+    /// The old version advanced the clock a fixed number of times and hoped the pump had already
+    /// parked on its deferral timer by then. Under load it hadn't: the pump's own continuation
+    /// (re-reading the clock and constructing its <c>Task.Delay</c>) can lag arbitrarily far behind
+    /// a tight test loop, so every advance issued before that registration exists is simply invisible
+    /// to it — and by the time the pump does register, it computes a fresh deadline from the
+    /// already-advanced "now", which none of the earlier advances could ever have satisfied. Waiting
+    /// for <paramref name="waitArmedSignal"/> first removes the race entirely: once it fires, the wait
+    /// is known to be registered against the current fake time, so a single sufficiently large advance
+    /// is safe and no fixed pass count is needed.
+    /// </remarks>
+    private static async Task<StepId> AdvanceUntilDispatchAsync(
+        StubCoreDispatcher stub, FakeTimeProvider fakeTime, SemaphoreSlim waitArmedSignal)
     {
         var readTask = stub.DispatchStarted.ReadAsync().AsTask();
 
-        for (var pass = 0; pass < AdvancePasses; pass++)
+        var armed = await waitArmedSignal.WaitAsync(DeferralWaitArmedGuard).ConfigureAwait(false);
+        if (!armed)
         {
-            fakeTime.Advance(TimeSpan.FromMinutes(1));
-
-            // Yields to the pump between advances rather than pacing it: a completed task, so this
-            // is a scheduler turn and not a wait. wait-ok: no duration is involved.
-            await Task.Yield();
-
-            if (readTask.IsCompleted)
-            {
-                return await readTask;
-            }
+            Assert.Fail(
+                $"The pump never armed its deferral wait within {DeferralWaitArmedGuard.TotalSeconds:0}s of the "
+                + "retry being scheduled — it is not reading the clock at all, not merely running behind it.");
         }
+
+        // DeferredBackoff is a fixed 10 minutes with no jitter (jitterSource: () => 1.0 above) — this
+        // clears that deadline with room to spare in a single advance, now that the wait above proved
+        // the pump's timer already exists to observe it.
+        fakeTime.Advance(TimeSpan.FromMinutes(20));
 
         var settled = await Task.WhenAny(readTask, Task.Delay(DispatchCeiling));
         if (settled != readTask)
         {
             Assert.Fail(
-                $"The deferred retry never dispatched after {AdvancePasses} advances of the fake clock. "
-                + "Its deadline is minutes out and the clock moved well past it, so the pump is not waking "
-                + "on the deferral at all.");
+                $"The deferred retry never dispatched within {DispatchCeiling.TotalSeconds:0}s of the clock "
+                + "advancing past its deadline, even though the pump had armed the wait — it registered the "
+                + "timer but never acted on it firing.");
         }
 
         return await readTask;

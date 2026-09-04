@@ -8,6 +8,18 @@ It is **not** for developing Baton — that is [`CLAUDE.md`](../../CLAUDE.md) �
 reference for `baton dispatch`, which is [`docs/dispatch.md`](../dispatch.md). Where those own a fact,
 this links rather than restates.
 
+This assumes `baton` is already installed on PATH. If `baton dispatch`/`baton status` print a
+`WARN: installed baton ... is behind this checkout's ...` line, the installed tool has drifted from
+the repo it is dispatching against (#1645) — refresh it with `pixi run tool-refresh` (README's
+*Installing `baton`* section) before trusting anything below.
+
+If instead a dispatch, redispatch or resume **refuses to start** citing an operator drain marker,
+that indicates an operator-invoked stop. The exit code is `2` (`ValidationRefused`), the same one a
+malformed invocation gets, so branch on the message rather than the code alone. For `dispatch`/`redispatch`
+the room directory is created to hold a `terminal.json` recording the refusal, while `resume` leaves the
+room untouched. An operator can clear a manual marker with `pixi run tool-refresh --abort`. The full
+specification for tool installation, launcher resolution, and drain markers is in [`spec/baton.md`](../../spec/baton.md) §8.
+
 Everything below is the state of the tree on the day it was written. Dispatch ergonomics
 ([#1354](https://github.com/aer-works/baton/issues/1354)), the machine completion contract
 ([#1356](https://github.com/aer-works/baton/issues/1356)), and validation errors carrying a
@@ -120,6 +132,16 @@ directory explicitly, and a wrong value produces a confident review of the wrong
 error. On Windows, double every backslash — it is a JSON string, and a lone `C:\Users\…` is rejected
 as an invalid escape before anything else is checked.
 
+**A `WorkingDirectory` also needs a recorded project ceiling, or `baton run` above refuses before
+anything spawns** (#1166, spec/baton.md §9's project scope: `ProjectNotTrustedException`,
+`ValidationRefused`). Run `baton trust /absolute/path/to/the/repo/under/review --ceiling
+ReadFiles,WriteFiles` once per machine per project before dispatching against it — the categories
+must be a superset of whatever the binding's own `PermissionGrant` asks for, since the effective
+grant is the intersection of the two, never wider than either. `baton trust <path> --ceiling all`
+trusts a project without narrowing anything; `baton trust --list` shows every project this machine
+has a recorded ceiling for, and `baton trust <path> --revoke` undoes one. A binding with no
+`WorkingDirectory` at all is unaffected — there is no project scope to enforce.
+
 ### Why this is the read-lane profile
 
 `NetworkAccess: false` is not a hardening choice you could relax — on `agy` it is the only
@@ -165,9 +187,10 @@ available two other ways, and both give you the same set of paths without parsin
   `error` — `null` when the refusal had none. Only ever populated on a pre-ledger `Failed` room (§5's
   exit-code-2 case); a settled or running room's ledger projection has no exception to carry one.
   `linkedFrom` (#1359) names the predecessor execution when the step's current one was started by
-  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected` (#1377)
-  is `true` when a human `baton decide reject` settled some step, so `state: "Failed"`/`error: null`
-  never gets misread as an unrecorded crash. `liveness` (#1375/#1513) is present on a step reading
+  `baton resume`; anything that was dispatched or retried normally shows `null` there. `rejected`
+  (#1377, widened by #1622) is `true` when a human `baton decide reject` or a non-accepting
+  `baton resolve --reject`/`--close` settled some step, so `state: "Failed"`/`error: null` never gets
+  misread as an unrecorded crash — full rule at spec/baton.md §3. `liveness` (#1375/#1513) is present on a step reading
   `"Running"`, or a `"Failed"` step still carrying a pending `RetryNotBefore` — `"alive" | "dead" |
   "unknown"` from the same probe the human `baton status` line already uses — so a SIGKILLed `baton
   run` stops reading as indefinitely `"Running"` (or as an ordinary parked retry) to a polling agent.
@@ -199,15 +222,74 @@ The room directory also holds `snapshot.json` (the workflow this room is bound t
 append-only event ledger), and `flow.lock`. The authoritative room layout is
 [`spec/baton.md`](../../spec/baton.md) §2–§3.
 
-**A path in `outputs` IS the worker's own write (#1594, conductor-writes shape).** Baton never writes
-into a declared output itself. When a declared output is missing at settle time but the worker's
-terminal response was recoverable, a step's own `steps[].capturedResponseFile` names an engine-owned
-file (in the execution's own output directory, never a declared name) the response was captured into,
-alongside `steps[].unsatisfiedOutputs` naming which declared outputs are still unwritten — present only
-on a `Failed` step, and readable from `status --json`/`terminal.json` without opening the execution
-directory. That step's own room settles `Failed`; the missing output stays missing until a conductor
-resolves the capture. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a capture can
-and can't ever resolve into.
+**Don't hand-roll the file-watching the paragraph above describes — `baton watch` (#1488) is the
+built-in version.** `baton watch <room-dir> --notify <command|url>` registers a one-shot notification
+and returns immediately (never a poll loop of its own); once the room reaches Terminal, the command is
+spawned (a small JSON object — `room, state, verdict, outputs, terminalAt`, not the full `terminal.json`
+shape — on stdin and in `BATON_WATCH_EVENT`) or the URL is POSTed the same JSON, exactly once. An already-terminal room at registration fires right away — no lost wake-up. This is the
+dispatch → `baton watch --notify <wake command>` → end-turn pattern: a harness ends its own turn right
+after registering rather than blocking on `baton status --follow` or a hand-rolled sentinel-file/poll
+loop, and gets woken back up by the notify command instead. **Firing after registration depends on
+`baton daemon` running** — it is what actually polls pending watches; `baton watch` warns on stderr at
+registration if it can't find one for the current user. `baton watch --list` /
+`baton watch --clear-fired` are the visibility/cleanup pair — full contract, including what each
+prints, is `spec/baton.md` §2, not restated here.
+
+**A path in `outputs` IS the worker's own write (#1594/#1608, conductor-writes shape).** Baton never
+writes into a declared output itself except through the one verb below. That step's own **room**
+settles the top-level `state` `Indeterminate`, not `Failed`, whenever journal facts alone cannot
+decide success vs. failure — a bare `baton redispatch` refuses an `Indeterminate` parent outright, so
+read `state` before assuming an Indeterminate room is an ordinary retryable failure. `spec/baton.md`
+§3's "Four producers" table is the register for what raises it and readable from
+`status --json`/`terminal.json`; per-step `steps[].indeterminateProducer` names WHICH producer, and it
+is the field to switch on, not `steps[].capturedResponseFile`'s presence — most Indeterminate steps
+today carry no captured response at all (an exit-0 worker whose declared outputs are simply absent,
+with nothing recoverable to capture), and driving `--accept-capture` off the wrong read throws. Only
+the `CapturedResponse` producer names an engine-owned file (in the execution's own output directory,
+never a declared name) on `steps[].capturedResponseFile`, alongside `steps[].unsatisfiedOutputs` naming
+which declared outputs are still unwritten. `baton resolve <room-dir> [--execution <id>]
+--accept-capture | --reject --reason <text> | --close --reason <text>` is the one resolution verb, and
+which of its three verbs a step admits depends on `indeterminateProducer` — spec/baton.md §3's "Consumer
+obligations" section (and its settle-shape table) is the full per-producer register, summarized without
+restating it below: `CapturedResponse` admits either `--accept-capture` or `--reject`, and
+`--accept-capture` writes the capture's body under each declared name it stands in for, settling the
+step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
+leaving the step resolved-but-`Failed`; `VerifyFailed`/`ExecutionArrested` admit only
+`--close --reason <text>` (see spec/baton.md §3 for why those two never admit the other verbs),
+settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
+those two, `VerifyFailed` carries the failing member(s)' own
+output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
+and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
+capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —
+in a multi-step lane, check its stdout / the returned `state` for whether the room reached Terminal; if
+not (a downstream step just became deliverable, or a rejected step still has retry budget), re-run
+`baton run --room-dir <room-dir>` — except on a room left `Paused`, where `baton decide` is the verb
+that moves it and `baton run` cannot. `baton resolve` names whichever of the two applies on its own
+stdout; follow that rather than the general rule (spec/baton.md §3).
+
+**`Succeeded` does not by itself mean the engine's gate ran (#1702).** After a step exits 0 with its
+outputs written, the engine runs that workspace's own verify command — but when the workspace does not
+define one (a role's baked-in `pixi` task absent from a foreign workspace), the step still settles
+`Succeeded`, and the room still exits 0, with the gate never having fired. `steps[].verify` is where
+that is said: it reads `"not-run"` exactly in that case and is **absent otherwise**, with
+`steps[].verifyReason` naming what was missing. So exit 0 plus `verify: "not-run"` means "the worker's
+own work looks clean and nothing checked it" — read the field before reporting a run as gated.
+`spec/baton.md` §3 is the register for the resolution order, for how to declare a verify command for
+your own workspace (`.baton/verify`, which must be **committed** to take effect), and for the
+`--verify <cmd>` override.
+
+Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
+`baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
+line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;
+`spec/baton.md` §8 has the full contract, including what it cannot reach.
+
+**Delivering orchestrator deliverables (`baton deliver`).** A conductor or orchestrator delivering artifacts (such as its decision queue at the end of an unattended window) delivers them directly to the standing conductor room so they reach the Fleet Glass inbox:
+
+```
+baton deliver <file> [--title <text>] [--room <room-dir>]
+```
+
+`--room-dir` is also accepted as an alias for `--room`. This copies the file into `<room>/artifacts/conductor/` under a filename unique to the source path (recorded as `artifact_file` in the manifest, defaulting the room to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
 
 ---
 
@@ -301,9 +383,9 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 
 | Code | Meaning |
 |---|---|
-| 0 | `Succeeded` — every step Succeeded |
+| 0 | `Succeeded` — every step Succeeded. **Not the same as "the gates passed" (#1702).** A step can succeed with the engine's own verify command never having run — see `steps[].verify` below |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
-| 2 | `ValidationRefused` — bindings/workflow validation, or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), was refused **before anything was dispatched, against a room with no ledger yet** |
+| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed, a project directory with no recorded `baton trust` ceiling — #1166, spec/baton.md §9), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
 | 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `baton status`/the sentinel for what the room actually is |
@@ -364,6 +446,28 @@ role/adapter pair.
 baton dispatch <role> --spec <spec-file> --room-dir <fresh-dir> [--adapter agy|claude] [--workspace <dir>]
                     [--output <path>]
 ```
+
+A quick read-only scoping question doesn't need a brief file at all: `--spec-text <text>` (or
+`--spec -` to pipe the prompt in over stdin) is a drop-in alternative to `--spec <spec-file>` — same
+room record, same lint, same everything downstream (#1518). One line, no file:
+
+```
+baton dispatch advise --spec-text "what does baton cancel actually do today?" --workspace <repo> --output <report>
+```
+
+**`--workspace <dir>` needs a recorded project ceiling too** (#1166, §2 above has the full contract) —
+`baton trust <dir> --ceiling …` once, before the first `baton dispatch` against it. This holds even
+for a role the table below auto-provisions a worktree for: the ceiling keys on `--workspace`'s own
+value (the source repository), never the auto-provisioned worktree path, which is why the operator
+never has to (and never could) trust a fresh directory `dispatch` only allocates after this refusal
+would already have fired.
+
+**Several manually-created worktrees of the same repository each need their own `baton trust`.** The
+ceiling key is the literal `--workspace` directory, canonicalised (absolute, trailing separator
+trimmed, case-insensitive) — there is no git-aware dereferencing to a shared `git-common-dir` or
+`origin`, so trusting one checkout does not trust a sibling one dispatch never auto-provisioned.
+That dereferencing was considered and not done: the operator's explicit act should name the path
+they actually typed, not a repository identity `dispatch` infers on their behalf.
 
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
 the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or

@@ -58,7 +58,25 @@ public sealed record CoreDispatchTarget(
     // success" marker. Set by the adapter (Adapter Isolation — the dispatcher never parses vendor
     // content, spec Rule 1); null on adapters/paths that do not stream, where the #1089 guard fails
     // safe to "a timeout always fails". Latched into CoreDispatchResult.TerminalSuccessObserved.
-    Func<string, bool>? DetectsTerminalSuccess = null);
+    Func<string, bool>? DetectsTerminalSuccess = null,
+    // F6 (#1593 review): same shape as DetectsTerminalSuccess above, but matches ANY status, not
+    // just success — see CoreDispatchResult.TerminalResultObserved's own remarks for why that
+    // distinction matters. Latched there.
+    Func<string, bool>? DetectsTerminalResult = null,
+    // #1680/#1732 review WIRING: given this execution's own output directory, how many PreToolUse
+    // hook verdicts that execution's hook recorded — Outcomes.OutcomeClassifier.Classify's
+    // hookVerdictCount, deferred to dispatch time because the directory is execution-specific
+    // (Adapter Isolation: Baton itself must not know the ledger's file name or format, only that a
+    // count can be asked for). Non-null ONLY for a dispatch whose adapter determined its PreToolUse
+    // hook is the sole thing narrowing the grant (AgyWorkerAdapter.RequiresHookAsSoleNarrowing) —
+    // null everywhere else (claude, or an agy grant the hook does not solely narrow) keeps the
+    // canary's parameters null and every other dispatch's classification unchanged.
+    Func<string, int>? CountHookVerdicts = null,
+    // #1741: the file name (not a path) CountHookVerdicts above reads, alongside it so a caller can
+    // record the arming fact durably (ExecutionRequest.HookVerdictLedgerFileName) rather than only
+    // holding a delegate that cannot survive a journal round-trip. Non-null exactly when
+    // CountHookVerdicts is non-null -- same gate, same reason.
+    string? HookVerdictLedgerFileName = null);
 
 /// <summary>
 /// A launch-configuration file an adapter needs written into place before its worker spawns, where the
@@ -116,7 +134,11 @@ public sealed record CoreDispatchResult(
     CoreExitReason Reason,
     string? StderrTail = null,
     bool TerminalSuccessObserved = false,
-    string? StdoutTail = null);
+    string? StdoutTail = null,
+    // F6 (#1593 review): latched from CoreDispatchTarget.DetectsTerminalResult — spec/baton.md §3 F6
+    // is the register entry for why OutcomeClassifier's dead-worker predicate reads this field rather
+    // than TerminalSuccessObserved.
+    bool TerminalResultObserved = false);
 
 
 /// <summary>
@@ -730,17 +752,24 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         // loop) under stdoutLock (below); read after the post-run Flush, which takes the same lock,
         // so the latch is visible.
         var terminalSuccessObserved = false;
+        var terminalResultObserved = false;
         var detectsTerminalSuccess = target.DetectsTerminalSuccess;
+        var detectsTerminalResult = target.DetectsTerminalResult;
         Action<string>? stdoutLineSink = target.OnStdoutLine;
-        if (detectsTerminalSuccess is not null)
+        if (detectsTerminalSuccess is not null || detectsTerminalResult is not null)
         {
             var innerProgress = target.OnStdoutLine;
             stdoutLineSink = line =>
             {
                 innerProgress?.Invoke(line);
-                if (!terminalSuccessObserved && detectsTerminalSuccess(line))
+                if (!terminalSuccessObserved && detectsTerminalSuccess is not null && detectsTerminalSuccess(line))
                 {
                     terminalSuccessObserved = true;
+                }
+
+                if (!terminalResultObserved && detectsTerminalResult is not null && detectsTerminalResult(line))
+                {
+                    terminalResultObserved = true;
                 }
             };
         }
@@ -913,6 +942,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         await Task.WhenAll(pendingLogWrites).ConfigureAwait(false);
 
         bool terminalSuccessLatched;
+        bool terminalResultLatched;
         string? capturedStdoutTail;
         lock (stdoutLock)
         {
@@ -924,6 +954,7 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             // Read under the same lock the sink mutates, and AFTER Flush drains the last buffered line --
             // a terminal `result` arriving in the final chunk is only latched once Flush runs it.
             terminalSuccessLatched = terminalSuccessObserved;
+            terminalResultLatched = terminalResultObserved;
             capturedStdoutTail = stdoutTail.ToTailOrNull();
         }
 
@@ -933,7 +964,8 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             capturedStderr = stderrTail.ToTailOrNull();
         }
 
-        return new CoreDispatchResult(exitCode, reason, capturedStderr, terminalSuccessLatched, capturedStdoutTail);
+        return new CoreDispatchResult(
+            exitCode, reason, capturedStderr, terminalSuccessLatched, capturedStdoutTail, terminalResultLatched);
 
     }
 

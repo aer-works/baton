@@ -3,12 +3,14 @@
     "id": "advise",
     "tier": "standard",
     "read_files": true,
-    "write_files": true,
+    "write_files": false,
     "run_shell_commands": false,
     "network_access": false,
     "timeout_minutes": 25,
     "verdict_schema": false,
-    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which is not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refuses a withheld-write role on a non-outbox-capable adapter outright by design (satisfiability there is unmeasured, #638) rather than auto-granting the audited write the C# engine's RoleDispatch now does. Narrowing this needs either a tier change (a separate decision) or teaching dispatch.py the engine's audited-grant translation -- see #1386 for the follow-up.",
+    "token_budget": 150000,
+    "billed_rate_limit": null,
+    "purpose": "Open design question with real options to weigh, BEFORE building. Cross-vendor on purpose: a second opinion from the same family that wrote the code is one instrument twice. #1355 tried making this read-shaped (write_files: false, the review/fact-check/patch shape) but reverted it: advise's tier defaults to agy, which was not outbox-write-capable, and tools/baton-agy-loop/dispatch.py's grant_refusal() refused a withheld-write role on a non-outbox-capable adapter outright by design rather than auto-granting the audited write the C# engine's RoleDispatch now does. #1759 retired dispatch.py; #1386 redid the narrowing under the real production sequence (RoleDispatch.ToBinding -> WorktreeWorkspaces.Provision -> WorkerBindingResolver.Resolve) where #901's audited-write widening un-refuses a withheld-write role once a worktree is provisioned, so no tier move is needed either.",
     "outputs": [
       {
         "name": "advice.md",
@@ -24,8 +26,15 @@
     "write_files": true,
     "run_shell_commands": true,
     "network_access": true,
+    "denied_shell_command_patterns": ["gh label*", "gh pr merge*", "gh api*"],
+    "denied_shell_option_tokens": ["--add-label", "--remove-label", "--label"],
     "timeout_minutes": 40,
     "verdict_schema": false,
+    "verify_pixi_task": "gates-quiet",
+    "token_budget": 1200000,
+    "max_tool_steps": 610,
+    "billed_rate_limit": null,
+    "delivers_branch": true,
     "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: PermissionGrant.CategoriesDefeatedByTheShell/WorkerBindingResolver refuse RunShellCommands without NetworkAccess outright for EVERY grant-consuming adapter, claude included, not agy alone (--adapter claude is not an escape hatch) -- and agy's own AgyWorkerAdapter.TryTranslatePermissionGrant refuses the same combination a second time at the vendor-translation layer, since --dangerously-skip-permissions grants both or neither. Defaulting network off here would make every unmodified dispatch of this role throw. See #1387 for the follow-up this leaves open.",
     "outputs": [
       {
@@ -43,22 +52,27 @@
     "run_shell_commands": true,
     "network_access": false,
     "shell_command_patterns": [
-      "git diff*", "git log*", "git show*", "git blame*", "git status*", "git grep*",
+      "git diff*", "git log*", "git show*", "git blame*", "git status*",
       "git rev-parse*", "git merge-base*", "git ls-files*", "git branch --list*",
       "gh pr view*", "gh pr diff*", "gh pr checks*", "gh issue view*"
     ],
     "denied_shell_command_patterns": [
-      "git commit*", "git push*", "git merge*", "git checkout*", "git switch*", "git reset*", "git clean*",
+      "git commit*", "git push*", "git merge *", "git checkout*", "git switch*", "git reset*", "git clean*",
       "git rebase*", "git am*", "git apply*", "git stash*", "git worktree*", "git remote*", "git config*",
       "git tag*", "git restore*", "git cherry-pick*", "git revert*",
+      "git difftool*", "git submodule*", "git -c *",
       "gh pr comment*", "gh pr edit*", "gh pr merge*", "gh issue comment*", "gh issue edit*", "gh label*",
       "gh repo*", "gh release*", "gh api*", "gh auth*", "gh secret*", "gh variable*", "gh workflow*",
-      "gh run cancel*", "gh run rerun*"
+      "gh run cancel*", "gh run rerun*", "gh extension*"
     ],
+    "denied_shell_option_tokens": ["--output"],
     "shell_commands_are_read_only": true,
     "timeout_minutes": 25,
     "verdict_schema": true,
-    "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/. #1456 (spec/baton.md SS9) grants read-only git/gh so scope no longer has to be reconstructed from grep and .git ref reads: the allowlist above is claude's real, measured ceiling (docs/vendor-capabilities.md's 'canonical ceiling' -- --allowedTools patterns plus a --disallowedTools deny-subset, both enforced with precedence, not mere pre-approval) rather than a wider categorical run_shell_commands. gh api is deliberately excluded -- its method is a runtime flag/field this glob matcher cannot bind to GET-only, so admitting it would be an unenforced hole, not a scoped one. This reverses #1355's flat shell refusal for review specifically because that decision's own reasoning was agy's incoherence (no scoped-shell-without-network grant exists there); #1456 accepts that agy therefore refuses this role's grant outright (PermissionGrantUnsupportedException) rather than silently degrading it -- claude stays the tier's only adapter for review.",
+    "token_budget": { "claude": 250000, "agy": 250000 },
+    "max_tool_steps": 100,
+    "billed_rate_limit": null,
+    "purpose": "Adversarial review of CLAIMS -- a decision record, a measured finding, anything whose rationale asserts something. The default for any PR touching src/ or making a claim in docs/. #1456 (spec/baton.md SS9) grants read-only git/gh so scope no longer has to be reconstructed from grep and .git ref reads: the allowlist above is claude's real, measured ceiling (docs/vendor-capabilities.md's 'canonical ceiling' -- --allowedTools patterns plus a --disallowedTools deny-subset, both enforced with precedence, not mere pre-approval) rather than a wider categorical run_shell_commands. gh api is deliberately excluded -- its method is a runtime flag/field this glob matcher cannot bind to GET-only, so admitting it would be an unenforced hole, not a scoped one. This reverses #1355's flat shell refusal for review specifically because that decision's own reasoning was agy's incoherence (no scoped-shell-without-network grant exists there); #1387 closed that gap -- AgyWorkerAdapter.TryTranslatePermissionGrant now defers a pattern-scoped shell grant like this one to AER's own PreToolUse hook instead of refusing it outright, so --adapter agy is a supported override here too. What was measured is the run_command channel narrowing this exact allow/deny list correctly, on six probed commands (docs/vendor-doc-audit.md) -- not the subagent/manage_task tools (denied outright, #1387 review F1), not the read tools' absent path bound (F2), and not the allow/deny lists' own prefix-collision defects (git diff*/git grep*/git merge-base*, #1679), so 'measured end to end' overstates the population; see spec/baton.md SS9 for the qualified claim. #1679 fixed those collisions by matching trailing-* patterns on word boundaries, and its review (#1683) then showed a positional deny cannot bound an OPTION at all: git grep is gone from the allowlist (the harness's own Grep tool covers a reviewer's need, and -O/--open-files-in-pager spawns an arbitrary pager through clustering, reordering or abbreviation that no anchored pattern catches), and denied_shell_option_tokens closes --output, the arbitrary file write git log/show/diff admitted under this role's own shell_commands_are_read_only assertion. The tier still defaults to claude (WorkerTiers.json's frontier entry) -- this only means an operator override no longer hits PermissionGrantUnsupportedException.",
     "outputs": [
       {
         "name": "report.md",
@@ -115,9 +129,11 @@
     "write_files": true,
     "run_shell_commands": true,
     "network_access": true,
+    "denied_shell_command_patterns": ["gh label*", "gh pr merge*", "gh api*"],
+    "denied_shell_option_tokens": ["--add-label", "--remove-label", "--label"],
     "timeout_minutes": 15,
     "verdict_schema": false,
-    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). The canonical brief is janitor-prompt.md next to dispatch.py -- pass it via --prompt-file rather than restating the contract. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
+    "purpose": "After an implementer commits: run the named mechanical checkers and make them green without changing behavior (#729). Until #1759 retired it, the canonical brief was janitor-prompt.md next to tools/baton-agy-loop/dispatch.py, passed via --prompt-file; baton dispatch janitor has no equivalent standing brief file today -- the operator supplies the checkers to run via --spec/--spec-text each time. The checkers determine the work, so the cheap tier runs it; anything needing judgment comes back [NOT DONE], not guessed at. #1355 kept network_access true here for the same reason as implement -- see implement's purpose field for the full reasoning (it is not agy-specific), not restated here.",
     "outputs": [
       {
         "name": "janitor.md",

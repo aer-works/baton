@@ -31,7 +31,9 @@ public sealed class InFlightExecutionRegistry
     /// in-process to a dispatch this same call already has in flight, instead of waiting on the
     /// concurrency guard. Returns <c>true</c> if <paramref name="targetExecutionId"/> was registered in-flight and
     /// cancellation was recorded and signalled; <c>false</c> if it was not registered (already
-    /// settled, not yet registered by <c>MutationInterface</c>, or a non-process target).
+    /// settled, not yet registered by <c>MutationInterface</c>, or a non-process target). Records
+    /// <see cref="CancellationOrigin.Operator"/> (#1762) — this is always an operator naming a
+    /// specific execution, never a wind-down.
     /// </summary>
     public async Task<bool> RequestCancellationAsync(ExecutionId targetExecutionId, CancellationToken cancellationToken = default)
     {
@@ -48,9 +50,22 @@ public sealed class InFlightExecutionRegistry
             return false;
         }
 
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(
+                new FlowEvent.CancellationRequested(targetExecutionId, CancellationOrigin.Operator), cancellationToken)
             .ConfigureAwait(false);
-        TryCancel(cancellationTokenSource);
+
+        // #1549: distinct from the CancellationRequested append above, which only records that Flow
+        // forwarded the intent -- this records that the signal actually reached a live token, not
+        // merely that a (possibly since-disposed) entry was found under the lock above. TryCancel's own
+        // remarks explain the disposal race this guards: the dispatch can settle and dispose its token
+        // between the snapshot above and the Cancel() call below, in which case there is nothing left
+        // to deliver to even though a request was genuinely forwarded moments earlier.
+        if (TryCancel(cancellationTokenSource))
+        {
+            await eventLogWriter.AppendAsync(new FlowEvent.CancellationDelivered(targetExecutionId), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         return true;
     }
 
@@ -59,7 +74,10 @@ public sealed class InFlightExecutionRegistry
     /// minted for every currently in-flight <see cref="ExecutionId"/>): records
     /// <see cref="FlowEvent.CancellationRequested"/> for every entry still registered — fsync'd,
     /// sequentially, in registration order, all before any is signalled — then cancels every one of
-    /// them. Called once the pump's own host <see cref="CancellationToken"/> fires.
+    /// them. Called once the pump's own host <see cref="CancellationToken"/> fires. Records
+    /// <see cref="CancellationOrigin.HostStop"/> (#1762): this mints one per still-registered
+    /// execution regardless of whether any of them is the one an operator actually meant to stop, so
+    /// it must never be read as an operator naming that step (spec/baton.md §2).
     /// </summary>
     internal async Task RequestStopAsync(CancellationToken cancellationToken)
     {
@@ -78,7 +96,8 @@ public sealed class InFlightExecutionRegistry
 
         foreach (var (executionId, _) in snapshot)
         {
-            await eventLogWriter.AppendAsync(new FlowEvent.CancellationRequested(executionId), cancellationToken)
+            await eventLogWriter.AppendAsync(
+                    new FlowEvent.CancellationRequested(executionId, CancellationOrigin.HostStop), cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -95,14 +114,17 @@ public sealed class InFlightExecutionRegistry
     /// cancellation being delivered here). A disposed source has already done its job: the execution
     /// it governed is no longer in flight, so there is nothing left to signal.
     /// </summary>
-    private static void TryCancel(CancellationTokenSource cancellationTokenSource)
+    /// <returns><c>true</c> if the signal was actually delivered to a live token; <c>false</c> if the source was already disposed.</returns>
+    private static bool TryCancel(CancellationTokenSource cancellationTokenSource)
     {
         try
         {
             cancellationTokenSource.Cancel();
+            return true;
         }
         catch (ObjectDisposedException)
         {
+            return false;
         }
     }
 
@@ -113,6 +135,32 @@ public sealed class InFlightExecutionRegistry
         {
             _eventLogWriter = eventLogWriter;
         }
+    }
+
+    /// <summary>
+    /// #1549: records that <c>Baton.Cli.CancelRequestPoller</c> gave up delivering a
+    /// <c>cancel.request</c> against <paramref name="targetExecutionId"/> — its bounded retry
+    /// exhausted, the file-channel rejection <c>CancelRequestFile.Reject</c> already writes. Reuses
+    /// this instance's own bound writer (<see cref="Bind"/>) rather than adding a second writer
+    /// parameter to the poller, the same way <see cref="RequestCancellationAsync"/> already does for
+    /// the successful-delivery half of the same flow. A no-op if this instance was never bound (no
+    /// live pump call, e.g. a unit test exercising the poller directly).
+    /// </summary>
+    public async Task RecordCancellationRejectedAsync(ExecutionId targetExecutionId, CancellationToken cancellationToken = default)
+    {
+        IEventLogWriter? eventLogWriter;
+        lock (_lock)
+        {
+            eventLogWriter = _eventLogWriter;
+        }
+
+        if (eventLogWriter is null)
+        {
+            return;
+        }
+
+        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRejected(targetExecutionId), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

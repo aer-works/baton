@@ -32,6 +32,9 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
         [typeof(DecideOptionsParser)] = () =>
             DecideOptionsParser.Parse([Relative, "--execution", "e1", "--type", "resume", "--bindings", "b.json"])
                 .RoomDirectoryPath,
+        [typeof(ResolveOptionsParser)] = () =>
+            ResolveOptionsParser.Parse([Relative, "--execution", "e1", "--accept-capture"])
+                .RoomDirectoryPath,
         [typeof(SupplyOptionsParser)] = () =>
             SupplyOptionsParser.Parse([Relative, "--worker", "w", "--output", "o", "--file", "f.txt", "--bindings", "b.json"])
                 .RoomDirectoryPath,
@@ -49,6 +52,14 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
             KeepOptionsParser.Parse([Relative]).RoomDirectoryPath,
         [typeof(UnkeepOptionsParser)] = () =>
             UnkeepOptionsParser.Parse([Relative]).RoomDirectoryPath,
+        [typeof(RoomDeleteOptionsParser)] = () =>
+            RoomDeleteOptionsParser.Parse([Relative]).RoomDirectoryPath,
+        [typeof(DeliverOptionsParser)] = () =>
+            DeliverOptionsParser.Parse(["file.md", "--room", Relative]).RoomDirectoryPath,
+        // WatchOptions.RoomDirectoryPath is nullable (null for --list/--clear-fired), but the
+        // Register shape driven here always resolves it -- see WatchOptionsParser.
+        [typeof(WatchOptionsParser)] = () =>
+            WatchOptionsParser.Parse([Relative, "--notify", "echo hi"]).RoomDirectoryPath!,
     };
 
     [Fact]

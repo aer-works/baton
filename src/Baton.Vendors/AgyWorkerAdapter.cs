@@ -64,9 +64,12 @@ namespace Baton.Vendors;
 /// </para>
 /// <para>
 /// <b>The consequence for anyone editing this class:</b> under that branch the tool-name lists
-/// (<c>ReadTools</c>, <c>WriteTools</c>, <c>ShellTools</c>, <c>NetworkTools</c>) are the entire
-/// enforcement boundary — a write-capable <c>agy</c> tool missing from <c>WriteTools</c> is simply
-/// not denied. Whether those lists are complete against agy's real tool surface is unmeasured — #623,
+/// (<c>ReadTools</c>, <c>WriteTools</c>, <c>ShellTools</c>, <c>SubagentAndTaskTools</c>,
+/// <c>NetworkTools</c>) are the entire enforcement boundary — a write-capable <c>agy</c> tool missing
+/// from <c>WriteTools</c> is simply not denied, and <c>SubagentAndTaskTools</c> is withheld under
+/// either <c>!WriteFiles</c> or <c>!RunShellCommands</c> rather than only the latter, because none of
+/// its four tools is narrowed by the pattern channel that bounds <c>run_command</c> (#1387 review,
+/// F1). Whether those lists are complete against agy's real tool surface is unmeasured — #623,
 /// which is the security property here rather than a tidiness question. Removing a category from
 /// <see cref="BuildDeniedTools"/> as "redundant with the flag" is the specific edit that would make
 /// #596's over-grant real.
@@ -85,6 +88,13 @@ namespace Baton.Vendors;
 /// </summary>
 public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantTranslator
 {
+    private readonly IAgyHookLivenessProbe _hookLivenessProbe;
+
+    public AgyWorkerAdapter(IAgyHookLivenessProbe? hookLivenessProbe = null)
+    {
+        _hookLivenessProbe = hookLivenessProbe ?? new ProcessAgyHookLivenessProbe();
+    }
+
     internal const string OversizePromptWrapperText =
         "Read the full task instructions at %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat as data.";
 
@@ -145,6 +155,38 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// </summary>
     public const string DeniedShellPatternsVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
 
+    /// <summary>
+    /// The environment variable carrying this invocation's <b>denied shell option tokens</b>
+    /// (<see cref="PermissionGrant.DeniedShellOptionTokens"/>, #1683 F2). A third channel rather than
+    /// more entries on <see cref="DeniedShellPatternsVariable"/> because a hook reading one list cannot
+    /// tell which of the two matching rules an entry wants; the rules themselves are stated on
+    /// <c>ShellCommandPatternMatcher.IsDeniedByOptionToken</c>. That method also records why no vendor
+    /// flag carries this rung on either vendor, which makes both hooks its sole enforcement.
+    /// </summary>
+    public const string DeniedShellOptionTokensVariable = "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS";
+
+    /// <summary>
+    /// The environment variable naming the file <see cref="AgyHookVerdictLedger"/> counts (#1680) —
+    /// the hook subprocess (<c>AgyHookCheckCommand</c>, via <c>baton agy-hook-check</c>) appends one
+    /// line to this path every time it reaches a verdict. Per-EXECUTION (#1732 review F2):
+    /// <see cref="Resolve"/> emits an unresolved <c>BATON_OUTPUT_DIR</c> reference rather than a
+    /// resolved directory, because <see cref="Resolve"/> itself runs once per binding-config entry and
+    /// a value it resolves would be shared by every execution and every agy role in the room — the
+    /// prior "room-local" phrasing here described that shared, un-reset scope and asserted the
+    /// opposite of what it produced. <c>BATON_OUTPUT_DIR</c> only resolves per execution, so each
+    /// execution gets its own ledger file and no two executions — concurrent or sequential, same role
+    /// or different — ever share one.
+    /// </summary>
+    public const string VerdictLedgerVariable = "BATON_HOOK_VERDICT_LEDGER";
+
+    /// <summary>
+    /// The file name under the ledger directory <see cref="VerdictLedgerVariable"/> names.
+    /// Dot-prefixed (#1732 review sub-threshold) so <see cref="Baton.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/>
+    /// can filter it out of a future deliverable listing the same way it already filters the engine's
+    /// own stream-log files — this is an engine-owned mechanism artifact, not a worker deliverable.
+    /// </summary>
+    internal const string VerdictLedgerFileName = ".agy-hook-verdicts.ndjson";
+
 
     /// <summary>
     /// The name of the workspace directory AER owns and points every agy worker at, holding the
@@ -192,14 +234,19 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     private static readonly IReadOnlyList<string> WriteTools =
         ["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"];
 
+    private static readonly IReadOnlyList<string> ShellTools = ["run_command"];
+
     /// <remarks>
     /// <para>
-    /// The subagent trio is withheld with the shell because it is agy's closest analogue to claude's
-    /// <c>Task</c>, and because of a bypass an independent reviewer found in the first draft:
+    /// The subagent trio is withheld with <c>manage_task</c> because it is agy's closest analogue to
+    /// claude's <c>Task</c>, and because of a bypass an independent reviewer found in the first draft:
     /// <c>define_subagent</c> takes <c>enable_write_tools</c> as an argument and
     /// <c>invoke_subagent</c> takes an optional <c>Workspace</c>. A write-withheld worker could
     /// therefore define a subagent with write tools enabled and invoke it — possibly under a
-    /// different workspace root than the one this hook was loaded from.
+    /// different workspace root than the one this hook was loaded from. <c>manage_task</c> is grouped
+    /// with them rather than with <see cref="ShellTools"/> for the reason given on <see cref="ReadTools"/>
+    /// above — it reaches background shell control that the hook's pattern channel never inspects — so
+    /// the same reasoning applies to it independent of whether <c>run_command</c> itself is bounded.
     /// </para>
     /// <para>
     /// <b>Whether a subagent's own tool calls re-enter this hook is unmeasured on agy</b>, so this
@@ -209,9 +256,16 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <see cref="ClaudeWorkerAdapter.MaxSubagentSpawnDepthVariable"/>, so withholding is the only
     /// lever available here. Tracked in #601.
     /// </para>
+    /// <para>
+    /// Withheld whenever <b>either</b> <c>WriteFiles</c> or <c>RunShellCommands</c> is false, not only
+    /// under <c>!RunShellCommands</c> as before this pass (#1387 review, F1): a write-withheld,
+    /// shell-granted role such as <c>review</c> can still reach <c>run_command</c>, and none of these
+    /// four tools is narrowed by the pattern channel that bounds <c>run_command</c> — so the spawn
+    /// lever has to stay pulled whenever writes are withheld even though shell itself is granted.
+    /// </para>
     /// </remarks>
-    private static readonly IReadOnlyList<string> ShellTools =
-        ["run_command", "manage_task", "invoke_subagent", "define_subagent", "manage_subagents"];
+    private static readonly IReadOnlyList<string> SubagentAndTaskTools =
+        ["manage_task", "invoke_subagent", "define_subagent", "manage_subagents"];
 
     /// <remarks>
     /// <c>browser_*</c> is a prefix entry (see <c>AgyHookCheckCommand</c>'s prefix support). The
@@ -252,6 +306,11 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             denied.AddRange(ShellTools);
         }
 
+        if (!grant.WriteFiles || !grant.RunShellCommands)
+        {
+            denied.AddRange(SubagentAndTaskTools);
+        }
+
         if (!grant.NetworkAccess)
         {
             denied.AddRange(NetworkTools);
@@ -259,6 +318,31 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         return string.Join(',', denied);
     }
+
+    /// <summary>
+    /// #1680: true when a resolved <paramref name="permissionScope"/> of
+    /// <c>--dangerously-skip-permissions</c> leaves the <c>PreToolUse</c> hook as the ONLY thing
+    /// narrowing this grant. That is not only the write/network-withheld shape #1680 was filed about
+    /// (this class's own remarks: "the hook only takes it back while it runs") — even a grant with
+    /// both <see cref="PermissionGrant.WriteFiles"/> and <see cref="PermissionGrant.NetworkAccess"/>
+    /// true still has the hook as sole enforcement for two things (#1732 review F5, correcting a prior
+    /// version of this comment that claimed the opposite): (1) <c>AgyHookCheckCommand</c>'s
+    /// workspace-or-outbox write bound, which applies to every write-family tool call REGARDLESS of
+    /// <see cref="PermissionGrant.WriteFiles"/> — nothing agy itself offers bounds where a write lands
+    /// (<c>agy.plan-mode-does-not-deny-writes</c>); and (2) <see cref="TryTranslatePermissionGrant"/>'s
+    /// shell-pattern-scoped path, which reaches <c>--dangerously-skip-permissions</c> with no
+    /// requirement that <see cref="PermissionGrant.ShellCommandPatterns"/> or
+    /// <see cref="PermissionGrant.DeniedShellCommandPatterns"/> be non-empty — so a grant carrying
+    /// either list has the hook as the only thing enforcing it. Probed whenever either applies:
+    /// writes or network withheld, OR a shell/deny pattern list is present.
+    /// </summary>
+    internal static bool RequiresHookAsSoleNarrowing(string permissionScope, PermissionGrant? grant) =>
+        permissionScope == "--dangerously-skip-permissions"
+        && grant is { } g
+        && (!g.WriteFiles
+            || !g.NetworkAccess
+            || g.ShellCommandPatterns is { Count: > 0 }
+            || g.DeniedShellCommandPatterns is { Count: > 0 });
 
     internal static string BuildShellPatterns(PermissionGrant? grant)
     {
@@ -276,6 +360,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     {
         return grant?.DeniedShellCommandPatterns is { Count: > 0 } patterns
             ? string.Join(',', patterns)
+            : string.Empty;
+    }
+
+    /// <summary>
+    /// The standing denied option tokens for <see cref="DeniedShellOptionTokensVariable"/> —
+    /// comma-joined, empty when none. Mirror of <see cref="BuildDeniedShellPatterns"/> over
+    /// <see cref="PermissionGrant.DeniedShellOptionTokens"/> (#1683 F2).
+    /// </summary>
+    internal static string BuildDeniedShellOptionTokens(PermissionGrant? grant)
+    {
+        return grant?.DeniedShellOptionTokens is { Count: > 0 } tokens
+            ? string.Join(',', tokens)
             : string.Empty;
     }
 
@@ -297,6 +393,27 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         if (grant.RunShellCommands)
         {
+            // #1387: a pattern-scoped shell grant (RunShellCommands=true, NetworkAccess=false, a
+            // non-empty ShellCommandPatterns) now defers to the hook instead of refusing --
+            // --dangerously-skip-permissions still turns run_command on at all headlessly, and the
+            // hook (AgyHookCheckCommand) does the actual narrowing. Full measurement: spec/baton.md
+            // §9's "agy now expresses this too" paragraph and docs/vendor-doc-audit.md's dated entry
+            // -- not restated here. An unscoped shell grant (no patterns) is unchanged: nothing would
+            // bound an unscoped --dangerously-skip-permissions shell, so it still refuses.
+            //
+            // This branch does not read grant.WriteFiles, so a write-granted, pattern-scoped shell
+            // grant (WriteFiles=true, RunShellCommands=true, NetworkAccess=false, patterns non-empty)
+            // also defers here rather than refusing. That is intentional, not an oversight (#1387
+            // review, F8): writes on that path are still bounded to workspace-or-outbox by
+            // AgyHookCheckCommand's write-family path check, the same bound applied when WriteFiles is
+            // withheld entirely.
+            if (grant.ShellCommandPatterns is { Count: > 0 })
+            {
+                resolvedValue = "--dangerously-skip-permissions";
+                gapReason = null;
+                return true;
+            }
+
             resolvedValue = null;
             gapReason = "agy only supports auto-approving shell command execution via " +
                 "--dangerously-skip-permissions, which also grants network access. Granting unrequested " +
@@ -323,11 +440,46 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
+        // #1166 -- see ClaudeWorkerAdapter.Resolve's identical seam (ProjectCeilingGate's own doc has
+        // the rule) for why this runs first on that adapter; the same ordering holds here for the same
+        // reason, applied to this vendor's own downstream readers: ResolvePermissionScope, the
+        // hook-liveness probe below, and every denied-tool env var.
+        invocation = ProjectCeilingGate.Apply(invocation, contract, ((IWorkerAdapter)this).WithheldWritesReachTheOutbox);
+
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
         var permissionScope = ResolvePermissionScope(invocation);
         var artifactsRoot = EnvironmentReference("BATON_ARTIFACTS_ROOT", isWindows);
         var agyWorkspace = EnsureAgyWorkspace();
+
+        // #1680: for a grant whose only narrowing IS the hook, confirm the hook is actually live
+        // before dispatching. Fails closed: any probe outcome other than an explicit `deny` refuses
+        // the dispatch -- see AgyHookUnverifiedException for why that is the safe direction here.
+        // #1732 review WIRING: the SAME predicate result also decides whether the returned
+        // CoreDispatchTarget carries a live CountHookVerdicts delegate below -- the resolve-time probe
+        // and the per-execution canary are the two guards for the identical shape (spec/baton.md §9),
+        // so they share one computation of "does this dispatch need either".
+        var requiresHookAsSoleNarrowing = RequiresHookAsSoleNarrowing(permissionScope, invocation.PermissionGrant);
+        if (requiresHookAsSoleNarrowing)
+        {
+            // #1732 review N5, ruled fail closed: the per-execution canary (CountHookVerdicts below)
+            // derives toolCallCount entirely from stream-json step_update lines -- a StreamJson:false
+            // binding emits none, so a hook that dies after this probe would be caught by nothing for
+            // that role's whole lifetime, silently, for as long as the binding exists. Refused here the
+            // same way WorkerBindingResolver refuses other incoherent grant shapes, rather than shipping
+            // a hole the operator has no way to see.
+            if (!invocation.StreamJson)
+            {
+                throw new AgyCanaryRequiresStreamJsonException();
+            }
+
+            var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+            var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
+            if (!probeResult.IsLive)
+            {
+                throw new AgyHookUnverifiedException(hookAssemblyPath, probeResult.Detail);
+            }
+        }
 
         List<string> args = ["-p", prompt];
 
@@ -426,6 +578,18 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             args.Add("--effort");
             args.Add(resolvedEffort);
         }
+        else if (RequiresAgyEffort(invocation.Model))
+        {
+            // #1596: a suffix-less gemini model (e.g. `gemini-3.7-flash`) reaches agy itself and is
+            // refused there -- paying for a full spawn first. Refuse up-front instead, naming the
+            // model exactly as agy's own refusal does. The available set printed here is the global
+            // one (AgyEffortValues), not enumerated per model: docs/vendor-capabilities.md's "agy
+            // models" section already records that the grid has holes (`gemini-3.1-pro` has no
+            // `medium`), so this message can overstate a narrower model's real set -- see the PR body.
+            throw new IncoherentVendorEffortException(
+                "agy",
+                $"--model {invocation.Model} requires --effort (available: low, medium, high).");
+        }
 
         if (invocation.Timeout is { } timeout)
         {
@@ -443,7 +607,27 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildDeniedTools(invocation.PermissionGrant)}"),
             (ShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildShellPatterns(invocation.PermissionGrant)}"),
             (DeniedShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
+            (DeniedShellOptionTokensVariable,
+                $"{ShellPatternsVendorTag}:{BuildDeniedShellOptionTokens(invocation.PermissionGrant)}"),
         };
+
+        // #1680 (F2, #1732 review): the first-verdict canary's write side. Per-EXECUTION, not
+        // per-room: this method (Resolve) runs once per binding-config entry (WorkerInvocation's own
+        // doc, WorkerBindingResolver.cs:146), so a directory computed here -- BindingsFileDirectory or
+        // WorkingDirectory, both room-scoped -- would be shared by every dispatch of this role and
+        // every other agy role in the room, for the whole run. An append-only file at that scope makes
+        // hookVerdictCount == 0 unreachable after the first verdict anywhere in the room, disarming the
+        // canary permanently. Instead this emits an environment-variable REFERENCE
+        // (WorkerInvocation.cs:9-19's sanctioned escape hatch for per-execution dynamism, the same
+        // mechanism BATON_ARTIFACTS_ROOT above uses) pointing at BATON_OUTPUT_DIR -- the per-execution
+        // directory CoreDispatcher only resolves at dispatch time (CoreDispatcher.AssembleChildEnvironment
+        // expands target.Environment values against it) and the same directory OutcomeClassifier.Classify
+        // is already handed as outputDirectory. Unconditional, like BATON_ARTIFACTS_ROOT above: the
+        // Artifact Manager always resolves BATON_OUTPUT_DIR (ArtifactManager.cs:216), so there is no
+        // "neither directory known" case here the way there was for the room-scoped fallback.
+        environment.Add((
+            VerdictLedgerVariable,
+            EnvironmentReference("BATON_OUTPUT_DIR", isWindows) + (isWindows ? @"\" : "/") + VerdictLedgerFileName));
 
         // agy home redirect (#442): non-shell bindings get HOME and USERPROFILE redirected to an
         // AER-owned state directory. Shell-granted workers (grant.RunShellCommands == true) are
@@ -513,7 +697,20 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             // #1089: only when streaming is there a `result` event on stdout to detect; in text mode the
             // stdout is the answer, so wiring the detector would just scan prose for nothing. Null there
             // keeps the guard failing safe.
-            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null);
+            DetectsTerminalSuccess: invocation.StreamJson ? IsTerminalSuccessLine : null,
+            // F6 (#1593 review): same streaming gate as DetectsTerminalSuccess above, but fires on a
+            // terminal `result` event of ANY status — see IsTerminalResultLine.
+            DetectsTerminalResult: invocation.StreamJson ? IsTerminalResultLine : null,
+            // #1732 review WIRING: the per-execution canary's read side, wired only when
+            // requiresHookAsSoleNarrowing (computed above, same value the resolve-time probe already
+            // gated on) held. Null otherwise -- see CoreDispatchTarget.CountHookVerdicts's own doc for
+            // which dispatches that covers and what it keeps unchanged.
+            CountHookVerdicts: requiresHookAsSoleNarrowing
+                ? outputDirectory => AgyHookVerdictLedger.CountVerdicts(Path.Combine(outputDirectory, VerdictLedgerFileName))
+                : null,
+            // #1741: see ExecutionRequest.HookVerdictLedgerFileName's own doc for why this travels
+            // alongside CountHookVerdicts above.
+            HookVerdictLedgerFileName: requiresHookAsSoleNarrowing ? VerdictLedgerFileName : null);
     }
 
     /// <summary>
@@ -537,6 +734,36 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
                 && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object
                 && result.TryGetProperty("status", out var status) && status.GetString() == "SUCCESS";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// F6 (#1593 review): true iff <paramref name="rawLine"/> is agy's terminal `result` marker of ANY
+    /// status — the same envelope <see cref="IsTerminalSuccessLine"/> matches, minus that method's
+    /// <c>status == "SUCCESS"</c> clause. Distinguishes "the worker finished and self-reported a
+    /// FAILURE" (a contract failure with a result record) from "the worker died mid-stream with no
+    /// result at all" (a dead worker) — <see cref="Outcomes.OutcomeClassifier"/>'s dead-worker predicate
+    /// needs exactly this fact, which <see cref="IsTerminalSuccessLine"/> cannot supply since it reads
+    /// false in both cases.
+    /// </summary>
+    internal static bool IsTerminalResultLine(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("event", out var eventProp) && eventProp.GetString() == "result"
+                && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object;
         }
         catch (JsonException)
         {
@@ -667,7 +894,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
                 "before any worker is dispatched.");
         }
 
-        var command = $"dotnet {HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
+        var command = BuildHookCommand(hookAssemblyPath);
         var hooks = new Dictionary<string, object>
         {
             ["baton-permission-gate"] = new
@@ -688,6 +915,17 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         return JsonSerializer.Serialize(hooks);
     }
+
+    /// <summary>
+    /// The hook command string, shared by <see cref="BuildHooksJson"/> (what's written into
+    /// <c>hooks.json</c>) and <see cref="IAgyHookLivenessProbe"/> (what the resolve-time probe
+    /// spawns) -- #1732 review N1: previously interpolated independently in both places, with only
+    /// <see cref="HookAssemblyToken"/>'s escaping shared, so a change to one could drift from the
+    /// other with nothing to notice. A probe spawning a stale command would keep reporting the hook
+    /// live while <c>hooks.json</c>'s real command silently changed underneath it.
+    /// </summary>
+    internal static string BuildHookCommand(string hookAssemblyPath) =>
+        $"dotnet {HookAssemblyToken(hookAssemblyPath)} agy-hook-check";
 
     /// <summary>
     /// How the assembly path is spelled inside the hook command string, so agy's shell resolves it.
@@ -834,7 +1072,10 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// explicitly rather than inherited so the value is visible next to the reasoning. Generous for
     /// what the command does (parse stdin, compare a name, print an object) because the cost of
     /// overrunning is asymmetric: a timeout produces no stdout, and no stdout is an
-    /// <em>allow</em> on this vendor.
+    /// <em>allow</em> on this vendor. For a role that relies on the hook as its sole narrowing —
+    /// <c>review</c> is the first such role — a hook that cannot start therefore turns the most
+    /// restricted agy role into an unscoped shell with network and unbounded writes; a liveness
+    /// guard for that failure mode is tracked in #1680, not built here (#1387 review, F5).
     /// </summary>
     private const int HookTimeoutSeconds = 30;
 
@@ -854,6 +1095,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// (sentinel <c>effort.agy-value-set</c> — that check is the tripwire if agy ever changes the set).
     /// Both are otherwise refused by agy at bind time, after the operator has waited; this refuses them
     /// up-front at resolution, naming the real cause. See <see cref="IncoherentVendorEffortException"/>.
+    /// #1596's sibling check, <see cref="RequiresAgyEffort"/>, covers the third case this method
+    /// cannot: an <see cref="WorkerInvocation.Effort"/> of <c>null</c>, when the model requires one.
     /// </summary>
     private static void ReconcileAgyEffort(string? model, string effort)
     {
@@ -898,6 +1141,39 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
 
         return null;
     }
+
+    /// <summary>
+    /// The bare (no <c>-low|-medium|-high</c> suffix) gemini model names <c>agy models</c> catalogues
+    /// as having suffixed variants (docs/vendor-capabilities.md's "<c>agy models</c>" fence) -- i.e.
+    /// the families the model-name/effort split actually applies to. Deliberately not "any
+    /// <c>gemini-</c>-prefixed name": <c>gemini-3-pro</c> is NOT one of these families -- it is a
+    /// separate, uncatalogued name that agy refuses for being unrecognized
+    /// (<c>effort.agy-rejection-is-per-model</c>, same doc), not for a missing effort, and treating it
+    /// as if it were regressed <c>AgyWorkerAdapterTests.A_model_is_passed_through_when_set</c> (found
+    /// while fixing #1596, corrected here rather than filed separately per "found-while-fixing").
+    /// </summary>
+    private static readonly HashSet<string> AgyModelsRequiringEffortSuffix =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+        };
+
+    /// <summary>
+    /// True for a catalogued gemini model agy will refuse to spawn without an explicit
+    /// <c>--effort</c> -- i.e. a bare <see cref="AgyModelsRequiringEffortSuffix"/> entry with no
+    /// suffix already applied via <see cref="GeminiEffortSuffix"/>. #1596's own scope note says
+    /// "whether every gemini model without an effort suffix requires --effort, or only some, is
+    /// unmeasured" -- so this stays scoped to the exact families the catalogue shows carrying
+    /// suffixed variants, rather than every <c>gemini-</c>-prefixed name (see
+    /// <see cref="AgyModelsRequiringEffortSuffix"/>'s own remarks for why that would be too wide).
+    /// A non-gemini model (claude, gpt-oss) or an uncatalogued one falls outside it and keeps today's
+    /// behaviour -- no up-front check -- because whether it requires <c>--effort</c> is simply
+    /// unmeasured, not measured-negative.
+    /// </summary>
+    private static bool RequiresAgyEffort(string? model) =>
+        model is not null
+        && GeminiEffortSuffix(model) is null
+        && AgyModelsRequiringEffortSuffix.Contains(model);
 
     private string ResolvePermissionScope(WorkerInvocation invocation)
     {
@@ -1311,6 +1587,79 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         return TryClassifyQuotaExhaustion(stdoutTail, timeProvider, out classification, out retryNotBefore);
     }
 
+    /// <summary>
+    /// #1720 review F1: agy's answer to the satisfied exit-0 veto — see
+    /// <see cref="Outcomes.IFailureClassifier.TryClassifySatisfiedRunFailure"/>'s own doc for why
+    /// this question differs from the exit-1 one at all. Stderr keeps the full matcher above (agy's
+    /// CLI diagnostics); stdout goes only through
+    /// <see cref="TryClassifyQuotaExhaustionFromResultEnvelope"/>.
+    /// </summary>
+    public bool TryClassifySatisfiedRunFailure(
+        string? stderrTail,
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        if (TryClassifyFailure(stderrTail, timeProvider, out classification, out retryNotBefore))
+        {
+            return true;
+        }
+
+        return TryClassifyQuotaExhaustionFromResultEnvelope(stdoutTail, timeProvider, out classification, out retryNotBefore);
+    }
+
+    /// <summary>
+    /// agy's own stream-json terminal envelope — <c>event == "result"</c> with a
+    /// <c>result.status</c> other than <c>"SUCCESS"</c>, the same shape
+    /// <see cref="TryParseProgressEvent"/> and <see cref="IsTerminalSuccessLine"/> already key on —
+    /// and only then the quota sentence, matched against that envelope's own <c>error</c> field.
+    /// A worker cannot emit this envelope: the CLI writes it, which is the whole point.
+    /// </summary>
+    public static bool TryClassifyQuotaExhaustionFromResultEnvelope(
+        string? stdoutTail,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        classification = null;
+        retryNotBefore = null;
+
+        FailureClassification? matchedClassification = null;
+        DateTimeOffset? matchedRetryNotBefore = null;
+
+        var matched = StreamJsonTailScanner.AnyObject(stdoutTail, root =>
+        {
+            if (!root.TryGetProperty("event", out var eventProp)
+                || eventProp.ValueKind != JsonValueKind.String
+                || eventProp.GetString() != "result"
+                || !root.TryGetProperty("result", out var result)
+                || result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("status", out var statusProp)
+                || statusProp.ValueKind != JsonValueKind.String
+                || statusProp.GetString() is not { Length: > 0 } status
+                || status == "SUCCESS"
+                || !result.TryGetProperty("error", out var errorProp)
+                || errorProp.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            return TryClassifyQuotaExhaustion(
+                errorProp.GetString(), timeProvider, out matchedClassification, out matchedRetryNotBefore);
+        });
+
+        if (!matched)
+        {
+            return false;
+        }
+
+        classification = matchedClassification;
+        retryNotBefore = matchedRetryNotBefore;
+        return true;
+    }
+
     [GeneratedRegex(@"Resets in\s+(?:(?<hours>\d+)h)?(?:(?<minutes>\d+)m)?(?:(?<seconds>\d+)s)?", RegexOptions.IgnoreCase)]
     private static partial Regex QuotaResetDurationRegex();
 
@@ -1376,8 +1725,9 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     }
 
     /// <summary>
-    /// Recognizes agy auto-denied-tool errors from stderr prose (issue #914) mirroring dispatch.py's
-    /// canonical twin markers: "auto-denied" AND "permission".
+    /// Recognizes agy auto-denied-tool errors from stderr prose (issue #914) mirroring what was
+    /// <c>tools/baton-agy-loop/dispatch.py</c>'s canonical twin markers before #1759 retired it:
+    /// "auto-denied" AND "permission".
     /// </summary>
     public static bool TryClassifyAutoDeniedTool(
         string? stderrOrReason,

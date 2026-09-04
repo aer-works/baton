@@ -14,8 +14,9 @@
   <ItemGroup>
     <!-- #888: the shared worker-role catalog. Copied next to the engine as the shipped default, NOT
          embedded, so an operator can retune tiers at runtime (a worker-tiers.json under BATON_HOME, or
-         the BATON_WORKER_*_PATH env override) with no rebuild. tools/baton-agy-loop/dispatch.py reads the
-         same tracked files, so there is one source. -->
+         the BATON_WORKER_*_PATH env override) with no rebuild. tools/baton-agy-loop/dispatch.py read the
+         same tracked files until #1759 retired it; tools/audit-completeness/completeness.py still reads
+         WorkerTiers.json directly today. -->
     <None Include="WorkerRoles.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="WorkerTiers.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="WorkflowTemplates.json" CopyToOutputDirectory="PreserveNewest" />

@@ -1,6 +1,30 @@
 namespace Baton.Domain;
 
 /// <summary>
+/// F1 (#1593 review): which of the four sources settled a step's
+/// <see cref="StepState.IndeterminateAwaitingResolution"/> flag — the discriminant <c>baton resolve</c>
+/// (<c>Baton.Cli.ResolveCommand</c>, <c>Mutation.MutationInterface.RecordCaptureResolutionAsync</c>)
+/// admits its verbs on, replacing a bare <see cref="StepState.LatestCapturedResponseFile"/> null/not-null
+/// read that could not tell <see cref="ContractFailure"/> (which DOES have something for a conductor to
+/// reject — their judgement after inspecting the workspace) from <see cref="VerifyFailed"/>/
+/// <see cref="Arrested"/> (which never do, since neither carries a captured response at all).
+/// </summary>
+public enum IndeterminateProducer
+{
+    /// <summary>#1594/#1608: <see cref="FlowEvent.ExecutionIndeterminate"/> with a non-null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — the worker's declared output(s) were missing but a terminal response was recoverable. <c>--accept-capture</c> and <c>--reject --reason</c> both admit this producer.</summary>
+    CapturedResponse,
+
+    /// <summary>#1593: <see cref="FlowEvent.ExecutionIndeterminate"/> with a null <see cref="FlowEvent.ExecutionIndeterminate.CapturedResponseFile"/> — an exit-0 contract failure (or a dead worker on a mutated workspace) with no response to capture. Only <c>--reject --reason</c> admits this producer; <c>--accept-capture</c> has no capture to accept and keeps refusing.</summary>
+    ContractFailure,
+
+    /// <summary>#1623: <see cref="FlowEvent.VerifyFailed"/> — the role's verify command exited non-zero after a clean, contract-satisfied worker exit. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
+    VerifyFailed,
+
+    /// <summary>#1623: <see cref="FlowEvent.ExecutionArrested"/> — a live execution crossed its role's token budget and was arrested. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
+    Arrested,
+}
+
+/// <summary>
 /// <c>FlowState = Project(EventStore, WorkflowDefinitionSnapshot)</c> — workflow state
 /// reconstructed from event history, never from live process state, wall-clock time, or anything
 /// not frozen inside an event. Producing this from the event log is the State Projector's
@@ -33,7 +57,8 @@ public sealed record FlowState(
     IReadOnlyList<StepState> Steps,
     WorkflowStatus Status = WorkflowStatus.Running,
     IReadOnlyList<StepLessExecutionState>? StepLessExecutions = null,
-    IReadOnlyList<ExecutionId>? CancellationRequestedExecutionIds = null)
+    IReadOnlyList<ExecutionId>? CancellationRequestedExecutionIds = null,
+    IReadOnlyList<ExecutionId>? UnmatchedVerifyExecutionIds = null)
 {
     /// <summary>Defaults to empty rather than <c>null</c> for call sites that omit the constructor argument.</summary>
     public IReadOnlyList<StepLessExecutionState> StepLessExecutions { get; init; } = StepLessExecutions ?? [];
@@ -41,6 +66,10 @@ public sealed record FlowState(
     /// <summary>Defaults to empty rather than <c>null</c> for call sites that omit the constructor argument.</summary>
     public IReadOnlyList<ExecutionId> CancellationRequestedExecutionIds { get; init; } =
         CancellationRequestedExecutionIds ?? [];
+
+    /// <summary>#1623 / F2: executions with an unmatched VerifyStarted, for crash recovery reconciliation.</summary>
+    public IReadOnlyList<ExecutionId> UnmatchedVerifyExecutionIds { get; init; } =
+        UnmatchedVerifyExecutionIds ?? [];
 }
 
 /// <summary>
@@ -166,6 +195,50 @@ public enum StepStatus
 /// <c>true</c>, independent of <see cref="LatestFailureClassification"/> or
 /// <see cref="ConsecutiveFailureCount"/>.
 /// </param>
+/// <param name="IndeterminateAwaitingResolution">
+/// The single flag for <see cref="Status.WorkflowOutcome.Indeterminate"/>, whichever of its three
+/// producers set it (#1608's <see cref="FlowEvent.ExecutionIndeterminate"/> captured-response settle,
+/// and #1623's <see cref="FlowEvent.VerifyFailed"/> / <see cref="FlowEvent.ExecutionArrested"/>) —
+/// <c>true</c> while one of those has been projected for this step's latest execution and nothing has
+/// since reopened or resolved it (<see cref="FlowEvent.CaptureResolved"/>, or a fresh
+/// <see cref="FlowEvent.ExecutionRequestAccepted"/>). Drives two independent reads:
+/// <see cref="Status.WorkflowOutcome.Describe"/> reports the room <c>Indeterminate</c> whenever any
+/// step reads <c>true</c> here (ahead of the ordinary <see cref="Failed"/>/<see cref="Rejected"/>
+/// check, even though <see cref="Status"/> itself stays <see cref="Failed"/> — the "single added enum
+/// value" ruling adds this at the room-level word only, never at <see cref="StepStatus"/>), and
+/// <see cref="Scheduling.RetryEngine.MayRetry"/> refuses unconditionally while this is <c>true</c>,
+/// the same explicit-arm shape as <see cref="RetryForeclosed"/>. An accepted resolution flips the
+/// step's <b>raw</b> status to <see cref="Succeeded"/> in the same projected step that clears this —
+/// but this can also read <c>true</c> while <see cref="Status"/> is <see cref="Paused"/>, not only
+/// <see cref="Failed"/> — a step declaring a <see cref="PausePoint"/> settles into
+/// <see cref="Paused"/> with this flag still set (spec/baton.md §3, "Unless the step declares a
+/// <c>PausePoint</c>", for the mechanism and what follows from it). Never true while
+/// <see cref="Status"/> is <see cref="Succeeded"/> or <see cref="Cancelled"/>.
+/// </param>
+/// <param name="IndeterminateReason">
+/// #1623: the human-readable diagnostic for an Indeterminate settled by
+/// <see cref="FlowEvent.VerifyFailed"/> or <see cref="FlowEvent.ExecutionArrested"/> — which gate
+/// members failed, or what the arrest measured. <b>Diagnostic only: never a gate.</b>
+/// <see cref="IndeterminateAwaitingResolution"/> is the one flag every reader branches on, so the
+/// captured-response producer (which records its own account on
+/// <see cref="LatestFailureReason"/> instead) leaves this null while still reading Indeterminate.
+/// </param>
+/// <param name="IndeterminateProducer">
+/// F1 (#1593 review): which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised
+/// <paramref name="IndeterminateAwaitingResolution"/> — the discriminant <c>baton resolve</c> admits
+/// its verbs on. Null whenever <paramref name="IndeterminateAwaitingResolution"/> is false; cleared in
+/// the same breath as <paramref name="IndeterminateReason"/> on resolution or reopen.
+/// </param>
+/// <param name="IndeterminateVerifyTail">
+/// #1701: <see cref="FlowEvent.VerifyFailed"/>'s own <c>Tail</c> — the failing member(s)' OWN
+/// captured output, not <paramref name="IndeterminateReason"/>'s one-line member-name summary. Set
+/// only by the <see cref="Domain.IndeterminateProducer.VerifyFailed"/> producer (an arrest's
+/// <paramref name="IndeterminateReason"/> is already the full diagnostic — nothing truncated to
+/// recover); cleared in the same breath as <paramref name="IndeterminateReason"/> on resolution or
+/// reopen. Why this exists at all: before #1701, a verify flake's own output lived only in
+/// <c>flow.jsonl</c>'s raw event, unreachable from <c>baton status --json</c> — a conductor diagnosing
+/// an Indeterminate room had no way to read it without reconstructing the room by hand.
+/// </param>
 public sealed record StepState(
     StepId StepId,
     StepStatus Status,
@@ -186,7 +259,26 @@ public sealed record StepState(
     int ExecutionCount = 0,
     string? LatestCapturedResponseFile = null,
     IReadOnlyList<string>? LatestUnsatisfiedOutputNames = null,
-    bool RetryForeclosed = false);
+    bool RetryForeclosed = false,
+    bool IndeterminateAwaitingResolution = false,
+    string? IndeterminateReason = null,
+    IndeterminateProducer? IndeterminateProducer = null,
+    string? IndeterminateVerifyTail = null,
+    // #1622 (c)/(d): schema at spec/baton.md §3. Cleared on a fresh dispatch.
+    bool ResolvedByConductor = false,
+    // #1622/#1390: schema at spec/baton.md §3.
+    bool? WorkspaceChanged = null,
+    bool? Hollow = null,
+    string? HollowReason = null,
+    // #1702: FlowEvent.VerifyNotRun's own reason for the latest attempt -- the pre-flight "not
+    // runnable" verdict, never a gate. Null whenever the latest attempt's verify step either never ran
+    // a pre-flight check (no resolved command, or the command WAS runnable), or the step has since had
+    // a fresh execution accepted (StateProjector clears this the same breath it clears
+    // IndeterminateReason on ExecutionRequestAccepted).
+    string? VerifyNotRunReason = null,
+    // F11 (#1720 review, conductor ruling): the `--reject` subset of ResolvedByConductor above --
+    // see spec/baton.md §3 for why the two are not one flag and where they are told apart.
+    bool ConductorRejected = false);
 
 /// <summary>
 /// A step-less supplementary execution still awaiting completion: minted outside the

@@ -24,6 +24,56 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// <c>bindings.json</c> today, just captured at resolve time instead of at read time.
     /// </param>
     /// <param name="Model">The resolved config entry's <c>WorkerBindingConfigEntry.Model</c>, carried for the same reason.</param>
+    /// <param name="VerifyPixiTask">
+    /// #1623: this execution's role-default verify task — see
+    /// <c>Baton.Vendors.WorkerRole.VerifyPixiTask</c>'s remarks. Lowest-precedence input to
+    /// <see cref="VerifyCommandResolver.Resolve"/> (full precedence order on
+    /// <c>Baton.Vendors.WorkerBindingConfigEntry.VerifyCommandOverride</c>'s own doc, spec/baton.md §3).
+    /// </param>
+    /// <param name="VerifyCommandOverride">
+    /// #1702: this execution's <c>--verify</c> value, carried the same hop as <paramref name="VerifyPixiTask"/>.
+    /// </param>
+    /// <param name="TokenBudget">
+    /// #1623: the per-execution token ceiling — see <c>Baton.Vendors.WorkerRole.TokenBudget</c>'s
+    /// remarks. Null enforces no budget.
+    /// </param>
+    /// <param name="MaxToolSteps">
+    /// #1682: the per-execution tool-step ceiling — see <c>Baton.Vendors.WorkerRole.MaxToolSteps</c>'s
+    /// remarks. Null enforces no cap. Independent of <paramref name="TokenBudget"/>: a monitor is
+    /// constructed whenever either is set (<c>MutationInterface.DispatchAndRecordOutcomeAsync</c>).
+    /// </param>
+    /// <param name="BilledRateLimit">
+    /// #1691: the billed-rate ceiling — see <c>Baton.Vendors.WorkerRole.BilledRateLimit</c>'s remarks,
+    /// including why no role sets one. Null enforces no rate trigger. Independent of the two above: a
+    /// monitor is constructed whenever ANY of the three is set
+    /// (<c>MutationInterface.DispatchAndRecordOutcomeAsync</c>).
+    /// </param>
+    /// <param name="IsWorktree">
+    /// F4 (#1593 review): whether <see cref="Target"/>'s <c>WorkingDirectory</c> is an ACTUALLY
+    /// provisioned worktree (<see cref="Baton.Vendors.WorkerBindingConfigEntry.IsWorktree"/>'s own
+    /// stamp), as opposed to null or the operator's own repository (the value a room with no
+    /// provisioned worktree carries). <c>Outcomes.OutcomeClassifier</c>'s untouched-workspace
+    /// discrimination reads this before passing a path to
+    /// <c>Workspaces.WorktreeProvisioner.IsWorkspaceUntouched</c> — a retry decision must never be
+    /// handed the operator's own working directory, routinely dirty for reasons that have nothing to
+    /// do with the execution.
+    /// </param>
+    /// <param name="WorktreeBaseSha">
+    /// F5/N2 (#1593/#1664 review): <see cref="Baton.Vendors.WorkerBindingConfigEntry.WorktreeBaseSha"/>,
+    /// carried the same hop as <see cref="IsWorktree"/> — see that field's own remarks for when it is
+    /// null, and <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s for what it's compared against.
+    /// </param>
+    /// <param name="DeliversBranch">
+    /// #1788: <c>Baton.Vendors.WorkerRole.DeliversBranch</c>, carried the same hop -- see that field's
+    /// own remarks for what it gates. Same safe <see langword="false"/> default as <c>ChangesTree</c>
+    /// below for any entry not built through <c>Baton.Vendors.RoleDispatch.ToBinding</c>.
+    /// </param>
+    /// <param name="ExpectPr">
+    /// #1788: whether the delivery check's PR half runs — <c>--expect-pr</c>'s resolved value
+    /// (<c>Baton.Vendors.RoleDispatch.ToBinding</c>'s <c>expectPrOverride ?? role.DeliversBranch</c>),
+    /// already resolved to a definite bool by the time it reaches here. Meaningless when
+    /// <see cref="DeliversBranch"/> is false — nothing reads it in that case.
+    /// </param>
     public sealed record Process(
         WorkerContract Contract,
         CoreDispatchTarget Target,
@@ -35,7 +85,21 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         // #1594: same resolved adapter object as FailureClassifier above -- a worker adapter answers
         // both questions, and this is the settle path's seam for the second one (recovering a missing
         // declared output from the worker's own terminal response).
-        Outcomes.IWorkerResponseParser? ResponseParser = null)
+        Outcomes.IWorkerResponseParser? ResponseParser = null,
+        string? VerifyPixiTask = null,
+        string? VerifyCommandOverride = null,
+        long? TokenBudget = null,
+        int? MaxToolSteps = null,
+        long? BilledRateLimit = null,
+        bool IsWorktree = false,
+        string? WorktreeBaseSha = null,
+        // #1622/#1390: Baton.Vendors.WorkerBindingConfigEntry.ChangesTree, carried the same hop --
+        // see that field's own remarks for why it is computed once, upstream, from the catalog role's
+        // own grant rather than re-derived here. Outcomes.OutcomeClassifier reads this to decide
+        // whether to compute/attach workspaceChanged/hollow onto a Succeeded verdict at all.
+        bool ChangesTree = false,
+        bool DeliversBranch = false,
+        bool ExpectPr = false)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

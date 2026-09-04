@@ -91,6 +91,55 @@ public class StateProjectorTests
         Assert.Equal(StepStatus.Succeeded, StepFor(state, Architect).Status);
     }
 
+    /// <summary>
+    /// #1622 (b)/#1390: the seam between <c>Outcomes.OutcomeClassifier</c> (which computes
+    /// WorkspaceChanged/Hollow/HollowReason onto the classification) and
+    /// <c>Status.WorkflowStatusProjector</c> (which reads them off <c>StepState</c> for
+    /// <c>status --json</c>) is <see cref="FlowEvent.ExecutionSucceeded"/> and this projector — this
+    /// is the wiring test for that seam, independent of a real dispatch.
+    /// </summary>
+    [Fact]
+    public void A_succeeded_execution_carries_workspaceChanged_and_hollow_through_to_StepState()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId, WorkspaceChanged: false, Hollow: true, HollowReason: "no diff, no outputs"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.False(architect.WorkspaceChanged);
+        Assert.True(architect.Hollow);
+        Assert.Equal("no diff, no outputs", architect.HollowReason);
+    }
+
+    /// <summary>
+    /// The field-absence control: a plain <see cref="FlowEvent.ExecutionSucceeded"/> (the shape every
+    /// non-tree-changing role's settle, and every pre-#1622 ledger line, carries) must leave all three
+    /// fields null, not defaulted to false — the "field absent for a review role" contract.
+    /// </summary>
+    [Fact]
+    public void A_succeeded_execution_with_no_work_product_fields_leaves_them_null()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.WorkspaceChanged);
+        Assert.Null(architect.Hollow);
+        Assert.Null(architect.HollowReason);
+    }
+
     [Fact]
     public void A_failed_execution_projects_as_Failed()
     {
@@ -403,6 +452,86 @@ public class StateProjectorTests
         Assert.Null(architect.LatestExecutionId);
     }
 
+    /// <summary>
+    /// #1549: the discriminating instrument for "new events are no-ops for state" — a plain
+    /// round-trip through <see cref="StateProjector"/> would pass even if one of these events
+    /// accidentally mutated <see cref="ProjectionCheckpointState"/>, as long as nothing later
+    /// asserted on the mutated field. Comparing the full projected <see cref="FlowState"/> WITH each
+    /// event interleaved against the same sequence WITHOUT it is what actually proves "no state
+    /// consequence" rather than merely "nothing this test happened to check changed."
+    /// </summary>
+    [Fact]
+    public void The_1549_heartbeat_and_cancellation_delivery_events_never_change_projected_state()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var baseline = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+        // FlowState's own record equality is reference-equal on its List<T> members (records don't
+        // get structural collection equality for free), so two independently-projected FlowStates
+        // that are genuinely identical still fail Assert.Equal directly -- serializing both to JSON
+        // is what actually compares the full shape.
+        var baselineJson = JsonSerializer.Serialize(StateProjector.Project(baseline, TwoStepSnapshot()));
+
+        FlowEvent[] Interleaved(FlowEvent noOpEvent) =>
+        [
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            noOpEvent,
+            new FlowEvent.ExecutionSucceeded(executionId),
+        ];
+
+        foreach (var noOpEvent in new FlowEvent[]
+                 {
+                     new FlowEvent.ExecutionProgress(executionId),
+                     new FlowEvent.CancellationDelivered(executionId),
+                     new FlowEvent.CancellationRejected(executionId),
+                 })
+        {
+            var json = JsonSerializer.Serialize(StateProjector.Project(Interleaved(noOpEvent), TwoStepSnapshot()));
+            Assert.Equal(baselineJson, json);
+        }
+    }
+
+    /// <summary>
+    /// #734: the same discriminating instrument as
+    /// <see cref="The_1549_heartbeat_and_cancellation_delivery_events_never_change_projected_state"/>
+    /// above, applied to the four newer cases <c>StateProjector</c>'s own no-op group cites this test
+    /// by name for.
+    /// </summary>
+    [Fact]
+    public void The_734_delivery_events_never_change_projected_state()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var baseline = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+        var baselineJson = JsonSerializer.Serialize(StateProjector.Project(baseline, TwoStepSnapshot()));
+
+        FlowEvent[] Interleaved(FlowEvent noOpEvent) =>
+        [
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            noOpEvent,
+            new FlowEvent.ExecutionSucceeded(executionId),
+        ];
+
+        foreach (var noOpEvent in new FlowEvent[]
+                 {
+                     new FlowEvent.DeliveryPrOpened(123, "734-lane"),
+                     new FlowEvent.DeliveryChecksGreen(123),
+                     new FlowEvent.DeliveryChecksRed(123),
+                     new FlowEvent.DeliveryMerged(123),
+                     new FlowEvent.DeliveryMerged(123, Merged: false),
+                 })
+        {
+            var json = JsonSerializer.Serialize(StateProjector.Project(Interleaved(noOpEvent), TwoStepSnapshot()));
+            Assert.Equal(baselineJson, json);
+        }
+    }
+
     [Fact]
     public void A_fail_fail_succeed_sequence_resets_the_consecutive_failure_count_to_zero()
     {
@@ -670,6 +799,31 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void A_fresh_ExecutionRequestAccepted_reopens_an_indeterminate_step()
+    {
+        // #1623 / F5: a fresh dispatch clears the Indeterminate flag and its reason text alongside
+        // RetryForeclosedStepIds. Both halves asserted, not just the text: the flag is what would
+        // otherwise leave WorkflowOutcome pinned to Indeterminate and MayRetry permanently false
+        // underneath a legitimate new attempt -- which is the whole failure this clear exists to
+        // prevent, and it is invisible to an assertion that only reads the diagnostic string.
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Null(architect.IndeterminateReason);
+        Assert.False(architect.RetryForeclosed);
+    }
+
+    [Fact]
     public void RetryWithRevision_reopens_a_foreclosed_step()
     {
         var executionId = new ExecutionId("exec-1");
@@ -764,6 +918,223 @@ public class StateProjectorTests
         var state = StateProjector.Project(events, TwoStepSnapshot());
 
         Assert.Equal(WorkflowStatus.Running, state.Status);
+    }
+
+    // #1608: FlowEvent.ExecutionIndeterminate / FlowEvent.CaptureResolved -- the two-predicate
+    // model's disagreement case and its own resolution verb's room fact.
+
+    [Fact]
+    public void ExecutionIndeterminate_projects_Failed_status_with_the_awaiting_resolution_flag_set()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(
+                executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["plan.md"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        // See StateProjector's ExecutionIndeterminate case comment for the single-added-enum-value
+        // ruling this pins. WorkflowOutcome.DescribeTerminal is what reads the flag below at the
+        // room level; pinned separately by WorkflowOutcomeAndExitCodeTests.
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(".captured-response.md", architect.LatestCapturedResponseFile);
+        Assert.Equal(["plan.md"], architect.LatestUnsatisfiedOutputNames);
+        Assert.Null(architect.LatestFailureClassification);
+        Assert.Null(architect.LatestExecutionFailedRetryNotBefore);
+    }
+
+    [Fact]
+    public void CaptureResolved_accepted_settles_the_step_Succeeded_and_clears_the_capture_fields()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: true, ResolvedOutputNames: ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Null(architect.LatestCapturedResponseFile);
+        Assert.Null(architect.LatestUnsatisfiedOutputNames);
+    }
+
+    [Fact]
+    public void CaptureResolved_rejected_leaves_the_step_Failed_but_clears_the_awaiting_resolution_flag()
+    {
+        // Polarity partner of the accepted test above -- one field apart (Accepted: false), otherwise
+        // identical, proving the Succeeded settle above is about Accepted, not incidentally about
+        // CaptureResolved being projected at all. The captured-response audit trail (file name,
+        // unsatisfied names) stays recorded -- only the resolution state changes.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false, Reason: "not an honest plan.md"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(".captured-response.md", architect.LatestCapturedResponseFile);
+        Assert.Equal(["plan"], architect.LatestUnsatisfiedOutputNames);
+    }
+
+    /// <summary>
+    /// F8 (#1720 review): a non-accepting resolution of a step with NO recorded producer — the legacy
+    /// pre-#1593 shape `--close` admits — must foreclose retry, or the engine re-dispatches a step the
+    /// conductor just closed. Unreachable through today's writers (every one records a producer),
+    /// which is exactly why an unforeclosed arm would be invisible if it became reachable.
+    /// </summary>
+    [Fact]
+    public void CaptureResolved_on_a_step_with_no_recorded_producer_forecloses_retry()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, "worker exited 1"),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false, Reason: "closed by the conductor"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.RetryForeclosed);
+        // F11's other half: a null producer means `--close`, not `--reject` -- the admission
+        // predicates never let `--reject` reach one -- so the room reads resolved, not rejected.
+        Assert.True(architect.ResolvedByConductor);
+        Assert.False(architect.ConductorRejected);
+    }
+
+    [Fact]
+    public void CaptureResolved_is_a_noop_when_StepId_does_not_match_the_execution_owning_step()
+    {
+        // The same stale-target guard StepRetryForeclosed's own ForExecutionId check already follows
+        // -- a resolution naming the wrong step for this execution id must not misapply.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.CaptureResolved(Critic, executionId, Accepted: true, ResolvedOutputNames: ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_an_unresolved_indeterminate_capture()
+    {
+        // Review finding on this PR: mirrors A_fresh_ExecutionRequestAccepted_reopens_a_foreclosed_step
+        // above -- defensive symmetry, not a currently-reachable path today. See StateProjector's own
+        // #1608 review comment on this same clear (ExecutionRequestAccepted arm) for why it's pinned
+        // anyway.
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void A_step_declaring_PausePoint_that_settles_Indeterminate_projects_Paused_with_the_flag_still_set()
+    {
+        // #1608 review finding 3: the shape spec/baton.md §3's "Unless the step declares a
+        // PausePoint" section describes, pinned at the projection layer -- FlowState.cs's doc for
+        // IndeterminateAwaitingResolution previously claimed it could not occur. This fixture appends
+        // the same two events the pump would append for that pause obligation, so the projected shape
+        // is pinned independent of the scheduling layer that decides to append them.
+        var snapshot = new WorkflowDefinitionSnapshot(
+            new WorkflowDefinitionSnapshotId("snapshot-pause"),
+            new WorkflowTemplateId("architect-only-paused"),
+            WorkflowTemplateVersion: 1,
+            Steps:
+            [
+                new WorkflowStepDefinition(
+                    Architect, "architect", ["goal"], ["plan"], DependsOn: [], RetryPolicy: new RetryPolicy(1),
+                    PausePoint: new PausePoint([])),
+            ]);
+
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(
+                executionId, "captured, awaiting conductor resolution", ".captured-response.md", ["plan"]),
+            new FlowEvent.WorkflowPaused(executionId, Architect),
+        };
+
+        var state = StateProjector.Project(events, snapshot);
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Paused, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(WorkflowStatus.Paused, state.Status);
+    }
+
+    [Fact]
+    public void ExecutionIndeterminate_survives_an_incremental_checkpoint_resume()
+    {
+        // The same DeepCopy landmine StepRetryForeclosed_survives_an_incremental_checkpoint_resume
+        // above pins for RetryForeclosedStepIds -- IndeterminateAwaitingResolutionStepIds is a second,
+        // independent trailing member relying on ProjectionCheckpointState.DeepCopy's positional
+        // constructor call actually carrying it forward.
+        var executionId = new ExecutionId("exec-1");
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+        Assert.True(StepFor(freshState, Architect).IndeterminateAwaitingResolution);
+
+        var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
+
+        Assert.True(StepFor(resumedState, Architect).IndeterminateAwaitingResolution);
+    }
+
+    [Fact]
+    public void RetryEngine_MayRetry_refuses_an_unresolved_indeterminate_step_projected_from_real_events()
+    {
+        // Closes the loop between StateProjector's own projection and RetryEngineTests' hand-built
+        // fixtures: this proves the flag RetryEngine.MayRetry gates on is the same one
+        // ExecutionIndeterminate actually sets, not merely a field the two happen to share a name for.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(Baton.Scheduling.RetryEngine.MayRetry(StepFor(state, Architect), new RetryPolicy(MaxAttempts: 5)));
     }
 
     [Fact]
@@ -1224,7 +1595,7 @@ public class StateProjectorTests
             var tailState = StateProjector.Project(allEvents, snapshot, loadedCheckpoint);
             var fullReplayState = StateProjector.Project(allEvents, snapshot, checkpoint: null);
 
-            // With the guard tightened to `Version < 3`, the stale Version-2 checkpoint is rejected
+            // With the guard tightened to `Version < 4`, the stale Version-2 checkpoint is rejected
             // (Load returns null) and the room falls back to a full replay -- so the two ordinals
             // agree. Before that fix, Load accepted the Version-2 checkpoint, the missing key
             // defaulted to an empty dictionary, and the tail-only projection undercounted.
@@ -1236,5 +1607,503 @@ public class StateProjectorTests
         {
             DirectoryCleanup.DeleteRecursively(tempDir);
         }
+    }
+
+    // #1623 (contract: spec/baton.md §3). Both of that issue's
+    // producers settle a step Indeterminate via the same ApplyIndeterminate helper -- these fixtures
+    // pin that shape, mirroring StepRetryForeclosed's own test block above.
+
+    [Fact]
+    public void VerifyFailed_settles_the_step_Failed_and_records_an_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check", "lint"], "GATES: FAIL 2 of 25 -- fmt-check, lint"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        // #1623/#1644 merge: the FLAG is what WorkflowOutcome and RetryEngine read for all three
+        // Indeterminate producers -- asserting only the reason text would leave the one line that
+        // unifies this producer with #1608's (ApplyIndeterminate's Add to
+        // IndeterminateAwaitingResolutionStepIds) deletable with every test still green.
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Contains("fmt-check", architect.IndeterminateReason);
+        Assert.True(architect.RetryForeclosed);
+        Assert.Equal(FailureClassification.Permanent, architect.LatestFailureClassification);
+    }
+
+    [Fact]
+    public void VerifyFailed_records_the_failing_members_own_output_as_IndeterminateVerifyTail()
+    {
+        // #1701: proves the ApplyIndeterminate->StepState wiring this new field depends on.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["tool-refresh-selftest"], "FAILED: could not write current pointer"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal("FAILED: could not write current pointer", architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionArrested_leaves_IndeterminateVerifyTail_null_never_fabricated()
+    {
+        // #1701: an arrest's IndeterminateReason is already the full diagnostic (DescribeArrest) --
+        // nothing truncated to recover, so this must stay null rather than echoing the reason text.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task", "manage_task"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void A_fresh_ExecutionRequestAccepted_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        // The reopen path (a future producer minting a fresh execution for a still-Indeterminate
+        // step) -- CaptureResolved and the Arrested-stays-null path each have their own test; this is
+        // the third clearing site (StateProjector.cs, ExecutionRequestAccepted's reopen arm).
+        var executionId = new ExecutionId("exec-1");
+        var redriveExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(redriveExecutionId, Architect)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void CaptureResolved_clears_IndeterminateVerifyTail_alongside_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.CaptureResolved(Architect, executionId, Accepted: false),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionIndeterminate_overwriting_the_producer_clears_the_stale_IndeterminateVerifyTail()
+    {
+        // #1711 review F3: a VerifyFailed tail must not survive the producer being overwritten by
+        // ExecutionIndeterminate's CapturedResponse/ContractFailure arms -- same clearing discipline
+        // as the other three sites (:127, :378).
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["fmt-check"], "GATES: FAIL 1 of 25 -- fmt-check"),
+            new FlowEvent.ExecutionIndeterminate(executionId, "captured", ".captured-response.md", ["plan"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(IndeterminateProducer.CapturedResponse, architect.IndeterminateProducer);
+        Assert.Null(architect.IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void ExecutionArrested_settles_the_step_Failed_and_records_an_IndeterminateReason()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000), ["manage_task", "manage_task"]),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.NotNull(architect.IndeterminateReason);
+        Assert.Contains("620000", architect.IndeterminateReason);
+        Assert.True(architect.RetryForeclosed);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_token_budget_text_off_BilledTokens()
+    {
+        // Must 6e: BilledTokens is what the arrest text now reports, not ContextLevelTokens + TokensOut.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, ContextLevelTokens: 500_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>
+    /// #1745: a role's token budget can now default per adapter, so the arrest text names WHICH
+    /// adapter's figure applied -- without it, "token budget exceeded" no longer says enough to tell a
+    /// conductor whether the claude or the agy figure fired.
+    /// </summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_names_the_adapter_the_budget_applied_to()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget,
+                Adapter: "agy"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) on adapter 'agy' — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>A ledger line written before #1745 carries no Adapter and reads exactly as it did before.</summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_omits_the_adapter_clause_when_none_was_recorded()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000, BilledTokens: 1_234_567),
+                Reason: ArrestReason.TokenBudget),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (1234567 billed tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_tool_step_cap_text()
+    {
+        // Must 6e: the SECOND, independent producer's own pinned text.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                Usage: null,
+                LastToolNames: ["run_command", "run_command"],
+                Reason: ArrestReason.ToolStepCap,
+                ToolStepCount: 81),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: tool-step cap exceeded (81 tool steps measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_pins_the_billed_rate_text_naming_window_observed_and_limit()
+    {
+        // #1691: the THIRD producer's own pinned text -- window width, observed rate, armed limit, all
+        // three named. StateProjector.DescribeBilledRateArrest carries why each one is there.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(
+                executionId,
+                new WorkerUsage(TokensIn: 96_546, TokensOut: 3_679, BilledTokens: 278_565),
+                LastToolNames: ["run_command"],
+                Reason: ArrestReason.BilledRate,
+                ToolStepCount: 26,
+                PeakBilledInWindow: 278_565,
+                BilledRateLimit: 250_000),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (278565 billed tokens in a 5 min window, limit 250000) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_degrades_the_billed_rate_text_when_the_figures_are_absent()
+    {
+        // #1691, the polarity arm: a BilledRate line with neither figure still names the mechanism and
+        // the window rather than fabricating a zero-token claim. Only reachable from a writer older
+        // than the fields, which cannot exist today -- pinned so it stays a graceful degrade rather
+        // than becoming "(0 billed tokens in a 5 min window, limit 0)" under a later edit.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: ArrestReason.BilledRate),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.Equal(
+            "Execution arrested: billed-token rate limit exceeded (over a 5 min window) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    /// <summary>
+    /// #1691 state-enumeration sweep: <c>DescribeArrest</c>'s switch has a THROWING default arm, so
+    /// before this test a member added to <see cref="ArrestReason"/> without an arm failed at runtime,
+    /// in production, on the one code path that runs when something has already gone wrong. Driven off
+    /// <see cref="Enum.GetValues{T}"/> so a new member fails here instead, the moment it is declared.
+    /// </summary>
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_covers_every_ArrestReason_member()
+    {
+        foreach (var reason in Enum.GetValues<ArrestReason>())
+        {
+            var executionId = new ExecutionId("exec-1");
+            var events = new FlowEvent[]
+            {
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+                new FlowEvent.ExecutionArrested(executionId, Usage: null, Reason: reason),
+            };
+
+            var state = StateProjector.Project(events, TwoStepSnapshot());
+
+            var architect = StepFor(state, Architect);
+            Assert.False(string.IsNullOrWhiteSpace(architect.IndeterminateReason),
+                $"ArrestReason.{reason} produced no arrest description — DescribeArrest is missing an arm for it.");
+            Assert.StartsWith("Execution arrested:", architect.IndeterminateReason, StringComparison.Ordinal);
+            Assert.True(architect.RetryForeclosed,
+                $"ArrestReason.{reason} must foreclose retry like every other arrest — a new trigger silently allowing a blind retry is the failure this sweep exists to catch.");
+        }
+    }
+
+    [Fact]
+    public void ExecutionArrested_DescribeArrest_treats_a_null_reason_as_the_legacy_token_budget_case()
+    {
+        // A ledger line written before #1682 -- Reason/ToolStepCount/BilledTokens all absent.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionArrested(executionId, new WorkerUsage(TokensIn: 500_000, TokensOut: 120_000)),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        // #1686 review F8: this figure is the OLD level-based (ContextLevelTokens/TokensIn + TokensOut)
+        // reading, computed because a pre-#1682 line never set BilledTokens at all -- it must not claim
+        // to be "billed tokens", the quantity this PR exists to stop treating as authoritative.
+        Assert.Equal(
+            "Execution arrested: token budget exceeded (620000 tokens measured) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void VerifyFailed_is_never_retried_even_within_MaxAttempts()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.False(Baton.Scheduling.RetryEngine.MayRetry(architect, new RetryPolicy(MaxAttempts: 5)));
+    }
+
+    [Theory]
+    [InlineData(VerifyFailedKind.EngineRestart, "Verify did not complete across an engine restart — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.TimedOut, "Verify timed out — awaiting conductor resolution.")]
+    [InlineData(VerifyFailedKind.Cancelled, "Verify cancelled — awaiting conductor resolution.")]
+    public void VerifyFailed_with_non_gate_kind_records_corresponding_IndeterminateReason(
+        VerifyFailedKind kind, string expectedReason)
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, null, "tail", kind),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.Equal(expectedReason, architect.IndeterminateReason);
+    }
+
+    [Fact]
+    public void VerifyPassed_and_VerifyStarted_are_diagnostic_only()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyStarted(executionId),
+            new FlowEvent.ExecutionSucceeded(executionId),
+            new FlowEvent.VerifyPassed(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.Null(architect.IndeterminateReason);
+    }
+
+    // Polarity partner for both producers above: identical log minus the one event stays an ordinary
+    // Succeeded/Terminal room, not Indeterminate.
+
+    [Fact]
+    public void The_same_execution_without_VerifyFailed_settles_Succeeded_not_Indeterminate()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Null(architect.IndeterminateReason);
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+    }
+
+    [Fact]
+    public void StepRebound_is_projected_without_perturbing_step_state()
+    {
+        // #1583 / S6 (spec/baton.md §3, #802 section 3.3): StepRebound is a diagnostic ledger event consumed by ExecutionUsageProjector;
+        // it does not alter step lifecycle status or retry counters.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.StepRebound(Architect, executionId, "agy", "gemini-3-pro", "claude", "sonnet", "Failover"),
+            new FlowEvent.ExecutionSucceeded(executionId),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.Equal(executionId, architect.LatestExecutionId);
+        Assert.Equal(0, architect.ConsecutiveFailureCount);
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_survives_an_incremental_checkpoint_resume()
+    {
+        // The same #1606 DeepCopy landmine StepRetryForeclosed_survives_an_incremental_checkpoint_resume
+        // pins for RetryForeclosedStepIds -- IndeterminateReasonByStepId is a second trailing dictionary
+        // relying on its own `?? new()` init default, and DeepCopy constructs positionally.
+        var executionId = new ExecutionId("exec-1");
+        var events = new List<FlowEvent>
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId, ["lint"], "tail"),
+        };
+
+        var (freshState, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+        Assert.NotNull(StepFor(freshState, Architect).IndeterminateReason);
+        // #1701: IndeterminateVerifyTailByStepId is a third trailing dictionary added the same way --
+        // same DeepCopy landmine, so it gets the same fresh/resumed round-trip proof.
+        Assert.Equal("tail", StepFor(freshState, Architect).IndeterminateVerifyTail);
+
+        var resumedState = StateProjector.Project(events, TwoStepSnapshot(), checkpoint);
+        Assert.NotNull(StepFor(resumedState, Architect).IndeterminateReason);
+        Assert.Equal("tail", StepFor(resumedState, Architect).IndeterminateVerifyTail);
+    }
+
+    [Fact]
+    public void An_Indeterminate_step_reaches_workflow_Terminal()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyFailed(executionId),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(new ExecutionId("exec-2"), Critic)),
+            new FlowEvent.ExecutionSucceeded(new ExecutionId("exec-2")),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.Equal(WorkflowStatus.Terminal, state.Status);
+    }
+
+    [Fact]
+    public void StepRebound_overrides_the_accepted_requests_Adapter_and_Model_and_survives_a_full_replay()
+    {
+        // #1583 HIGH: StepRebound must be projected as an override on AcceptedRequestByExecutionId,
+        // not merely journaled — a crash before the checkpoint save (the path this event exists for)
+        // recovers the rebind only if a full replay from scratch reproduces it.
+        var executionId = new ExecutionId("exec-1");
+        var acceptedRequest = MakeRequest(executionId, Architect) with { Adapter = "claude", Model = "sonnet" };
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(acceptedRequest),
+            new FlowEvent.StepRebound(Architect, executionId, PreviousAdapter: "claude", PreviousModel: "sonnet", NewAdapter: "agy", NewModel: "gemini-3-pro"),
+        };
+
+        var (_, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot());
+
+        var reboundRequest = Assert.Single(checkpoint.State.AcceptedRequestByExecutionId.Values);
+        Assert.Equal("agy", reboundRequest.Adapter);
+        Assert.Equal("gemini-3-pro", reboundRequest.Model);
     }
 }

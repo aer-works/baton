@@ -70,6 +70,16 @@ public static class BatonPaths
     public const string RoomsDirectoryName = "rooms";
 
     /// <summary>
+    /// <c>{Root}/by-workstream</c> — junction directories written by
+    /// <c>Baton.Cli.WorkstreamJunctionLinker</c>. <b>Deliberately a sibling of <see cref="Rooms"/>,
+    /// never a child</b>: spec/baton.md's dispatch section (§2) explains why.
+    /// </summary>
+    public static string ByWorkstream => Path.Combine(Root, ByWorkstreamDirectoryName);
+
+    /// <summary>Directory name of <see cref="ByWorkstream"/> relative to a root.</summary>
+    public const string ByWorkstreamDirectoryName = "by-workstream";
+
+    /// <summary>
     /// Filename, under a room's <c>.baton</c> directory, of the room marker whose <c>Kind</c> field
     /// distinguishes an interactive-session room from a workflow room. For an interactive room this
     /// file is the serialized session metadata (kind included); for a workflow room it is a minimal
@@ -166,6 +176,123 @@ public static class BatonPaths
 
     /// <summary>Filename of <see cref="RoomRegistryFile"/> relative to a root.</summary>
     public const string RoomRegistryFileName = "room-registry.jsonl";
+
+    /// <summary>
+    /// <c>{Root}/quota-ledger.jsonl</c> — see <see cref="QuotaLedgerStore"/> (spec/baton.md §7) for
+    /// what this holds: one append-only line per settled execution's own usage, written engine-side at
+    /// settle (issue #1570, quota-design S4b). Guarded by the same <see cref="MutexGuardedFileLock"/>
+    /// mechanism as <see cref="RoomRegistryFile"/>, a distinct file with its own lock name.
+    /// </summary>
+    public static string QuotaLedgerFile => Path.Combine(Root, QuotaLedgerFileName);
+
+    /// <summary>Filename of <see cref="QuotaLedgerFile"/> relative to a root.</summary>
+    public const string QuotaLedgerFileName = "quota-ledger.jsonl";
+
+    /// <summary>
+    /// <c>{Root}/fleet/projection.json</c> — the daemon-written fleet projection file (#1557,
+    /// spec/baton.md §7's fourth kept responsibility): the same <c>fleet_status</c> room array
+    /// (spec/baton.md §6) plus per-room <c>live</c>/<c>pruned</c> and the top-level <c>derived_at</c>,
+    /// rewritten atomically roughly every 30s so a local reader (a janitor sweep, the pusher once
+    /// #1557 PR-B lands) never has to re-derive it by scanning every room itself.
+    /// </summary>
+    public static string FleetProjectionFile => Path.Combine(Root, FleetDirectoryName, FleetProjectionFileName);
+
+    /// <summary>Directory name <see cref="FleetProjectionFile"/> lives under, relative to a root.</summary>
+    public const string FleetDirectoryName = "fleet";
+
+    /// <summary>Filename of <see cref="FleetProjectionFile"/> relative to <see cref="FleetDirectoryName"/>.</summary>
+    public const string FleetProjectionFileName = "projection.json";
+
+    /// <summary>
+    /// <c>{Root}/secretpatterns.local.txt</c> — the daemon's own copy of the fail-closed secret-gate
+    /// denylist <c>tools/fleet-glass/pusher.py</c>'s <c>load_secret_patterns</c>/<c>secret_hit_index</c>
+    /// already define (spec/baton.md §6): one regex per line, '#' starts a comment, blank lines
+    /// ignored. A NEW path, not the pusher's own <c>tools/fleet-glass/secretpatterns.local.txt</c> —
+    /// the daemon and the pusher are separate processes with no shared working directory in general
+    /// (the daemon runs from an installed <see cref="Tools"/> checkout, the pusher from its own repo
+    /// checkout), so each keeps its own copy under its own storage root, machine-local like the
+    /// pusher's own (never checked in — outside the repo entirely, so no <c>.gitignore</c> entry is
+    /// needed either). Missing or unreadable fails CLOSED (every <c>stdoutTail</c> line withheld),
+    /// matching the pusher's own ruling.
+    /// </summary>
+    public static string SecretPatternsFile => Path.Combine(Root, SecretPatternsFileName);
+
+    /// <summary>Filename of <see cref="SecretPatternsFile"/> relative to a root.</summary>
+    public const string SecretPatternsFileName = "secretpatterns.local.txt";
+
+    /// <summary>
+    /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
+    /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
+    /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.
+    /// </summary>
+    public static string DeletedRoomsFile => Path.Combine(Root, DeletedRoomsFileName);
+
+    /// <summary>Filename of <see cref="DeletedRoomsFile"/> relative to a root.</summary>
+    public const string DeletedRoomsFileName = "deleted-rooms.jsonl";
+
+    /// <summary>
+    /// <c>{Root}/watches</c> — one JSON file per <c>baton watch</c> registration (#1488), named
+    /// <c>&lt;watch-id&gt;.json</c>. <c>Baton.Cli</c>'s <c>WatchStore</c> (not referenced from here —
+    /// this project has no <c>Baton.Cli</c> reference) owns what each file holds and how exactly-once
+    /// firing is guaranteed. Operator-trust-level, per spec/baton.md §2's trust-model paragraph (M4,
+    /// fix round) — not restated here.
+    /// </summary>
+    public static string Watches => Path.Combine(Root, WatchesDirectoryName);
+
+    /// <summary>Directory name of <see cref="Watches"/> relative to a root.</summary>
+    public const string WatchesDirectoryName = "watches";
+
+    /// <summary>
+    /// <c>{Root}/draining.json</c> — the tool-refresh drain marker. <see cref="DrainMarker"/> owns what
+    /// it means and who refuses under it; this type only names where it lives, the same split
+    /// <see cref="RoomRegistryFile"/> has with <see cref="RoomRegistryStore"/>.
+    /// </summary>
+    public static string DrainMarkerFile => Path.Combine(Root, DrainMarkerFileName);
+
+    /// <summary>Filename of <see cref="DrainMarkerFile"/> relative to a root.</summary>
+    public const string DrainMarkerFileName = "draining.json";
+
+    /// <summary>
+    /// <c>{Root}/tools</c> — directory holding side-by-side per-commit tool installations (#1668).
+    /// </summary>
+    public static string Tools => Path.Combine(Root, ToolsDirectoryName);
+
+    /// <summary>Directory name of <see cref="Tools"/> relative to a root.</summary>
+    public const string ToolsDirectoryName = "tools";
+
+    /// <summary>
+    /// <c>{Root}/tools/current</c> — atomic pointer file holding the currently active tool commit SHA (#1668).
+    /// </summary>
+    public static string CurrentToolPointerFile => Path.Combine(Tools, CurrentToolPointerFileName);
+
+    /// <summary>Filename of <see cref="CurrentToolPointerFile"/> relative to <see cref="Tools"/>.</summary>
+    public const string CurrentToolPointerFileName = "current";
+
+    /// <summary>
+    /// Attempts to resolve the active tool commit SHA (#1668). Checks <see cref="CurrentToolPointerFile"/>,
+    /// degrading gracefully to null if missing or unreadable.
+    /// </summary>
+    public static string? TryResolveCurrentToolSha()
+    {
+        try
+        {
+            var pointerFile = CurrentToolPointerFile;
+            if (File.Exists(pointerFile))
+            {
+                var sha = File.ReadAllText(pointerFile).Trim();
+                if (!string.IsNullOrEmpty(sha))
+                {
+                    return sha;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Degrade gracefully
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The canonical key for a record directory: absolute, with any trailing separator removed, so

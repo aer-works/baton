@@ -61,11 +61,18 @@ public static class HookCheckCommand
     /// DenyAlways rung, #390) — same literal as <c>AgyHookCheckCommand.DeniedShellPatternsEnvironmentVariable</c>
     /// and <c>ClaudeWorkerAdapter.DeniedShellPatternsVariable</c> (record-once). Belt-and-braces here:
     /// claude's primary enforcement of this rung is <c>--disallowedTools Bash(pattern)</c>, which
-    /// survives a silently-dead hook (#530); this channel lets the segment-level check below also
-    /// refuse a denied family riding a chain, which <c>--disallowedTools</c>' own whole-line matching
-    /// does not provably reach (spec/baton.md §9).
+    /// survives a silently-dead hook (#530); this channel lets the segment-level check below reach
+    /// what that flag's own whole-line matching cannot provably reach on its own (spec/baton.md §9).
     /// </summary>
     public const string DeniedShellPatternsEnvironmentVariable = "BATON_HOOK_DENIED_SHELL_PATTERNS";
+
+    /// <summary>
+    /// #1683 F2's channel — same literal as
+    /// <c>ClaudeWorkerAdapter.DeniedShellOptionTokensVariable</c>, which owns the canonical "why"
+    /// (record-once). NOT belt-and-braces the way the channel above is; that adapter member says why.
+    /// </summary>
+    public const string DeniedShellOptionTokensEnvironmentVariable =
+        "BATON_HOOK_DENIED_SHELL_OPTION_TOKENS";
 
     /// <summary>
     /// Exit code 2, fed back to Claude Code as a blocking <c>PreToolUse</c> error (stderr becomes
@@ -95,7 +102,7 @@ public static class HookCheckCommand
     public static int Execute(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory = null,
         string? workspaceDirectory = null, string? shellPatternsRaw = null,
-        string? deniedShellPatternsRaw = null)
+        string? deniedShellPatternsRaw = null, string? deniedShellOptionTokensRaw = null)
     {
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stderr);
@@ -104,7 +111,7 @@ public static class HookCheckCommand
         {
             return Decide(
                 stdin, stderr, deniedToolsRaw, outboxDirectory, workspaceDirectory, shellPatternsRaw,
-                deniedShellPatternsRaw);
+                deniedShellPatternsRaw, deniedShellOptionTokensRaw);
         }
         catch (Exception ex)
         {
@@ -136,7 +143,8 @@ public static class HookCheckCommand
 
     private static int Decide(
         TextReader stdin, TextWriter stderr, string? deniedToolsRaw, string? outboxDirectory,
-        string? workspaceDirectory, string? shellPatternsRaw, string? deniedShellPatternsRaw)
+        string? workspaceDirectory, string? shellPatternsRaw, string? deniedShellPatternsRaw,
+        string? deniedShellOptionTokensRaw)
     {
         // Always drain stdin before deciding anything, even when there is nothing to check
         // against below: Claude Code is the writer on the other end of this pipe, and exiting
@@ -287,22 +295,50 @@ public static class HookCheckCommand
             // deny-on-absent would fail every existing unscoped `RunShellCommands: true` claude role
             // (`implement`, `janitor`) the moment this shipped, which is exactly what #1459's own issue
             // body flags as the reason this was deferred out of #1456.
-            if (shellPatternList.Status == ShellPatternListStatus.Present && shellPatternList.Patterns.Count > 0)
-            {
-                var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
-                var deniedShellPatterns = deniedShellPatternList.Status == ShellPatternListStatus.Present
-                    ? deniedShellPatternList.Patterns
-                    : Array.Empty<string>();
+            var deniedShellPatternList = ShellPatternList.Parse(deniedShellPatternsRaw, VendorTag);
+            var deniedShellPatterns = deniedShellPatternList.Status == ShellPatternListStatus.Present
+                ? deniedShellPatternList.Patterns
+                : Array.Empty<string>();
 
+            // #1731: NOT nested under shellPatternList.Patterns.Count > 0 alone, matching
+            // AgyHookCheckCommand's condition (`deniedShellPatternList.Patterns.Count > 0 ||
+            // shellPatternList.Patterns.Count > 0`, #1725) -- see spec/baton.md §9 for why claude's
+            // own --disallowedTools flag is not a sufficient backstop on its own for this rung.
+            if (deniedShellPatterns.Count > 0 || shellPatternList.Patterns.Count > 0)
+            {
                 var result = Baton.Vendors.ShellCommandPatternMatcher.EvaluateChainedCommand(
                     shellCommandLine, shellPatternList.Patterns, deniedShellPatterns);
 
                 if (!result.IsAllowed)
                 {
-                    stderr.WriteLine($"AER: the 'Bash' command is denied under this session's scoped " +
-                                     $"shell grant — {result.Reason}.");
+                    // "scoped" would misstate this for implement/janitor (#1731): this rung now also
+                    // engages on an unscoped grant that carries a deny list, not only a scoped allow.
+                    stderr.WriteLine($"AER: the 'Bash' command is denied under this session's shell " +
+                                     $"grant — {result.Reason}.");
                     return DeniedExitCode;
                 }
+            }
+
+            // #1683 F2: at the toolName == "Bash" level, matching where agy's own copy of this rung
+            // sits (AgyHookCheckCommand), not nested under shellPatternList.Patterns.Count > 0. Nested
+            // there, a role carrying denied_shell_option_tokens on top of a deliberate UNSCOPED shell
+            // grant (Present, empty Patterns) would have the rung enforced on agy and silently skipped
+            // on claude — no role ships that shape today (IsDeniedByOptionToken has nothing to bind an
+            // empty-Patterns command to besides its own token list, so this is a no-op against every
+            // current role), but the two hooks agreeing on when the rung engages is the point, not the
+            // shape of today's catalog. Whole-line tokenization, not per-segment: the line reaching
+            // here already passed the metacharacter scan and pattern pass above whenever those ran, and
+            // every segment's tokens are the line's tokens.
+            var deniedOptionTokenList = ShellPatternList.Parse(deniedShellOptionTokensRaw, VendorTag);
+            if (deniedOptionTokenList.Status == ShellPatternListStatus.Present &&
+                Baton.Vendors.ShellCommandPatternMatcher.IsDeniedByOptionToken(
+                    shellCommandLine, deniedOptionTokenList.Patterns))
+            {
+                stderr.WriteLine(
+                    "AER: the 'Bash' command carries an option this session's grant denies outright " +
+                    "(a standing option-token 'never', matched anywhere on the line rather than at " +
+                    "its start) and was refused.");
+                return DeniedExitCode;
             }
         }
 

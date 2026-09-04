@@ -4,6 +4,7 @@ using Baton.Concurrency;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 using static Baton.Tests.TestSupport.ShellWorkerCommands;
@@ -237,8 +238,20 @@ public class WorkflowEndToEndTests
         }
     }
 
+    /// <summary>
+    /// F3 (#1593 review): the "bounded self-iteration" pattern this test used to pin (write
+    /// <c>needs_revision</c>, get retried, write <c>approved</c>) no longer works — a mandated
+    /// behaviour change, not a defect; see spec/baton.md §3's "Behaviour change (#1593 F3)" for why a
+    /// failed <see cref="OutputCondition"/> gets the same treatment as a missing declared output. This
+    /// test was previously kept green by changing its fixture to <c>exit 1</c> instead of repointing
+    /// what it measures — the exact <c>v-and-v</c> failure the repo's own gate names: a control arm
+    /// rewritten until it stops discriminating the behaviour it was positioned to catch. Renamed and
+    /// rewritten to assert the actual current behaviour: the worker exits 0, its <c>verdict</c> output
+    /// fails the declared condition, and the step settles <see cref="WorkflowOutcome.Indeterminate"/>
+    /// without a second attempt ever being dispatched.
+    /// </summary>
     [Fact]
-    public async Task A_worker_using_bounded_self_iteration_retries_until_its_output_condition_is_satisfied()
+    public async Task An_exit_0_worker_whose_OutputCondition_fails_settles_Indeterminate_and_is_not_retried()
     {
         var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "self-iteration-workflow.json");
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
@@ -271,22 +284,25 @@ public class WorkflowEndToEndTests
                 new WorkflowId("wf-self-iteration"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
 
             var reviewerState = finalState.Steps.Single(s => s.StepId == Reviewer);
-            FlowAssert.Succeeded(reviewerState);
+            Assert.True(reviewerState.IndeterminateAwaitingResolution);
+            Assert.Equal(IndeterminateProducer.ContractFailure, reviewerState.IndeterminateProducer);
+            Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(finalState));
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var executionIds = GetAcceptedExecutionIds(events, Reviewer);
-            Assert.Equal(2, executionIds.Count);
-            Assert.Equal(StepStatus.Failed, GetTerminalStatus(events, executionIds[0]));
-            Assert.Equal(StepStatus.Succeeded, GetTerminalStatus(events, executionIds[1]));
 
-            // Exit 0 with an unsatisfied OutputCondition classifies ExecutionFailed with no
-            // self-reported classification — only the condition, not the worker, drove the retry.
-            var firstAttemptOutcome = events.OfType<FlowEvent.ExecutionFailed>().Single(e => e.ExecutionId == executionIds[0]);
-            Assert.Null(firstAttemptOutcome.FailureClassification);
-            Assert.NotNull(firstAttemptOutcome.Reason);
-            Assert.Contains("verdict", firstAttemptOutcome.Reason);
+            // Only ONE attempt was ever dispatched — a second (retried) attempt would have read the
+            // marker file WriteVerdictNeedsRevisionThenApproved's own first invocation writes and
+            // produced "approved" instead. This is the discriminating assertion the pre-F3 rewrite
+            // lost: it measured the exit-code retry path, never the condition-driven one this test's
+            // name claims.
+            Assert.Single(executionIds);
+            Assert.True(File.Exists(markerFilePath));
+
+            var indeterminateEvent = events.OfType<FlowEvent.ExecutionIndeterminate>().Single(e => e.ExecutionId == executionIds[0]);
+            Assert.Null(indeterminateEvent.CapturedResponseFile);
+            Assert.Contains("verdict", indeterminateEvent.Reason);
         }
-
         finally
         {
             DirectoryCleanup.DeleteRecursively(roomDirectory);
@@ -351,7 +367,7 @@ public class WorkflowEndToEndTests
             {
                 ["flaky"] = new WorkerBinding.Process(
                     new WorkerContract("flaky", [], [new ProducedOutput("result")], []),
-                    ExitCleanlyWithoutWriting(),
+                    ExitWithFailureCode(),
                     TimeSpan.FromSeconds(30)),
                 ["downstream"] = new WorkerBinding.Process(
                     new WorkerContract("downstream", ["result"], [new ProducedOutput("final")], []),

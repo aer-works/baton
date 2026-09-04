@@ -42,6 +42,50 @@ public class RedispatchOptionsParserTests
         Assert.Null(options.Timeout);
         Assert.Null(options.Label);
         Assert.False(options.LabelSpecified);
+        Assert.Null(options.Attachments);
+    }
+
+    /// <summary>#1576: mirrors <c>DispatchOptionsParserTests.Parses_repeatable_attach_flags_in_order</c>.</summary>
+    [Fact]
+    public void Parses_repeatable_attach_flags_in_order()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            ["parent-room", "--spec", "amended.md", "--attach", "context.txt", "--attach", "notes.md"]);
+
+        Assert.NotNull(options.Attachments);
+        Assert.Equal(new[] { "context.txt", "notes.md" }, options.Attachments);
+    }
+
+    /// <summary>
+    /// Merge of #1576 (--attach), #1686 review F2 (--max-tool-steps), #1691 (--billed-rate-limit) and
+    /// #1702 (--verify): all five parse together alongside --spec. Pins the seam #1704, #1691 and #1702
+    /// all landed in — a positional slip in <see cref="RedispatchOptions"/>'s own parameter list (four
+    /// trailing optionals, all defaulted) would silently drop one of them rather than fail to compile.
+    /// </summary>
+    [Fact]
+    public void Parses_spec_attach_max_tool_steps_billed_rate_limit_and_verify_together()
+    {
+        var options = RedispatchOptionsParser.Parse(
+            [
+                "parent-room", "--spec", "amended.md", "--attach", "context.txt",
+                "--max-tool-steps", "200", "--billed-rate-limit", "250000",
+                "--verify", "pixi run gates-quiet",
+            ]);
+
+        Assert.Equal("amended.md", options.SpecFilePath);
+        Assert.Equal(new[] { "context.txt" }, options.Attachments);
+        Assert.Equal(200, options.MaxToolSteps);
+        Assert.Equal(250_000, options.BilledRateLimit);
+        Assert.Equal("pixi run gates-quiet", options.VerifyCommand);
+    }
+
+    [Fact]
+    public void Attach_without_value_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--spec", "amended.md", "--attach"]));
+
+        Assert.Contains("--attach", ex.TryInvocation);
     }
 
     [Fact]
@@ -131,5 +175,68 @@ public class RedispatchOptionsParserTests
 
         Assert.StartsWith(
             Path.GetFullPath(Baton.Status.BatonPaths.Rooms), options.RoomDirectoryPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_workstream_is_sanitized_the_same_way_dispatchs_own_is()
+    {
+        // Shared sanitizer (DispatchOptionsParser.SanitizeWorkstream) -- one grammar/cap rule for both
+        // verbs, not a second implementation that could drift.
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--workstream", "w1619"]);
+        Assert.Equal("w1619", options.Workstream);
+        Assert.True(options.WorkstreamSpecified);
+    }
+
+    [Fact]
+    public void A_blank_workstream_sets_WorkstreamSpecified_true_and_Workstream_null()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room", "--workstream", "   "]);
+        Assert.Null(options.Workstream);
+        Assert.True(options.WorkstreamSpecified);
+    }
+
+    [Fact]
+    public void A_path_unsafe_workstream_is_a_typed_argument_error()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--workstream", "a/b"]));
+        Assert.Contains("--workstream", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Workstream_is_absent_and_unspecified_when_never_passed()
+    {
+        var options = RedispatchOptionsParser.Parse(["parent-room"]);
+        Assert.Null(options.Workstream);
+        Assert.False(options.WorkstreamSpecified);
+    }
+
+    /// <summary>
+    /// #1691: <c>redispatch</c> takes the flag too. #1686 review F2 found <c>--max-tool-steps</c>
+    /// shipped on <c>dispatch</c> only, so an operator's escape hatch silently evaporated the moment
+    /// they redispatched with an amended brief; this axis does not repeat that.
+    /// </summary>
+    [Fact]
+    public void The_billed_rate_limit_option_parses_and_defaults_to_null()
+    {
+        Assert.Equal(250_000, RedispatchOptionsParser.Parse(["parent-room", "--billed-rate-limit", "250000"]).BilledRateLimit);
+        Assert.Null(RedispatchOptionsParser.Parse(["parent-room"]).BilledRateLimit);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("nonsense")]
+    public void A_non_positive_or_non_numeric_billed_rate_limit_is_a_typed_argument_error(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => RedispatchOptionsParser.Parse(["parent-room", "--billed-rate-limit", rawValue]));
+
+        Assert.Contains("--billed-rate-limit", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_billed_rate_limit()
+    {
+        Assert.Contains("--billed-rate-limit <n>", RedispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
 }

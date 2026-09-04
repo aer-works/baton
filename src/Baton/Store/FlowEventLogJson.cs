@@ -1,5 +1,8 @@
+using System.Collections.Frozen;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Baton.Domain;
 
 namespace Baton.Store;
 
@@ -56,6 +59,14 @@ namespace Baton.Store;
 /// copy-pasting such options here looks harmless; here absence means damage. A test pins this
 /// setting so the mistake fails loudly instead of corrupting the journal.
 /// </para>
+/// <para>
+/// <b>An unknown discriminator is not the same failure as a known one with a bad shape (#1779).</b>
+/// A <c>FlowEvent</c> <c>eventType</c> (or <c>LogEntry</c> <c>owner</c>) this binary has never heard of
+/// is a newer writer, not damage — <see cref="DeserializeLine"/> returns an internal sentinel for that
+/// case instead of throwing, and <see cref="FlowEventLogReader"/> skips and counts it. Every other case
+/// above is unchanged: a recognized discriminator with a lost or renamed member still throws exactly as
+/// this type's remarks describe.
+/// </para>
 /// </remarks>
 public static class FlowEventLogJson
 {
@@ -65,4 +76,81 @@ public static class FlowEventLogJson
         Converters = { new JsonStringEnumConverter() },
         RespectRequiredConstructorParameters = true,
     };
+
+    private static readonly FrozenSet<string> KnownOwners = typeof(LogEntry)
+        .GetCustomAttributes<JsonDerivedTypeAttribute>()
+        .Select(attribute => (string)attribute.TypeDiscriminator!)
+        .ToFrozenSet(StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string> KnownEventTypes = typeof(FlowEvent)
+        .GetCustomAttributes<JsonDerivedTypeAttribute>()
+        .Select(attribute => (string)attribute.TypeDiscriminator!)
+        .ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// #1779: the tolerant entry point for reading one <c>flow.jsonl</c> line — every caller that reads
+    /// the journal (<see cref="FlowEventLogReader"/>, and any test asserting the converter-level
+    /// contract) uses this instead of calling <c>JsonSerializer.Deserialize&lt;LogEntry&gt;</c> directly.
+    /// Peeks the <c>owner</c> discriminator (and, for a <c>flow</c> line, the nested <c>Event</c>'s own
+    /// <c>eventType</c>) before committing to a shape: an unrecognized discriminator returns
+    /// <see cref="LogEntry.UnknownLogEntry"/> or a <see cref="LogEntry.FlowLogEntry"/> wrapping
+    /// <see cref="FlowEvent.UnknownFlowEvent"/> rather than throwing; a recognized one is deserialized
+    /// through <see cref="Options"/> exactly as before, so a lost/renamed member on a KNOWN kind still
+    /// throws <see cref="JsonException"/>.
+    /// <para>
+    /// <b>Why this isn't a <see cref="JsonConverter{T}"/> on <see cref="Options"/> itself.</b> The
+    /// runtime refuses to combine a custom converter with a type that also declares
+    /// <see cref="JsonPolymorphicAttribute"/>/<see cref="JsonDerivedTypeAttribute"/>: registering one for
+    /// <see cref="FlowEvent"/> or <see cref="LogEntry"/> throws <c>NotSupportedException</c> ("the
+    /// converter for derived type … does not support metadata writes or reads") the moment either type
+    /// is resolved as a root type, not just when the converter would actually run. <see cref="Options"/>
+    /// therefore stays exactly the attribute-driven built-in dispatch every other caller already depends
+    /// on, and the peek-first logic lives here, one layer up, instead.
+    /// </para>
+    /// </summary>
+    public static LogEntry DeserializeLine(string line)
+    {
+        using var document = JsonDocument.Parse(line);
+        var root = document.RootElement;
+        var owner = ReadDiscriminator(root, "owner");
+
+        if (!KnownOwners.Contains(owner))
+        {
+            return new LogEntry.UnknownLogEntry(owner, root.GetRawText());
+        }
+
+        if (owner == "flow" && root.TryGetProperty("Event", out var eventElement))
+        {
+            var eventType = ReadDiscriminator(eventElement, "eventType");
+            if (!KnownEventTypes.Contains(eventType))
+            {
+                var writerUtcTimestamp = root.TryGetProperty("WriterUtcTimestamp", out var timestampElement)
+                    && timestampElement.ValueKind != JsonValueKind.Null
+                        ? timestampElement.GetDateTime()
+                        : (DateTime?)null;
+                return new LogEntry.FlowLogEntry(
+                    new FlowEvent.UnknownFlowEvent(eventType, eventElement.GetRawText()), writerUtcTimestamp);
+            }
+        }
+
+        return JsonSerializer.Deserialize<LogEntry>(root.GetRawText(), Options)
+            ?? throw new JsonException($"Line in the ledger deserialized to null: {line}");
+    }
+
+    private static string ReadDiscriminator(JsonElement element, string discriminatorPropertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException($"Expected a JSON object, got {element.ValueKind}: {element.GetRawText()}");
+        }
+
+        if (!element.TryGetProperty(discriminatorPropertyName, out var discriminatorProperty)
+            || discriminatorProperty.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(
+                $"Missing or non-string '{discriminatorPropertyName}' discriminator: {element.GetRawText()}");
+        }
+
+        return discriminatorProperty.GetString()!;
+    }
 }

@@ -33,8 +33,13 @@ if (args.Length >= 1 && args[0] == "hook-check")
     var shellPatterns = Environment.GetEnvironmentVariable(HookCheckCommand.ShellPatternsEnvironmentVariable);
     var deniedShellPatterns =
         Environment.GetEnvironmentVariable(HookCheckCommand.DeniedShellPatternsEnvironmentVariable);
+    // #1683 F2: the option-token deny rung, read the same way. Hook-only on this vendor -- no
+    // --disallowedTools entry expresses it (ShellCommandPatternMatcher.IsDeniedByOptionToken).
+    var deniedShellOptionTokens = Environment.GetEnvironmentVariable(
+        HookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
     return HookCheckCommand.Execute(
-        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, shellPatterns, deniedShellPatterns);
+        Console.In, Console.Error, deniedTools, outputDir, workspaceDir, shellPatterns, deniedShellPatterns,
+        deniedShellOptionTokens);
 }
 
 // #554: the same idea for agy, and a separate command because the two vendors share none of the
@@ -54,8 +59,16 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
     // exemption remains claude-only and is not extended here.
     var agyOutputDir = Environment.GetEnvironmentVariable("BATON_OUTPUT_DIR");
     var agyWorkspaceDir = Environment.GetEnvironmentVariable(HookCheckCommand.WorkspaceEnvironmentVariable);
+    // #1683 F2: the option-token deny rung, read like the two channels above.
+    var agyDeniedShellOptionTokens = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.DeniedShellOptionTokensEnvironmentVariable);
+    // #1680: the first-verdict canary's write side -- naming the file this invocation appends one
+    // line to, so AgyWorkerAdapter's caller can later confirm the hook fired at all.
+    var agyVerdictLedgerPath = Environment.GetEnvironmentVariable(
+        AgyHookCheckCommand.VerdictLedgerEnvironmentVariable);
     return AgyHookCheckCommand.Execute(
-        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns);
+        Console.In, Console.Out, deniedTools, shellPatterns, agyOutputDir, agyWorkspaceDir, deniedShellPatterns,
+        agyDeniedShellOptionTokens, agyVerdictLedgerPath);
 }
 
 // #1458: folded from the standalone Baton.Mcp.Host executable -- a stdio MCP server (vendor CLIs
@@ -74,25 +87,34 @@ if (args.Length >= 1 && args[0] == "daemon")
     return 0;
 }
 
-var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "supply", "resume", "status", "templates", "keep", "unkeep", "mcp", "daemon" };
+var knownSubcommands = new[] { "run", "dispatch", "redispatch", "cancel", "decide", "resolve", "supply", "resume", "status", "watch", "deliver", "templates", "keep", "unkeep", "trust", "room", "rooms", "ledger", "mcp", "daemon" };
 if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
 {
     Console.Error.WriteLine(RunOptionsParser.Usage);
     Console.Error.WriteLine($"       {DispatchOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RedispatchOptionsParser.Usage[7..]}");
     Console.Error.WriteLine(
-        "       baton cancel <room-dir> [--execution <execution-id>] --bindings <bindings-file> [--workflow-id <id>]");
+        "       baton cancel <room-dir> [--execution <execution-id>] [--bindings <bindings-file>] [--workflow-id <id>]");
     Console.Error.WriteLine(
         "       baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede " +
         "[--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]");
+    Console.Error.WriteLine(
+        "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text> " +
+        "| --close --reason <text>");
     Console.Error.WriteLine(
         "       baton supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
     Console.Error.WriteLine($"       {ResumeOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {StatusOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {WatchOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {DeliverOptionsParser.Usage[7..]}");
     Console.Error.WriteLine("       baton templates [--json]");
     Console.Error.WriteLine($"       {KeepOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {UnkeepOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {TrustOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {RoomDeleteOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {RoomsPruneOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine($"       {LedgerCommand.Usage[7..]}");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
@@ -135,6 +157,21 @@ try
         return 0;
     }
 
+    // #1488: block-free, produces no CommandResult (there is nothing to pump) -- joins status/deliver
+    // above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "watch")
+    {
+        var watchOptions = WatchOptionsParser.Parse(args[1..]);
+        return await WatchCommand.ExecuteAsync(watchOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+    }
+
+    if (args[0] == "deliver")
+    {
+        var deliverOptions = DeliverOptionsParser.Parse(args[1..]);
+        await DeliverCommand.ExecuteAsync(deliverOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
     if (args[0] == "templates")
     {
         return await TemplatesCommand.ExecuteAsync(args[1..], Console.Out, hostStopSource.Token).ConfigureAwait(false);
@@ -154,6 +191,55 @@ try
         var unkeepOptions = UnkeepOptionsParser.Parse(args[1..]);
         await KeepCommand.UnmarkAsync(unkeepOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
         return 0;
+    }
+
+    // #1166 (TrustCommand's own doc has why this verb exists): list/register/revoke against
+    // ProjectCeilingStore produces no CommandResult (no workflow pump), so this joins keep/unkeep/watch
+    // above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "trust")
+    {
+        var trustOptions = TrustOptionsParser.Parse(args[1..]);
+        return await TrustCommand.ExecuteAsync(trustOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+    }
+
+    // #1659: `room`/`rooms` are noun-first verb groups (only one sub-verb each today —
+    // `delete`/`prune` — but the shape leaves room for a later `room show`/`rooms list` without a new
+    // top-level word). Neither produces a CommandResult (no workflow pump), so both join
+    // keep/unkeep/status/templates above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "room")
+    {
+        if (args.Length < 2 || args[1] != "delete")
+        {
+            throw new CliArgumentException($"Unknown 'baton room' sub-verb. {RoomDeleteOptionsParser.Usage}");
+        }
+
+        var roomDeleteOptions = RoomDeleteOptionsParser.Parse(args[2..]);
+        await RoomDeleteCommand.ExecuteAsync(roomDeleteOptions, Console.Out, hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    if (args[0] == "rooms")
+    {
+        if (args.Length < 2 || args[1] != "prune")
+        {
+            throw new CliArgumentException($"Unknown 'baton rooms' sub-verb. {RoomsPruneOptionsParser.Usage}");
+        }
+
+        var roomsPruneOptions = RoomsPruneOptionsParser.Parse(args[2..]);
+        await RoomsPruneCommand.ExecuteAsync(roomsPruneOptions, Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
+        return 0;
+    }
+
+    // #1570: fleet-level, not a room mutation and produces no CommandResult (no workflow pump) --
+    // joins room/rooms above rather than the CommandResult/FlowStateReporter switch below.
+    if (args[0] == "ledger")
+    {
+        if (args.Length < 2 || args[1] != "--rebuild")
+        {
+            throw new CliArgumentException($"Unknown 'baton ledger' invocation. {LedgerCommand.Usage}");
+        }
+
+        return await LedgerCommand.RebuildAsync(Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
     }
 
     CommandResult result;
@@ -198,6 +284,14 @@ try
             {
                 var options = DecideOptionsParser.Parse(args[1..]);
                 result = await DecideCommand.ExecuteAsync(options, WorkerAdapterRegistry.Default, cancellationToken: hostStopSource.Token)
+                    .ConfigureAwait(false);
+                break;
+            }
+
+        case "resolve":
+            {
+                var options = ResolveOptionsParser.Parse(args[1..]);
+                result = await ResolveCommand.ExecuteAsync(options, hostStopSource.Token)
                     .ConfigureAwait(false);
                 break;
             }
@@ -248,6 +342,58 @@ try
         // CancellationToken.None: a Ctrl-C that already carried the workflow to Terminal must not
         // then lose the sentinel write for the terminal state it just reached.
         await TerminalSentinelWriter.WriteAsync(terminalRoomDirectoryPath, view, CancellationToken.None).ConfigureAwait(false);
+
+        // #1570: the fleet-level burn ledger, appended right after the sentinel -- terminalEntries is
+        // already in hand from the read above, so this costs one more in-memory pass, not a second
+        // flow.jsonl read (spec/baton.md §7's harvest-at-settle ruling). Fire-and-forget with respect
+        // to the run, same posture as the sentinel write's own fail-open contract
+        // (QuotaLedgerStore.AppendAsync's doc comment states the exact rule this leans on): a ledger
+        // write must never be the reason a run that already reached Terminal reports as failed.
+        try
+        {
+            var ledgerEntries = QuotaLedgerStore.BuildEntries(terminalEntries, terminalRoomDirectoryPath);
+            await QuotaLedgerStore.AppendAsync(ledgerEntries, BatonPaths.QuotaLedgerFile, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            Console.Error.WriteLine($"Could not append to the quota ledger at '{BatonPaths.QuotaLedgerFile}': {ex.Message}.");
+        }
+    }
+    else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
+    {
+        // #1608 review finding 1: `baton resolve --reject` on a step with retry budget remaining
+        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
+        // predicate, so DeriveWorkflowStatus can read Running again on a room whose LAST write above
+        // (back when it first settled Indeterminate) left a Terminal sentinel on disk. Left in place,
+        // that stale terminal.json both fools FleetStatusTool's sentinel-first fast path into a frozen
+        // "Indeterminate" reading and permanently blocks RedispatchCommand's own sentinel-gated refusal
+        // from ever clearing — a resolved-but-reopened room a harness can never redispatch again. No
+        // other verb can turn a Terminal room back non-Terminal, so this is scoped to `resolve` alone
+        // rather than a general post-command rule.
+        // bestEffort: the resolution above is already durable, so a sentinel this call cannot delete
+        // must not report a succeeded resolution as failed (#1608 re-review finding 2 — see
+        // DeleteStaleSentinel's own remarks for the opposite choice at RunCommand's call site).
+        TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath, bestEffort: true);
+
+        // #1608 review finding 4: `resolve` never re-drives the DAG itself (spec/baton.md §3) — a
+        // rejected, retry-eligible step OR an accepted step that just made a downstream step
+        // deliverable both leave this room genuinely non-Terminal with nothing left to notice, unless
+        // told. Named here rather than left implicit so a harness never has to infer the follow-up.
+        //
+        // #1608 re-review finding 1: branched on the returned state, because `baton run` is the wrong
+        // verb for one of the two non-Terminal shapes. A step that declares a PausePoint and settles
+        // Indeterminate is Paused with the flag still set (spec/baton.md §3), and resolving it clears
+        // the flag but not the pause — only FlowEvent.WorkflowResumed removes it — so the room is
+        // still Paused here, and a `baton run` against it re-enters the same unfulfilled obligation
+        // and returns Paused again. `baton decide` is the verb that discharges it, spelled out in
+        // full rather than deferred to "the arguments above": FlowStateReporter prints the execution
+        // id and supersede targets, but --type and --bindings appear nowhere in this stdout, and a
+        // verb an operator cannot actually invoke is the dead end review finding 1 was about.
+        Console.WriteLine(result.State.Status == WorkflowStatus.Paused
+            ? "Room is not yet complete — this room is still paused; record the pause decision with "
+              + "`baton decide <room-dir> --execution <execution-id> --type resume|reject|retry-with-revision|supersede "
+              + "--bindings <bindings-file>` (the execution id is printed above), which is what resumes it."
+            : $"Room is not yet complete — {RecoveryGuidance.RunRoomDirInstruction}.");
     }
 
     // #1359: baton resume gets the same truthful exit-code table as run/dispatch — its own design
@@ -259,11 +405,11 @@ try
         return (int)RunExitCodeResolver.Resolve(result);
     }
 
-    // Unchanged for cancel/decide/supply — #1356 scoped its exit-code table to run/dispatch only;
-    // widening it to the rest was not asked for and is not done here.
-    return result.State.Status == WorkflowStatus.Terminal && result.State.Steps.All(step => step.Status == StepStatus.Succeeded)
-        ? 0
-        : 1;
+    // Still the 0/1 contract for cancel/decide/supply/resolve — #1356 scoped its exit-code table to
+    // run/dispatch only; widening it to the rest was not asked for and is not done here. #1650 F2
+    // moved the expression itself into MutationExitCodeResolver (which also handles cancel's queued
+    // arm) so its arms are assertable without spawning a process.
+    return MutationExitCodeResolver.Resolve(result);
 }
 catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedException or Baton.Store.FlowJournalHeldException)
 {
@@ -275,6 +421,17 @@ catch (BatonFlowException ex) when (ex is Baton.Concurrency.WorkflowLockedExcept
     // moment. The room is left exactly as it was; the exit code alone says "retry later".
     WriteErrorWithTry(ex);
     return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.RoomHeld : 1;
+}
+catch (Baton.Status.StaleSentinelDeletionException ex)
+{
+    // #1608 re-review finding 2: a stale terminal.json that could not be deleted refuses the run
+    // rather than starting a pump behind a false "already done" signal. Kept out of the catch below
+    // deliberately: that one would answer a locked sentinel by trying to WRITE the very same locked
+    // path (WriteValidationRefusedAsync -> File.Move onto terminal.json), turning a clean refusal
+    // back into the raw IOException this arm exists to remove -- the same "leave the room exactly as
+    // it was" carve-out shape #1374 F1 uses above.
+    WriteErrorWithTry(ex);
+    return args[0] is "run" or "dispatch" or "redispatch" or "resume" ? (int)RunExitCode.ValidationRefused : 1;
 }
 catch (BatonFlowException ex)
 {

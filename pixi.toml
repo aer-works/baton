@@ -15,8 +15,14 @@ version = "0.1.0"
 # activation env (not a shell) so EVERY `pixi run` build inherits it, including a dispatched worker's
 # self-gate, which is the case that needs it. Cost is a small per-build startup penalty; the win is
 # that concurrent worktree builds each own throwaway nodes and cannot collide.
+#
+# #1671: also disable Roslyn's shared VBCSCompiler.exe server -- same activation-env scope as
+# MSBUILDDISABLENODEREUSE above, same reason (a memory-bound box, one fewer long-lived process per
+# machine). Why this scope and not a Directory.Build.props condition, and what it costs: spec/baton.md
+# §11 C-13.
 [activation.env]
 MSBUILDDISABLENODEREUSE = "1"
+UseSharedCompilation = "false"
 
 [tasks]
 # Every toolchain below (Go, .NET) is installed separately and is NOT
@@ -32,8 +38,8 @@ MSBUILDDISABLENODEREUSE = "1"
 # (tool-manifest and standalone-tool commands, not MSBuild), the LIVE smoke-*/vendor-probe tasks
 # (human-run, never concurrent with a lane by construction), and
 # `gates`/`gates-fast` themselves -- they hold no MSBuild directly; their MSBuild-owning legs
-# (fmt-check, lint, test-no-build, build-cli) are each wrapped, which serializes exactly the
-# dangerous fraction and lets the python audit legs of two gates runs still overlap.
+# (fmt-check, lint, test-no-build) are each wrapped, which serializes exactly the dangerous
+# fraction and lets the python audit legs of two gates runs still overlap.
 build = { cmd = "python tools/buildlock.py dotnet build" }
 # The rebuild is FORCED and then the test run is told not to build again (#688). MSBuild skips a
 # project whose source is older than the assembly built from it, so a plain `dotnet test` can run the
@@ -61,7 +67,11 @@ test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental &&
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
 # Standalone use is EXPOSED to the #688 stale-assembly trap `test` exists to close: outside a
 # gates run, use `pixi run test`.
-test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build" }
+#
+# `-m:1` (#1671): serializes the five xUnit test projects' testhost processes; in-assembly
+# parallelism is untouched. Why `-m:1` and not a VSTest runsettings `MaxCpuCount`, and what was
+# measured to tell them apart: spec/baton.md §11 C-13.
+test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }
 # Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
 # report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
 # Results are wiped first so stale collections never skew the merge. Excludes source-generated
@@ -183,11 +193,13 @@ vendor-verify = { cmd = "python -u tools/vendor-verify/verify.py" }
 # neither is available.
 audit-completeness = { cmd = "python -u tools/audit-completeness/completeness.py" }
 
-# CLI-only build for the CI audit job (#887): audit-selfcheck's catalog checks read the role
-# catalog through `baton templates --json`, so the audit leg needs a built Baton.Cli. Pure managed
-# code since #1474 (no native lib, no cargo, no P/Invoke into anything external) — this build stays
-# ~a minute for the same reason `build`/`test`/`lint` no longer need a `build-core` dependency either.
-build-cli = { cmd = "python tools/buildlock.py dotnet build src/Baton.Cli" }
+# #1759: `build-cli` used to exist so the CI audit leg had a built Baton.Cli before
+# audit-selfcheck's catalog checks read the role catalog through `tools/baton-agy-loop/dispatch.py`'s
+# own `baton templates --json` call at import. That reason went away with dispatch.py; neither
+# audit-selfcheck nor audit-controls touches the built CLI at all now, so the task was removed
+# rather than left as dead weight. They stay sequenced in AFTER_BUILD_FAST (tools/gates/gates.py)
+# regardless, out of caution rather than a remaining need -- moving them into OVERLAP is now
+# possible but is its own change, not exercised by this one.
 audit-selfcheck = { cmd = "python -u tools/audit-completeness/selfcheck.py" }
 audit-controls = { cmd = "python -u tools/audit-completeness/controls.py" }
 
@@ -240,6 +252,8 @@ buildlock-selftest = { cmd = "python -u tools/buildlock.py --selftest" }
 # flake-watch workflow, which is exactly why its selftest belongs in the local gates — a reporter that
 # has quietly stopped being able to report is indistinguishable, from the outside, from a quiet suite.
 flake-watch-selftest = { cmd = "python -u tools/flake-watch/summarize.py --selftest" }
+diff-shape = { cmd = "python -u tools/diff-shape/diff_shape.py" }
+diff-shape-selftest = { cmd = "python -u tools/diff-shape/diff_shape.py --selftest" }
 
 # Every local gate, one exit code. Report THIS command's exit status, never a per-gate line scraped
 # out of the combined output -- see tools/gates/gates.py for the two occasions that went wrong.
@@ -251,7 +265,11 @@ gates-fast = { cmd = "python -u tools/gates/gates.py --fast" }
 gates-quiet = { cmd = "python -u tools/gates/gates.py --quiet" }
 gates-fast-quiet = { cmd = "python -u tools/gates/gates.py --fast --quiet" }
 gates-selftest = { cmd = "python -u tools/gates/gates.py --selftest" }
+# #1676: what .github/workflows/ci.yml's own required job runs (see that job's own comment for why).
+gates-ci-quiet = { cmd = "python -u tools/gates/gates.py --ci --quiet" }
 gate-sabotage = { cmd = "python -u tools/gates/sabotage.py" }
+# #1636 (spec/baton.md C-12): what .githooks/pre-push runs before deciding whether to skip.
+gates-check-receipt = { cmd = "python -u tools/gates/gates.py --check-receipt" }
 
 # One-time per clone: point git at the committed hooks. .git/hooks is not version-controlled, so a
 # pre-push gate left there binds one machine and silently protects nobody else.
@@ -266,24 +284,18 @@ setup-hooks = { cmd = "git config core.hooksPath .githooks" }
 # with no vendor CLI present to inspect it says so plainly without failing.
 vendor-check = { cmd = "python tools/buildlock.py dotnet run --project tools/Baton.VendorProbe -- --check" }
 
-# Dispatches one AER workflow step to a worker via a real `baton run` and prints its output -- the
-# scaffolding an ad-hoc Node one-liner stood in for three times during the #513 cross-vendor
-# orchestration trial, each time with a different bug (see tools/baton-agy-loop/dispatch.py's own
-# docstring). Not a smoke test and not CI-wired: this is a dispatch primitive for whoever is
-# orchestrating a multi-step worker exchange (implementer/reviewer or otherwise), same spirit as
-# vendor-verify being a re-runnable instrument rather than a one-off script.
-baton-dispatch = { cmd = "python tools/baton-agy-loop/dispatch.py" }
-# Pure-Python red/green check that dispatch.py's denied-tool guard (#912) discriminates: a real agy
-# "auto-denied" stderr line is caught, a clean run is not. Gated (in FAST) so an agy rewording that
-# would silently disable the guard fails a gate instead.
-baton-dispatch-selftest = { cmd = "python tools/baton-agy-loop/dispatch.py --selftest" }
-
 # #1413: pure-Python red/green check that the fleet-glass pusher's secret gate fails CLOSED (a
 # missing/unreadable secretpatterns.local.txt withholds every deliverable) and that its dedupe and
 # artifact-selection rules discriminate, over synthetic temp fixtures -- no network, no real
 # ~/.baton. Not wired into gates/gates-fast: fleet-glass is an unbuilt-by-CI operator tool (like
-# vendor-verify/baton-dispatch above), run by whoever touches pusher.py rather than on every PR.
+# vendor-verify above), run by whoever touches pusher.py rather than on every PR.
 fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --selftest" }
+
+# #1656 F2 (2026-09-02 review): the JS-side twin of the selftest above -- worker.core.mjs's
+# deliverables_list/fleet_status paging and the heartbeat-merge (maxIsoOrNull), over synthetic
+# in-memory fixtures via plain `node`, no live Cloudflare Worker/KV. Same "operator tool, not
+# CI-wired" posture as fleet-glass-pusher-selftest.
+fleet-glass-worker-selftest = { cmd = "node tools/fleet-glass/worker.selftest.mjs" }
 
 # M13 Phase 4 (#110), the milestone's completion gate: unlike smoke-claude/smoke-mixed-vendor
 # above, this needs no live vendor auth, so it runs unattended in default CI rather than a gated
@@ -291,3 +303,17 @@ fleet-glass-pusher-selftest = { cmd = "python tools/fleet-glass/pusher.py --self
 # one-step workflow whose `claude` adapter is satisfied by a local stub binary (no network), asserts
 # the declared output landed on disk, then uninstalls -- see scripts/verify-pack-roundtrip.sh.
 verify-pack = { cmd = "bash scripts/verify-pack-roundtrip.sh", depends-on = ["pack"] }
+
+# #1645 / #1668: the one-command refresh of the installed tool -- side-by-side per-commit install into
+# ~/.baton/tools/<sha> (no drain wait needed), verify directly, flip ~/.baton/tools/current atomically,
+# install launcher into ~/.dotnet/tools, rebuild Debug CLI for pusher, restart fleet-glass-pusher,
+# and prune old unreferenced versions. Not wrapped in buildlock.py itself: the script's own `pixi run pack`
+# call is (see pack above), and wrapping twice would self-deadlock. Not built/tested by default CI --
+# like pack/verify-pack, this needs the checkout to pack from, and mutates this machine's real installed tool,
+# so it stays operator-run rather than gated.
+tool-refresh = { cmd = "python tools/tool-refresh/refresh.py" }
+tool-refresh-selftest = { cmd = "python -u tools/tool-refresh/refresh.py --selftest" }
+
+# #1670 F2: exercises baton.cmd/baton.ps1 end to end against a mock exe fixture. Isolation and
+# overlap-safety rationale live in tools/gates/gates.py's OVERLAP comment, where this is wired in.
+launcher-selftest = { cmd = "powershell.exe -NoProfile -File tests/Launcher.Tests.ps1" }

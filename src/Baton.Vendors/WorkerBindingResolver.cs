@@ -130,7 +130,8 @@ public static class WorkerBindingResolver
             // shell believing it escaped the write withhold. Told only that the contract is
             // unsatisfiable, they would grant more shell.
             RefuseIfShellDefeatsAWithheldCategory(workerName, entry.PermissionGrant);
-            RefuseIfTheContractCannotBeWritten(workerName, entry.Contract, entry.PermissionGrant, adapter);
+            RefuseIfTheContractCannotBeWritten(
+                workerName, entry.Contract, entry.PermissionGrant, adapter.WithheldWritesReachTheOutbox);
         }
 
         var workingDirectory = ResolveWorkingDirectory(workerName, entry.WorkingDirectory, profiles);
@@ -142,7 +143,10 @@ public static class WorkerBindingResolver
             // adapter so a vendor CLI with its own internal wait limit can be told about AER's. Passing
             // it here rather than plumbing a per-execution value is what keeps this "once per binding
             // entry" contract intact — both come off `entry`.
-            entry.Timeout);
+            entry.Timeout,
+            // #1166 review finding A: forwarded so ProjectCeilingGate keys the ceiling on the stable
+            // source repository rather than the ephemeral, room-scoped worktree path above.
+            WorktreeSourceRepository: entry.WorktreeSourceRepository);
         var target = adapter.Resolve(invocation, entry.Contract);
 
         if (onWorkerStdoutLine is not null)
@@ -151,18 +155,22 @@ public static class WorkerBindingResolver
             target = target with { OnStdoutLine = line => onWorkerStdoutLine(capturedWorkerName, line) };
         }
 
-        return new WorkerBinding.Process(entry.Contract, target, entry.Timeout, adapter, entry.GrantAuditMode, entry.Adapter, entry.Model, adapter);
+        return new WorkerBinding.Process(
+            entry.Contract, target, entry.Timeout, adapter, entry.GrantAuditMode, entry.Adapter, entry.Model, adapter,
+            entry.VerifyPixiTask, entry.VerifyCommandOverride, entry.TokenBudget, entry.MaxToolSteps,
+            entry.BilledRateLimit, entry.IsWorktree, entry.WorktreeBaseSha, entry.ChangesTree,
+            entry.DeliversBranch, entry.ExpectPr);
     }
 
 
     /// <summary>
     /// #529, refused at the execution choke point. The rule itself lives on
-    /// <see cref="PermissionGrant.CategoriesDefeatedByTheShell"/> — every surface that needs the same
-    /// answer asks it there rather than restating the conditions (#645).
+    /// <see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/> — every surface that needs the
+    /// same answer asks it there rather than restating the conditions (#645).
     /// </summary>
     private static void RefuseIfShellDefeatsAWithheldCategory(string workerName, PermissionGrant? grant)
     {
-        if (grant?.CategoriesDefeatedByTheShell is { Count: > 0 } withheld)
+        if (grant?.CategoriesDefeatedByTheShell() is { Count: > 0 } withheld)
         {
             throw new IncoherentPermissionGrantException(workerName, withheld);
         }
@@ -189,9 +197,16 @@ public static class WorkerBindingResolver
     /// <c>review.md</c>. So the question goes to <see cref="IWorkerAdapter.WithheldWritesReachTheOutbox"/>
     /// rather than being answered here, and adapters where it is still true keep the refusal.
     /// </para>
+    /// <para>
+    /// <b>#1166's second caller.</b> <see cref="ProjectCeilingGate.Apply"/> re-checks the same
+    /// condition against a grant it has just narrowed (a coherent role grant can become contract-breaking
+    /// once capped by a project ceiling, the same reason it re-runs
+    /// <see cref="RefuseIfShellDefeatsAWithheldCategory"/>'s predicate) — internal rather than private so
+    /// that gate can call this method directly instead of carrying its own copy of the condition.
+    /// </para>
     /// </summary>
-    private static void RefuseIfTheContractCannotBeWritten(
-        string workerName, WorkerContract contract, PermissionGrant? grant, IWorkerAdapter adapter)
+    internal static void RefuseIfTheContractCannotBeWritten(
+        string workerName, WorkerContract contract, PermissionGrant? grant, bool withheldWritesReachTheOutbox)
     {
         // A null grant is the raw PermissionScope escape hatch — nothing structured to reconcile
         // against the contract, so there is no claim here to check.
@@ -200,7 +215,7 @@ public static class WorkerBindingResolver
             return;
         }
 
-        if (adapter.WithheldWritesReachTheOutbox)
+        if (withheldWritesReachTheOutbox)
         {
             return;
         }

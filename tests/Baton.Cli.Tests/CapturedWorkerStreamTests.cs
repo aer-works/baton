@@ -188,6 +188,98 @@ public class CapturedWorkerStreamTests
     }
 
     [Fact]
+    public void Rollover_MarksTheStreamTruncatedOnlyOnceASegmentIsActuallyDiscarded()
+    {
+        // #1706 review M3. chunk1 survives a single rollover (it is still `.stdout.log.1`), so a reader
+        // can replay the whole stream and there is nothing to mark; the SECOND rollover overwrites it.
+        // `ExecutionStreamLogger.StdoutTruncationMarkerFileName`'s own doc has why the marker exists and
+        // who reads it -- this pins WHEN it is written, which is the half a reader cannot verify.
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-truncation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var logger = new ExecutionStreamLogger(tempDir, maxSizeBytes: 100);
+            var markerPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+
+            static byte[] Chunk(char fill)
+            {
+                var chunk = new byte[60];
+                Array.Fill(chunk, (byte)fill);
+                return chunk;
+            }
+
+            logger.AppendStdout(Chunk('A'));
+            Assert.False(File.Exists(markerPath));
+
+            // First rollover: `.stdout.log.1` now holds chunk A. Nothing lost, so no marker -- the
+            // polarity arm without which "always mark" would pass the assertion below.
+            logger.AppendStdout(Chunk('B'));
+            Assert.True(File.Exists(Path.Combine(tempDir, ExecutionStreamLogger.StdoutRolloverFileName)));
+            Assert.False(File.Exists(markerPath));
+
+            // Second rollover: chunk A is overwritten and gone.
+            logger.AppendStdout(Chunk('C'));
+            Assert.True(File.Exists(markerPath));
+            Assert.Equal(0, new FileInfo(markerPath).Length);
+
+            // stderr rolled zero times and must not be marked by stdout's loss -- the streams are
+            // counted independently.
+            Assert.False(File.Exists(Path.Combine(tempDir, ExecutionStreamLogger.StderrTruncationMarkerFileName)));
+
+            // And the marker is one of this logger's own files per the predicate that WOULD filter it
+            // out of a directory read -- #1724 review LOW: see ReservedOutputNames' own doc
+            // (WorkerContract.cs) for why this predicate currently has no production caller. This pins
+            // its membership answer, not a live filtering effect.
+            Assert.True(ExecutionStreamLogger.IsStreamLogFileName(ExecutionStreamLogger.StdoutTruncationMarkerFileName));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    [Fact]
+    public void A_logger_constructed_over_an_already_rolled_directory_marks_its_first_destructive_roll()
+    {
+        // #1724 item 3: `_stdoutRollovers` used to seed to 0 unconditionally, so a SECOND logger built
+        // over a directory that had already rolled once (e.g. a resumed/rebound execution reusing the
+        // same output directory) would treat its own first roll as roll #1 and never write the
+        // truncation marker, even though the directory's `.stdout.log.1` was about to be overwritten
+        // for the second time and a segment really was about to be lost. Pre-creating `.stdout.log.1`
+        // here reproduces that already-rolled directory; goes red if the constructor's seeding is
+        // reverted to an unconditional 0.
+        var tempDir = Path.Combine(Path.GetTempPath(), $"stream-seed-rollover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(tempDir, ExecutionStreamLogger.StdoutRolloverFileName), new byte[60]);
+
+            var logger = new ExecutionStreamLogger(tempDir, maxSizeBytes: 100);
+            var markerPath = Path.Combine(tempDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+
+            static byte[] Chunk(char fill)
+            {
+                var chunk = new byte[60];
+                Array.Fill(chunk, (byte)fill);
+                return chunk;
+            }
+
+            logger.AppendStdout(Chunk('A'));
+            Assert.False(File.Exists(markerPath));
+
+            // This logger's OWN first roll -- but it overwrites the pre-existing `.stdout.log.1`, so
+            // the seeded count must already treat it as roll #2 and write the marker on this call
+            // rather than waiting for a second roll from this instance.
+            logger.AppendStdout(Chunk('B'));
+            Assert.True(File.Exists(markerPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
+    [Fact]
     public async Task RoundTrip_And_RenderEscaping_BothPolarities()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), $"stream-roundtrip-{Guid.NewGuid():N}");
@@ -338,6 +430,11 @@ public class CapturedWorkerStreamTests
         // only the writer half was asserted. This drives StatusCommand.TailStreams across a real
         // rollover and requires the tail to keep delivering without dropping the post-rollover
         // content.
+        //
+        // #1574: TailStreams now buffers whole lines (StreamLineAssembler) before rendering, so each
+        // chunk is newline-terminated -- an unterminated chunk would be held as a partial trailing
+        // line rather than rendered on the poll that wrote it, which is the new (and correct)
+        // contract, not what this rollover-continuity test means to exercise.
         var testRoot = Path.Combine(Path.GetTempPath(), $"tail-rollover-{Guid.NewGuid():N}");
         var execDir = Path.Combine(testRoot, "execution_tail");
         Directory.CreateDirectory(execDir);
@@ -346,23 +443,25 @@ public class CapturedWorkerStreamTests
             const long cap = 100;
             var logger = new ExecutionStreamLogger(execDir, maxSizeBytes: cap);
             var offsets = new Dictionary<string, long>(StringComparer.Ordinal);
+            var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
+            IWorkerAdapter? NoAdapter(string executionId) => null;
 
-            var chunkA = System.Text.Encoding.UTF8.GetBytes(new string('A', 60));
+            var chunkA = System.Text.Encoding.UTF8.GetBytes(new string('A', 59) + "\n");
             logger.AppendStdout(chunkA);
 
             var firstRead = new StringWriter();
-            StatusCommand.TailStreams(firstRead, testRoot, offsets);
-            Assert.Contains(new string('A', 60), firstRead.ToString());
+            StatusCommand.TailStreams(firstRead, testRoot, offsets, lineAssemblers, NoAdapter);
+            Assert.Contains(new string('A', 59), firstRead.ToString());
 
             // Crossing the cap rolls the file; the next tail must surface the new content.
-            var chunkB = System.Text.Encoding.UTF8.GetBytes(new string('B', 60));
+            var chunkB = System.Text.Encoding.UTF8.GetBytes(new string('B', 59) + "\n");
             logger.AppendStdout(chunkB);
 
             var secondRead = new StringWriter();
-            StatusCommand.TailStreams(secondRead, testRoot, offsets);
+            StatusCommand.TailStreams(secondRead, testRoot, offsets, lineAssemblers, NoAdapter);
             var secondText = secondRead.ToString();
-            Assert.Contains(new string('B', 60), secondText);
-            Assert.DoesNotContain(new string('A', 60), secondText);
+            Assert.Contains(new string('B', 59), secondText);
+            Assert.DoesNotContain(new string('A', 59), secondText);
         }
         finally
         {

@@ -25,6 +25,7 @@ jobs:
     # job for those branches -- a skipped required check still satisfies branch protection (#1475).
     if: ${{ !startsWith(github.event.pull_request.head.ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Declared rather than inherited: the closures step reads issues via the job token, and an org
     # tightening the default token scope later should not silently break it (#975 review).
     permissions:

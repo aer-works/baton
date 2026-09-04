@@ -26,6 +26,10 @@ internal static class ShellWorkerCommands
         ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
         : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
 
+    public static CoreDispatchTarget ExitWithFailureCode(int exitCode = 1) => OperatingSystem.IsWindows()
+        ? new CoreDispatchTarget("cmd", ["/c", $"exit {exitCode}"])
+        : new CoreDispatchTarget("sh", ["-c", $"exit {exitCode}"]);
+
     /// <summary>
     /// Sleeps for at least <paramref name="duration"/> before writing <paramref name="outputName"/>
     /// and exiting 0 — M10 Phase 4's real long-running worker, giving a test enough real wall-clock
@@ -83,12 +87,16 @@ internal static class ShellWorkerCommands
     }
 
     /// <summary>
-    /// The bounded self-iteration pattern: writes <paramref name="verdictFileName"/> with
-    /// <c>{"status":"needs_revision"}</c> on its first invocation and <c>{"status":"approved"}</c>
-    /// on every one after, keyed off a marker file outside <c>BATON_OUTPUT_DIR</c> — each attempt's
-    /// output directory is fresh by design, so durable state across attempts has to live
-    /// elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>. Exits 0 both times: only the
-    /// caller's declared <c>OutputCondition</c> on the produced output distinguishes the two attempts.
+    /// The (now-defunct, F3 #1593 review) bounded self-iteration pattern: writes
+    /// <paramref name="verdictFileName"/> with <c>{"status":"needs_revision"}</c> on its first
+    /// invocation and <c>{"status":"approved"}</c> on every one after, keyed off a marker file outside
+    /// <c>BATON_OUTPUT_DIR</c> — each attempt's output directory is fresh by design, so durable state
+    /// across attempts has to live elsewhere, same as <see cref="FailOnFirstAttemptThenSucceed"/>.
+    /// Exits 0 both times: only the caller's declared <c>OutputCondition</c> on the produced output
+    /// distinguishes the two attempts. F3: the retry this pattern relied on no longer happens — see
+    /// spec/baton.md's #1593 register entry for the reasoning. Kept for
+    /// <see cref="Baton.Tests.EndToEnd.WorkflowEndToEndTests.An_exit_0_worker_whose_OutputCondition_fails_settles_Indeterminate_and_is_not_retried"/>,
+    /// which exercises the FIRST attempt only and never reaches the "approved" branch.
     /// </summary>
     public static CoreDispatchTarget WriteVerdictNeedsRevisionThenApproved(
         string scriptDirectory, string markerFilePath, string verdictFileName)
@@ -226,6 +234,37 @@ internal static class ShellWorkerCommands
               "exit /b 0\n"
             : "#!/bin/sh\n" +
               $"echo '{resultLine}'\n" +
+              "exit 0\n";
+
+        return FromScript(scriptDirectory, body);
+    }
+
+    /// <summary>
+    /// #1709: emits one live claude-shaped usage line — real bytes for a <c>TokenBudgetMonitor</c>
+    /// watching the stream to accumulate, the same "assistant" shape the arrest tests above use — then
+    /// writes the declared output and exits 0. Standing in for an ordinary Succeeded execution that ran
+    /// with a live budget monitor in scope but never crossed it, so
+    /// <see cref="Domain.FlowEvent.ExecutionSucceeded.PeakBilledInWindow"/>'s wiring in
+    /// <c>MutationInterface</c> is proven through the real dispatch pipeline, not only at the projector.
+    /// </summary>
+    public static CoreDispatchTarget EmitUsageLineThenWriteFile(
+        string scriptDirectory, long cacheCreationInputTokens, string outputName, string content)
+    {
+        var usageLine = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":2,"
+            + $"\"cache_creation_input_tokens\":{cacheCreationInputTokens},\"cache_read_input_tokens\":0,\"output_tokens\":3"
+            + "}}}";
+        var outputPath = OperatingSystem.IsWindows()
+            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
+            : $"$BATON_OUTPUT_DIR/{outputName}";
+
+        var body = OperatingSystem.IsWindows()
+            ? "@echo off\n" +
+              $"echo {usageLine}\n" +
+              $"echo {content}>\"{outputPath}\"\n" +
+              "exit /b 0\n"
+            : "#!/bin/sh\n" +
+              $"echo '{usageLine}'\n" +
+              $"echo {content} > \"{outputPath}\"\n" +
               "exit 0\n";
 
         return FromScript(scriptDirectory, body);

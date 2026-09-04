@@ -49,7 +49,10 @@ public sealed class FleetStatusTool : IMcpTool
         return gated.Count > 0 && gated.All(s => s.Liveness == "dead");
     }
 
-    private static readonly JsonSerializerOptions SerializerOptions = new()
+    // internal, not private: spec/baton.md §7's daemon-written fleet projection file (#1557)
+    // serializes each room with these SAME options, so the wire shape stays one construction site
+    // rather than a second copy drifting from this one.
+    internal static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
     };
@@ -107,18 +110,66 @@ public sealed class FleetStatusTool : IMcpTool
             }
         }
 
+        var discovered = await DiscoverRoomsAsync(extraRoots, cancellationToken).ConfigureAwait(false);
+        var results = new List<FleetRoomStatusView>();
+
+        foreach (var room in discovered)
+        {
+            var roomStatus = await ProcessRoomAsync(room.RoomDir, includeTerminal, cancellationToken).ConfigureAwait(false);
+            if (roomStatus is not null)
+            {
+                results.Add(room.Project is null ? roomStatus : roomStatus with { Project = room.Project });
+            }
+        }
+
+        var json = JsonSerializer.Serialize(results, SerializerOptions);
+        return new McpToolCallResult(json);
+    }
+
+    /// <summary>
+    /// One room directory, plus its project (spec/baton.md §8), the way the scan-plus-registry union
+    /// below resolves it — the discovery half of <see cref="ProcessRoomAsync"/>, factored out so #1557's
+    /// daemon-side fleet projection writer can walk the SAME set of rooms in the SAME order without a
+    /// second, drifting copy of the registry-union logic.
+    /// </summary>
+    internal readonly record struct DiscoveredRoom(string RoomDir, string? Project);
+
+    /// <summary>
+    /// Resolves every room this tool's scan-plus-registry union would find (spec/baton.md §8), without
+    /// processing any of them — <see cref="CallAsync"/> and <c>Baton.Cli.Daemon.FleetProjectionWriter</c>
+    /// (#1557) both walk this same list and call <see cref="ProcessRoomAsync"/> themselves, so the
+    /// discovery rule (which directories count, how a registry entry decorates one with its project) is
+    /// stated once.
+    /// </summary>
+    internal static async Task<IReadOnlyList<DiscoveredRoom>> DiscoverRoomsAsync(
+        IReadOnlyList<string> extraRoots, CancellationToken cancellationToken)
+    {
         var searchRoots = new List<string>();
         if (Directory.Exists(BatonPaths.Rooms))
         {
             searchRoots.Add(BatonPaths.Rooms);
         }
 
+        // #1619 LOW-3: BatonPaths.ByWorkstream, and everything under it, is nothing but junctions back
+        // into rooms BatonPaths.Rooms (or another caller-supplied root) already scans by their real
+        // path -- walking it too would double-count every room in it under a second, junction-derived
+        // path key, since RecordKey/seenRooms dedupe on the path string, not the resolved target.
+        var byWorkstreamKey = BatonPaths.RecordKey(BatonPaths.ByWorkstream);
         foreach (var extraRoot in extraRoots)
         {
-            if (Directory.Exists(extraRoot))
+            if (!Directory.Exists(extraRoot))
             {
-                searchRoots.Add(extraRoot);
+                continue;
             }
+
+            var extraRootKey = BatonPaths.RecordKey(extraRoot);
+            if (BatonPaths.RecordKeyComparer.Equals(extraRootKey, byWorkstreamKey)
+                || extraRootKey.StartsWith(byWorkstreamKey + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            searchRoots.Add(extraRoot);
         }
 
         // spec/baton.md §8: the registry's project-root map, keyed the same way seenRooms/roomDir
@@ -151,7 +202,7 @@ public sealed class FleetStatusTool : IMcpTool
         }
 
         var seenRooms = new HashSet<string>(BatonPaths.RecordKeyComparer);
-        var results = new List<FleetRoomStatusView>();
+        var discovered = new List<DiscoveredRoom>();
 
         foreach (var searchRoot in searchRoots)
         {
@@ -175,11 +226,8 @@ public sealed class FleetStatusTool : IMcpTool
                     continue;
                 }
 
-                var roomStatus = await ProcessRoomAsync(roomDir, includeTerminal, cancellationToken).ConfigureAwait(false);
-                if (roomStatus is not null)
-                {
-                    results.Add(DecorateWithProject(roomStatus, recordKey, projectByRoom));
-                }
+                projectByRoom.TryGetValue(recordKey, out var project);
+                discovered.Add(new DiscoveredRoom(roomDir, project));
             }
         }
 
@@ -193,22 +241,13 @@ public sealed class FleetStatusTool : IMcpTool
                 continue;
             }
 
-            var roomStatus = await ProcessRoomAsync(roomPath, includeTerminal, cancellationToken).ConfigureAwait(false);
-            if (roomStatus is not null)
-            {
-                results.Add(roomStatus with { Project = projectRoot });
-            }
+            discovered.Add(new DiscoveredRoom(roomPath, projectRoot));
         }
 
-        var json = JsonSerializer.Serialize(results, SerializerOptions);
-        return new McpToolCallResult(json);
+        return discovered;
     }
 
-    private static FleetRoomStatusView DecorateWithProject(
-        FleetRoomStatusView roomStatus, string recordKey, IReadOnlyDictionary<string, string> projectByRoom) =>
-        projectByRoom.TryGetValue(recordKey, out var projectRoot) ? roomStatus with { Project = projectRoot } : roomStatus;
-
-    private static async Task<FleetRoomStatusView?> ProcessRoomAsync(
+    internal static async Task<FleetRoomStatusView?> ProcessRoomAsync(
         string roomDir, bool includeTerminal, CancellationToken cancellationToken)
     {
         var roomName = Path.GetFileName(Path.TrimEndingDirectorySeparator(roomDir));
@@ -240,7 +279,12 @@ public sealed class FleetStatusTool : IMcpTool
                 MaxAttempts: s.MaxAttempts,
                 FailureKind: s.FailureKind,
                 RetryEligible: s.RetryEligible,
-                ExhaustedUntil: s.ExhaustedUntil
+                ExhaustedUntil: s.ExhaustedUntil,
+                WorkspaceChanged: s.WorkspaceChanged,
+                Hollow: s.Hollow,
+                HollowReason: s.HollowReason,
+                Verify: s.Verify,
+                VerifyReason: s.VerifyReason
             )).ToList();
 
             // #1613 item 3: terminal.json (the sentinel) is a frozen WorkflowStatusView -- it never
@@ -252,9 +296,10 @@ public sealed class FleetStatusTool : IMcpTool
             // WorkerBindingConfigException, which TryLoadBindingsAsync catches and swallows) that
             // already covered the label alone.
             var terminalBindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
-            var terminalBinding = TryResolveSoleBinding(terminalBindings);
+            var terminalBinding = ConductorRoomDetector.TryResolveSoleBinding(terminalBindings);
             var (terminalRole, terminalAdapter, terminalModel, terminalEffort, terminalTimeoutMs) =
                 ProjectBindingFields(terminalBinding);
+            var terminalLineage = await TryReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             return new FleetRoomStatusView(
                 Name: roomName,
@@ -265,18 +310,42 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: sentinel.Error,
                 Try: sentinel.Try,
                 Rejected: sentinel.Rejected,
+                ResolvedBy: sentinel.ResolvedBy,
                 Role: terminalRole,
                 Adapter: terminalAdapter,
                 Model: terminalModel,
                 Effort: terminalEffort,
                 TimeoutMs: terminalTimeoutMs,
-                Label: ExtractRoomLabel(terminalBindings));
+                Label: ExtractRoomLabel(terminalBindings),
+                Workstream: ExtractRoomWorkstream(terminalBindings),
+                ParentRoomPath: terminalLineage.ParentRoomDirectoryPath,
+                ParentExecutionId: terminalLineage.ParentExecutionId,
+                TerminalAt: sentinel.TerminalAt,
+                Delivery: await TryResolveDeliveryAsync(roomDir, sentinel.Outputs, cancellationToken).ConfigureAwait(false));
         }
 
         // 2. Active room: load snapshot + flow events and project
         var snapshotPath = Path.Combine(roomDir, BatonPaths.SnapshotFileName);
         if (!File.Exists(snapshotPath))
         {
+            var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            var soleBinding = ConductorRoomDetector.TryResolveSoleBinding(bindings);
+            var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(soleBinding);
+            if (string.Equals(role, "conductor", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(roomName, "conductor", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FleetRoomStatusView(
+                    Name: roomName,
+                    Path: roomDir,
+                    Role: role ?? "conductor",
+                    Adapter: adapter,
+                    Model: model,
+                    Effort: effort,
+                    TimeoutMs: timeoutMs,
+                    Label: ExtractRoomLabel(bindings),
+                    Workstream: ExtractRoomWorkstream(bindings));
+            }
+
             return new FleetRoomStatusView(
                 Name: roomName,
                 Path: roomDir,
@@ -335,12 +404,18 @@ public sealed class FleetStatusTool : IMcpTool
                     stepView.MaxAttempts,
                     stepView.FailureKind,
                     stepView.RetryEligible,
-                    stepView.ExhaustedUntil));
+                    stepView.ExhaustedUntil,
+                    stepView.WorkspaceChanged,
+                    stepView.Hollow,
+                    stepView.HollowReason,
+                    stepView.Verify,
+                    stepView.VerifyReason));
             }
 
             var bindings = await TryLoadBindingsAsync(roomDir, cancellationToken).ConfigureAwait(false);
             var binding = TryResolveRunningBinding(bindings, steps, events);
             var (role, adapter, model, effort, timeoutMs) = ProjectBindingFields(binding);
+            var lineage = await TryReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             // #1513: the ledger's own `Running` (WorkflowOutcome.Describe/DeriveWorkflowStatus) means
             // "not terminal, and something could still make progress" -- true whether that something
@@ -351,7 +426,7 @@ public sealed class FleetStatusTool : IMcpTool
             // reported symptom -- "the room reads RUNNING forever on the fleet view"): it never
             // touches `outcome`/`state.Status` itself, so RunExitCodeResolver, TerminalSentinelWriter,
             // and every other WorkflowOutcome consumer keep reading exactly what they always did.
-            var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps)
+            var displayState = outcome == WorkflowOutcome.Running && IsConfirmedStalled(steps) && !string.Equals(role, "conductor", StringComparison.OrdinalIgnoreCase)
                 ? StalledDisplayState
                 : outcome;
 
@@ -364,12 +439,22 @@ public sealed class FleetStatusTool : IMcpTool
                 Error: view.Error,
                 Try: view.Try,
                 Rejected: view.Rejected,
+                ResolvedBy: view.ResolvedBy,
                 Role: role,
                 Adapter: adapter,
                 Model: model,
                 Effort: effort,
                 TimeoutMs: timeoutMs,
-                Label: ExtractRoomLabel(bindings));
+                Label: ExtractRoomLabel(bindings),
+                Workstream: ExtractRoomWorkstream(bindings),
+                ParentRoomPath: lineage.ParentRoomDirectoryPath,
+                ParentExecutionId: lineage.ParentExecutionId,
+                // #1157: view.TerminalAt is null on every non-terminal room by construction
+                // (WorkflowStatusProjector.Project gates it on WorkflowStatus.Terminal), so this needs
+                // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
+                // which never turns a terminal room into a Running one.
+                TerminalAt: view.TerminalAt,
+                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -380,6 +465,50 @@ public sealed class FleetStatusTool : IMcpTool
                 Name: roomName,
                 Path: roomDir,
                 Error: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// spec/baton.md §6 schema states the field and its absence rule; this is the read side.
+    /// Gated on <see cref="DeliveryReferenceResolver"/> resolving a PR number specifically (not merely
+    /// a branch) — the same gate <c>DeliveryPoller.PollRoomAsync</c> itself uses, so a branch-only
+    /// room (which the poller never touches either) never pays the extra <c>flow.jsonl</c> read below.
+    /// </summary>
+    private static async Task<DeliveryStatusView?> TryResolveDeliveryAsync(
+        string roomDir, IReadOnlyList<string>? outputs, CancellationToken cancellationToken)
+    {
+        if (DeliveryReferenceResolver.Resolve(outputs)?.PullRequestNumber is null)
+        {
+            return null;
+        }
+
+        var logPath = Path.Combine(roomDir, BatonPaths.FlowLogFileName);
+        if (!File.Exists(logPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var events = await new FlowEventLogReader(logPath).ReadAllAsync(cancellationToken).ConfigureAwait(false);
+            DeliveryStatusView? latest = null;
+            foreach (var flowEvent in events)
+            {
+                latest = flowEvent switch
+                {
+                    FlowEvent.DeliveryPrOpened opened => new DeliveryStatusView(opened.PullRequestNumber, "Opened"),
+                    FlowEvent.DeliveryChecksGreen green => new DeliveryStatusView(green.PullRequestNumber, "ChecksGreen"),
+                    FlowEvent.DeliveryChecksRed red => new DeliveryStatusView(red.PullRequestNumber, "ChecksRed"),
+                    FlowEvent.DeliveryMerged merged => new DeliveryStatusView(merged.PullRequestNumber, merged.Merged ? "Merged" : "Closed"),
+                    _ => latest,
+                };
+            }
+
+            return latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FlowEventLogReadException)
+        {
+            return null;
         }
     }
 
@@ -408,13 +537,33 @@ public sealed class FleetStatusTool : IMcpTool
     }
 
     /// <summary>
-    /// Resolves the worker-binding config entry (issue #1503) for whichever step this room's
-    /// projection currently calls <c>"Running"</c> — the same worker a caller would see live if they
-    /// tailed <c>room_detail</c> right now. Picks the first Running step when a workflow has more than
-    /// one in flight at once; a room row carries one binding, not a list. See spec/baton.md §6 schema
-    /// for when this comes back absent and why.
+    /// Thin wrapper around <see cref="InteractiveSessionMaterializer.ReadLineageAsync"/> (issue
+    /// #1620, spec/baton.md §6 schema) that additionally degrades to
+    /// <see cref="InteractiveSessionMaterializer.RoomLineage.None"/> on an I/O fault at this call
+    /// site -- the same fail-open display-metadata contract <see cref="TryLoadBindingsAsync"/>
+    /// already applies to <c>bindings.json</c>.
     /// </summary>
-    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveRunningBinding(
+    private static async Task<InteractiveSessionMaterializer.RoomLineage> TryReadLineageAsync(
+        string roomDir, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await InteractiveSessionMaterializer.ReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return InteractiveSessionMaterializer.RoomLineage.None;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the worker-binding config entry (issue #1503) and recorded request (issue #1584)
+    /// for whichever step this room's projection currently calls <c>"Running"</c> — the same worker
+    /// a caller would see live if they tailed <c>room_detail</c> right now. Picks the first Running
+    /// step when a workflow has more than one in flight at once; a room row carries one binding, not
+    /// a list. See spec/baton.md §6 schema for when this comes back absent and why.
+    /// </summary>
+    private static (string Role, WorkerBindingConfigEntry Entry, ExecutionRequest Request)? TryResolveRunningBinding(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings,
         IReadOnlyList<FleetStepStatusView> steps,
         IReadOnlyList<FlowEvent> events)
@@ -425,17 +574,17 @@ public sealed class FleetStatusTool : IMcpTool
             return null;
         }
 
-        string? role = null;
+        ExecutionRequest? runningRequest = null;
         foreach (var evt in events)
         {
             if (evt is FlowEvent.ExecutionRequestAccepted accepted && accepted.Request.ExecutionId.Value == runningExecution)
             {
-                role = accepted.Request.Worker;
+                runningRequest = accepted.Request;
                 break;
             }
         }
 
-        if (role is null)
+        if (runningRequest is null)
         {
             return null;
         }
@@ -445,37 +594,36 @@ public sealed class FleetStatusTool : IMcpTool
             return null;
         }
 
-        return bindings.TryGetValue(role, out var entry) ? (role, entry) : null;
-    }
-
-    /// <summary>
-    /// The terminal-sentinel fast path's binding resolution (#1613 item 3) -- rationale for the
-    /// "exactly one role" requirement is spec/baton.md §6's fleet_status schema entry, not restated
-    /// here.
-    /// </summary>
-    private static (string Role, WorkerBindingConfigEntry Entry)? TryResolveSoleBinding(
-        IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings)
-    {
-        if (bindings is null || bindings.Count != 1)
-        {
-            return null;
-        }
-
-        var only = bindings.Single();
-        return (only.Key, only.Value);
+        return bindings.TryGetValue(runningRequest.Worker, out var entry)
+            ? (runningRequest.Worker, entry, runningRequest)
+            : null;
     }
 
     /// <summary>
     /// One construction site (the #1590/#1597 lesson) for turning a resolved binding into the five
     /// wire fields -- both the active-room path (<see cref="TryResolveRunningBinding"/>) and the
-    /// terminal-sentinel fast path (<see cref="TryResolveSoleBinding"/>) resolve WHICH role
-    /// differently, but project the resolved <c>(Role, Entry)</c> pair to Role/Adapter/Model/
-    /// Effort/TimeoutMs identically.
+    /// terminal-sentinel fast path (<see cref="ConductorRoomDetector.TryResolveSoleBinding"/>) resolve WHICH role
+    /// differently and share this same projection, but the active-room overload additionally prefers
+    /// a recorded <see cref="ExecutionRequest"/>'s Adapter/Model over the resolved
+    /// <c>(Role, Entry)</c> pair's own values (issue #1584) -- the terminal path has no recorded
+    /// request to prefer, so its Adapter/Model always come from the pair itself (spec/baton.md §6
+    /// schema).
     /// </summary>
     private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
-        (string Role, WorkerBindingConfigEntry Entry)? binding) =>
+        (string Role, WorkerBindingConfigEntry Entry)? binding,
+        ExecutionRequest? recordedRequest = null) =>
         binding is { } resolved
-            ? (resolved.Role, resolved.Entry.Adapter, resolved.Entry.Model, resolved.Entry.Effort, (long?)resolved.Entry.Timeout.TotalMilliseconds)
+            ? (resolved.Role,
+               recordedRequest?.Adapter ?? resolved.Entry.Adapter,
+               recordedRequest?.Model ?? resolved.Entry.Model,
+               resolved.Entry.Effort,
+               (long?)resolved.Entry.Timeout.TotalMilliseconds)
+            : (null, null, null, null, null);
+
+    private static (string? Role, string? Adapter, string? Model, string? Effort, long? TimeoutMs) ProjectBindingFields(
+        (string Role, WorkerBindingConfigEntry Entry, ExecutionRequest Request)? binding) =>
+        binding is { } resolved
+            ? ProjectBindingFields((resolved.Role, resolved.Entry), resolved.Request)
             : (null, null, null, null, null);
 
     /// <summary>
@@ -483,6 +631,14 @@ public sealed class FleetStatusTool : IMcpTool
     /// </summary>
     private static string? ExtractRoomLabel(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
         bindings?.Values.Select(entry => entry.Label).FirstOrDefault(label => label is not null);
+
+    /// <summary>
+    /// Extracts a room's <c>--workstream</c> (#1619) off its loaded <c>bindings.json</c> dictionary —
+    /// same shape as <see cref="ExtractRoomLabel"/>, since both are room-level facts stamped onto
+    /// every entry at dispatch time, not scoped to one worker's Running step.
+    /// </summary>
+    private static string? ExtractRoomWorkstream(IReadOnlyDictionary<string, WorkerBindingConfigEntry>? bindings) =>
+        bindings?.Values.Select(entry => entry.Workstream).FirstOrDefault(workstream => workstream is not null);
 }
 
 /// <summary>
@@ -516,13 +672,16 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("rejected")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool Rejected = false,
-    // #1503: worker role/adapter/model/effort/timeout for this room's Running step, read off
-    // bindings.json via TryResolveRunningBindingAsync -- see spec/baton.md §6 schema for exactly
-    // which step this reads, when the five fields come back absent, and why timeoutMs isn't a
-    // countdown. Adapter/Model here are bindings.json's CURRENT values, not the recorded-at-accept
-    // value Steps[].Usage is attributed by since #1567 (ExecutionRequest.Adapter) -- after a
-    // failover rebind the two can name different vendors in the same view, neither labelled as such
-    // (issue #1584, not fixed here).
+    // F10/F11 (#1720 review): the room-level WorkflowStatusView.ResolvedBy, copied the same way
+    // Rejected above is. Needed BECAUSE F11 scoped `rejected` to `--reject`: without this the glass
+    // has no signal at all for a conductor `baton resolve --close`, which settles a room Failed with
+    // a recorded ruling rather than a crash. The per-step resolvedByConductor flag stays
+    // deliberately omitted -- WHICH step is a one-room `baton status --json` question.
+    [property: JsonPropertyName("resolvedBy")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedBy = null,
+    // #1503, extended by #1584: worker role/adapter/model/effort/timeout for this room's Running step,
+    // read via TryResolveRunningBinding -- see spec/baton.md §6 schema for resolution rules and gating.
     [property: JsonPropertyName("role")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Role = null,
@@ -541,7 +700,32 @@ public sealed record FleetRoomStatusView(
     // #1499: read via ExtractRoomLabel off each path's own loaded bindings.json, spec/baton.md §6 schema.
     [property: JsonPropertyName("label")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Label = null);
+    string? Label = null,
+    // #1619: read via ExtractRoomWorkstream off each path's own loaded bindings.json, same fail-open
+    // convention as Label immediately above -- spec/baton.md §6 schema.
+    [property: JsonPropertyName("workstream")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Workstream = null,
+    // #1441/#1620: redispatch lineage -- see spec/baton.md §6 schema for the read side and the
+    // absence rules.
+    [property: JsonPropertyName("parentRoomPath")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ParentRoomPath = null,
+    [property: JsonPropertyName("parentExecutionId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ParentExecutionId = null,
+    // #1157: the room-level WorkflowStatusView.TerminalAt, copied the same way Rejected/ResolvedBy
+    // above are -- never re-derived here. A terminal room reports when its run ENDED; before this
+    // field the fleet reported no terminal instant at all and a consumer wanting one had to stat a
+    // file. Why this surface omits the field on a legacy room where the retention sweep instead falls
+    // back to a mtime is part of spec/baton.md §3's absence rules.
+    [property: JsonPropertyName("terminalAt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TerminalAt = null,
+    // #734: spec/baton.md §6 schema states this field's shape and its absence rule -- see there.
+    [property: JsonPropertyName("delivery")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DeliveryStatusView? Delivery = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.
@@ -595,4 +779,25 @@ public sealed record FleetStepStatusView(
     // renders that honestly, this field never re-derives or clears it.
     [property: JsonPropertyName("exhaustedUntil")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ExhaustedUntil = null);
+    string? ExhaustedUntil = null,
+    // #1622/#1390: copied verbatim from WorkflowStatusStepView.WorkspaceChanged/.Hollow/.HollowReason
+    // -- present only for a tree-changing role's Succeeded settle, per that record's own remarks. The
+    // glass badge #1390 asks for reads this rather than probing the worktree itself.
+    [property: JsonPropertyName("workspaceChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? WorkspaceChanged = null,
+    [property: JsonPropertyName("hollow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? Hollow = null,
+    [property: JsonPropertyName("hollowReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? HollowReason = null,
+    // #1702: copied verbatim from WorkflowStatusStepView.Verify/.VerifyReason -- "not-run" plus the
+    // pre-flight reason, so a fleet_status caller (and Fleet Glass) can render "unverified" for a step
+    // that ran but was never checked, distinct from an ordinary Succeeded step.
+    [property: JsonPropertyName("verify")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Verify = null,
+    [property: JsonPropertyName("verifyReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? VerifyReason = null);

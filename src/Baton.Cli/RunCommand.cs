@@ -45,9 +45,28 @@ public static class RunCommand
     /// file named is a different template (#628).
     /// </exception>
     /// <exception cref="Baton.Concurrency.WorkflowLockedException">
-    /// Another Flow instance already holds this room directory's lock.
+    /// Another Flow instance already holds this room directory's lock. The pump's own guard
+    /// (<see cref="MutationInterface.StartWorkflowAsync"/>) stays deliberately fail-fast: losing it
+    /// means a second pump owns this room, and waiting for it is exactly the wrong behaviour.
+    /// <para>
+    /// #1650 F3, stated because the guard's fail-fast property no longer describes the <em>command</em>:
+    /// two bounded waits now precede it on this same invocation — <see cref="WorktreeWorkspaces.Provision"/>
+    /// and the <c>FlowEventLogWriter</c> open — so a second <c>baton run</c> against a live pump can
+    /// spend up to two <see cref="Baton.Concurrency.RoutineHoldBudget"/> intervals before this guard
+    /// ever gets its turn, and normally refuses with the type below rather than this one. Fail-fast
+    /// here is now a property of the last step, not of the run.
+    /// </para>
     /// </exception>
-    /// <exception cref="Baton.Store.FlowJournalHeldException">See that type's own docs for why (#816).</exception>
+    /// <exception cref="Baton.Store.FlowJournalHeldException">
+    /// #816's journal-held refusal. What a second <c>baton run</c> gets against a live pump, in place
+    /// of the lock refusal above (#1650 F3): the writer scoped below is opened before
+    /// <see cref="MutationInterface.StartWorkflowAsync"/>'s guard is ever reached, so it is contended
+    /// first. <see cref="DecideCommand"/> holds the reasoning.
+    /// </exception>
+    /// <exception cref="Baton.Status.StaleSentinelDeletionException">
+    /// The room carries a stale <c>terminal.json</c> from a prior attempt that could not be deleted, so
+    /// this call refuses rather than pumping behind a false "already done" signal (#1608 re-review).
+    /// </exception>
     /// <param name="inFlightExecutions">
     /// M15 Phase 4's (issue #140) caller-retained delivery point — forwarded to
     /// <see cref="MutationInterface.StartWorkflowAsync"/>. A caller that retains one can signal a
@@ -67,15 +86,37 @@ public static class RunCommand
     /// double-echoing there is narrower: no daemon/UI path constructs <see cref="RunOptions"/> with
     /// <c>EchoWorker</c> set, and an explicit callback always wins over the flag below.
     /// </param>
-    public static async Task<CommandResult> ExecuteAsync(
+    public static Task<CommandResult> ExecuteAsync(
         RunOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,
         InFlightExecutionRegistry? inFlightExecutions = null,
         CancellationToken cancellationToken = default,
         Action<string, string>? onWorkerStdoutLine = null)
+        => ExecuteAsync(options, adapters, inFlightExecutions, cancellationToken, onWorkerStdoutLine, testOnlyAfterProvisionBeforeStaleSweepAsync: null);
+
+    /// <param name="testOnlyAfterProvisionBeforeStaleSweepAsync">
+    /// #1649: test-only seam, always <c>null</c> in production. Runs after
+    /// <see cref="WorktreeWorkspaces.Provision"/> and strictly before
+    /// <see cref="CancelRequestFile.DeleteStalePendingRequestAsync"/> — the exact window a concurrent
+    /// <c>baton cancel</c> can land a live <c>cancel.request</c> write in — so a test can deterministically
+    /// write into that window instead of racing real process timing to hit it.
+    /// </param>
+    internal static async Task<CommandResult> ExecuteAsync(
+        RunOptions options,
+        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        InFlightExecutionRegistry? inFlightExecutions,
+        CancellationToken cancellationToken,
+        Action<string, string>? onWorkerStdoutLine,
+        Func<Task>? testOnlyAfterProvisionBeforeStaleSweepAsync)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
+
+        // #1649: captured before WorktreeWorkspaces.Provision below runs (and therefore before the
+        // sweep further down) — CancelRequestFile.DeleteStalePendingRequestAsync uses this to tell a
+        // request written no earlier than THIS invocation started (a concurrent writer racing that
+        // window) apart from one left behind by a prior, crashed pump.
+        var invocationStartUtc = DateTimeOffset.UtcNow;
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
         await RegisterRoomAsync(options, cancellationToken).ConfigureAwait(false);
@@ -127,15 +168,28 @@ public static class RunCommand
         // sentinel at all -- "absence means not terminal yet" (spec/baton-room-spec-v1.0.md) would then
         // be false. A room that is not yet Terminal never has a sentinel to lose, so the probe costs
         // nothing there and the delete still runs.
+        //
+        // #1608 re-review finding 2: fail-closed (DeleteStaleSentinel's default), unlike the
+        // post-`resolve` call site — a sentinel this call cannot remove is exactly the false
+        // "already done" signal above, so refusing before the pump starts is the whole point.
         var priorProbe = await WorkflowTerminalProbe.ProbeAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
         if (!priorProbe.IsTerminal)
         {
             TerminalSentinelWriter.DeleteStaleSentinel(options.RoomDirectoryPath);
         }
 
+        // #1649: test-only hook firing exactly here, before the sweep below.
+        if (testOnlyAfterProvisionBeforeStaleSweepAsync is not null)
+        {
+            await testOnlyAfterProvisionBeforeStaleSweepAsync().ConfigureAwait(false);
+        }
+
         // #1495 review finding 5: clear any unconsumed pending cancel.request from a crashed prior
-        // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequest.
-        CancelRequestFile.DeleteStalePendingRequest(options.RoomDirectoryPath);
+        // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequestAsync,
+        // which (#1649) discriminates that from a request a concurrent baton cancel wrote into the
+        // window between WorktreeWorkspaces.Provision above and this call.
+        await CancelRequestFile.DeleteStalePendingRequestAsync(options.RoomDirectoryPath, invocationStartUtc, cancellationToken)
+            .ConfigureAwait(false);
 
         // #1495: retained regardless of whether the caller supplied one, so THIS call can poll
         // cancel.request against it below — a caller-supplied instance is still honoured (forwarded
@@ -162,6 +216,16 @@ public static class RunCommand
             var pollTask = CancelRequestPoller.RunAsync(
                 options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions,
                 CancelRequestPoller.DefaultPollInterval, pollCancellation.Token);
+
+            // #1549: the content-free progress heartbeat — a sibling fire-and-forget poller sharing
+            // this call's own writer and cancellation lifetime, never the pollCancellation token above
+            // stopped and re-created; both stop together when the pump call below returns. Unlike
+            // CancelRequestPoller there is no correctness-bearing "final tick" to run after this task
+            // is awaited — a heartbeat missed in the last GetInterval() window before exit is exactly
+            // as harmless as one missed mid-run (advisory/observability only, no state consequence).
+            var heartbeatTask = ExecutionProgressHeartbeat.RunAsync(
+                options.RoomDirectoryPath, logPath, artifactsRootPath, snapshot, writer,
+                ExecutionProgressHeartbeat.GetInterval(), pollCancellation.Token);
 
             try
             {
@@ -228,6 +292,25 @@ public static class RunCommand
                     try
                     {
                         Console.Error.WriteLine($"cancel.request final tick failed: {ex.Message}");
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                try
+                {
+                    await heartbeatTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected: pollCancellation firing mid-tick surfaces here, same as pollTask above.
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        Console.Error.WriteLine($"execution progress heartbeat faulted during shutdown: {ex.Message}");
                     }
                     catch
                     {
@@ -429,7 +512,8 @@ public static class RunCommand
         try
         {
             await RoomRegistryStore.AppendAsync(
-                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile, cancellationToken)
+                options.RoomDirectoryPath, projectRoot, BatonPaths.RoomRegistryFile,
+                explicitRegister: options.Register, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)

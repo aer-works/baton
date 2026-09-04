@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Artifacts;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Outcomes;
 using Baton.Status;
 
 namespace Baton.Vendors.Tests;
@@ -41,6 +43,10 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
+        // #1166: same reason as ClaudeWorkerAdapterTests's identically-named test -- trust the fixture
+        // path first so this test's own concern (forwarding) is what decides the outcome, not the gate.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -120,9 +126,47 @@ public class AgyWorkerAdapterTests
         Assert.Null(target.DetectsTerminalSuccess);
     }
 
+    /// <summary>
+    /// N5/F6 (#1664 re-review): <see cref="AgyWorkerAdapter.IsTerminalResultLine"/> had zero test
+    /// coverage — this is the single fact <c>OutcomeClassifier</c>'s dead-worker predicate now keys
+    /// on (`TerminalResultObserved`), so a regression here silently reclassifies a self-reported
+    /// FAILURE result as a dead worker again. Mirrors
+    /// <see cref="StreamJson_wires_a_terminal_success_detector_that_recognises_only_agys_success_result"/>'s
+    /// shape, but asserts the wider match: a `result` event of ANY status is terminal, unlike
+    /// <see cref="AgyWorkerAdapter.IsTerminalSuccessLine"/> which only matches SUCCESS.
+    /// </summary>
+    [Fact]
+    public void StreamJson_wires_a_terminal_result_detector_that_recognises_any_result_status()
+    {
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", StreamJson: true), ArchitectContract);
+
+        Assert.NotNull(target.DetectsTerminalResult);
+        Assert.True(target.DetectsTerminalResult!(
+            """{"event":"result","result":{"status":"SUCCESS","response":"done","usage":{"total_tokens":5}}}"""));
+        // The polarity F6 exists for: a self-reported FAILURE is still a terminal RESULT, unlike
+        // DetectsTerminalSuccess above, which reads false for the identical line.
+        Assert.True(target.DetectsTerminalResult!("""{"event":"result","result":{"status":"FAILURE","is_error":true}}"""));
+        Assert.False(target.DetectsTerminalResult!("""{"event":"step_update","step_update":{"state":"DONE","step_type":"tool"}}"""));
+        Assert.False(target.DetectsTerminalResult!("not json"));
+    }
+
+    [Fact]
+    public void Without_StreamJson_no_terminal_result_detector_is_wired()
+    {
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Null(target.DetectsTerminalResult);
+    }
+
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {
+        // #1166: see A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target above -- Set
+        // is idempotent, so re-trusting the same fixture path here does not depend on that test's
+        // ordering relative to this one.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -509,22 +553,25 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
-    public void A_read_only_scoped_shell_grant_is_still_refused_shell_without_network_on_agy()
+    public void A_read_only_scoped_shell_grant_now_resolves_on_agy_by_deferring_to_the_hook()
     {
-        // #1456: review's exact claude-side grant shape (RunShellCommands scoped by read-only
-        // patterns, NetworkAccess false, ShellCommandsAreReadOnly true) has no equivalent here --
-        // agy's --dangerously-skip-permissions is all-or-nothing, and ShellCommandsAreReadOnly is a
-        // PermissionGrant-level coherence exemption (WorkerBindingResolver's #529 check), not a claim
-        // this adapter's own translator understands. It must still refuse, loudly, rather than
-        // silently resolving to an unscoped --dangerously-skip-permissions or a plain --mode.
+        // #1456 shipped review's exact claude-side grant shape (RunShellCommands scoped by read-only
+        // patterns, NetworkAccess false, ShellCommandsAreReadOnly true) and this test used to assert
+        // agy refused it outright, because --dangerously-skip-permissions is all-or-nothing and
+        // ShellCommandsAreReadOnly is a PermissionGrant-level coherence exemption
+        // (WorkerBindingResolver's #529 check), not a claim this adapter's own translator understood.
+        //
+        // The hook route expresses this grant correctly end to end -- measured by #1387's second
+        // probe; see spec/baton.md §9 and docs/vendor-doc-audit.md for the full table, not restated
+        // here. So this shape now resolves rather than refuses.
         var grant = new PermissionGrant(
             ReadFiles: true, WriteFiles: false, RunShellCommands: true,
             ShellCommandPatterns: ["git diff*"], NetworkAccess: false, ShellCommandsAreReadOnly: true);
 
-        var ex = Assert.Throws<PermissionGrantUnsupportedException>(() => new AgyWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract));
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true), ArchitectContract);
 
-        Assert.Equal("agy", ex.AdapterName);
+        Assert.Contains("--dangerously-skip-permissions", target.Args);
     }
 
     [Fact]
@@ -538,6 +585,49 @@ public class AgyWorkerAdapterTests
         Assert.False(succeeded);
         Assert.Null(resolved);
         Assert.NotNull(gapReason);
+    }
+
+    /// <summary>
+    /// #1387's polarity pair, arm 1: an UNSCOPED shell grant without network still refuses -- nothing
+    /// would bound <c>--dangerously-skip-permissions</c>' network-side over-grant, so this arm must stay
+    /// exactly as conservative as <see cref="TryTranslatePermissionGrant_refuses_shell_commands_without_throwing"/>
+    /// even when the grant is otherwise identical to arm 2 below.
+    /// </summary>
+    [Fact]
+    public void A_shell_grant_without_network_and_without_patterns_still_refuses()
+    {
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: false, ShellCommandPatterns: null);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.False(succeeded);
+        Assert.Null(resolved);
+        Assert.NotNull(gapReason);
+    }
+
+    /// <summary>
+    /// #1387's polarity pair, arm 2: a PATTERN-SCOPED shell grant without network now defers to the
+    /// hook instead of refusing -- the full measured table lives in spec/baton.md §9 and
+    /// docs/vendor-doc-audit.md, not restated here. The deny half of that story is
+    /// <c>agy.hook-deny-honoured</c>'s own claim (a <c>PreToolUse</c> deny blocks the call); this test
+    /// only pins the translation this PR changes, not the hook's own enforcement, which that
+    /// sentinel already covers.
+    /// </summary>
+    [Fact]
+    public void A_pattern_scoped_shell_grant_without_network_defers_to_the_hook_instead_of_refusing()
+    {
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: false,
+            ShellCommandPatterns: ["git status*", "git log*"]);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.True(succeeded);
+        Assert.Equal("--dangerously-skip-permissions", resolved);
+        Assert.Null(gapReason);
     }
 
     [Fact]
@@ -578,7 +668,7 @@ public class AgyWorkerAdapterTests
             ReadFiles: true, WriteFiles: true, RunShellCommands: true,
             ShellCommandPatterns: ["git *"], NetworkAccess: true);
 
-        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true), ArchitectContract);
 
         Assert.Contains(target.Environment!, env => env.Name == AgyWorkerAdapter.ShellPatternsVariable && env.Value == "agy:git *");
     }
@@ -597,12 +687,50 @@ public class AgyWorkerAdapterTests
             DeniedShellCommandPatterns: ["rm *"]);
 
         var target = adapter.Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant),
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true),
             ArchitectContract);
 
         Assert.Contains(
             target.Environment!,
             env => env.Name == AgyWorkerAdapter.DeniedShellPatternsVariable && env.Value == "agy:rm *");
+    }
+
+    [Fact]
+    public void Resolving_a_grant_with_denied_option_tokens_emits_that_channel_too()
+    {
+        // #1683 F2. The hook is the ONLY enforcement of this rung on either vendor -- there is no
+        // --disallowedTools half -- so an unemitted channel is not a lost narrowing, it is the whole
+        // rung silently gone. Pinned separately from the pattern channel above because the two are
+        // matched by different rules and a field can be threaded to one and not the other.
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, RunShellCommands: true, NetworkAccess: true,
+            DeniedShellOptionTokens: ["--output"]);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true),
+            ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellOptionTokensVariable && env.Value == "agy:--output");
+    }
+
+    [Fact]
+    public void A_grant_with_no_denied_option_tokens_still_emits_that_channel_present_but_empty()
+    {
+        // Same always-emitted contract as the two channels beside it: "agy:" at minimum, so the hook
+        // can tell "nothing denied" from "the channel broke".
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(ReadFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true),
+            ArchitectContract);
+
+        Assert.Contains(
+            target.Environment!,
+            env => env.Name == AgyWorkerAdapter.DeniedShellOptionTokensVariable && env.Value == "agy:");
     }
 
     [Fact]
@@ -613,7 +741,7 @@ public class AgyWorkerAdapterTests
         var adapter = new AgyWorkerAdapter();
         var grant = new PermissionGrant(ReadFiles: true, RunShellCommands: true, NetworkAccess: true);
 
-        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+        var target = adapter.Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true), ArchitectContract);
 
         Assert.Contains(
             target.Environment!,
@@ -662,7 +790,7 @@ public class AgyWorkerAdapterTests
     {
         var grant = new PermissionGrant(RunShellCommands: true, NetworkAccess: true);
         var target = new AgyWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true), ArchitectContract);
 
         Assert.Equal("agy", target.Program);
         Assert.Equal("-p", target.Args[0]);
@@ -729,12 +857,42 @@ public class AgyWorkerAdapterTests
     }
 
     [Fact]
+    public void The_written_hooks_json_command_equals_what_BuildHookCommand_would_hand_the_probe()
+    {
+        // #1732 review N1: hooks.json's command and the resolve-time probe's command used to be two
+        // independent interpolations of the same string, pinned by nothing. Both now call
+        // AgyWorkerAdapter.BuildHookCommand -- this parses the written hooks.json (never
+        // substring-matches; see RunWrittenHookCommand's own remarks on why) and asserts its command
+        // equals BuildHookCommand's own output for the identical assembly path, which is exactly what
+        // ProcessAgyHookLivenessProbe.Probe now spawns.
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        var workspace = target.Args
+            .Select((arg, i) => (arg, i))
+            .Where(pair => pair.arg == "--add-dir")
+            .Select(pair => target.Args[pair.i + 1])
+            .Single(dir => dir.EndsWith(AgyWorkerAdapter.AgyWorkspaceDirectoryName, StringComparison.Ordinal));
+
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(workspace, ".agents", "hooks.json")));
+        var writtenCommand = doc.RootElement
+            .EnumerateObject().Single().Value
+            .GetProperty("PreToolUse")[0]
+            .GetProperty("hooks")[0]
+            .GetProperty("command").GetString()!;
+
+        var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        Assert.Equal(AgyWorkerAdapter.BuildHookCommand(hookAssemblyPath), writtenCommand);
+    }
+
+    [Fact]
     public void A_withheld_category_reaches_the_hook_through_the_environment()
     {
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: false,
                                         RunShellCommands: true, NetworkAccess: true);
         var target = new AgyWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan.", PermissionGrant: grant), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, StreamJson: true), ArchitectContract);
 
         var denied = StripVendorTag(EnvValue(target, AgyWorkerAdapter.DeniedToolsVariable)).Split(',');
 
@@ -788,6 +946,41 @@ public class AgyWorkerAdapterTests
         Assert.Contains("run_command", denied);
         Assert.Contains("manage_task", denied);
         Assert.DoesNotContain("view_file", denied);
+    }
+
+    /// <summary>
+    /// #1387 review, F1: before this pass, <c>define_subagent</c>/<c>invoke_subagent</c>/
+    /// <c>manage_subagents</c>/<c>manage_task</c> were withheld only under <c>!RunShellCommands</c>,
+    /// so a write-withheld, shell-granted grant (the real <c>review</c> role's shape) left the
+    /// subagent trio reachable and unnarrowed -- a subagent could be defined with write tools enabled
+    /// and invoked, defeating the write withholding none of the hook's other branches inspects. This
+    /// pins the fix directly against the two real shipped roles the finding named: <c>review</c> now
+    /// denies all four, <c>implement</c> (writes granted) denies none of them.
+    /// </summary>
+    [Fact]
+    public void The_real_review_role_denies_the_subagent_trio_and_manage_task()
+    {
+        var review = WorkerRoleCatalog.For("review");
+
+        var denied = AgyWorkerAdapter.BuildDeniedTools(review.Grant).Split(',');
+
+        Assert.Contains("define_subagent", denied);
+        Assert.Contains("invoke_subagent", denied);
+        Assert.Contains("manage_subagents", denied);
+        Assert.Contains("manage_task", denied);
+    }
+
+    [Fact]
+    public void The_real_implement_role_does_not_deny_the_subagent_trio_or_manage_task()
+    {
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var denied = AgyWorkerAdapter.BuildDeniedTools(implement.Grant).Split(',');
+
+        Assert.DoesNotContain("define_subagent", denied);
+        Assert.DoesNotContain("invoke_subagent", denied);
+        Assert.DoesNotContain("manage_subagents", denied);
+        Assert.DoesNotContain("manage_task", denied);
     }
 
     /// <summary>
@@ -1542,5 +1735,646 @@ public class AgyWorkerAdapterTests
 
         Assert.True(WorkerAdapterRegistry.Default.TryGetValue("agy", out var agyAdapter));
         Assert.IsType<AgyWorkerAdapter>(agyAdapter);
+    }
+
+    // ---- #1387 review F7: the composition, not just the translation ----
+    //
+    // Every test above pins BuildShellPatterns/BuildDeniedShellPatterns's OUTPUT, or the adapter's
+    // own translation. Neither runs that output through AgyHookCheckCommand.Execute, so nothing
+    // exercises "adapter emits review's patterns -> hook denies curl / allows git status" -- the
+    // composition #1387 actually depends on. agy.hook-deny-honoured (tools/vendor-verify/verify.py)
+    // only proves a deny blocks a call under a hook that always denies; it says nothing about
+    // review's real allow/deny lists producing the right verdict. This group closes that gap by
+    // feeding the REAL review role (loaded from WorkerRoles.json, not a hand-written fixture)
+    // straight into the hook, and asserts the deny REASON per arm so the two deny channels
+    // (DenyAlways vs. allow-list-miss) are told apart rather than collapsed into "decision: deny".
+    //
+    // git merge-base is deliberately not asserted here: it is shadowed by the git merge* deny entry
+    // (#1679) and would fail this test for a reason unrelated to the composition being proven.
+
+    private static string HookPayload(string commandLine) => $$"""
+        {"artifactDirectoryPath":"C:/x/brain/abc","conversationId":"abc",
+         "toolCall":{"args":{"CommandLine":"{{commandLine}}","Cwd":"C:\\x","WaitMsBeforeAsync":5000},
+                     "name":"run_command"},
+         "transcriptPath":"C:/x/transcript_full.jsonl","workspacePaths":["C:/x"]}
+        """;
+
+    private static (string Decision, string? Reason) DecideForReviewRole(string commandLine)
+    {
+        var review = WorkerRoleCatalog.For("review");
+        var deniedTools = $"{AgyWorkerAdapter.DeniedToolsVendorTag}:{AgyWorkerAdapter.BuildDeniedTools(review.Grant)}";
+        var shellPatterns = $"{AgyWorkerAdapter.ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildShellPatterns(review.Grant)}";
+        var deniedShellPatterns = $"{AgyWorkerAdapter.ShellPatternsVendorTag}:{AgyWorkerAdapter.BuildDeniedShellPatterns(review.Grant)}";
+
+        using var stdin = new StringReader(HookPayload(commandLine));
+        using var stdout = new StringWriter();
+
+        Baton.Cli.AgyHookCheckCommand.Execute(
+            stdin, stdout, deniedTools, shellPatternsRaw: shellPatterns,
+            deniedShellPatternsRaw: deniedShellPatterns, deniedShellOptionTokensRaw: "agy:");
+
+        using var doc = JsonDocument.Parse(stdout.ToString());
+        var decision = doc.RootElement.GetProperty("decision").GetString()!;
+        var reason = doc.RootElement.TryGetProperty("reason", out var reasonProp)
+            ? reasonProp.GetString()
+            : null;
+        return (decision, reason);
+    }
+
+    [Theory]
+    [InlineData("git status", "allow", null)]
+    [InlineData("git log -1", "allow", null)]
+    [InlineData("curl https://example.com", "deny", "does not match any pattern this session's grant allows")]
+    [InlineData("git push --dry-run origin HEAD", "deny", "matches this session's standing deny list")]
+    public void The_real_review_role_s_shell_patterns_compose_correctly_through_the_hook(
+        string commandLine, string expectedDecision, string? expectedReasonSubstring)
+    {
+        var (decision, reason) = DecideForReviewRole(commandLine);
+
+        Assert.Equal(expectedDecision, decision);
+        if (expectedReasonSubstring is null)
+        {
+            Assert.Null(reason);
+        }
+        else
+        {
+            Assert.Contains(expectedReasonSubstring, reason);
+        }
+    }
+
+    // ---- F1 (#1720 review): the exit-0 veto, through the REAL agy classifier ----
+
+    /// <summary>
+    /// F1's red arm (<see cref="IFailureClassifier.TryClassifySatisfiedRunFailure"/> has the why): a
+    /// worker that finished its job and wrote ABOUT a quota refusal — reviewing this adapter,
+    /// summarising an incident, drafting a runbook paragraph — had its completed run discarded as
+    /// Failed and parked until an instant fabricated from its own prose. Driven through the REAL
+    /// adapter rather than a canned double, the agy twin of
+    /// <c>ClaudeWorkerAdapterTests</c>'s own integration arm.
+    /// </summary>
+    [Fact]
+    public void Classify_does_not_veto_a_satisfied_exit_0_agy_run_whose_answer_text_quotes_the_quota_sentence()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"c-1","status":"SUCCESS","response":"I read the log: agy answered 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s.' and the lane parked."}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// F1's green arm, and the polarity control for the one above: the vendor's OWN terminal envelope
+    /// — <c>result.status</c> other than <c>SUCCESS</c>, the quota sentence in its <c>result.error</c>
+    /// — still parks a satisfied exit-0 run, with the reset instant read from that envelope. A worker
+    /// cannot emit this; the CLI writes it. The two arms differ only in whether the signal is
+    /// vendor-typed, which is the whole content of the fix.
+    /// </summary>
+    [Fact]
+    public void Classify_vetoes_a_satisfied_exit_0_agy_run_carrying_the_vendors_own_quota_result_envelope()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"eca57a30-db54-4be3-b760-53d708f8ae79","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h39m10s."}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        var now = new DateTimeOffset(2026, 8, 12, 22, 0, 0, TimeSpan.Zero);
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter,
+                timeProvider: new TestTimeProvider(now));
+
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal(FailureClassification.ExhaustedUntil, classification.FailureClassification);
+            Assert.Equal(now.AddHours(1).AddMinutes(39).AddSeconds(10), classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// agy's Finding G twin (#1720 review): the red arm above quotes the quota SENTENCE, not the
+    /// vendor's own envelope, which the typed status/error shape already rejects. See
+    /// <c>ClaudeWorkerAdapterTests.A_workers_own_answer_text_embedding_a_full_verbatim_envelope_does_not_classify</c>
+    /// for what this fixture defends against and why it needs a C# raw string.
+    /// </summary>
+    [Fact]
+    public void Classify_does_not_veto_a_satisfied_exit_0_agy_run_whose_answer_text_embeds_a_full_verbatim_envelope()
+    {
+        var stdoutTail =
+            """{"event":"result","result":{"conversation_id":"c-2","status":"SUCCESS","response":"agy printed {\"event\":\"result\",\"result\":{\"status\":\"ERROR\",\"error\":\"Individual quota reached. Resets in 1h39m10s.\"}}"}}""";
+        var contract = new WorkerContract("worker", [], [], []);
+        var directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            IFailureClassifier adapter = new AgyWorkerAdapter();
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural, StderrTail: null, StdoutTail: stdoutTail),
+                contract,
+                directory,
+                adapter);
+
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.RetryNotBefore);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    // ---- #1387 review F8: the write-granted scoped-shell variant is also intentionally in scope ----
+
+    [Fact]
+    public void A_write_granted_pattern_scoped_shell_grant_without_network_also_defers_to_the_hook()
+    {
+        // No shipped role has this shape (advise has writes without shell; implement/janitor have
+        // both plus network) -- see TryTranslatePermissionGrant's own remark on this branch for what
+        // it resolves to and why that's intentional (#1387 review, F8).
+        var adapter = new AgyWorkerAdapter();
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true,
+            ShellCommandPatterns: ["git status*"], NetworkAccess: false);
+
+        var succeeded = adapter.TryTranslatePermissionGrant(grant, out var resolved, out var gapReason);
+
+        Assert.True(succeeded);
+        Assert.Equal("--dangerously-skip-permissions", resolved);
+        Assert.Null(gapReason);
+    }
+
+    // ---- #1680: resolve-time hook liveness probe ----
+
+    /// <summary>Deterministic test double -- see <see cref="IAgyHookLivenessProbe"/>'s own remarks.</summary>
+    private sealed class FakeHookLivenessProbe : IAgyHookLivenessProbe
+    {
+        private readonly AgyHookLivenessResult _result;
+        public int CallCount { get; private set; }
+
+        public FakeHookLivenessProbe(AgyHookLivenessResult result) => _result = result;
+
+        public AgyHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout)
+        {
+            CallCount++;
+            return _result;
+        }
+    }
+
+    private static readonly PermissionGrant ReviewShapedGrant =
+        new(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true);
+
+    [Fact]
+    public void A_grant_whose_only_narrowing_is_the_hook_refuses_dispatch_when_the_probe_reports_dead()
+    {
+        // #1680 acceptance: a hook the probe cannot confirm is live refuses at resolve time, naming
+        // the hook path and what the probe actually reported -- here, a synthetic non-existent path,
+        // matching the issue's own "hook path -> non-existent file" scenario, WITHOUT spawning any
+        // real process (the probe is a fake; see FakeHookLivenessProbe).
+        var probe = new FakeHookLivenessProbe(
+            new AgyHookLivenessResult(false, "'C:/does/not/exist/Baton.Cli.dll' does not exist"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var ex = Assert.Throws<AgyHookUnverifiedException>(() => adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant, StreamJson: true), ArchitectContract));
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Contains("does not exist", ex.Message);
+        Assert.Contains("PreToolUse hook", ex.Message);
+        Assert.Contains(ex.HookAssemblyPath, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("timed out")]
+    [InlineData("stdout carried no 'decision' field")]
+    [InlineData("returned decision 'allow' instead of 'deny'")]
+    public void Any_non_deny_probe_outcome_refuses_dispatch(string detail)
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, detail));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var ex = Assert.Throws<AgyHookUnverifiedException>(() => adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant, StreamJson: true), ArchitectContract));
+
+        Assert.Contains(detail, ex.Message);
+    }
+
+    [Fact]
+    public void A_live_probe_lets_dispatch_proceed_normally()
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(true, "deny"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant, StreamJson: true), ArchitectContract);
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Equal("agy", target.Program);
+    }
+
+    [Fact]
+    public void A_non_streaming_sole_narrowing_grant_is_refused_at_resolve()
+    {
+        // #1732 review N5, ruled fail closed -- see AgyCanaryRequiresStreamJsonException's own
+        // remarks for why this shape is refused rather than shipped as a silent hole. The probe must
+        // not even run: there is nothing to confirm live if the dispatch is refused before it starts.
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var ex = Assert.Throws<AgyCanaryRequiresStreamJsonException>(() => adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant, StreamJson: false),
+            ArchitectContract));
+
+        Assert.Equal(0, probe.CallCount);
+        Assert.Contains("StreamJson", ex.Message);
+    }
+
+    [Fact]
+    public void The_same_grant_resolves_normally_once_StreamJson_is_true()
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(true, "deny"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        var target = adapter.Resolve(
+            new WorkerInvocation("Review the diff.", PermissionGrant: ReviewShapedGrant, StreamJson: true),
+            ArchitectContract);
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.NotNull(target.CountHookVerdicts);
+        // #1741: the file name travels alongside the delegate so a caller can journal the arming
+        // fact durably (ExecutionRequest.HookVerdictLedgerFileName) -- same gate as CountHookVerdicts.
+        Assert.Equal(AgyWorkerAdapter.VerdictLedgerFileName, target.HookVerdictLedgerFileName);
+    }
+
+    [Fact]
+    public void A_grant_with_both_categories_already_open_never_calls_the_probe()
+    {
+        // implement/janitor's shape: RunShellCommands and NetworkAccess both true reaches
+        // --dangerously-skip-permissions, but WriteFiles is also true, so there is nothing left for
+        // the hook to be the ONLY thing narrowing -- the probe must not run.
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        adapter.Resolve(new WorkerInvocation("Build.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Fact]
+    public void A_grant_that_never_reaches_dangerously_skip_permissions_never_calls_the_probe()
+    {
+        // advise's shape: writes granted, no shell/network at all -- resolves to plain --mode
+        // accept-edits, never --dangerously-skip-permissions, so the probe must not run regardless of
+        // what is withheld.
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        adapter.Resolve(new WorkerInvocation("Advise.", PermissionGrant: grant), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Fact]
+    public void A_default_scope_dispatch_with_no_PermissionGrant_never_calls_the_probe()
+    {
+        var probe = new FakeHookLivenessProbe(new AgyHookLivenessResult(false, "must not be called"));
+        var adapter = new AgyWorkerAdapter(probe);
+
+        adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Theory]
+    // WriteFiles withheld, network granted (review's own shape): sole narrowing.
+    [InlineData("--dangerously-skip-permissions", false, true, true)]
+    // Writes granted, network withheld (the #1387 pattern-scoped shape): sole narrowing.
+    [InlineData("--dangerously-skip-permissions", true, false, true)]
+    // Both withheld: still sole narrowing.
+    [InlineData("--dangerously-skip-permissions", false, false, true)]
+    // Both granted (implement/janitor's shape): nothing left for the hook to solely narrow.
+    [InlineData("--dangerously-skip-permissions", true, true, false)]
+    // Not --dangerously-skip-permissions at all: irrelevant what the grant withholds.
+    [InlineData("accept-edits", false, false, false)]
+    [InlineData("plan", false, false, false)]
+    public void RequiresHookAsSoleNarrowing_predicate(
+        string permissionScope, bool writeFiles, bool networkAccess, bool expected)
+    {
+        var grant = new PermissionGrant(WriteFiles: writeFiles, NetworkAccess: networkAccess);
+
+        Assert.Equal(expected, AgyWorkerAdapter.RequiresHookAsSoleNarrowing(permissionScope, grant));
+    }
+
+    [Fact]
+    public void RequiresHookAsSoleNarrowing_is_true_for_a_fully_granted_grant_carrying_a_shell_allow_pattern()
+    {
+        // #1732 review F5: writes and network both granted, but ShellCommandPatterns is non-empty --
+        // TryTranslatePermissionGrant's pattern-scoped path (#1387) reaches
+        // --dangerously-skip-permissions with no requirement that the pattern list be honoured by
+        // anything but the hook, so this is still sole narrowing.
+        var grant = new PermissionGrant(
+            WriteFiles: true, NetworkAccess: true, RunShellCommands: true,
+            ShellCommandPatterns: ["git *"]);
+
+        Assert.True(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", grant));
+    }
+
+    [Fact]
+    public void RequiresHookAsSoleNarrowing_is_true_for_a_fully_granted_grant_carrying_a_deny_always_pattern()
+    {
+        // #1732 review F5: same shape, but the standing "never" channel (#390) instead of the allow
+        // list -- a write-granted role can still carry a DenyAlways rule (e.g. "never git push
+        // --force") that only the hook enforces.
+        var grant = new PermissionGrant(
+            WriteFiles: true, NetworkAccess: true, RunShellCommands: true,
+            DeniedShellCommandPatterns: ["git push --force"]);
+
+        Assert.True(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", grant));
+    }
+
+    [Fact]
+    public void ExecutionStreamLoggers_filter_recognises_the_verdict_ledgers_own_file_name()
+    {
+        // #1732 review sub-threshold: ExecutionStreamLogger (Baton core) cannot take a project
+        // reference on Baton.Vendors (Adapter Isolation), so its filter duplicates
+        // VerdictLedgerFileName's literal value rather than referencing this constant. This test
+        // project references both assemblies, so it is the one place that duplication can be pinned
+        // against the real constant -- if the two ever drift, this goes red rather than the ledger
+        // silently reappearing in a future directory listing.
+        Assert.True(ExecutionStreamLogger.IsStreamLogFileName(AgyWorkerAdapter.VerdictLedgerFileName));
+    }
+
+    [Fact]
+    public void The_verdict_ledger_path_is_per_execution_so_a_second_executions_hook_never_inherits_the_firsts_verdicts()
+    {
+        // #1732 review F2's acceptance test. Resolve runs ONCE per binding entry (WorkerInvocation's
+        // own doc), so the SAME CoreDispatchTarget below stands in for every execution of this role --
+        // exactly the room-wide sharing the old room-scoped ledger path had. What must differ between
+        // two executions is BATON_OUTPUT_DIR, which only CoreDispatcher.AssembleChildEnvironment
+        // resolves, per dispatch -- so this drives that same expansion twice, with two different
+        // per-execution output directories, the way two real dispatches of one role in one room would.
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        var firstOutputDir = Path.Combine(Path.GetTempPath(), $"agy-ledger-exec1-{Guid.NewGuid():N}");
+        var secondOutputDir = Path.Combine(Path.GetTempPath(), $"agy-ledger-exec2-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(firstOutputDir);
+        Directory.CreateDirectory(secondOutputDir);
+        try
+        {
+            var firstEnvironment = CoreDispatcher.AssembleChildEnvironment(MakeExecutionRequest(firstOutputDir), target);
+            var secondEnvironment = CoreDispatcher.AssembleChildEnvironment(MakeExecutionRequest(secondOutputDir), target);
+
+            var firstLedgerPath = firstEnvironment.Single(e => e.Name == AgyWorkerAdapter.VerdictLedgerVariable).Value;
+            var secondLedgerPath = secondEnvironment.Single(e => e.Name == AgyWorkerAdapter.VerdictLedgerVariable).Value;
+
+            Assert.NotEqual(firstLedgerPath, secondLedgerPath);
+            Assert.StartsWith(firstOutputDir, firstLedgerPath, StringComparison.Ordinal);
+            Assert.StartsWith(secondOutputDir, secondLedgerPath, StringComparison.Ordinal);
+
+            // The first execution's hook is healthy and appends verdicts to ITS OWN path.
+            File.WriteAllLines(firstLedgerPath, ["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"]);
+
+            Assert.Equal(2, AgyHookVerdictLedger.CountVerdicts(firstLedgerPath));
+            // The second execution's hook wrote nothing to ITS OWN, different path -- unlike the prior
+            // room-scoped path, it does not see the first execution's 2 verdicts.
+            Assert.Equal(0, AgyHookVerdictLedger.CountVerdicts(secondLedgerPath));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(firstOutputDir);
+            DirectoryCleanup.DeleteRecursively(secondOutputDir);
+        }
+    }
+
+    private static ExecutionRequest MakeExecutionRequest(string outputDirectory) => new(
+        new ExecutionId($"exec-{Guid.NewGuid():N}"),
+        new WorkflowId("wf-1"),
+        new StepId("step-1"),
+        "agy",
+        Inputs: [],
+        Outputs: [],
+        Timeout: TimeSpan.FromSeconds(30),
+        Environment: ArtifactManager.BuildEnvironment([], outputDirectory, Path.GetTempPath()),
+        UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+    [Fact]
+    public void RequiresHookAsSoleNarrowing_is_false_for_a_null_grant()
+    {
+        Assert.False(AgyWorkerAdapter.RequiresHookAsSoleNarrowing("--dangerously-skip-permissions", null));
+    }
+
+    // ---- #1680: first-verdict canary primitives ----
+    // #1732 review F4: CountToolCallLines (a DONE-only, no-tool_name-required re-implementation of
+    // IWorkerUsageParser.CountToolSteps) was deleted along with its two tests here -- the wiring uses
+    // the existing, already-in-scope-at-the-call-site usageParser.CountToolSteps instead.
+
+    [Fact]
+    public void ProcessAgyHookLivenessProbe_reports_dead_for_a_nonexistent_hook_path_without_spawning_a_process()
+    {
+        // No subprocess is spawned here at all -- File.Exists short-circuits first -- so this is a
+        // real unit test of the shipped probe class, not merely of a fake, while still never touching
+        // agy (this task's own "no live agy" constraint).
+        var probe = new ProcessAgyHookLivenessProbe();
+
+        var result = probe.Probe(@"C:\definitely\does\not\exist\Baton.Cli.dll", TimeSpan.FromSeconds(1));
+
+        Assert.False(result.IsLive);
+        Assert.Contains("does not exist", result.Detail);
+    }
+
+    [Fact]
+    public void ProcessAgyHookLivenessProbe_reports_live_against_the_real_built_binary()
+    {
+        // #1732 review F8: the single load-bearing claim of the whole probe -- "with BATON_HOOK_*
+        // stripped, the real shipped binary answers deny" -- executed for real, not merely traced by
+        // reading. Needs only the built Baton.Cli.dll this suite already asserts is present with its
+        // runtimeconfig (The_hook_assembly_carries_its_runtimeconfig_so_dotnet_can_load_it above). With
+        // F6 landed this now also spawns through the real cmd/sh form, so this one test covers both.
+        // No agy, no vendor spend, no live run. The per-process live-result cache is reset first and
+        // the spawn counter asserted after, so this test cannot be served from an entry some earlier
+        // test in this class warmed for the same assembly path (#1732 review round 3, Finding A): a
+        // test whose whole purpose is executing the real binary must fail if nothing was executed.
+        ProcessAgyHookLivenessProbe.ResetCacheForTesting();
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var probe = new ProcessAgyHookLivenessProbe();
+
+        var result = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsLive, $"expected the real hook to answer deny; got: {result.Detail}");
+        Assert.Equal("deny", result.Detail);
+        Assert.Equal(1, ProcessAgyHookLivenessProbe.SpawnCountForTesting);
+    }
+
+    [Fact]
+    public void A_second_resolve_of_the_same_live_path_reuses_the_first_probe_instead_of_spawning_again()
+    {
+        // #1732 review "Probe cost" (ruled ahead of #1731): two agy roles resolving in the same
+        // process under one CLI invocation must not each pay for a cold `cmd /c dotnet …` start for a
+        // liveness answer that cannot meaningfully change within one short-lived process.
+        // ResetCacheForTesting's own remarks explain why this call is needed before asserting a
+        // known-empty starting point.
+        ProcessAgyHookLivenessProbe.ResetCacheForTesting();
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var probe = new ProcessAgyHookLivenessProbe();
+
+        var first = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+        Assert.True(first.IsLive, $"expected the real hook to answer deny; got: {first.Detail}");
+        var afterFirst = ProcessAgyHookLivenessProbe.SpawnCountForTesting;
+        Assert.Equal(1, afterFirst);
+
+        var second = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(first, second);
+        Assert.Equal(afterFirst, ProcessAgyHookLivenessProbe.SpawnCountForTesting);
+    }
+
+    [Theory]
+    [InlineData("""{"decision":"deny","reason":"x"}""", true)]
+    [InlineData("""{"decision":"allow"}""", false)]
+    [InlineData("""{"decision":"maybe"}""", false)]
+    [InlineData("""{"notADecision":true}""", false)]
+    [InlineData("not json", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void ProcessAgyHookLivenessProbe_Evaluate_reads_only_an_explicit_deny_as_live(string? stdout, bool expectedLive)
+    {
+        var result = ProcessAgyHookLivenessProbe.Evaluate(stdout);
+
+        Assert.Equal(expectedLive, result.IsLive);
+    }
+
+    /// <summary>
+    /// #1166: the agy side of <see cref="ClaudeWorkerAdapterTests.An_unseen_project_directory_is_refused_before_any_worker_spawns"/>
+    /// -- see that test's own doc for the red-first claim both arms make against the pre-#1166 behaviour.
+    /// </summary>
+    [Fact]
+    public void An_unseen_project_directory_is_refused_before_any_worker_spawns()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unseen-agy-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: unseenProject), ArchitectContract));
+
+        Assert.Equal(unseenProject, ex.ProjectPath);
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("baton trust", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1166: effective grant = role grant ∩ project ceiling. Kept out of the
+    /// <c>--dangerously-skip-permissions</c> shape deliberately (RunShellCommands/NetworkAccess both
+    /// stay false on the role grant) -- that shape also arms the hook-liveness probe
+    /// (<see cref="AgyWorkerAdapter.RequiresHookAsSoleNarrowing"/>), which is a different concern this
+    /// test does not need to pay for. Uses a contract with no declared outputs, deliberately: capping
+    /// WriteFiles away on agy while a contract declares outputs now refuses
+    /// (<see cref="A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy"/>,
+    /// #1166 review finding B) -- that is a different, deliberately separate concern from the plain
+    /// intersection this test asserts.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_the_role_grant_caps_the_effective_grant_to_the_intersection()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-cap-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+        var noOutputsContract = new WorkerContract("architect", ["goal"], [], []);
+
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            noOutputsContract);
+
+        // The capped grant no longer grants writes, so the mode flag must reflect "plan", not
+        // "accept-edits" -- the translation path a still-WriteFiles:true grant would have taken.
+        Assert.Equal("plan", ArgValue(target, "--mode"));
+
+        var denied = target.Environment!.Single(v => v.Name == AgyWorkerAdapter.DeniedToolsVariable).Value;
+        Assert.Contains("write_to_file", denied);
+    }
+
+    /// <summary>
+    /// #1166 review finding A -- the agy side of
+    /// <see cref="ClaudeWorkerAdapterTests.A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path"/>,
+    /// same claim, same both-directions assertion.
+    /// </summary>
+    [Fact]
+    public void A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path()
+    {
+        var sourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src-agy-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(sourceRepo, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: worktreePath, WorktreeSourceRepository: sourceRepo),
+            ArchitectContract);
+
+        Assert.Equal(worktreePath, target.WorkingDirectory);
+
+        var untrustedWorktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree2-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(untrustedWorktreePath, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var otherSourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src2-agy-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: untrustedWorktreePath, WorktreeSourceRepository: otherSourceRepo),
+            ArchitectContract));
+        Assert.Equal(otherSourceRepo, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding B: on agy a withheld write does NOT reach the outbox (#670,
+    /// <c>WithheldWritesReachTheOutbox</c> defaults false) -- so a ceiling that caps WriteFiles away
+    /// from a role grant that had it, over a contract declaring outputs, must refuse here rather than
+    /// let a worker that cannot write its declared output run to completion and pay for itself before
+    /// failing the contract check (#629). See
+    /// <see cref="ClaudeWorkerAdapterTests.A_ceiling_that_caps_away_write_files_does_not_refuse_the_contract_on_claude"/>
+    /// for the polarity partner.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unsatisfiable-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: false, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var ex = Assert.Throws<UnsatisfiableOutputContractException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains("plan.md", ex.UnwritableOutputs);
     }
 }

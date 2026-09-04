@@ -1,14 +1,19 @@
+using System.Text.Json;
 using Baton.Cli.Daemon;
 using Baton.Artifacts;
 using Baton.Concurrency;
 using Baton.Domain;
+using Baton.Status;
 using Baton.Store;
 using Baton.Templates;
 using Xunit;
 
 namespace Baton.Cli.Tests.Daemon;
 
-[Collection(SerializedEnvironmentCollection.Name)]
+/// <remarks>
+/// #1524: same <see cref="BatonEnvironmentSnapshot.BeginScope"/> isolation as
+/// <c>Baton.Vendors.Tests.WorkerRoleCatalogTests</c>.
+/// </remarks>
 public class RoomRetentionSweepTests
 {
     private static readonly StepId StepA = new("stepA");
@@ -43,7 +48,35 @@ public class RoomRetentionSweepTests
         }
     }
 
-    private static async Task<string> CreateTerminalRoomWithArtifactsAsync(string parentDir, string roomName, ExecutionId execId)
+    /// <summary>
+    /// #1157: appends journal lines carrying a CHOSEN writer stamp, which
+    /// <see cref="FlowEventLogWriter"/> cannot do — it stamps <c>DateTime.UtcNow</c>, so every room a
+    /// test builds through it ends "just now" and no test could distinguish a terminal instant from
+    /// the moment the fixture was written. Same wire contract
+    /// (<see cref="FlowEventLogJson.Options"/>) and the same one-complete-line-per-append shape, so
+    /// what is read back is a real journal, not a shape only this test understands. Pass
+    /// <paramref name="writerUtcTimestamp"/> as <c>null</c> to produce a pre-#745 legacy line.
+    /// </summary>
+    private static async Task AppendStampedLogEventsAsync(
+        string logPath, DateTime? writerUtcTimestamp, params FlowEvent[] events)
+    {
+        var text = string.Concat(events.Select(@event =>
+            JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(@event, writerUtcTimestamp),
+                typeof(LogEntry),
+                FlowEventLogJson.Options) + "\n"));
+
+        await File.AppendAllTextAsync(logPath, text, TestContext.Current.CancellationToken);
+    }
+
+    /// <param name="terminalAtUtc">
+    /// #1157: when the run ENDED, stamped onto the journal lines themselves. <c>null</c> keeps the
+    /// original behaviour (<see cref="FlowEventLogWriter"/>'s own "now"); <see cref="LegacyJournal"/>
+    /// writes the same two events with no writer stamps at all, the pre-#745 shape the retention
+    /// fallback exists for.
+    /// </param>
+    private static async Task<string> CreateTerminalRoomWithArtifactsAsync(
+        string parentDir, string roomName, ExecutionId execId, DateTime? terminalAtUtc = null)
     {
         var roomDir = Path.Combine(parentDir, roomName);
         Directory.CreateDirectory(roomDir);
@@ -52,10 +85,25 @@ public class RoomRetentionSweepTests
         var logPath = Path.Combine(roomDir, "flow.jsonl");
 
         await SnapshotBinder.PersistAsync(SingleStepSnapshot(), snapshotPath, TestContext.Current.CancellationToken);
-        await WriteLogEventsAsync(
-            logPath,
+
+        FlowEvent[] events =
+        [
             new FlowEvent.ExecutionRequestAccepted(TestRequest(execId)),
-            new FlowEvent.ExecutionSucceeded(execId));
+            new FlowEvent.ExecutionSucceeded(execId),
+        ];
+
+        if (terminalAtUtc == LegacyJournal)
+        {
+            await AppendStampedLogEventsAsync(logPath, writerUtcTimestamp: null, events);
+        }
+        else if (terminalAtUtc is { } instant)
+        {
+            await AppendStampedLogEventsAsync(logPath, instant, events);
+        }
+        else
+        {
+            await WriteLogEventsAsync(logPath, events);
+        }
 
         var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
         var execDir = ArtifactManager.AllocateOutputDirectory(artifactsRoot, execId);
@@ -63,6 +111,14 @@ public class RoomRetentionSweepTests
 
         return roomDir;
     }
+
+    /// <summary>
+    /// Sentinel for <see cref="CreateTerminalRoomWithArtifactsAsync"/>'s <c>terminalAtUtc</c> meaning
+    /// "write a pre-#745 journal with no writer stamps". <see cref="DateTime.MinValue"/> is not a
+    /// plausible real stamp, and a separate bool parameter would have made the two mutually exclusive
+    /// options independently settable.
+    /// </summary>
+    private static readonly DateTime LegacyJournal = DateTime.MinValue;
 
     private static async Task<string> CreateRoomWithEventsAsync(string parentDir, string roomName, params RoomEvent[] events)
     {
@@ -183,36 +239,24 @@ public class RoomRetentionSweepTests
     [Fact]
     public void GetInterval_ClampsPathologicalValue_InsteadOfOverflowing()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable);
-        try
-        {
-            // Pins the clamp (RoomRetentionSweep.MaxInterval documents why it exists): a value whose
-            // seconds would overflow TimeSpan.FromSeconds must collapse to MaxInterval, never throw.
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, "1e300");
-            var interval = RoomRetentionSweep.GetInterval();
-            Assert.Equal(RoomRetentionSweep.MaxInterval, interval);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, prior);
-        }
+        // Pins the clamp (RoomRetentionSweep.MaxInterval documents why it exists): a value whose
+        // seconds would overflow TimeSpan.FromSeconds must collapse to MaxInterval, never throw.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionSweepIntervalSecondsOverride = "1e300" });
+
+        var interval = RoomRetentionSweep.GetInterval();
+        Assert.Equal(RoomRetentionSweep.MaxInterval, interval);
     }
 
     [Fact]
     public void GetInterval_LiftsSubSecondValue_ToMinInterval()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable);
-        try
-        {
-            // Pins the lower clamp (RoomRetentionSweep.MinInterval documents the rationale): a value below
-            // one second must lift to MinInterval rather than pass through near-zero.
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, "1e-9");
-            Assert.Equal(RoomRetentionSweep.MinInterval, RoomRetentionSweep.GetInterval());
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.IntervalSecondsEnvironmentVariable, prior);
-        }
+        // Pins the lower clamp (RoomRetentionSweep.MinInterval documents the rationale): a value below
+        // one second must lift to MinInterval rather than pass through near-zero.
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionSweepIntervalSecondsOverride = "1e-9" });
+
+        Assert.Equal(RoomRetentionSweep.MinInterval, RoomRetentionSweep.GetInterval());
     }
 
     [Fact]
@@ -260,15 +304,16 @@ public class RoomRetentionSweepTests
 
         try
         {
+            // #1157: the grace window is measured from the run's terminal instant, which lives in the
+            // journal -- so that is what these two fixtures differ in. Backdating flow.jsonl's mtime
+            // (what this test used to do) no longer ages a room, which is the point of the change.
             var exec1 = new ExecutionId("exec-1");
-            var room1Dir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-1-old", exec1);
-            var flowLog1Path = Path.Combine(room1Dir, "flow.jsonl");
-            File.SetLastWriteTimeUtc(flowLog1Path, DateTime.UtcNow.AddHours(-2));
+            var room1Dir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-1-old", exec1, DateTime.UtcNow.AddHours(-2));
 
             var exec2 = new ExecutionId("exec-2");
-            var room2Dir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-2-new", exec2);
-            var flowLog2Path = Path.Combine(room2Dir, "flow.jsonl");
-            File.SetLastWriteTimeUtc(flowLog2Path, DateTime.UtcNow);
+            var room2Dir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-2-new", exec2, DateTime.UtcNow);
 
             var graceThreshold = TimeSpan.FromHours(1);
             var sweep = new RoomRetentionSweep();
@@ -297,6 +342,217 @@ public class RoomRetentionSweepTests
         }
     }
 
+    /// <summary>
+    /// #1157, the headline: a run that ended two hours ago whose journal was appended to a moment ago
+    /// is still two hours old. Under the retired <c>flow.jsonl</c>-mtime proxy the late append reset
+    /// the grace window, so this room was kept — and kept again on every subsequent sweep for as long
+    /// as anything kept touching the file.
+    /// </summary>
+    [Fact]
+    public async Task PruneRoomAsync_OldTerminalInstant_ButFreshlyAppendedJournal_IsStillPruned()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_prune_lateappend_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var execId = new ExecutionId("exec-late-append");
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-late-append", execId, DateTime.UtcNow.AddHours(-2));
+
+            // The late append: a diagnostic StateProjector gives no StepState consequence, so the room
+            // stays terminal and only the file's mtime (and its last line's stamp) move forward.
+            var flowLogPath = Path.Combine(roomDir, "flow.jsonl");
+            await AppendStampedLogEventsAsync(
+                flowLogPath,
+                DateTime.UtcNow,
+                new FlowEvent.ZeroOutputsDespiteSubstantialWork(execId, "late diagnostic"));
+
+            // The discriminating control, read BEFORE the assertion: the retired proxy would have kept
+            // this room. Without it a passing test below could just mean the fixture never looked
+            // fresh to begin with, which is the arm that decides whether this test is about anything.
+            Assert.True(
+                DateTime.UtcNow - File.GetLastWriteTimeUtc(flowLogPath) < TimeSpan.FromHours(1),
+                "fixture is not exercising the defect: flow.jsonl's mtime must be INSIDE the grace window");
+
+            var sweep = new RoomRetentionSweep();
+            var (_, prunedCount) = await sweep.ExecuteSingleSweepAsync(
+                roomsDirectoryOverride: tempRoot,
+                graceOverride: TimeSpan.FromHours(1),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, prunedCount);
+
+            var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
+            Assert.True(Directory.Exists(ArtifactManager.ResolvePrunedOutputDirectory(artifactsRoot, execId)));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1157 / spec/baton.md §3: a room with no terminal event has not ended, and the sweep may not
+    /// invent an instant for it — including the crash window, where the journal simply stops. Pinned
+    /// with a grace of zero so nothing but the missing terminal instant can be what refuses it.
+    /// </summary>
+    [Fact]
+    public async Task PruneRoomAsync_NonTerminalRoom_HasNoTerminalInstantAndIsNotPruned()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_prune_nonterminal_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var execId = new ExecutionId("exec-running");
+            var roomDir = Path.Combine(tempRoot, "room-running");
+            Directory.CreateDirectory(roomDir);
+
+            await SnapshotBinder.PersistAsync(
+                SingleStepSnapshot(),
+                Path.Combine(roomDir, "snapshot.json"),
+                TestContext.Current.CancellationToken);
+
+            // Accepted but never settled -- the shape a journal has when the engine died mid-execution.
+            await AppendStampedLogEventsAsync(
+                Path.Combine(roomDir, "flow.jsonl"),
+                DateTime.UtcNow.AddHours(-2),
+                new FlowEvent.ExecutionRequestAccepted(TestRequest(execId)));
+
+            var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
+            var execDir = ArtifactManager.AllocateOutputDirectory(artifactsRoot, execId);
+            await File.WriteAllTextAsync(
+                Path.Combine(execDir, "output.txt"), "artifact-data", TestContext.Current.CancellationToken);
+
+            var pruned = await RoomRetentionSweep.PruneRoomAsync(
+                roomDir, TimeSpan.Zero, TestContext.Current.CancellationToken);
+
+            Assert.False(pruned);
+            Assert.True(Directory.Exists(execDir));
+            Assert.False(Directory.Exists(ArtifactManager.ResolvePrunedOutputDirectory(artifactsRoot, execId)));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1157's legacy arm: a pre-#745 journal carries no writer stamps, so there is no terminal instant
+    /// to read and the grace window falls back to <c>flow.jsonl</c>'s mtime — announced once per room,
+    /// not once per sweep, so a daemon at the five-minute placeholder cadence does not emit 288 copies
+    /// a day per room.
+    /// </summary>
+    [Fact]
+    public async Task PruneRoomAsync_LegacyJournalWithNoWriterStamps_FallsBackToMtimeAndWarnsOncePerRoom()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_prune_legacy_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var execId = new ExecutionId("exec-legacy");
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-legacy", execId, LegacyJournal);
+            var flowLogPath = Path.Combine(roomDir, "flow.jsonl");
+
+            // Only the mtime can age this room -- its journal carries no instant at all. Inside the
+            // grace window first: the fallback has to be a real read of the mtime, not a blanket
+            // "no instant, prune anyway".
+            File.SetLastWriteTimeUtc(flowLogPath, DateTime.UtcNow);
+
+            var warnings = new StringWriter();
+            var keptInsideGrace = await RoomRetentionSweep.PruneRoomAsync(
+                roomDir, TimeSpan.FromHours(1), TestContext.Current.CancellationToken, warnings);
+
+            Assert.False(keptInsideGrace);
+
+            File.SetLastWriteTimeUtc(flowLogPath, DateTime.UtcNow.AddHours(-2));
+
+            var prunedOutsideGrace = await RoomRetentionSweep.PruneRoomAsync(
+                roomDir, TimeSpan.FromHours(1), TestContext.Current.CancellationToken, warnings);
+
+            Assert.True(prunedOutsideGrace);
+
+            var lines = warnings.ToString()
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var line = Assert.Single(lines);
+            Assert.Contains(roomDir, line, StringComparison.Ordinal);
+            Assert.Contains("predates writer timestamps", line, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1157, second reader: the warning above must name the CAUSE, not merely appear. The second of
+    /// spec/baton.md §3's absence cases also reaches the mtime fallback, and the first version of this
+    /// code told the operator such a room predated #745 — about a journal written seconds earlier, a
+    /// wrong census in the one place that reports it.
+    /// <para>
+    /// This is the discriminating arm for
+    /// <see cref="PruneRoomAsync_LegacyJournalWithNoWriterStamps_FallsBackToMtimeAndWarnsOncePerRoom"/>:
+    /// that test asserts the #745 sentence, and without this one nothing would notice it being said
+    /// about every absent instant rather than about a legacy journal specifically.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PruneRoomAsync_ZeroStepWorkflow_FallsBackWithoutBlamingTheLegacyJournalCause()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_prune_zerostep_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var roomDir = Path.Combine(tempRoot, "room-zero-step");
+            Directory.CreateDirectory(roomDir);
+
+            var zeroStepSnapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-empty"),
+                new WorkflowTemplateId("zero-step"),
+                WorkflowTemplateVersion: 1,
+                Steps: []);
+            await SnapshotBinder.PersistAsync(
+                zeroStepSnapshot,
+                Path.Combine(roomDir, "snapshot.json"),
+                TestContext.Current.CancellationToken);
+
+            // The shape RunCommand leaves behind: FlowEventLogWriter creates the journal on construction,
+            // so the file exists and is empty. A zero-step snapshot projects terminal off that.
+            var flowLogPath = Path.Combine(roomDir, "flow.jsonl");
+            await File.WriteAllTextAsync(flowLogPath, string.Empty, TestContext.Current.CancellationToken);
+            File.SetLastWriteTimeUtc(flowLogPath, DateTime.UtcNow.AddHours(-2));
+
+            var warnings = new StringWriter();
+            await RoomRetentionSweep.PruneRoomAsync(
+                roomDir, TimeSpan.FromHours(1), TestContext.Current.CancellationToken, warnings);
+
+            var line = Assert.Single(warnings.ToString()
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            Assert.Contains(roomDir, line, StringComparison.Ordinal);
+            Assert.DoesNotContain("predates writer timestamps", line, StringComparison.Ordinal);
+            Assert.Contains("no journal line ever transitioned it to terminal", line, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
     [Fact]
     public async Task PruneRoomAsync_KeepMarkedRoom_IsNotPruned()
     {
@@ -306,9 +562,8 @@ public class RoomRetentionSweepTests
         try
         {
             var execId = new ExecutionId("exec-keep");
-            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-keep", execId);
-            var flowLogPath = Path.Combine(roomDir, "flow.jsonl");
-            File.SetLastWriteTimeUtc(flowLogPath, DateTime.UtcNow.AddHours(-2));
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-keep", execId, DateTime.UtcNow.AddHours(-2));
 
             await KeepMarker.MarkKeepAsync(roomDir, TestContext.Current.CancellationToken);
 
@@ -350,13 +605,13 @@ public class RoomRetentionSweepTests
             // leaving the room merely non-terminal so PruneAsync returns false without throwing. Lock contention
             // is both the realistic per-room prune failure and one that actually reaches the catch.
             var exec1 = new ExecutionId("exec-1");
-            var room1Dir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-1-locked", exec1);
-            File.SetLastWriteTimeUtc(Path.Combine(room1Dir, "flow.jsonl"), DateTime.UtcNow.AddHours(-2));
+            var room1Dir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-1-locked", exec1, DateTime.UtcNow.AddHours(-2));
 
             // Room 2: an equally terminal, prunable room the sweep must still reach after room 1 throws.
             var exec2 = new ExecutionId("exec-2");
-            var room2Dir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "room-2-valid", exec2);
-            File.SetLastWriteTimeUtc(Path.Combine(room2Dir, "flow.jsonl"), DateTime.UtcNow.AddHours(-2));
+            var room2Dir = await CreateTerminalRoomWithArtifactsAsync(
+                tempRoot, "room-2-valid", exec2, DateTime.UtcNow.AddHours(-2));
 
             var sweep = new RoomRetentionSweep();
 
@@ -392,62 +647,139 @@ public class RoomRetentionSweepTests
     [Fact]
     public void EnvironmentVariables_PruneDefaultsAndOverrides()
     {
-        var priorEnabled = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable);
-        var priorGrace = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
-
-        try
+        using (BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Blank))
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, null);
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, null);
-
             Assert.False(RoomRetentionSweep.IsPruneEnabled());
             Assert.Equal(RoomRetentionSweep.PlaceholderDefaultPruneGrace, RoomRetentionSweep.GetPruneGrace());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, "true");
-            Assert.True(RoomRetentionSweep.IsPruneEnabled());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, "1");
-            Assert.True(RoomRetentionSweep.IsPruneEnabled());
-
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1800");
-            Assert.Equal(TimeSpan.FromSeconds(1800), RoomRetentionSweep.GetPruneGrace());
         }
-        finally
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneEnabledOverride = "true" }))
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneEnabledEnvironmentVariable, priorEnabled);
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, priorGrace);
+            Assert.True(RoomRetentionSweep.IsPruneEnabled());
+        }
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneEnabledOverride = "1" }))
+        {
+            Assert.True(RoomRetentionSweep.IsPruneEnabled());
+        }
+
+        using (BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1800" }))
+        {
+            Assert.Equal(TimeSpan.FromSeconds(1800), RoomRetentionSweep.GetPruneGrace());
         }
     }
 
     [Fact]
     public void GetPruneGrace_ClampsPathologicalValue_ToMaxPruneGrace()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1e300");
-            var grace = RoomRetentionSweep.GetPruneGrace();
-            Assert.Equal(RoomRetentionSweep.MaxPruneGrace, grace);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, prior);
-        }
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1e300" });
+
+        var grace = RoomRetentionSweep.GetPruneGrace();
+        Assert.Equal(RoomRetentionSweep.MaxPruneGrace, grace);
     }
 
     [Fact]
     public void GetPruneGrace_LiftsSubSecondValue_ToMinPruneGrace()
     {
-        var prior = Environment.GetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable);
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Blank with { RetentionPruneGraceSecondsOverride = "1e-9" });
+
+        var grace = RoomRetentionSweep.GetPruneGrace();
+        Assert.Equal(RoomRetentionSweep.MinPruneGrace, grace);
+    }
+
+    // #1659: the retention hook -- RoomRetentionSweep may call `baton rooms prune --terminal` behind
+    // DaemonSettings.RoomsRetentionDays, default off.
+    [Fact]
+    public void ResolveRoomsRetentionDays_NoSettingsAndNoOverride_IsNull()
+    {
+        var sweep = new RoomRetentionSweep();
+        Assert.Null(sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public void ResolveRoomsRetentionDays_SettingsValue_IsUsedWhenNoOverride()
+    {
+        var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 5 });
+        Assert.Equal(5, sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public void ResolveRoomsRetentionDays_NonPositiveSettingsValue_IsTreatedAsOff()
+    {
+        var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 0 });
+        Assert.Null(sweep.ResolveRoomsRetentionDays());
+    }
+
+    [Fact]
+    public async Task ExecuteRoomsRetentionPruneAsync_NoRetentionConfigured_IsANoOp()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_retention_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
         try
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, "1e-9");
-            var grace = RoomRetentionSweep.GetPruneGrace();
-            Assert.Equal(RoomRetentionSweep.MinPruneGrace, grace);
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "old-room", new ExecutionId("exec-1"));
+            await WriteRoomTerminalSentinelAsync(roomDir);
+            var registryPath = Path.Combine(tempRoot, "room-registry.jsonl");
+            await Baton.Vendors.RoomRegistryStore.AppendAsync(
+                roomDir, tempRoot, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var sweep = new RoomRetentionSweep(); // no DaemonSettings -> RoomsRetentionDays unset
+            var deletedCount = await sweep.ExecuteRoomsRetentionPruneAsync(
+                registryFilePathOverride: registryPath, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, deletedCount);
+            Assert.True(Directory.Exists(roomDir));
         }
         finally
         {
-            Environment.SetEnvironmentVariable(RoomRetentionSweep.PruneGraceSecondsEnvironmentVariable, prior);
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
         }
+    }
+
+    [Fact]
+    public async Task ExecuteRoomsRetentionPruneAsync_ConfiguredRetentionDays_DeletesAnOldTerminalRoom()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "baton_sweep_retention_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var roomDir = await CreateTerminalRoomWithArtifactsAsync(tempRoot, "old-room", new ExecutionId("exec-1"));
+            var terminalSentinelPath = await WriteRoomTerminalSentinelAsync(roomDir);
+            // Backdate the sentinel so a 1-day retention window finds it eligible.
+            File.SetLastWriteTimeUtc(terminalSentinelPath, DateTime.UtcNow.AddDays(-30));
+
+            var registryPath = Path.Combine(tempRoot, "room-registry.jsonl");
+            await Baton.Vendors.RoomRegistryStore.AppendAsync(
+                roomDir, tempRoot, registryPath, explicitRegister: true, cancellationToken: TestContext.Current.CancellationToken);
+
+            var sweep = new RoomRetentionSweep(new Baton.Vendors.DaemonSettings { RoomsRetentionDays = 1 });
+            var deletedCount = await sweep.ExecuteRoomsRetentionPruneAsync(
+                registryFilePathOverride: registryPath, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, deletedCount);
+            Assert.False(Directory.Exists(roomDir));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, true);
+            }
+        }
+    }
+
+    private static async Task<string> WriteRoomTerminalSentinelAsync(string roomDir)
+    {
+        var view = new Baton.Status.WorkflowStatusView(Baton.Status.WorkflowOutcome.Succeeded, [], [], null);
+        await Baton.Status.TerminalSentinelWriter.WriteAsync(roomDir, view, TestContext.Current.CancellationToken);
+        return Path.Combine(roomDir, Baton.Status.TerminalSentinelWriter.TerminalSentinelFileName);
     }
 }
