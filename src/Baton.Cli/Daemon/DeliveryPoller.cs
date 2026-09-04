@@ -146,7 +146,7 @@ public sealed class DeliveryPoller : BackgroundService
 
         // A URL reference pins its own repo (spec/baton.md §2), so `gh pr view <url>` needs no cwd
         // inside that repo's checkout. A bare number relies on `gh` resolving the repo from the cwd it
-        // runs in, so that shape falls back to the room's own §8 registry project root, and is skipped
+        // runs in, so that shape falls back to the room's own spec/baton.md §8 registry project root, and is skipped
         // (logged once per room) when the room has none.
         var isUrlReference = prArgument.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             || prArgument.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
@@ -156,7 +156,7 @@ public sealed class DeliveryPoller : BackgroundService
             if (_missingProjectRootWarnedRooms.Add(room.RoomDir))
             {
                 (warningSink ?? Console.Error).WriteLine(
-                    $"DeliveryPoller: '{room.RoomDir}' declares a bare PR number with no registered §8 "
+                    $"DeliveryPoller: '{room.RoomDir}' declares a bare PR number with no registered spec/baton.md §8 "
                     + "project root, so 'gh' has no repo context to run in -- skipped. Reported once per room.");
             }
 

@@ -304,7 +304,7 @@ public sealed class DeliveryPollerTests : IDisposable
     }
 
     /// <summary>
-    /// #734 review finding: a bare PR number has no repo context without the room's own §8 project
+    /// #734 review finding: a bare PR number has no repo context without the room's own spec/baton.md §8 project
     /// root, and must be skipped with a logged line rather than silently -- once per room.
     /// </summary>
     [Fact]
