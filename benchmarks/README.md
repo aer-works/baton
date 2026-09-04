@@ -26,10 +26,11 @@ check, not an enforcement.
 The file is sorted with `on_vendor_frontier` rows first, then by utility, then by quality — so a row a
 same-vendor sibling dominates (Opus xhigh, 73 at 89 steps, behind Opus high's 73 at 73) sorts below
 every frontier row whatever its utility. At the default L of 0.10 (one quality point forfeited per ten
-agent steps) the frontier rows run Sol max, Sol xhigh, Opus high, Sol high, Opus max, Opus medium.
-Raise L to 0.20 and Opus medium passes Opus high; at 0.40 the top five are all Sol or Opus rows at 61
-steps or fewer. Gemini 3.8 Flash high ties Opus max for the best raw quality (74) and its medium row
-ties for sixth; both fall to tenth and eleventh once steps count at all.
+agent steps) the first six rows are Sol max, Sol xhigh, Opus high, Sol high, Opus max, Opus medium —
+all six on their vendor's frontier, four of them on the cross-vendor one. Raise L to 0.20 and Opus
+medium passes Opus high; at 0.40 the top five are all Sol or Opus rows at 61 steps or fewer. Gemini
+3.8 Flash high ties Opus max for the best raw quality (74) and its medium row ties for sixth; at the
+default L they sit tenth and eleventh, and at 0.05 eighth and ninth.
 
 ## Reading rules the snapshots share
 

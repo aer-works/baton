@@ -11,7 +11,7 @@ What each column is for, and why a ratio alone misleads, is written once in benc
 ("Derived scores"); --sweep prints the top rows under several L values instead of writing anything.
 
 Usage:
-    python benchmarks/deepswe/derive_scores.py benchmarks/deepswe/2026-09-04 [--lambda 0.10] [--sweep]
+    python benchmarks/deepswe/derive_scores.py benchmarks/deepswe/2026-09-04 [--lambda 0.10] [--sweep | --check]
 """
 
 from __future__ import annotations
@@ -97,8 +97,12 @@ def main(argv: list[str]) -> int:
         w = csv.DictWriter(buf, fieldnames=fields, lineterminator="\n")
         w.writeheader()
         w.writerows(derived)
-        # newline="" so CRLF drift is a difference, not something universal-newline reading hides.
-        current = target.open(encoding="utf-8", newline="").read() if target.exists() else ""
+        # newline="" so CRLF drift is a difference, not something universal-newline reading hides;
+        # .gitattributes pins the derived file to LF so a fresh checkout compares byte-equal.
+        current = ""
+        if target.exists():
+            with target.open(encoding="utf-8", newline="") as f:
+                current = f.read()
         if current != buf.getvalue():
             print(f"derive_scores: {target} is stale; rerun without --check", file=sys.stderr)
             return 1
