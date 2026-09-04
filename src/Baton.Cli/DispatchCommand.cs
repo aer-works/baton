@@ -275,14 +275,91 @@ public static class DispatchCommand
         var runOptions = new RunOptions(
             workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, options.WorkflowId,
             ProjectRootDirectory: workspace, Register: true);
-        var result = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
+        // #1841: capture a vendor-reported id while stdout is flowing. Reading the finished log is
+        // not reliable here: the init envelope is the first line and can be rolled out of a long
+        // execution's bounded log. The callback is keyed by the same binding name RunCommand resolved,
+        // while the adapter remains solely responsible for recognizing its own vendor envelope.
+        var capturedSessionIds = new Dictionary<string, string>(StringComparer.Ordinal);
+        var captureLock = new object();
+        void CaptureSessionId(string workerName, string rawLine)
+        {
+            if (!bindings.TryGetValue(workerName, out var entry)
+                || !adapters.TryGetValue(entry.Adapter, out var adapter)
+                || !adapter.TryParseSessionId(rawLine, out var sessionId)
+                || sessionId is not { Length: > 0 })
+            {
+                return;
+            }
+
+            lock (captureLock)
+            {
+                // Last report wins, including a later attempt by the same binding.
+                capturedSessionIds[workerName] = sessionId;
+            }
+        }
+
+        var result = await RunCommand.ExecuteAsync(
+            runOptions, adapters, cancellationToken: cancellationToken, onWorkerStdoutLine: CaptureSessionId)
+            .ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
         {
             CopyPrimaryOutputToOverride(options, result, primaryOutputName);
         }
 
+        // #1841: read-side session id capture -- records the id an adapter's own vendor stream
+        // reported (never mints one; see spec/baton.md §3's dispatch entry for why minting one into
+        // the frozen CoreDispatchTarget argv would break a #1373 retry) and records it onto THIS
+        // room's own bindings.json entry, exactly where a future `dispatch --continue` off this room
+        // reads it (ResolveContinuationAsync below). Touches only SessionId -- never ResumeSession,
+        // so a --continue child's own chained `ResumeSession: true` (set above, at :119) survives this
+        // rewrite unchanged.
+        try
+        {
+            await RecordCapturedSessionIdsAsync(bindings, capturedSessionIds, bindingsFilePath)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The worker outcome is already journaled. Session metadata improves a future dispatch,
+            // but losing it must not suppress this dispatch's terminal sentinel or real exit code.
+            Console.Error.WriteLine(
+                $"Warning: could not record the vendor session id in '{bindingsFilePath}': {ex.Message} "
+                + "This dispatch result is unchanged, but the newly reported id was not recorded; "
+                + "a later --continue may refuse when no prior session id exists.");
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// #1841: persists ids already recovered from live worker stdout by
+    /// <see cref="IWorkerAdapter.TryParseSessionId"/>. A no-op write when nothing was reported; never
+    /// records an empty/null id and never changes <see cref="WorkerBindingConfigEntry.ResumeSession"/>.
+    /// </summary>
+    private static async Task RecordCapturedSessionIdsAsync(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings,
+        IReadOnlyDictionary<string, string> capturedSessionIds,
+        string bindingsFilePath)
+    {
+        if (capturedSessionIds.Count == 0)
+        {
+            return;
+        }
+
+        var updated = bindings.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        foreach (var (workerName, sessionId) in capturedSessionIds)
+        {
+            if (updated.TryGetValue(workerName, out var entry))
+            {
+                updated[workerName] = entry with { SessionId = sessionId };
+            }
+        }
+
+        // The workflow token can be intentionally cancelled by the time the worker has terminated.
+        // This small terminal bookkeeping step must still make an already-observed id durable.
+        await WorkerBindingConfigWriter.SaveToFileAsync(updated, bindingsFilePath, CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -770,10 +847,10 @@ public static class DispatchCommand
             throw new CliArgumentException(
                 $"'--continue {continueFromRoomDirectoryPath}' cannot rehire worker '{parentWorkerName}' — "
                 + $"its '{BatonPaths.RoomBindingsFileName}' has no SessionId recorded, so there is no "
-                + "vendor session to resume. A room only carries one when it was itself dispatched with "
-                + "--continue, or an operator recorded one by hand (baton resume's own precedent).",
-                "drop --continue to dispatch this brief cold, or --continue a room that was itself a "
-                + "--continue dispatch.");
+                + "vendor session to resume. Ordinary Claude dispatches capture the id reported by "
+                + "the worker; this adapter or worker stream reported no usable id.",
+                "drop --continue to dispatch this brief cold, or --continue a Claude room whose "
+                + "bindings.json contains a captured SessionId.");
         }
 
         // Refuse a still-running veteran outright -- concurrently resuming the same session id is not

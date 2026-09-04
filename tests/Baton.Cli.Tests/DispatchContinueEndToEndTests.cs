@@ -145,7 +145,7 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
         var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-continue-e2e-{Guid.NewGuid():N}");
         try
         {
-            // An ordinary dispatch mints no session id -- see WorkerCannotResumeException's own doc.
+            // This fake adapter reports no session id; the field therefore remains absent.
             var parentRoom = await DispatchTerminalParentAsync(testRoot, "Weigh the options for X.");
 
             var followUpSpecPath = await WriteSpecAsync(testRoot, "Now weigh Y instead.");
@@ -362,9 +362,9 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
     }
 
     /// <summary>
-    /// Stands in for what a real adapter/M24 capture would someday record automatically -- see
-    /// <c>WorkerCannotResumeException</c>'s own doc for why an ordinary dispatch mints nothing today.
-    /// The same hand-recorded-SessionId shape <c>baton resume</c> already requires an operator to set.
+    /// Stands in for a prior room with a recorded session id. These continuation tests use a simple
+    /// fake that reports no stream id, so they place the same bindings field #1841 now fills for a
+    /// real Claude dispatch.
     /// </summary>
     private static async Task SetSessionIdAsync(string roomDirectory, string workerName, string sessionId)
     {

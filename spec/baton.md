@@ -906,8 +906,7 @@ conversation-id-resume measurement, not yet run; refused (both the veteran's rec
 this dispatch's own resolved one must be `claude`) rather than silently falling back to a cold start.
 **Fails the dispatch loudly** (Q4) on every check performable before the vendor spawns: the named room
 missing, its bindings.json unreadable or naming more than one worker, an adapter mismatch, no
-`SessionId` recorded (the ordinary, undecorated terminal case — a dispatch that was never itself a
-`--continue` and was never hand-annotated mints nothing automatically, see below), or the veteran room
+`SessionId` recorded (an adapter that cannot recover an id, or a worker stream that reported none), or the veteran room
 not yet terminal (a still-running worker resumed concurrently races the vendor's own session-id guard,
 which is an existence check, not a lock — `durability.session-id-guard-is-not-a-lock`,
 docs/vendor-doc-audit.md). **Not detectable, and not claimed:** the vendor silently minting a fresh
@@ -915,8 +914,8 @@ session under the resumed id instead of truly continuing it — closing that gap
 existence-check-not-lock measurement to distinguish resume-refused from silently-started-fresh, a
 separate, unshipped prerequisite pin.
 <br><br>
-**Why an ordinary `baton dispatch` mints no session id automatically, and why that is deliberate
-rather than an oversight left for later:** `WorkerInvocation`/the resolved `CoreDispatchTarget` argv
+**Why an ordinary `baton dispatch` captures rather than mints a session id:**
+`WorkerInvocation`/the resolved `CoreDispatchTarget` argv
 is built once per binding and reused verbatim across every #1373 retry of that binding. Minting a
 client-side `--session-id` at bind time would bake it into that frozen argv — and claude's own
 `--session-id` reuse is existence-guarded (sequential reuse refused, same sentinel as above), so a
@@ -924,9 +923,11 @@ retry after a timeout would fail outright rather than merely restart cold, a liv
 default dispatch path for the sake of a `--continue` chain's own root. `--continue` sidesteps this
 entirely by only ever ferrying a session id FORWARD from an explicit prior dispatch, using `--resume`
 (not existence-guarded the identical way) — so a chain's second, third, … link works exactly like the
-first, and the ordinary no-`--continue` path is untouched. Automatically capturing a session id on
-every dispatch — closing the loop so any veteran, not only one already reached via `--continue`, can
-be rehired — is unshipped follow-up work, not part of this pin.
+first, and the ordinary no-`--continue` path is untouched. While a Claude execution's stdout flows,
+Baton parses its `stream-json` init event through the adapter and records the reported id on the
+room's own binding after the run settles (#1841); it records nothing when no id was reported. A retry
+keeps the resolved argv unchanged and the newest attempt's reported id wins, so any terminal
+Claude room with a reported id can seed a later `--continue` chain.
 <br><br>
 Provenance is journaled on the NEW room's own `.baton/room.json` marker — the identical
 `ParentRoomDirectoryPath`/`ParentExecutionId` fields #1441's redispatch lineage already writes (both
