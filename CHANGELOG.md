@@ -7,6 +7,28 @@ and `src/Baton.Vendors/CHANGELOG.md`, kept as history. New entries are prepended
 `vX.Y.Z`. See `release-please-config.json`. Everything below this line predates the split: the
 repo's single shared version through `0.14.0`.
 
+## [0.32.0](https://github.com/philipreese/baton/compare/v0.31.1...v0.32.0) (2026-09-04)
+
+
+### Features
+
+* capture Claude session IDs from worker streams ([#1851](https://github.com/philipreese/baton/issues/1851)) ([e9c89e6](https://github.com/philipreese/baton/commit/e9c89e62cee93eb7d1823faaf00bc4f00f75b4a3))
+* **dispatch:** Continue a prior worker's vendor session for a follow-on lane with journaled provenance ([#1840](https://github.com/philipreese/baton/issues/1840)) ([3e998f2](https://github.com/philipreese/baton/commit/3e998f24343a426cef610302be685113968b96ef))
+* **dispatch:** Rebind a quota-parked step to a declared fallback binding ([#1838](https://github.com/philipreese/baton/issues/1838)) ([44c3ce3](https://github.com/philipreese/baton/commit/44c3ce3c55e058234fcbdd992923d9aca9b0b6a4))
+
+
+### Bug Fixes
+
+* **adapters:** Refuse a room path with a .claude component, not the config-root value ([#1847](https://github.com/philipreese/baton/issues/1847)) ([2be2ced](https://github.com/philipreese/baton/commit/2be2ced4c87041249017384c51e8cc7e00b79891))
+* **flow:** Treat a verify probe that cannot answer as unknown, never as the task being absent ([#1836](https://github.com/philipreese/baton/issues/1836)) ([2f58a56](https://github.com/philipreese/baton/commit/2f58a563feebd72390e7d124c0b3c45f5794c1ae))
+* restore generated-code coverage exclusions ([#1850](https://github.com/philipreese/baton/issues/1850)) ([fa7e51e](https://github.com/philipreese/baton/commit/fa7e51e325485f9b7a0a8486cca09a7bd8998365))
+* **tool-refresh:** Keep polling for a slow daemon launch instead of failing a healthy refresh at 5s ([#1845](https://github.com/philipreese/baton/issues/1845)) ([ad464bb](https://github.com/philipreese/baton/commit/ad464bbe6c8c95c85d47662b1649990316f87e38))
+
+
+### Miscellaneous
+
+* **tests:** Run dotnet test on Microsoft.Testing.Platform and take xunit v3 4.0.0 ([#1843](https://github.com/philipreese/baton/issues/1843)) ([0ae5a6f](https://github.com/philipreese/baton/commit/0ae5a6f9af13d24faafa6d933668a1511144fe82))
+
 ## [0.31.1](https://github.com/philipreese/baton/compare/v0.31.0...v0.31.1) (2026-09-04)
 
 
