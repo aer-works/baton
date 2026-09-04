@@ -84,14 +84,24 @@ execution's own `artifacts/execution_<id>/` scratch directory (decision 0021 poi
 never surfaced"), so only those route through this primitive: `baton deliver` (`DeliverCommand.cs`)
 — a re-delivery of the same `source_path` now versions rather than replacing the prior bytes — and
 the `promote-artifact` MCP tool (`PromoteArtifactTool.cs`, #595), a worker-side counterpart: named
-bytes a worker points at, anywhere under its own execution's scratch tree, land in `artifacts/`
-the same versioned way, with `producedBy` carrying the calling execution's id (derived from its
-`BATON_OUTPUT_DIR`, the same structural trust `MemoryProposalEscalation`'s remarks give an
-`execution_*` directory name) and `role`/`adapter`/`model` left null — nothing in the MCP host
-today knows a calling worker's role or vendor to record there. Composed onto the same host and
-gated by the same `--memory-proposal-tool` opt-in `MemoryProposalTool` already uses (`McpCommand.cs`)
-rather than a second flag, since both are worker-side escalation tools with the identical
-`BATON_OUTPUT_DIR` precondition.
+bytes a worker points at land in `artifacts/` the same versioned way, with `producedBy` carrying
+the calling execution's id (derived from its `BATON_OUTPUT_DIR`, the same structural trust
+`MemoryProposalEscalation`'s remarks give an `execution_*` directory name) and `role`/`adapter`/
+`model` left null — nothing in the MCP host today knows a calling worker's role or vendor to record
+there. `sourcePath` is refused (a structured tool error, nothing written) unless it resolves —
+links followed component by component, the same `OutboxPath.IsInside` containment `--fleet-status`
+and the workspace-write gates use — inside that calling execution's own scratch tree; a reparse
+point pointing outside is denied the same way a plain path outside would be, never followed.
+`artifactName` is refused the same way for a path separator, a `..` segment, or a Windows reserved
+device-name stem (`CON`/`PRN`/`AUX`/`NUL`/`COM1`-`9`/`LPT1`-`9`, case-insensitive, with or without an
+extension) — the last of those throws deep inside `RoomArtifacts.Write`'s temp-file path otherwise.
+Composed onto the same host and gated by the same `--memory-proposal-tool` opt-in `MemoryProposalTool`
+already uses (`McpCommand.cs`) rather than a second flag, since both are worker-side escalation tools
+with the identical `BATON_OUTPUT_DIR` precondition — a precondition `McpCommand` now validates rather
+than assumes: `BATON_OUTPUT_DIR` must resolve to an existing room directory's
+`artifacts/execution_<id>` (the literal `artifacts` segment, a non-empty id after the `execution_`
+prefix, the room directory present on disk), and a value that does not match fails closed with one
+line naming the expected shape, never registering the tool.
 `RoleSpecMaterializer.CopyAttachmentsIntoRoom`'s `--attach` copy does not: it is harness-supplied
 input copied in before any execution exists, not something a worker produced (0021 point 1), so it
 has no `ExecutionBindingResolver`-derivable attribution to record — see that method's own remarks.

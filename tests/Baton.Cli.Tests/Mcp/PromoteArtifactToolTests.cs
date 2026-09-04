@@ -14,11 +14,13 @@ public class PromoteArtifactToolTests
     public void Promote_WritesVersionOneWithAttribution()
     {
         var roomDir = TempDir();
-        var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-source-{Guid.NewGuid():N}.md");
+        var scratchDir = ScratchDir();
+        var sourcePath = Path.Combine(scratchDir, "source.md");
+        Directory.CreateDirectory(scratchDir);
         File.WriteAllText(sourcePath, "hello");
         try
         {
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
 
             var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
 
@@ -36,7 +38,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            FileCleanup.Delete(sourcePath);
+            DeleteIfExists(scratchDir);
         }
     }
 
@@ -44,10 +46,12 @@ public class PromoteArtifactToolTests
     public void SecondPromote_OfSameName_WritesVersionTwo()
     {
         var roomDir = TempDir();
-        var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-source-{Guid.NewGuid():N}.md");
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var sourcePath = Path.Combine(scratchDir, "source.md");
         try
         {
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
 
             File.WriteAllText(sourcePath, "first");
             var first = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
@@ -65,7 +69,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            FileCleanup.Delete(sourcePath);
+            DeleteIfExists(scratchDir);
         }
     }
 
@@ -73,10 +77,12 @@ public class PromoteArtifactToolTests
     public void MissingSource_ReturnsErrorAndWritesNothing()
     {
         var roomDir = TempDir();
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
         try
         {
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
-            var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-missing-{Guid.NewGuid():N}.md");
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
+            var sourcePath = Path.Combine(scratchDir, "missing.md");
 
             var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
 
@@ -86,6 +92,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
+            DeleteIfExists(scratchDir);
         }
     }
 
@@ -93,9 +100,11 @@ public class PromoteArtifactToolTests
     public void RelativeSourcePath_ReturnsError()
     {
         var roomDir = TempDir();
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
         try
         {
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
 
             var result = tool.Call(Parse(JsonSerializer.Serialize(new
             {
@@ -109,6 +118,59 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
+            DeleteIfExists(scratchDir);
+        }
+    }
+
+    [Fact]
+    public void SourceOutsideScratchDirectory_ReturnsErrorAndWritesNothing()
+    {
+        var roomDir = TempDir();
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-outside-{Guid.NewGuid():N}.md");
+        File.WriteAllText(sourcePath, "hello");
+        try
+        {
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
+
+            var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
+
+            Assert.True(result.IsError);
+            Assert.Contains("scratch", result.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(RoomArtifacts.Versions(roomDir, "report.md"));
+        }
+        finally
+        {
+            DeleteIfExists(roomDir);
+            DeleteIfExists(scratchDir);
+            FileCleanup.Delete(sourcePath);
+        }
+    }
+
+    [Fact]
+    public void SourceInsideScratchDirectory_IsPromoted()
+    {
+        var roomDir = TempDir();
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var nestedDir = Path.Combine(scratchDir, "nested");
+        Directory.CreateDirectory(nestedDir);
+        var sourcePath = Path.Combine(nestedDir, "source.md");
+        File.WriteAllText(sourcePath, "hello");
+        try
+        {
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
+
+            var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
+
+            Assert.False(result.IsError);
+            Assert.Single(RoomArtifacts.Versions(roomDir, "report.md"));
+        }
+        finally
+        {
+            DeleteIfExists(roomDir);
+            DeleteIfExists(scratchDir);
         }
     }
 
@@ -120,11 +182,13 @@ public class PromoteArtifactToolTests
     public void BadArtifactName_ReturnsErrorAndWritesNothing(string artifactName)
     {
         var roomDir = TempDir();
-        var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-source-{Guid.NewGuid():N}.md");
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var sourcePath = Path.Combine(scratchDir, "source.md");
         File.WriteAllText(sourcePath, "hello");
         try
         {
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
 
             var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName })));
 
@@ -134,7 +198,37 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            FileCleanup.Delete(sourcePath);
+            DeleteIfExists(scratchDir);
+        }
+    }
+
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("con.md")]
+    [InlineData("NUL")]
+    [InlineData("COM1.txt")]
+    [InlineData("lpt9")]
+    public void ReservedDeviceNameArtifactName_ReturnsErrorAndWritesNothing(string artifactName)
+    {
+        var roomDir = TempDir();
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var sourcePath = Path.Combine(scratchDir, "source.md");
+        File.WriteAllText(sourcePath, "hello");
+        try
+        {
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
+
+            var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName })));
+
+            Assert.True(result.IsError);
+            Assert.Contains("reserved", result.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.False(Directory.Exists(Path.Combine(roomDir, "artifacts")));
+        }
+        finally
+        {
+            DeleteIfExists(roomDir);
+            DeleteIfExists(scratchDir);
         }
     }
 
@@ -142,7 +236,9 @@ public class PromoteArtifactToolTests
     public void OversizedSource_ReturnsErrorAndWritesNothing()
     {
         var roomDir = TempDir();
-        var sourcePath = Path.Combine(Path.GetTempPath(), $"baton-promote-source-{Guid.NewGuid():N}.md");
+        var scratchDir = ScratchDir();
+        Directory.CreateDirectory(scratchDir);
+        var sourcePath = Path.Combine(scratchDir, "source.md");
         try
         {
             using (var stream = File.Create(sourcePath))
@@ -150,7 +246,7 @@ public class PromoteArtifactToolTests
                 stream.SetLength(PromoteArtifactTool.MaxSourceBytes + 1);
             }
 
-            var tool = new PromoteArtifactTool(roomDir, Attribution);
+            var tool = new PromoteArtifactTool(roomDir, scratchDir, Attribution);
 
             var result = tool.Call(Parse(JsonSerializer.Serialize(new { sourcePath, artifactName = "report.md" })));
 
@@ -160,13 +256,15 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            FileCleanup.Delete(sourcePath);
+            DeleteIfExists(scratchDir);
         }
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 
     private static string TempDir() => Path.Combine(Path.GetTempPath(), $"baton-promote-artifact-tool-test-{Guid.NewGuid():N}");
+
+    private static string ScratchDir() => Path.Combine(Path.GetTempPath(), $"baton-promote-artifact-tool-scratch-{Guid.NewGuid():N}");
 
     private static void DeleteIfExists(string path) => DirectoryCleanup.DeleteRecursively(path);
 }

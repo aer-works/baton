@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Baton.Artifacts;
+using Baton.Cli;
 
 namespace Baton.Cli.Mcp;
 
@@ -14,7 +15,7 @@ namespace Baton.Cli.Mcp;
 /// which flag turns this tool on and why.
 /// </para>
 /// </summary>
-public sealed class PromoteArtifactTool(string roomDirectoryPath, ArtifactAttribution attribution) : IMcpTool
+public sealed class PromoteArtifactTool(string roomDirectoryPath, string scratchOutputDirectory, ArtifactAttribution attribution) : IMcpTool
 {
     /// <summary>
     /// A promoted file's byte cap (#595): large enough for a report, a log excerpt, or a small
@@ -24,6 +25,23 @@ public sealed class PromoteArtifactTool(string roomDirectoryPath, ArtifactAttrib
     /// stream log.
     /// </summary>
     public const long MaxSourceBytes = 25 * 1024 * 1024;
+
+    /// <summary>
+    /// Windows reserved device-name stems (case-insensitive, with or without an extension) -- writing
+    /// under one of these throws an unhandled <see cref="IOException"/> deep inside
+    /// <see cref="RoomArtifacts.Write"/>'s temp-file path rather than the structured refusal every
+    /// other bad <c>artifactName</c> produces (#1824 review finding 3). Checked here rather than
+    /// inside <see cref="RoomArtifacts"/>'s shared name normalization because that path already throws
+    /// a raw <see cref="ArgumentException"/> for its own separator/'..' checks and this tool does not
+    /// catch it -- keeping the check here keeps every promote-artifact refusal a structured
+    /// <see cref="McpToolCallResult"/> instead of adding an untested exception-to-error mapping.
+    /// </summary>
+    private static readonly HashSet<string> ReservedDeviceNameStems = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
 
     public string Name => "promote-artifact";
 
@@ -58,6 +76,18 @@ public sealed class PromoteArtifactTool(string roomDirectoryPath, ArtifactAttrib
             return new McpToolCallResult($"'sourcePath' must be an absolute path; got '{sourcePath}'.", IsError: true);
         }
 
+        // #1824 review finding 2: this tool's spec paragraph promises promotion is scoped to the
+        // caller's own execution scratch tree; nothing previously enforced that. OutboxPath.IsInside
+        // resolves every link component-by-component before comparing, which is also what settles the
+        // symlink low from the same review -- a source path laundered through a reparse point that
+        // targets outside the scratch tree resolves outside it and is refused here, never followed.
+        if (!OutboxPath.IsInside(sourcePath, scratchOutputDirectory))
+        {
+            return new McpToolCallResult(
+                $"'sourcePath' must resolve inside this execution's own scratch directory " +
+                $"('{scratchOutputDirectory}'); got '{sourcePath}'.", IsError: true);
+        }
+
         if (!File.Exists(sourcePath))
         {
             return new McpToolCallResult($"'sourcePath' does not exist or is not a regular file: '{sourcePath}'.", IsError: true);
@@ -72,6 +102,13 @@ public sealed class PromoteArtifactTool(string roomDirectoryPath, ArtifactAttrib
         {
             return new McpToolCallResult(
                 $"'artifactName' must contain no path separators and no '..'; got '{artifactName}'.", IsError: true);
+        }
+
+        if (ReservedDeviceNameStems.Contains(Path.GetFileNameWithoutExtension(artifactName)))
+        {
+            return new McpToolCallResult(
+                $"'artifactName' must not be a Windows reserved device name (CON, PRN, AUX, NUL, " +
+                $"COM1-9, LPT1-9); got '{artifactName}'.", IsError: true);
         }
 
         string? title = null;
