@@ -132,6 +132,16 @@ directory explicitly, and a wrong value produces a confident review of the wrong
 error. On Windows, double every backslash — it is a JSON string, and a lone `C:\Users\…` is rejected
 as an invalid escape before anything else is checked.
 
+**A `WorkingDirectory` also needs a recorded project ceiling, or `baton run` above refuses before
+anything spawns** (#1166, spec/baton.md §9's project scope: `ProjectNotTrustedException`,
+`ValidationRefused`). Run `baton trust /absolute/path/to/the/repo/under/review --ceiling
+ReadFiles,WriteFiles` once per machine per project before dispatching against it — the categories
+must be a superset of whatever the binding's own `PermissionGrant` asks for, since the effective
+grant is the intersection of the two, never wider than either. `baton trust <path> --ceiling all`
+trusts a project without narrowing anything; `baton trust --list` shows every project this machine
+has a recorded ceiling for, and `baton trust <path> --revoke` undoes one. A binding with no
+`WorkingDirectory` at all is unaffected — there is no project scope to enforce.
+
 ### Why this is the read-lane profile
 
 `NetworkAccess: false` is not a hardening choice you could relax — on `agy` it is the only
@@ -375,7 +385,7 @@ already Failed, even a perfectly good resume exits 1; read the resumed step's ow
 |---|---|
 | 0 | `Succeeded` — every step Succeeded. **Not the same as "the gates passed" (#1702).** A step can succeed with the engine's own verify command never having run — see `steps[].verify` below |
 | 1 | `Failed` — a step ran and failed for an ordinary reason (also the bucket a still-Running or still-Paused process falls into if it returns short of Terminal, e.g. no `--wait`) |
-| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
+| 2 | `ValidationRefused` — refused **before anything was dispatched**. Two causes: bindings/workflow validation or an unresolvable worker binding (bad adapter name, an incoherent grant, an unprovisioned worktree an `AuditedNotEnforced` grant needed, a project directory with no recorded `baton trust` ceiling — #1166, spec/baton.md §9), typically against a room with no ledger yet; or (#1608) a stale `terminal.json` from a prior attempt that could not be deleted — that one fires against a ledgered room too, and its message names the locked file, so read the message before assuming the bindings are at fault |
 | 3 | `Timeout` — the step(s) that failed did so because a dispatch hit its binding's `Timeout`, not because the worker ran and failed on its own; or (#1378) `baton run --wait --wait-timeout <minutes>` hit that bound before the room reached Terminal — the room itself is still Paused/Running in that case, check `baton status` |
 | 4 | `Cancelled` — the workflow settled via cancellation, not failure |
 | 5 | `RoomHeld` — another Flow instance already holds this room (a live pump, or a background component's brief lock). Not a terminal outcome and not written to `terminal.json`: the room may be perfectly healthy, so nothing here overwrites its real state. Retry later, or check `baton status`/the sentinel for what the room actually is |
@@ -444,6 +454,20 @@ room record, same lint, same everything downstream (#1518). One line, no file:
 ```
 baton dispatch advise --spec-text "what does baton cancel actually do today?" --workspace <repo> --output <report>
 ```
+
+**`--workspace <dir>` needs a recorded project ceiling too** (#1166, §2 above has the full contract) —
+`baton trust <dir> --ceiling …` once, before the first `baton dispatch` against it. This holds even
+for a role the table below auto-provisions a worktree for: the ceiling keys on `--workspace`'s own
+value (the source repository), never the auto-provisioned worktree path, which is why the operator
+never has to (and never could) trust a fresh directory `dispatch` only allocates after this refusal
+would already have fired.
+
+**Several manually-created worktrees of the same repository each need their own `baton trust`.** The
+ceiling key is the literal `--workspace` directory, canonicalised (absolute, trailing separator
+trimmed, case-insensitive) — there is no git-aware dereferencing to a shared `git-common-dir` or
+`origin`, so trusting one checkout does not trust a sibling one dispatch never auto-provisioned.
+That dereferencing was considered and not done: the operator's explicit act should name the path
+they actually typed, not a repository identity `dispatch` infers on their behalf.
 
 A role whose grant withholds writes, dispatched to an adapter whose withheld writes do **not** reach
 the outbox, is bound as `AuditedNotEnforced` — which needs a provisioned git worktree, or

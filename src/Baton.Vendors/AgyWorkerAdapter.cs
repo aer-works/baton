@@ -440,6 +440,12 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
         ArgumentNullException.ThrowIfNull(invocation);
         ArgumentNullException.ThrowIfNull(contract);
 
+        // #1166 -- see ClaudeWorkerAdapter.Resolve's identical seam (ProjectCeilingGate's own doc has
+        // the rule) for why this runs first on that adapter; the same ordering holds here for the same
+        // reason, applied to this vendor's own downstream readers: ResolvePermissionScope, the
+        // hook-liveness probe below, and every denied-tool env var.
+        invocation = ProjectCeilingGate.Apply(invocation, contract, ((IWorkerAdapter)this).WithheldWritesReachTheOutbox);
+
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
         var permissionScope = ResolvePermissionScope(invocation);

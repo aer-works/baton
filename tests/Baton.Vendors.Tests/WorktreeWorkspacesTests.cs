@@ -227,6 +227,62 @@ public sealed class WorktreeWorkspacesTests : IDisposable
         Assert.Equal(worktreePath, resumed.WorkingDirectory);
     }
 
+    /// <summary>
+    /// #1166 review finding A: <see cref="WorkerBindingConfigEntry.WorktreeSourceRepository"/> must be
+    /// stamped the same way <see cref="WorkerBindingConfigEntry.WorktreeBaseSha"/> is, in the same
+    /// expression -- <see cref="ProjectCeilingGate"/> keys the project ceiling on it. Reverting the
+    /// <c>WorktreeSourceRepository = spec.Repository</c> assignment turns this red alone.
+    /// </summary>
+    [Fact]
+    public void Provision_stamps_WorktreeSourceRepository_with_the_declared_repository()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+
+        const string worker = "reviewer";
+        var bindings = Bindings((worker, Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"))));
+
+        var (result, _) = WorktreeWorkspaces.Provision(bindings, _root);
+
+        Assert.Equal(sourceRepo, result[worker].WorktreeSourceRepository);
+    }
+
+    /// <summary>P2-style mirror: the lazy walk shares the same stamping.</summary>
+    [Fact]
+    public void ProvisionLazily_stamps_WorktreeSourceRepository_with_the_declared_repository()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+
+        const string worker = "reviewer";
+        var bindings = Bindings((worker, Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"))));
+
+        var (result, _, skipped) = WorktreeWorkspaces.ProvisionLazily(bindings, _root);
+
+        Assert.Equal(sourceRepo, result[worker].WorktreeSourceRepository);
+        Assert.Empty(skipped);
+    }
+
+    /// <summary>The resume path's own separate stamping site.</summary>
+    [Fact]
+    public void ReuseForResume_stamps_WorktreeSourceRepository_with_the_declared_repository()
+    {
+        var sourceRepo = Path.Combine(_root, "source");
+        Directory.CreateDirectory(sourceRepo);
+        InitGitRepository(sourceRepo);
+
+        const string worker = "reviewer";
+        var worktreePath = Path.Combine(_root, WorktreeWorkspaces.WorkspacesDirectoryName, worker);
+        WorktreeProvisioner.Provision(worktreePath, sourceRepo, "HEAD");
+        var entry = Entry(worktree: new WorktreeWorkspace(sourceRepo, "HEAD"));
+
+        var resumed = WorktreeWorkspaces.ReuseForResume(entry, worker, _root);
+
+        Assert.Equal(sourceRepo, resumed.WorktreeSourceRepository);
+    }
+
     private static void InitGitRepository(string path)
     {
         RunGitProcess(path, "init");

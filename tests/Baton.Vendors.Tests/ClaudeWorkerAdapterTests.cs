@@ -90,6 +90,10 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
+        // #1166: a WorkingDirectory now has to carry a recorded ceiling or Resolve refuses -- this
+        // test is about forwarding, not the ceiling gate, so it trusts the fixture path unrestricted.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new ClaudeWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -1394,6 +1398,171 @@ public class ClaudeWorkerAdapterTests
 
         Assert.False(classified);
         Assert.Null(classification);
+    }
+
+    /// <summary>
+    /// #1166: decision 0004's project ceiling fails closed against a project directory
+    /// <see cref="ProjectCeilingStore"/> has never seen -- red-first against the pre-#1166 behaviour,
+    /// which spawned unconditionally whenever WorkingDirectory was set.
+    /// </summary>
+    [Fact]
+    public void An_unseen_project_directory_is_refused_before_any_worker_spawns()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unseen-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: unseenProject), ArchitectContract));
+
+        Assert.Equal(unseenProject, ex.ProjectPath);
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("baton trust", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1166: effective grant = role grant ∩ project ceiling. The role grants WriteFiles; the
+    /// project's recorded ceiling withholds it, so the capped grant must withhold it too. Asserted on
+    /// the hook-denied-tools channel rather than <c>--allowedTools</c>, because #649 pre-approves
+    /// Edit/Write/NotebookEdit unconditionally -- the flag alone would pass even if capping did nothing.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_the_role_grant_caps_the_effective_grant_to_the_intersection()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-cap-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        var hookDenied = target.Environment!.Single(v => v.Name == ClaudeWorkerAdapter.DeniedToolsVariable).Value;
+        Assert.Contains("Write", hookDenied);
+        Assert.Contains("Edit", hookDenied);
+        Assert.Contains("NotebookEdit", hookDenied);
+    }
+
+    /// <summary>#1166: after 'baton trust --revoke', the next dispatch against that project refuses again.</summary>
+    [Fact]
+    public void A_revoked_project_is_refused_on_the_next_dispatch()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-revoke-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(project, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        // Confirm it dispatches while trusted, so the refusal below is the revoke's effect and not a
+        // ceiling that was never actually recorded.
+        new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan.", WorkingDirectory: project), ArchitectContract);
+
+        ProjectCeilingStore.Revoke(project, ProjectCeilingStore.DefaultPath);
+
+        Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: project), ArchitectContract));
+    }
+
+    /// <summary>
+    /// #1166 review finding A -- <see cref="ProjectCeilingGate"/>'s own doc has why. Both directions
+    /// asserted (v-and-v): trust the source repo alone and dispatch succeeds even though the worktree
+    /// path itself was never trusted; trust only the worktree path and dispatch still refuses, naming
+    /// the source repo.
+    /// </summary>
+    [Fact]
+    public void A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path()
+    {
+        var sourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(sourceRepo, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: worktreePath, WorktreeSourceRepository: sourceRepo),
+            ArchitectContract);
+
+        Assert.Equal(worktreePath, target.WorkingDirectory);
+
+        var untrustedWorktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree2-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(untrustedWorktreePath, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var otherSourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src2-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: untrustedWorktreePath, WorktreeSourceRepository: otherSourceRepo),
+            ArchitectContract));
+        Assert.Equal(otherSourceRepo, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding B, the polarity partner of
+    /// <see cref="AgyWorkerAdapterTests.A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy"/>:
+    /// on claude a withheld write still reaches the outbox (#649, <c>WithheldWritesReachTheOutbox</c> is
+    /// true), so capping WriteFiles away here must NOT refuse the same contract that throws on agy --
+    /// otherwise the gate-level recheck would be over-firing rather than closing the specific #629 gap
+    /// it exists for.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_caps_away_write_files_does_not_refuse_the_contract_on_claude()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unsatisfiable-claude-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: false, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        Assert.NotNull(target);
+    }
+
+    /// <summary>
+    /// #1166 review finding C: neither of the gate's own two structural refusals had a test. A ceiling
+    /// that withholds a category (here NetworkAccess) has nothing to intersect against when the
+    /// invocation carries only the raw PermissionScope escape hatch, not a structured PermissionGrant --
+    /// AER cannot verify an opaque vendor string against a category ceiling.
+    /// </summary>
+    [Fact]
+    public void A_restrictive_ceiling_refuses_a_raw_PermissionScope_invocation_with_no_structured_grant()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-raw-scope-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+
+        var ex = Assert.Throws<ProjectCeilingRequiresStructuredGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write", WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal(project, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding C, the other untested structural refusal: a role grant that is coherent
+    /// on its own (an unscoped shell alongside every other category) becomes the #529 shape once the
+    /// ceiling caps WriteFiles away while leaving RunShellCommands granted -- the shell still reaches
+    /// writes regardless of what the ceiling nominally withheld. This is the gate's own re-check, not
+    /// WorkerBindingResolver's pre-existing bind-time one (which never sees the capped grant).
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_makes_the_capped_grant_incoherent_refuses_rather_than_widen()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-incoherent-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider

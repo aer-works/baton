@@ -27,6 +27,12 @@ namespace Baton.Vendors;
 /// diff straight to it. A non-git workspace never reaches here (the entrypoint refuses to inject a base
 /// and fails loudly); were it to, git's own non-zero exit surfaces as a failed execution.
 /// </para>
+/// <para>
+/// <b>No grant machinery (#1166).</b> Like <see cref="CommandWorkerAdapter"/>, this is engine-deterministic
+/// rather than a vendor worker — there is no AI on the other end to grant anything to, so it does not
+/// implement <see cref="IPermissionGrantTranslator"/> and <see cref="ProjectCeilingGate"/> never runs
+/// against it.
+/// </para>
 /// </remarks>
 public sealed class CaptureWorkerAdapter : IWorkerAdapter
 {

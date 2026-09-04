@@ -43,6 +43,10 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target()
     {
+        // #1166: same reason as ClaudeWorkerAdapterTests's identically-named test -- trust the fixture
+        // path first so this test's own concern (forwarding) is what decides the outcome, not the gate.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -158,6 +162,11 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void The_rooms_directory_is_bound_with_add_dir_because_agy_ignores_the_process_cwd()
     {
+        // #1166: see A_configured_WorkingDirectory_is_forwarded_into_the_resolved_target above -- Set
+        // is idempotent, so re-trusting the same fixture path here does not depend on that test's
+        // ordering relative to this one.
+        ProjectCeilingStore.Set("/home/user/my-project", ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
         var target = new AgyWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan.", WorkingDirectory: "/home/user/my-project"), ArchitectContract);
 
@@ -2259,5 +2268,113 @@ public class AgyWorkerAdapterTests
         var result = ProcessAgyHookLivenessProbe.Evaluate(stdout);
 
         Assert.Equal(expectedLive, result.IsLive);
+    }
+
+    /// <summary>
+    /// #1166: the agy side of <see cref="ClaudeWorkerAdapterTests.An_unseen_project_directory_is_refused_before_any_worker_spawns"/>
+    /// -- see that test's own doc for the red-first claim both arms make against the pre-#1166 behaviour.
+    /// </summary>
+    [Fact]
+    public void An_unseen_project_directory_is_refused_before_any_worker_spawns()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unseen-agy-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", WorkingDirectory: unseenProject), ArchitectContract));
+
+        Assert.Equal(unseenProject, ex.ProjectPath);
+        Assert.NotNull(ex.TryInvocation);
+        Assert.Contains("baton trust", ex.TryInvocation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1166: effective grant = role grant ∩ project ceiling. Kept out of the
+    /// <c>--dangerously-skip-permissions</c> shape deliberately (RunShellCommands/NetworkAccess both
+    /// stay false on the role grant) -- that shape also arms the hook-liveness probe
+    /// (<see cref="AgyWorkerAdapter.RequiresHookAsSoleNarrowing"/>), which is a different concern this
+    /// test does not need to pay for. Uses a contract with no declared outputs, deliberately: capping
+    /// WriteFiles away on agy while a contract declares outputs now refuses
+    /// (<see cref="A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy"/>,
+    /// #1166 review finding B) -- that is a different, deliberately separate concern from the plain
+    /// intersection this test asserts.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_the_role_grant_caps_the_effective_grant_to_the_intersection()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-cap-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+        var noOutputsContract = new WorkerContract("architect", ["goal"], [], []);
+
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            noOutputsContract);
+
+        // The capped grant no longer grants writes, so the mode flag must reflect "plan", not
+        // "accept-edits" -- the translation path a still-WriteFiles:true grant would have taken.
+        Assert.Equal("plan", ArgValue(target, "--mode"));
+
+        var denied = target.Environment!.Single(v => v.Name == AgyWorkerAdapter.DeniedToolsVariable).Value;
+        Assert.Contains("write_to_file", denied);
+    }
+
+    /// <summary>
+    /// #1166 review finding A -- the agy side of
+    /// <see cref="ClaudeWorkerAdapterTests.A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path"/>,
+    /// same claim, same both-directions assertion.
+    /// </summary>
+    [Fact]
+    public void A_worktree_dispatch_keys_the_ceiling_on_the_source_repository_not_the_ephemeral_worktree_path()
+    {
+        var sourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src-agy-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(sourceRepo, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+
+        var target = new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: worktreePath, WorktreeSourceRepository: sourceRepo),
+            ArchitectContract);
+
+        Assert.Equal(worktreePath, target.WorkingDirectory);
+
+        var untrustedWorktreePath = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-tree2-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(untrustedWorktreePath, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var otherSourceRepo = Path.Combine(Path.GetTempPath(), $"baton-ceiling-worktree-src2-agy-{Guid.NewGuid():N}");
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Draft a plan.", WorkingDirectory: untrustedWorktreePath, WorktreeSourceRepository: otherSourceRepo),
+            ArchitectContract));
+        Assert.Equal(otherSourceRepo, ex.ProjectPath);
+    }
+
+    /// <summary>
+    /// #1166 review finding B: on agy a withheld write does NOT reach the outbox (#670,
+    /// <c>WithheldWritesReachTheOutbox</c> defaults false) -- so a ceiling that caps WriteFiles away
+    /// from a role grant that had it, over a contract declaring outputs, must refuse here rather than
+    /// let a worker that cannot write its declared output run to completion and pay for itself before
+    /// failing the contract check (#629). See
+    /// <see cref="ClaudeWorkerAdapterTests.A_ceiling_that_caps_away_write_files_does_not_refuse_the_contract_on_claude"/>
+    /// for the polarity partner.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_caps_away_write_files_refuses_a_contract_declaring_outputs_on_agy()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-unsatisfiable-agy-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: false, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(ReadFiles: true, WriteFiles: true);
+
+        var ex = Assert.Throws<UnsatisfiableOutputContractException>(() => new AgyWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains("plan.md", ex.UnwritableOutputs);
     }
 }

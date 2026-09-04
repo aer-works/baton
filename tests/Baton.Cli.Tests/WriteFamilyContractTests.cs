@@ -1,3 +1,4 @@
+using Baton.Cli.Tests.TestSupport;
 using Baton.Vendors;
 using Baton.Domain;
 
@@ -136,7 +137,15 @@ public class WriteFamilyContractTests
     public void An_adapter_passes_its_working_directory_to_the_gate_and_omits_it_when_there_is_none(
         string vendor)
     {
+        // #1166 review finding H1: this class carries no [Collection(...)] at all, so it sits in
+        // xUnit's default parallel pool — an isolated home (rather than a shared, GUID-scoped
+        // workspace path into the assembly's one project-ceilings.json) is what actually stops this
+        // Set from racing every other class that writes through AtomicLaunchConfigWriter concurrently.
+        using var home = new IsolatedBatonHome();
         var workspace = Path.Combine(Path.GetTempPath(), "baton-workspace");
+        // #1166: the ceiling gate now runs before this test's own concern (the workspace env var), so
+        // trust the fixture path unrestricted first.
+        ProjectCeilingStore.Set(workspace, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
         IWorkerAdapter adapter = vendor == "claude"
             ? new ClaudeWorkerAdapter()
             : new AgyWorkerAdapter();
