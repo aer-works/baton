@@ -332,7 +332,11 @@ public sealed class TokenBudgetMonitor
     /// displays (never arrests on, since #1682) goes on <see cref="WorkerUsage.ContextLevelTokens"/>
     /// instead, so a reader summing the three raw fields does not silently double-count it.
     /// <see cref="WorkerUsage.CacheReadTokens"/> here is the running Σ (display-only, #1682), not the
-    /// latest reading. <see cref="WorkerUsage.BilledTokens"/> is the quantity actually compared to the
+    /// latest reading; #1812 added <see cref="WorkerUsage.CacheReadLevelTokens"/> alongside it for a
+    /// consumer that needs the latest line's reading instead (the daemon's fleet projection, which
+    /// pusher.py's derive path treats as a level, not a Σ — same duality
+    /// <see cref="WorkerUsage.ContextLevelTokens"/> already has for the input side).
+    /// <see cref="WorkerUsage.BilledTokens"/> is the quantity actually compared to the
     /// budget, and <see cref="WorkerUsage.BilledIsFloor"/> (#1706) says whether that quantity is a
     /// measurement of this execution's billed tokens or only a lower bound on them — true for every
     /// claude stream, false for every agy one, per the two parsers' own measured shapes.
@@ -348,6 +352,7 @@ public sealed class TokenBudgetMonitor
                 CacheReadTokens: _cacheReadSum,
                 CacheCreationTokens: _latestCacheCreation,
                 ContextLevelTokens: _inputLevel,
+                CacheReadLevelTokens: _latestCacheRead,
                 BilledTokens: _billedTokens,
                 BilledIsFloor: _billedIsFloor);
         }

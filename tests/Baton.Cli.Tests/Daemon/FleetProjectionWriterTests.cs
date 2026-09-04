@@ -261,6 +261,30 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Assert.True(roomNode.ContainsKey("stdout_last_write_ago_sec"));
     }
 
+    /// <summary>#1812: `rooms[].live.cacheReadTokens` is the LATEST usage line's reading, not the
+    /// running Σ `Mutation.TokenBudgetMonitor` also tracks for #1682's budget arrest -- two lines
+    /// (cache reads 800 then 100) must project 100, never 900, or the daemon's file path disagrees
+    /// with pusher.py's derive path (which replaces, never sums, per its own doc comment) on what the
+    /// field even means.</summary>
+    [Fact]
+    public async Task RunningRoom_CacheReadTokens_ReportsLatestLineNotRunningSum()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var stdoutContent =
+            """{"type":"assistant","message":{"id":"msg_1","usage":{"cache_creation_input_tokens":100,"cache_read_input_tokens":800}}}""" + "\n"
+            + """{"type":"assistant","message":{"id":"msg_2","usage":{"cache_creation_input_tokens":100,"cache_read_input_tokens":100}}}""" + "\n";
+        var (_, _) = await CreateRunningRoomAsync("cache-read-level-room", liveIdentity, stdoutContent);
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.Equal(100, live["cacheReadTokens"]!.GetValue<long>());
+    }
+
     /// <summary>
     /// #1557 PR-A2: end-to-end wiring for <c>live.stdoutTail</c> — <see cref="StdoutTailRendererTests"/>
     /// pins the renderer's own output against pusher.py; this pins that
@@ -327,8 +351,14 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
     /// <summary>Builds a room with one "architect" step Running under a real captured `.stdout.log`,
     /// recorded engine identity <paramref name="identity"/>, and a claude bindings.json entry.</summary>
-    private async Task<(string RoomDir, ExecutionId ExecutionId)> CreateRunningRoomAsync(
+    private Task<(string RoomDir, ExecutionId ExecutionId)> CreateRunningRoomAsync(
         string roomName, (int Pid, DateTimeOffset StartTime) identity)
+        => CreateRunningRoomAsync(roomName, identity, stdoutContent: null);
+
+    /// <summary>Same as the overload above, but with the captured `.stdout.log`'s content overridable
+    /// -- #1812: lets a test feed several usage-bearing lines rather than the single-line default.</summary>
+    private async Task<(string RoomDir, ExecutionId ExecutionId)> CreateRunningRoomAsync(
+        string roomName, (int Pid, DateTimeOffset StartTime) identity, string? stdoutContent)
     {
         var room = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, roomName);
         Directory.CreateDirectory(room);
@@ -365,6 +395,7 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Directory.CreateDirectory(stdoutDir);
         await File.WriteAllTextAsync(
             Path.Combine(stdoutDir, ".stdout.log"),
+            stdoutContent ??
             """{"type":"assistant","message":{"id":"msg_1","usage":{"cache_creation_input_tokens":100,"cache_read_input_tokens":10}}}""" + "\n",
             TestContext.Current.CancellationToken);
 
