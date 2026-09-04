@@ -80,6 +80,11 @@ After `implement` and `review` mechanically withheld Claude's `Agent`/`Task` too
 rooms used about 0.59B cache-read tokens, recorded as roughly 2.6x less per room. That before/after
 change is the clearest causal evidence of avoidable spend in the dataset.
 
+Source for both figures: the conductor's read of the rooms' own `quota-ledger.jsonl` entries under
+`~/.baton/rooms`, taken 2026-09-04 — the 24-room "before" set ran 2026-09-03 evening, the 25-room
+"after" set 02:00–05:15 ET on 2026-09-04, immediately after #1811 landed the withholding. The room
+ledgers are the durable record; no separate CSV was cut for this pair. A future rerun should emit one.
+
 ### Model-turn polling
 
 One roughly ten-line change reached about 2.36M tokens because an in-lane background command was
