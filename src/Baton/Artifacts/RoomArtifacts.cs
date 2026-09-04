@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Artifacts;
@@ -96,32 +97,44 @@ public static class RoomArtifacts
         var indexPath = Path.Combine(versionsDir, IndexFileName);
 
         var newSha256 = Sha256Hex(content);
-        var existingVersions = ReadIndex(indexPath);
-        var latest = existingVersions.Count > 0 ? existingVersions[^1] : null;
 
-        if (File.Exists(currentPath) && Sha256Hex(File.ReadAllBytes(currentPath)) == newSha256)
+        // Read-index → pick n+1 → write version → append index line is a read-then-write across
+        // processes (two `baton deliver` invocations, or a deliver racing a future worker-side write).
+        // Without the lock both compute the same n and the index carries a duplicate number whose
+        // "latest" is whichever line happened to land last. Same per-file named mutex #1781 gave the
+        // other cross-process record files; keyed on the index, since that is the thing being serialized.
+        return MutexGuardedFileLock.RunUnderLock(indexPath, VersionLockPrefix, VersionLockTimeout, () =>
         {
-            return new ArtifactWriteResult(ArtifactWriteOutcome.Unchanged, latest?.Version ?? 0, currentPath);
-        }
+            var existingVersions = ReadIndex(indexPath);
+            var latest = existingVersions.Count > 0 ? existingVersions[^1] : null;
 
-        var nextVersion = (latest?.Version ?? 0) + 1;
-        Directory.CreateDirectory(versionsDir);
-        WriteAtomic(Path.Combine(versionsDir, VersionFileName(nextVersion)), content);
+            if (File.Exists(currentPath) && Sha256Hex(File.ReadAllBytes(currentPath)) == newSha256)
+            {
+                return new ArtifactWriteResult(ArtifactWriteOutcome.Unchanged, latest?.Version ?? 0, currentPath);
+            }
 
-        var entry = new ArtifactVersionEntry(
-            nextVersion,
-            (producedAtUtc ?? DateTimeOffset.UtcNow).ToString("O"),
-            attribution,
-            newSha256,
-            content.LongLength);
-        AppendIndexLine(indexPath, entry);
+            var nextVersion = (latest?.Version ?? 0) + 1;
+            Directory.CreateDirectory(versionsDir);
+            WriteAtomic(Path.Combine(versionsDir, VersionFileName(nextVersion)), content);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(currentPath)!);
-        WriteAtomic(currentPath, content);
+            var entry = new ArtifactVersionEntry(
+                nextVersion,
+                (producedAtUtc ?? DateTimeOffset.UtcNow).ToString("O"),
+                attribution,
+                newSha256,
+                content.LongLength);
+            AppendIndexLine(indexPath, entry);
 
-        var outcome = nextVersion == 1 ? ArtifactWriteOutcome.Created : ArtifactWriteOutcome.Versioned;
-        return new ArtifactWriteResult(outcome, nextVersion, currentPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(currentPath)!);
+            WriteAtomic(currentPath, content);
+
+            var outcome = nextVersion == 1 ? ArtifactWriteOutcome.Created : ArtifactWriteOutcome.Versioned;
+            return new ArtifactWriteResult(outcome, nextVersion, currentPath);
+        });
     }
+
+    private const string VersionLockPrefix = "baton-artifact-versions";
+    private static readonly TimeSpan VersionLockTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>The version history for <paramref name="name"/>, oldest first, from the index alone
     /// — empty when the name has never been written through <see cref="Write"/>.</summary>

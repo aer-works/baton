@@ -50,6 +50,32 @@ public sealed class RoomArtifactsTests : IDisposable
         Assert.Single(RoomArtifacts.Versions(_roomDir, "plan.md"));
     }
 
+    /// <summary>
+    /// Second-reader finding on #1791: sixteen distinct writes from parallel threads must produce
+    /// exactly versions 1..16, each once, every version's bytes readable, and the current file equal to
+    /// the last version indexed. Fails without the lock in <see cref="RoomArtifacts.Write"/>.
+    /// </summary>
+    [Fact]
+    public void Write_ConcurrentWriters_NeverMintTheSameVersionNumber()
+    {
+        const int writers = 16;
+        Parallel.For(0, writers, new ParallelOptions { MaxDegreeOfParallelism = writers }, i =>
+            RoomArtifacts.Write(_roomDir, "plan.md", Bytes($"writer-{i}"), Attribution()));
+
+        var versions = RoomArtifacts.Versions(_roomDir, "plan.md");
+
+        Assert.Equal(Enumerable.Range(1, writers), versions.Select(v => v.Version));
+        Assert.Equal(writers, versions.Select(v => v.Sha256).Distinct().Count());
+        foreach (var v in versions)
+        {
+            Assert.StartsWith("writer-", Encoding.UTF8.GetString(RoomArtifacts.Read(_roomDir, "plan.md", v.Version)!));
+        }
+
+        var current = Encoding.UTF8.GetString(RoomArtifacts.Read(_roomDir, "plan.md")!);
+        var last = Encoding.UTF8.GetString(RoomArtifacts.Read(_roomDir, "plan.md", writers)!);
+        Assert.Equal(last, current);
+    }
+
     [Fact]
     public void Write_ChangedRewrite_VersionsAndKeepsOldBytesIntact()
     {

@@ -72,8 +72,8 @@ reader keeps working unchanged. `RoomArtifacts.Write` (`src/Baton/Artifacts/Room
 the one primitive that writes a named artifact: absent → version 1; present and byte-identical →
 nothing new; present and different → version `n+1`, written to a sidecar
 `artifacts/.versions/<name>/<n>` with one `artifacts/.versions/<name>/index.jsonl` line
-(`n`, `producedAt`, `producedBy` — `executionId`/`role`/`adapter`/`model`, from
-`ExecutionBindingResolver` where an execution exists — `sha256`, `bytes`) appended *before*
+(`n`, `producedAt`, `producedBy` — `executionId`/`role`/`adapter`/`model`, supplied by the caller;
+`baton deliver` writes role `conductor` with no execution — `sha256`, `bytes`) appended *before*
 `artifacts/<name>` is atomically replaced (temp file + move). A dot-directory, per #1351's filter
 convention: version history is engine mechanism, not a document a worker or harness should see
 enumerated. JSONL, for the same append-only crash-safety shape `flow.jsonl` already relies on. The
