@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.30.0](https://github.com/philipreese/baton/compare/flow-v0.29.0...flow-v0.30.0) (2026-09-04)
+
+
+### Features
+
+* **cli:** Add baton watch, a one-shot terminal notification for a room ([#1766](https://github.com/philipreese/baton/issues/1766)) ([97fff37](https://github.com/philipreese/baton/commit/97fff371078d1b7a9bb1a3de47b2a3367de612b5))
+* **daemon:** Port the pusher's stdout-tail renderer into the projection writer ([#1786](https://github.com/philipreese/baton/issues/1786)) ([7a98fab](https://github.com/philipreese/baton/commit/7a98fabc8cff297a22a8d5f5261d063b6699a32f))
+* **daemon:** Write the fleet projection file every 30 s ([#1772](https://github.com/philipreese/baton/issues/1772)) ([dcf338b](https://github.com/philipreese/baton/commit/dcf338bab7c8ecba2f976617cd0d7627de6f1a97))
+* **dispatch:** Per-adapter token budget defaults in the role catalog ([#1751](https://github.com/philipreese/baton/issues/1751)) ([df7f645](https://github.com/philipreese/baton/commit/df7f645e8df15df3704a12ced2e295db60a42459))
+* **flow:** A real terminal-timestamp source for workflow runs ([#1775](https://github.com/philipreese/baton/issues/1775)) ([ec58249](https://github.com/philipreese/baton/commit/ec582494c47f2b91488a3e0b1743570e80b3a02f))
+* **flow:** Artifacts are files -- versioned, attributed, never silently overwritten ([#1791](https://github.com/philipreese/baton/issues/1791)) ([9414ef1](https://github.com/philipreese/baton/commit/9414ef13f9bb158df17bc7049dc394ef246166ce))
+* **flow:** Delivery state (branch, PR, CI, merged) recorded as room facts ([#1790](https://github.com/philipreese/baton/issues/1790)) ([faf46e1](https://github.com/philipreese/baton/commit/faf46e168e0b2936fac42f3deb00f0537782265a))
+* **flow:** Fleet-level burn ledger — append per-execution usage to quota-ledger.jsonl at settle ([#1781](https://github.com/philipreese/baton/issues/1781)) ([a775237](https://github.com/philipreese/baton/commit/a7752374d81951da5db95168c83405a03411863c))
+* **flow:** Journal a content-free progress heartbeat and cancellation delivery/rejection events ([#1780](https://github.com/philipreese/baton/issues/1780)) ([d26390c](https://github.com/philipreese/baton/commit/d26390ca735b3423daa92cff9f702108e494a55b))
+* **flow:** Journal the windowed billed-rate peak on every terminal outcome ([#1761](https://github.com/philipreese/baton/issues/1761)) ([01ae71c](https://github.com/philipreese/baton/commit/01ae71c48627c9a1a7556271c1d7e9c55a1ec769))
+
+
+### Bug Fixes
+
+* **flow:** Arm the replay's hook canary from the recorded request instead of today's binding ([#1753](https://github.com/philipreese/baton/issues/1753)) ([5a4d971](https://github.com/philipreese/baton/commit/5a4d97178784ccc22dd84874304b37a85898402f))
+* **flow:** Honour a journalled cancel before redispatching an overdue quota-parked step ([#1762](https://github.com/philipreese/baton/issues/1762)) ([cc601f8](https://github.com/philipreese/baton/commit/cc601f8bc38c5d27bf831876c251c50b3231a6ba))
+* **flow:** Remove the Console.Error race from RoomTurnThrottleTests ([#1785](https://github.com/philipreese/baton/issues/1785)) ([80f7afe](https://github.com/philipreese/baton/commit/80f7afe0fd671d645daff8a758a0ee2e9410d535))
+
+
+### Code Refactoring
+
+* **flow:** One reader for the agy hook-verdict ledger ([#1771](https://github.com/philipreese/baton/issues/1771)) ([76853ed](https://github.com/philipreese/baton/commit/76853edce37d09e5f6235be43351a40841d3c35d))
+
+
+### Tests
+
+* **arch:** Pin the single filtered seam for execution output-directory listings ([#1764](https://github.com/philipreese/baton/issues/1764)) ([571081e](https://github.com/philipreese/baton/commit/571081e567daa298705236e4709a92bbf2884007))
+
+
+### Miscellaneous
+
+* **dispatch:** Retire the Python dispatcher in favour of baton dispatch ([#1765](https://github.com/philipreese/baton/issues/1765)) ([1a2e292](https://github.com/philipreese/baton/commit/1a2e29222835ed5ec90e00585f55df3ff51647d7))
+* **measure:** Record agy's sub-agent stream shape and tighten the usage comment ([#1750](https://github.com/philipreese/baton/issues/1750)) ([05a7c59](https://github.com/philipreese/baton/commit/05a7c59abe20b40b4070541d4249d15e3f7b5d2d))
+
 ## [0.29.0](https://github.com/philipreese/baton/compare/flow-v0.28.0...flow-v0.29.0) (2026-09-03)
 
 

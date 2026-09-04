@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.30.0](https://github.com/philipreese/baton/compare/cli-v0.29.0...cli-v0.30.0) (2026-09-04)
+
+
+### Features
+
+* **cli:** Add baton watch, a one-shot terminal notification for a room ([#1766](https://github.com/philipreese/baton/issues/1766)) ([97fff37](https://github.com/philipreese/baton/commit/97fff371078d1b7a9bb1a3de47b2a3367de612b5))
+* **daemon:** Port the pusher's stdout-tail renderer into the projection writer ([#1786](https://github.com/philipreese/baton/issues/1786)) ([7a98fab](https://github.com/philipreese/baton/commit/7a98fabc8cff297a22a8d5f5261d063b6699a32f))
+* **daemon:** Write the fleet projection file every 30 s ([#1772](https://github.com/philipreese/baton/issues/1772)) ([dcf338b](https://github.com/philipreese/baton/commit/dcf338bab7c8ecba2f976617cd0d7627de6f1a97))
+* **flow:** A real terminal-timestamp source for workflow runs ([#1775](https://github.com/philipreese/baton/issues/1775)) ([ec58249](https://github.com/philipreese/baton/commit/ec582494c47f2b91488a3e0b1743570e80b3a02f))
+* **flow:** Add the project-keyed permission-ceiling store and the baton trust verb ([#1787](https://github.com/philipreese/baton/issues/1787)) ([11bb629](https://github.com/philipreese/baton/commit/11bb62958da6626f12b084275b42bcd63a0f17a4))
+* **flow:** Artifacts are files -- versioned, attributed, never silently overwritten ([#1791](https://github.com/philipreese/baton/issues/1791)) ([9414ef1](https://github.com/philipreese/baton/commit/9414ef13f9bb158df17bc7049dc394ef246166ce))
+* **flow:** Delivery state (branch, PR, CI, merged) recorded as room facts ([#1790](https://github.com/philipreese/baton/issues/1790)) ([faf46e1](https://github.com/philipreese/baton/commit/faf46e168e0b2936fac42f3deb00f0537782265a))
+* **flow:** Fleet-level burn ledger — append per-execution usage to quota-ledger.jsonl at settle ([#1781](https://github.com/philipreese/baton/issues/1781)) ([a775237](https://github.com/philipreese/baton/commit/a7752374d81951da5db95168c83405a03411863c))
+* **flow:** Journal a content-free progress heartbeat and cancellation delivery/rejection events ([#1780](https://github.com/philipreese/baton/issues/1780)) ([d26390c](https://github.com/philipreese/baton/commit/d26390ca735b3423daa92cff9f702108e494a55b))
+
+
+### Bug Fixes
+
+* **cli:** Print billed/cache/thinking tokens in the status usage roll-up ([#1755](https://github.com/philipreese/baton/issues/1755)) ([9d1a490](https://github.com/philipreese/baton/commit/9d1a4903d09aa59c2b208b76ab2602ffddcc1816))
+* **daemon:** Retry FleetProjectionWriter.WriteAtomic past a concurrent reader ([#1789](https://github.com/philipreese/baton/issues/1789)) ([565e307](https://github.com/philipreese/baton/commit/565e307018ceda7b142ae37e541d07150baeb2c0))
+* **daemon:** Scope singleton mutex per-home; kill orphaned daemon on task restart ([#1777](https://github.com/philipreese/baton/issues/1777)) ([0b28a18](https://github.com/philipreese/baton/commit/0b28a181fe35085e60e9c460cb20eea5f60c5fd7))
+* **dispatch:** Deny label, merge, and API writes to implement and janitor without fatal metacharacters on unscoped grants ([#1748](https://github.com/philipreese/baton/issues/1748)) ([47febb7](https://github.com/philipreese/baton/commit/47febb7e15c01e6ecee4974e32eeb9c6fa0b4a1b))
+
+
+### Miscellaneous
+
+* **dispatch:** Retire the Python dispatcher in favour of baton dispatch ([#1765](https://github.com/philipreese/baton/issues/1765)) ([1a2e292](https://github.com/philipreese/baton/commit/1a2e29222835ed5ec90e00585f55df3ff51647d7))
+
 ## [0.29.0](https://github.com/philipreese/baton/compare/cli-v0.28.0...cli-v0.29.0) (2026-09-03)
 
 

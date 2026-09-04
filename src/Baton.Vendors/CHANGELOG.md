@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.30.0](https://github.com/philipreese/baton/compare/vendors-v0.29.0...vendors-v0.30.0) (2026-09-04)
+
+
+### Features
+
+* **dispatch:** Per-adapter token budget defaults in the role catalog ([#1751](https://github.com/philipreese/baton/issues/1751)) ([df7f645](https://github.com/philipreese/baton/commit/df7f645e8df15df3704a12ced2e295db60a42459))
+* **flow:** Add the project-keyed permission-ceiling store and the baton trust verb ([#1787](https://github.com/philipreese/baton/issues/1787)) ([11bb629](https://github.com/philipreese/baton/commit/11bb62958da6626f12b084275b42bcd63a0f17a4))
+
+
+### Bug Fixes
+
+* **dispatch:** Deny label, merge, and API writes to implement and janitor without fatal metacharacters on unscoped grants ([#1748](https://github.com/philipreese/baton/issues/1748)) ([47febb7](https://github.com/philipreese/baton/commit/47febb7e15c01e6ecee4974e32eeb9c6fa0b4a1b))
+* **dispatch:** Make advise read-shaped like the other read lanes ([#1769](https://github.com/philipreese/baton/issues/1769)) ([34bde12](https://github.com/philipreese/baton/commit/34bde12901bd52a88e8e60ef1b234cd9c5401855))
+* **flow:** Arm the replay's hook canary from the recorded request instead of today's binding ([#1753](https://github.com/philipreese/baton/issues/1753)) ([5a4d971](https://github.com/philipreese/baton/commit/5a4d97178784ccc22dd84874304b37a85898402f))
+
+
+### Code Refactoring
+
+* **flow:** One reader for the agy hook-verdict ledger ([#1771](https://github.com/philipreese/baton/issues/1771)) ([76853ed](https://github.com/philipreese/baton/commit/76853edce37d09e5f6235be43351a40841d3c35d))
+
+
+### Miscellaneous
+
+* **dispatch:** Retire the Python dispatcher in favour of baton dispatch ([#1765](https://github.com/philipreese/baton/issues/1765)) ([1a2e292](https://github.com/philipreese/baton/commit/1a2e29222835ed5ec90e00585f55df3ff51647d7))
+
 ## [0.29.0](https://github.com/philipreese/baton/compare/vendors-v0.28.0...vendors-v0.29.0) (2026-09-03)
 
 
