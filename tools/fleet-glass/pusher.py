@@ -2703,7 +2703,6 @@ NTFY_EVENT_TIERS: dict[str, str] = {
     "lane_failed": "urgent",
     "lane_succeeded_with_warnings": "default",
     "zombie_detected": "high",
-    "stalled_detected": "high",
     "pusher_anomaly": "high",
 }
 
@@ -2732,6 +2731,11 @@ def _parse_hhmm(value: str) -> tuple[int, int]:
 #: existed -- this is a targeted fix for the one zone the config's own default and this issue name,
 #: not a general US-timezone engine.
 _US_EASTERN_ALIASES = frozenset({"America/New_York", "US/Eastern"})
+
+#: zone names already logged as unresolvable this process -- `in_quiet_hours` runs once per room
+#: per cycle, so an un-provisioned non-Eastern zone would otherwise log the same line every call;
+#: this caps it at one line per zone name for the life of the process.
+_LOGGED_UNRESOLVABLE_TZ_NAMES: set[str] = set()
 
 
 def _us_eastern_offset_fallback(now_utc: datetime) -> timedelta:
@@ -2768,7 +2772,9 @@ def in_quiet_hours(cfg: dict, now: datetime) -> bool:
             start_h, start_m = _parse_hhmm(qh["start"])
             end_h, end_m = _parse_hhmm(qh["end"])
         else:
-            log(f"ntfy: quiet hours timezone {tz_name!r} unresolvable ({ex}) -- treating as never quiet")
+            if tz_name not in _LOGGED_UNRESOLVABLE_TZ_NAMES:
+                _LOGGED_UNRESOLVABLE_TZ_NAMES.add(tz_name)
+                log(f"ntfy: quiet hours timezone {tz_name!r} unresolvable ({ex}) -- treating as never quiet")
             return False
     except (ValueError, OSError):
         return False
@@ -2905,13 +2911,33 @@ def _ntfy_room_title_message(event_type: str, room: dict) -> tuple[str, str]:
     return f"Fleet event: {name}", event_type
 
 
+def prune_ntfy_dedup_state(ntfy_state: dict, room_list: list) -> None:
+    """Mutates `ntfy_state` in place, dropping every per-room dedup key (`<event_type>:<path>`) for a
+    room no longer present in `room_list` AT ALL -- distinct from `push_ntfy_room_events`'s own
+    per-room clear, which only fires for a room that's still in the list but non-notifiable this
+    cycle. A room that leaves the fleet entirely (deleted, or swept by RoomRetentionSweep) stops
+    appearing in `room_list` and is never visited by that per-room clear again, so its entry would
+    otherwise persist forever. Mirrors `prune_live_telemetry_cache`/`prune_pruned_info_cache`'s
+    intersect-against-current-room_list shape. `pusher_anomaly:*` keys are left alone -- they're
+    keyed by a fixed, small set of block names rather than per-room, so they're already bounded."""
+    paths = {room.get("path") or room.get("name")
+             for room in (room_list or []) if isinstance(room, dict)}
+    for key in list(ntfy_state.keys()):
+        event_type, sep, path = key.partition(":")
+        if sep and event_type in _NTFY_ROOM_EVENT_KEYS and path not in paths:
+            del ntfy_state[key]
+
+
 def push_ntfy_room_events(cfg: dict, secrets: dict, ntfy_state: dict, room_list: list,
                            now: datetime, sender=None) -> None:
     """Called once per main() cycle over the CURRENT room list. A room with no notifiable condition
     this cycle has its dedup entries cleared, so a LATER re-occurrence (a lane that recovers, then
     fails again) reads as a fresh first occurrence rather than folding forever against a condition
-    that already resolved. Never raises -- a single room's send failure is logged and does not stop
-    the rest of the fleet from being considered."""
+    that already resolved. Also prunes (`prune_ntfy_dedup_state`) any per-room entry for a room that
+    left the fleet entirely, not just one that's merely non-notifiable this cycle. Never raises -- a
+    single room's send failure is logged and does not stop the rest of the fleet from being
+    considered."""
+    prune_ntfy_dedup_state(ntfy_state, room_list)
     for room in (room_list or []):
         if not isinstance(room, dict):
             continue
@@ -3693,13 +3719,17 @@ def main() -> None:
             # #1558: ntfy room-condition events -- own top-level try/except so a failure here never
             # touches the mailbox producers above. Runs every cycle over whatever `room_list` the
             # snapshot block above produced (possibly [] if that block raised early); dedup state is
-            # round-tripped through disk the same way every other producer's state is.
-            try:
-                ntfy_state = load_push_state(ntfy_state_path)
-                push_ntfy_room_events(cfg, ntfy_secrets, ntfy_state, room_list, datetime.now(timezone.utc))
-                save_push_state(ntfy_state_path, ntfy_state)
-            except Exception as ex:  # noqa: BLE001 — loop must survive anything
-                log(f"ERROR (ntfy room events) {type(ex).__name__}: {ex}")
+            # round-tripped through disk the same way every other producer's state is. Gated on
+            # `ntfy_topic` at the call site (not just inside `maybe_push_ntfy_event`) so a disabled
+            # feature never even reads or writes `ntfy-state.local.json` -- the startup "disabled"
+            # log line above is the only thing a disabled config still does.
+            if cfg.get("ntfy_topic"):
+                try:
+                    ntfy_state = load_push_state(ntfy_state_path)
+                    push_ntfy_room_events(cfg, ntfy_secrets, ntfy_state, room_list, datetime.now(timezone.utc))
+                    save_push_state(ntfy_state_path, ntfy_state)
+                except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                    log(f"ERROR (ntfy room events) {type(ex).__name__}: {ex}")
 
             if once:
                 break
@@ -5837,7 +5867,6 @@ def _selftest() -> int:
     check("tier table: lane_succeeded_with_warnings is default",
           ntfy_priority_for_event("lane_succeeded_with_warnings") == "default")
     check("tier table: zombie_detected is high", ntfy_priority_for_event("zombie_detected") == "high")
-    check("tier table: stalled_detected is high", ntfy_priority_for_event("stalled_detected") == "high")
     check("tier table: pusher_anomaly is high", ntfy_priority_for_event("pusher_anomaly") == "high")
     check("tier table: an unrecognized event type fails toward default, never urgent",
           ntfy_priority_for_event("something_made_up") == "default")
@@ -5975,6 +6004,21 @@ def _selftest() -> int:
     push_ntfy_room_events(room_events_cfg, {}, room_events_state, [failing_room], outside, sender=fake_sender)
     check("push_ntfy_room_events: the SAME room failing again after recovering alerts fresh, not folded",
           len(sent_calls) == 1)
+
+    # -- #1817 review: rooms that leave the fleet entirely get their dedup keys pruned, not just
+    # cleared while merely non-notifiable this cycle --
+    prune_state = {
+        "lane_failed:/rooms/gone": {"first_seen": 1, "last_seen": 1, "magnitude": 1, "alert_count": 1},
+        "zombie_detected:/rooms/still-here": {"first_seen": 1, "last_seen": 1, "magnitude": 1, "alert_count": 1},
+        "pusher_anomaly:deliver": {"first_seen": 1, "last_seen": 1, "magnitude": 1, "alert_count": 1},
+    }
+    prune_ntfy_dedup_state(prune_state, [{"path": "/rooms/still-here", "state": "Stalled"}])
+    check("prune_ntfy_dedup_state: a room absent from the current room_list loses its dedup key",
+          "lane_failed:/rooms/gone" not in prune_state)
+    check("prune_ntfy_dedup_state: a room still present keeps its fold state",
+          "zombie_detected:/rooms/still-here" in prune_state)
+    check("prune_ntfy_dedup_state: pusher_anomaly keys are left alone (not per-room, already bounded)",
+          "pusher_anomaly:deliver" in prune_state)
 
     # -- #1558: pusher-level anomaly, keyed by block name so a repeating fault folds --
     with tempfile.TemporaryDirectory() as anomaly_tmp:
