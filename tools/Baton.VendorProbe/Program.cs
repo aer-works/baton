@@ -10,7 +10,7 @@ namespace Baton.VendorProbe;
 /// <remarks>
 /// <para>
 /// <c>docs/vendor-capabilities.md</c> has always said "re-run the probes before trusting this after a
-/// vendor update — both CLIs self-update." There were no probes to re-run: they were ad-hoc shell,
+/// vendor update — the CLIs self-update." There were no probes to re-run: they were ad-hoc shell,
 /// written once and thrown away. This is them, and the point is that a negative result now has to
 /// carry the list of surfaces it was established on.
 /// </para>
@@ -22,7 +22,11 @@ namespace Baton.VendorProbe;
 /// </remarks>
 public static class Program
 {
-    private static readonly string[] Vendors = ["claude", "agy"];
+    /// <summary>
+    /// Every subscription-backed CLI covered by the probe and its free version-drift check.
+    /// Kept public so the local architecture tripwire cannot silently omit a newly added vendor.
+    /// </summary>
+    public static IReadOnlyList<string> SupportedVendors { get; } = ["claude", "agy", "codex"];
 
     /// <summary>
     /// No byte-order mark. These outputs are read by other tools, and a BOM makes an otherwise valid
@@ -37,7 +41,14 @@ public static class Program
         var lockPath = Arg(args, "--lock") ?? Staleness.DefaultLockPath;
         var driftPath = Arg(args, "--drift-lock") ?? DriftGrace.DefaultBookkeepingPath;
 
-        var vendors = only is null ? Vendors : [only];
+        if (only is not null && !SupportedVendors.Contains(only, StringComparer.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                $"unknown vendor '{only}'. Expected one of: {string.Join(", ", SupportedVendors)}");
+            return 2;
+        }
+
+        IReadOnlyList<string> vendors = only is null ? SupportedVendors : [only.ToLowerInvariant()];
 
         if (args.Contains("--check"))
         {

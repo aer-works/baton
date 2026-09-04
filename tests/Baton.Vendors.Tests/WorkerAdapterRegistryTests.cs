@@ -35,10 +35,10 @@ public class WorkerAdapterRegistryTests
         new("worker", [], [new ProducedOutput("out")], []);
 
     /// <summary>
-    /// Both arms are expressible by every adapter on purpose. <c>agy</c> refuses shell without
-    /// network and network without shell, so a pair that moved only one of them would throw
-    /// <see cref="PermissionGrantUnsupportedException"/> and turn this into a test about that
-    /// refusal instead of about whether the grant is read at all.
+    /// The full arm is expressible by every grant-consuming adapter. The fully withheld arm is
+    /// expressible by claude/agy, while Codex correctly refuses it because its sandbox cannot deny
+    /// all filesystem reads. That refusal is itself observable proof that dispatch read the grant;
+    /// an adapter that ignores grants resolves both arms to an identical target.
     /// </summary>
     private static readonly PermissionGrant Granted = new(
         ReadFiles: true, WriteFiles: true, RunShellCommands: true, ShellCommandPatterns: [], NetworkAccess: true);
@@ -70,8 +70,17 @@ public class WorkerAdapterRegistryTests
     {
         var granted = GrantReachableSurface(
             adapter.Resolve(new WorkerInvocation("prompt", PermissionGrant: Granted), Contract));
-        var withheld = GrantReachableSurface(
-            adapter.Resolve(new WorkerInvocation("prompt", PermissionGrant: Withheld), Contract));
+
+        IReadOnlyList<string> withheld;
+        try
+        {
+            withheld = GrantReachableSurface(
+                adapter.Resolve(new WorkerInvocation("prompt", PermissionGrant: Withheld), Contract));
+        }
+        catch (PermissionGrantUnsupportedException)
+        {
+            return true;
+        }
 
         return !granted.SequenceEqual(withheld, StringComparer.Ordinal);
     }

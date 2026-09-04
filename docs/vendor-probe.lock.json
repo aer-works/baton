@@ -1,5 +1,5 @@
 {
-  "WrittenAt": "2026-09-04T16:27:01.7143108-04:00",
+  "WrittenAt": "2026-09-04T16:52:17.3989992-04:00",
   "Vendors": [
     {
       "Vendor": "agy",
@@ -10,6 +10,11 @@
       "Vendor": "claude",
       "RecordedVersion": "2.1.258 (Claude Code)",
       "RecordedAt": "2026-09-04T16:27:01.6872432-04:00"
+    },
+    {
+      "Vendor": "codex",
+      "RecordedVersion": "codex-cli 0.153.2",
+      "RecordedAt": "2026-09-04T16:52:17.3939804-04:00"
     }
   ]
 }

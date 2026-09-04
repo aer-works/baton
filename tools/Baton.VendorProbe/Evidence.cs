@@ -28,6 +28,8 @@ public static class Surfaces
     public const string Subcommands = "subcommand list";
     public const string SlashCommand = "in-session slash command";
     public const string StructuredOutput = "structured output stream";
+    public const string AppServer = "app-server JSON-RPC";
+    public const string ExecHelp = "exec --help";
     public const string ConfigFile = "config file";
     public const string LocalState = "local state directory";
     public const string StdErr = "stderr";

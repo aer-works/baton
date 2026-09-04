@@ -1,0 +1,2 @@
+{"method":"error","params":{"error":{"message":"SYNTHETIC_USAGE_LIMIT","codexErrorInfo":"usageLimitExceeded"},"threadId":"00000000-0000-0000-0000-000000000005","turnId":"00000000-0000-0000-0000-000000000006","willRetry":false}}
+{"method":"error","params":{"error":{"message":"SYNTHETIC_RATE_LIMIT","codexErrorInfo":"rateLimitExceeded"},"threadId":"00000000-0000-0000-0000-000000000005","turnId":"00000000-0000-0000-0000-000000000007","willRetry":true}}

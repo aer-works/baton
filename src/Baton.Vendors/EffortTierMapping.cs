@@ -52,11 +52,23 @@ public static class EffortTierMapping
             [Exhaustive] = "high",
         };
 
+    public static readonly IReadOnlyDictionary<string, string> CodexByCanonical =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [Quick] = "low",
+            [Standard] = "medium",
+            [Careful] = "high",
+            [Exhaustive] = "max",
+        };
+
     public static readonly IReadOnlySet<string> ClaudeRawValues =
         new HashSet<string>(StringComparer.Ordinal) { "low", "medium", "high", "xhigh", "max" };
 
     public static readonly IReadOnlySet<string> AgyRawValues =
         new HashSet<string>(StringComparer.Ordinal) { "low", "medium", "high" };
+
+    public static readonly IReadOnlySet<string> CodexRawValues =
+        new HashSet<string>(StringComparer.Ordinal) { "low", "medium", "high", "xhigh", "max", "ultra" };
 
     /// <summary>True for exactly the four words 0023 names — never a vendor's own raw value.</summary>
     public static bool IsCanonical(string effort) => ClaudeByCanonical.ContainsKey(effort);
@@ -77,6 +89,14 @@ public static class EffortTierMapping
     /// (<c>AgyWorkerAdapter.ReconcileAgyEffort</c>) — this method only resolves the vocabulary.
     /// </summary>
     public static string ResolveForAgy(string effort) => Resolve("agy", effort, AgyByCanonical, AgyRawValues);
+
+    /// <summary>
+    /// Resolves Baton's canonical vocabulary to Codex CLI reasoning effort. The app-server model
+    /// catalog is the source for per-model availability; this method validates the stable vocabulary,
+    /// while <see cref="CodexWorkerAdapter"/> rejects known model/effort mismatches and delegation-only
+    /// <c>ultra</c> when the role withholds subagents.
+    /// </summary>
+    public static string ResolveForCodex(string effort) => Resolve("codex", effort, CodexByCanonical, CodexRawValues);
 
     private static string Resolve(
         string adapterName,

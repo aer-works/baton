@@ -13,6 +13,7 @@ public class DispatchCapabilitiesTests
         // Adapters
         Assert.Contains("claude:", text);
         Assert.Contains("agy:", text);
+        Assert.Contains("codex:", text);
 
         // Claude model aliases and full ID example — the exact joined line, not a per-alias loose
         // Contains: "opus" alone is a substring of the hardcoded "claude-opus-4-8" example. Note what
@@ -30,12 +31,14 @@ public class DispatchCapabilitiesTests
         // Claude's own list contains.
         Assert.Contains($"Raw Effort: {string.Join(", ", EffortTierMapping.ClaudeRawValues)}", text);
         Assert.Contains($"Raw Effort: {string.Join(", ", EffortTierMapping.AgyRawValues)}", text);
+        Assert.Contains($"Raw Effort: {string.Join(", ", EffortTierMapping.CodexRawValues)}", text);
 
         // Canonical efforts, both vendors — exact "word (-> vendor-value)" pairs.
         foreach (var word in EffortTierMapping.CanonicalWords)
         {
             Assert.Contains($"{word} (-> {EffortTierMapping.ClaudeByCanonical[word]})", text);
             Assert.Contains($"{word} (-> {EffortTierMapping.AgyByCanonical[word]})", text);
+            Assert.Contains($"{word} (-> {EffortTierMapping.CodexByCanonical[word]})", text);
         }
 
         // agy models (illustrative only — agy has no alias catalog to source from)

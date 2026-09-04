@@ -12,6 +12,7 @@ and where a row says something is *absent*, it names the surfaces that absence w
 
 | established | against | covers |
 |---|---|---|
+| 2026-09-04, `#1853` | `codex` **0.153.2**, desktop **26.901.4073** | First subscription-authenticated Codex probe and adapter evidence: native shell-less `codex exec --json`, resumable `thread_id`, per-turn token usage, typed terminal/error events, documented sandbox/config controls, and dynamic visible model/effort discovery through app-server `model/list`. Full evidence boundaries, measurements, unknowns, and sanitized fixtures: [`vendor-codex-probe-2026-09-04.md`](vendor-codex-probe-2026-09-04.md). |
 | 2026-09-01, `#1613` review | `claude` **2.1.257** | **per-message usage shape, measured live (finding: Fleet Glass live tokens).** `claude -p "Reply with the single word ok." --output-format stream-json --verbose --max-turns 1` in a scratch dir. The `type=="assistant"` line's `message.usage` object carries, per message (not just on the terminal `result` line): `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cache_creation` (nested `{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`), `output_tokens`, `service_tier`, `inference_geo`. This settles the question the #1613 lane left unmeasured ("does a per-message usage figure exist at all, for anything") in the affirmative — all four token-count fields the design needed (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/`cache_creation_input_tokens`) are present on the SAME line as each assistant turn, confirmed on a real turn (values were `2`/`4`/`15092`/`12066` on this trivial "ok" turn — the trivial prompt's own cache-read/write dominance mirrors the `total_cost_usd` finding below at line ~548). Consumer: `tools/fleet-glass/pusher.py`'s `extract_live_counts`, spec/baton.md §6's `rooms[].live` schema entry. *Evidence: live capture, this run.* |
 | 2026-08-31, `#1540` | `claude` **2.1.252** | **stream-json flush cadence and volume, measured live (#1540).** Invoked headlessly with `-p --output-format stream-json --verbose`. Observed incremental flush per message/tool event: `system` init/hooks arrive at turn start, `assistant` content events flush as each message/tool block completes, and `rate_limit_event`/`result` arrive at turn completion. Event-level volume without `--include-partial-messages` is ~5–8 JSON lines per single-turn dispatch (a fraction of token-level deltas), safely preserving the 8 MiB `ExecutionStreamLogger` window against premature rollover. *Evidence:* `claude -p "Count to 5 slowly, one line per number" --output-format stream-json --verbose` (the #1540 lane's own recorded run): 4 `system` lines truncated in the capture, then two `assistant` events (a `thinking` block, then the `text` block `"1\n\n2\n\n3\n\n4\n\n5"`), then `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed",...}}`, then the terminal line `{"duration_api_ms":2550,...,"is_error":false,...,"result":"1\n\n2\n\n3\n\n4\n\n5",...,"type":"result","duration_ms":3870,...}` — 8 JSON lines total for this single-turn dispatch (4 truncated `system` + 2 `assistant` + 1 `rate_limit_event` + 1 `result`), at the top of the ~5–8 range stated above. |
 | 2026-08-31, `#1487` | `claude` **2.1.251**, `agy` **1.1.22** | **auto-update off-switches, measured for both CLIs (not flipped — see [`docs/runbooks/vendor-probe.md § Turning drift deliberate`](runbooks/vendor-probe.md#turning-drift-deliberate-1487)).** `claude`: `settings.json`'s `env.DISABLE_AUTOUPDATER: "1"` is the real mechanism — checked live against `code.claude.com/docs/en/setup.md` (§ "Disable auto-updates"), 2026-08-31. `autoUpdates: false` (the alternative the issue asked to disambiguate) is **not a real key**: `settings-reference.md`'s full key index has no such entry — the update-related keys are `autoUpdatesChannel`, `minimumVersion`, `requiredMinimumVersion`, `requiredMaximumVersion`, none of which is a kill switch. `DISABLE_AUTOUPDATER` stops only the background check; `claude update`/`claude install` still work (`DISABLE_UPDATES` blocks those too, not measured here — out of scope, the loop wants manual updates to keep working). *Evidence: vendor documentation.* `agy`: `AGY_CLI_DISABLE_AUTO_UPDATE` (env var) — **undocumented**: absent from `antigravity.google/docs/cli/settings`, `.../cli/reference`, and `.../cli/install` (all three checked, none mentions auto-update at all); found by inspecting the shipped binary (`agy.exe`, strings), sitting directly beside the `"failed to check for updates"` error string it evidently guards. *Evidence: shipped binary (strings), inspected not run — never toggled, per this run's scope.* |
@@ -78,6 +79,21 @@ env $STRIP claude -p --output-format stream-json --verbose "..."
 | Plan usage & reset | **`/usage` (and `/cost`) — works headlessly, see below** | **`/usage` — works headlessly, per-family rows, measured 2026-08-28, see below** |
 | Per-turn cost | **`total_cost_usd` in every `stream-json` result** | no **dollar** figure (no `total_cost_usd`) — but the `stream-json` `result` carries per-turn **token** usage (`usage`: input/output/thinking/cache_read/total), #1088 |
 | Other | `--agents <json>` | `--remote-control`, `--agent`, `--project` |
+
+### Codex capability addendum (`0.153.2`, 2026-09-04)
+
+The matrix above predates the third adapter. Codex's equivalent headless surface is `codex exec`; it
+accepts a positional prompt, emits JSONL with `--json`, resumes with `codex exec resume <thread-id>`,
+and exposes visible models plus their model-specific effort sets through app-server `model/list`.
+`turn.completed` carries per-turn input, cached-input, output, and reasoning-output tokens, but no
+API-equivalent dollar cost was observed. The CLI documents `read-only` and `workspace-write`
+sandboxes, explicit network configuration, extra writable roots, and `approval_policy="never"`.
+Baton refuses filesystem-read denial, read-without-command, command-pattern, and denied-option grants
+because those role ceilings have not been shown equivalent to Codex's per-run controls. Codex 0.153's
+`execpolicy` is an ordered-prefix language; it cannot express the option-token-anywhere denies carried
+by `implement` and `janitor`. No current built-in role therefore has an exactly translatable grant, so
+all fail closed instead of silently widening or narrowing it. See the dated probe linked in the history
+row for the exact command grammar, captured event shapes, host-policy override, and open measurements.
 
 ## Prompt delivery splits the vendors (#932)
 
@@ -400,18 +416,21 @@ mapping actually depends on: that each vendor's *set* of accepted values hasn't 
 adds, removes, or renames a level, the sentinel fails the next time it's re-run — the "we'll know
 when it changes" property is now real, not assumed.
 
-| canonical | `claude` | `agy` |
-|---|---|---|
-| `quick` | `low` | `low` |
-| `standard` | `medium` | `medium` |
-| `careful` | `high` | `high` |
-| `exhaustive` | `max` | `high` *(collapsed)* |
+| canonical | `claude` | `agy` | `codex` |
+|---|---|---|---|
+| `quick` | `low` | `low` | `low` |
+| `standard` | `medium` | `medium` | `medium` |
+| `careful` | `high` | `high` | `high` |
+| `exhaustive` | `max` | `high` *(collapsed)* | `max` |
 
 **Disclosed collapse, per 0023's own rule.** `agy` has no fourth level — `careful` and `exhaustive`
 both resolve to `agy`'s `high`, and the UI must say so at the point of choosing rather than let two
 visibly different canonical choices silently produce the same run. `claude`'s `xhigh` is not reached
 by any canonical level; it remains available only as a raw, unvalidated escape hatch (the same path
 `#566` already threads through `WorkerInvocation.Effort`), not through the canonical picker.
+Codex likewise keeps `xhigh` and `ultra` on the raw path. Availability is model-specific and comes
+from `model/list`; Baton rejects unknown models and unsupported pairs. Subagent feature switches are
+enforced independently—an `ultra` effort label is not treated as evidence that delegation occurs.
 
 **A genuine vendor divergence, measured while building the sentinel above, worth its own line: the
 two vendors fail an unknown `--effort` value in opposite directions.** `agy` hard-errors (exit 1) and
@@ -445,11 +464,11 @@ depends on: that each vendor's model set hasn't moved out from under it.
 frontier/standard/cheap/minimal/orchestrator vocabulary — that is role-dispatch's own internal
 dispatch-tier system, unrelated to this one, and never rendered to a person.
 
-| canonical | `claude` | `agy` |
-|---|---|---|
-| `deep` | `opus` | *(not recorded — see below)* |
-| `balanced` | `sonnet` | *(not recorded — see below)* |
-| `fast` | `haiku` | *(not recorded — see below)* |
+| canonical | `claude` | `agy` | `codex` |
+|---|---|---|---|
+| `deep` | `opus` | *(not recorded — see below)* | `gpt-6-astra`, `gpt-5.6-sol` |
+| `balanced` | `sonnet` | *(not recorded — see below)* | `gpt-5.6-terra` |
+| `fast` | `haiku` | *(not recorded — see below)* | `gpt-5.6-luna` |
 
 **`claude` — fully placed, no collapse.** `claude` ships no model-list subcommand: `claude models` is
 answered as a prompt and spends usage rather than enumerating anything
@@ -478,6 +497,11 @@ specific, effort-suffixed strings would be exactly the guess this record's own d
 **Left for a human-run measurement**: which canonical purpose each agy model family is offered under,
 and how (if at all) a UI reconciles agy's own effort-suffixed naming (a separate axis, § "`agy
 models`" above) with the purpose axis this table is about.
+
+**`codex` — placed from the dated visible catalog.** The four current families whose product roles
+were recorded by the 2026-09-04 host catalog map without collapse: Astra and Sol to deep, Terra to
+balanced, and Luna to fast. Older visible models remain deliberately unplaced; a recognizable name
+is not evidence of the model-purpose tier the current product assigns it.
 
 ## A blocking MCP tool holds a turn open — on both vendors
 
@@ -718,14 +742,14 @@ Baton's own consumer of the facts above, not a new vendor measurement — see
 `ExecutionUsageProjector` reads whichever registered adapter's `TryParseFinalUsage` recognizes a line
 in the execution's captured stdout; nothing here is fabricated when a line does not match.
 
-| field | claude | agy |
-|---|---|---|
-| `wallClockMs` | always, once Core has recorded both ends of the execution's lifetime — derived from the ledger, not from either vendor | same |
-| `tokensIn` / `tokensOut` | `usage.input_tokens`/`output_tokens` off the `stream-json` `result` event — **measured (#1569) to exclude `cache_read_input_tokens`**, not include it: a captured envelope with `input_tokens: 2` alongside `cache_read_input_tokens: 38741` is only coherent if the two are disjoint | `result.usage.input_tokens`/`output_tokens` — **only when agy reports the split**; a run reporting a single combined `total_tokens` (both shapes are observed, above) leaves both fields absent rather than guessing a direction. Measured (#1569) on a captured envelope: `input_tokens + output_tokens == total_tokens` exactly, with `cache_read_tokens` outside that sum — same exclusion as claude |
-| `turns` | `num_turns` off the same `result` event | `result.num_turns` |
-| `cacheReadTokens` / `cacheCreationTokens` (#1569) | `usage.cache_read_input_tokens` / `usage.cache_creation_input_tokens`, siblings of `input_tokens` on the same event | `result.usage.cache_read_tokens`; agy has never been observed reporting a cache-creation figure, so `cacheCreationTokens` is always absent on this vendor |
-| `thinkingTokens` (#1569) | **nested**, not a sibling: `usage.output_tokens_details.thinking_tokens` | `result.usage.thinking_tokens`, flat |
-| dollar cost (`total_cost_usd`) | real, but has no field in `usage`'s additive shape (issue #1360 scoped it to tokens/turns/wall-clock; #1569 added the cache/thinking counts, not cost) | n/a (agy reports none, per this section) |
+| field | claude | agy | codex |
+|---|---|---|---|
+| `wallClockMs` | always, once Core has recorded both ends of the execution's lifetime — derived from the ledger, not from either vendor | same | same |
+| `tokensIn` / `tokensOut` | `usage.input_tokens`/`output_tokens` off the `stream-json` `result` event — **measured (#1569) to exclude `cache_read_input_tokens`**, not include it: a captured envelope with `input_tokens: 2` alongside `cache_read_input_tokens: 38741` is only coherent if the two are disjoint | `result.usage.input_tokens`/`output_tokens` — **only when agy reports the split**; a run reporting a single combined `total_tokens` (both shapes are observed, above) leaves both fields absent rather than guessing a direction. Measured (#1569) on a captured envelope: `input_tokens + output_tokens == total_tokens` exactly, with `cache_read_tokens` outside that sum — same exclusion as claude | `turn.completed.usage.input_tokens` / `output_tokens`, observed per turn; Baton subtracts cached input from the inclusive input count before projecting `tokensIn` |
+| `turns` | `num_turns` off the same `result` event | `result.num_turns` | `1` for each successful `turn.completed` event |
+| `cacheReadTokens` / `cacheCreationTokens` (#1569) | `usage.cache_read_input_tokens` / `usage.cache_creation_input_tokens`, siblings of `input_tokens` on the same event | `result.usage.cache_read_tokens`; agy has never been observed reporting a cache-creation figure, so `cacheCreationTokens` is always absent on this vendor | `turn.completed.usage.cached_input_tokens` / absent |
+| `thinkingTokens` (#1569) | **nested**, not a sibling: `usage.output_tokens_details.thinking_tokens` | `result.usage.thinking_tokens`, flat | `turn.completed.usage.reasoning_output_tokens` |
+| dollar cost (`total_cost_usd`) | real, but has no field in `usage`'s additive shape (issue #1360 scoped it to tokens/turns/wall-clock; #1569 added the cache/thinking counts, not cost) | n/a (agy reports none, per this section) | not reported in the observed JSONL; any API-equivalent cost needs a dated price table and explicit estimate label |
 
 **The gate every one of these rows sits behind: structured-output mode.** Every vendor-reported field
 lives in the `stream-json` terminal line this whole document has been describing — if a dispatch runs

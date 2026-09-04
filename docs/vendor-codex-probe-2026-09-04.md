@@ -1,0 +1,194 @@
+# Codex CLI probe — 2026-09-04
+
+This is the dated evidence record for the first Baton Codex adapter. It records observations made on
+one Windows Codex desktop host, against Codex CLI `0.153.2` and desktop app `26.901.4073`. It does not
+claim that host policy, the model catalog, or undocumented wire details are stable across releases.
+The final reusable-probe refresh confirmed ChatGPT authentication, spent two deliberately tiny
+Luna/low subscription turns (initial and resume), and queried model/rate-limit app-server methods. API
+credentials were scrubbed before launch and no API-key-billed request was permitted.
+
+## Evidence boundary
+
+The evidence has three distinct sources:
+
+- **Observed** means a live subscription-authenticated CLI or app-server probe on this host.
+- **Documented** means the first-party [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
+  or [app-server](https://learn.chatgpt.com/docs/app-server) documentation.
+- **Schema** means the JSON Schema generated locally by `codex app-server generate-json-schema` from
+  CLI `0.153.2`.
+
+The JSONL files under `tests/Baton.Vendors.Tests/Fixtures/codex/` are sanitized, minimal test vectors.
+They preserve the observed values and relevant wire shapes but are not represented as byte-for-byte
+transcripts. Prompts, filesystem paths, installation identifiers, account identifiers, and credentials
+are absent.
+
+## Authentication and executable
+
+`codex doctor --json` reported ChatGPT-token authentication and no API key. The authenticated desktop
+subscription was therefore the authority used by `codex exec`; Baton does not need, receive, or store a
+vendor credential. `--ignore-user-config` skipped user configuration during the probes without removing
+that authentication.
+
+This host has two installations. In the operator's PowerShell, `Get-Command codex` resolves the npm
+`codex.ps1` shim for CLI `0.153.2`; later on PATH, the desktop app exposes a native `codex.exe` for
+CLI `0.153.1`. A bare shell-less `ProcessStartInfo("codex")` selected the older desktop executable,
+so copying the interactive shell's version claim into the adapter would have been wrong. Baton now
+walks PATH in order and, when it encounters the npm shim, resolves the package's platform-specific
+native `codex.exe` under `node_modules/@openai` without executing PowerShell or `cmd.exe`. A direct
+native install still resolves normally. Missing or incomplete installations fall back to the literal
+program name so the process boundary reports its ordinary program-not-found error.
+
+## `codex exec` command surface
+
+CLI `0.153.2` exposed non-interactive execution in this shape:
+
+```text
+codex exec -s <read-only|workspace-write> -m <model> -C <directory> \
+  --json --ignore-user-config --skip-git-repo-check <prompt>
+
+codex exec resume --json --skip-git-repo-check <session-id> <prompt>
+```
+
+Configuration overrides can select reasoning effort and approval policy, for example
+`-c model_reasoning_effort="low"` and `-c approval_policy="never"`. The probe also established that
+feature switches are available through `--disable <feature>`; the stable feature list included shell,
+multi-agent, browser-use, and app capabilities. This record does not assert that disabling one feature
+is a complete permission boundary for every future CLI version.
+
+## JSONL event grammar
+
+With `--json`, stdout is one JSON object per line. The documented event families relevant to Baton are:
+
+| Event | Meaning for an adapter |
+|---|---|
+| `thread.started` | Start of the persistent Codex thread; its `thread_id` is the resumable session id. |
+| `turn.started` | Start of one model turn. |
+| `item.started`, `item.updated`, `item.completed` | Progress for an item. Known item types include `agent_message`, `reasoning`, `command_execution`, `file_change`, `mcp_tool_call`, `web_search`, and plan updates. |
+| `turn.completed` | Successful terminal event for the turn; carries usage when reported. |
+| `turn.failed` | Failed terminal event for the turn. |
+| `error` | Top-level error event. |
+
+Observed successful streams had this ordering:
+
+```text
+thread.started
+turn.started
+item.completed (agent_message)
+turn.completed (usage)
+```
+
+The final user-facing response is the completed `agent_message`, not the last physical JSONL line.
+Consequently, a consumer must retain recognized message items while continuing through the terminal
+event; reading only the final nonblank line loses the response.
+
+Command execution can add `item.started` and `item.completed` records before the agent message. A failed
+tool item does not necessarily fail the model turn: one observed command denial was followed by an
+agent message, `turn.completed`, and process exit code `0`. The structured stream is therefore the
+authoritative outcome; process exit status alone is insufficient.
+
+## Session and resume semantics
+
+The session id came from `thread.started.thread_id`. Resuming with that id emitted the same thread id.
+The resume turn then reported its own usage rather than a cumulative thread total:
+
+| Probe | Input | Cached input | Output | Reasoning output |
+|---|---:|---:|---:|---:|
+| Initial small turn | 14,750 | 8,960 | 11 | 0 |
+| Read-only command-attempt turn | 46,632 | 40,192 | 210 | 48 |
+| Resume of the same thread | 19,579 | 11,008 | 9 | 0 |
+
+The resumed turn's counters being lower than the preceding turn's counters establishes per-turn, not
+cumulative, reporting for this stream. Baton can append one usage observation per terminal turn. To
+avoid counting cached input twice, its accounting projection should separate uncached input as
+`max(input_tokens - cached_input_tokens, 0)` and cache reads as `cached_input_tokens`; this is Baton's
+interpretation of the fields, not a claim about subscription debiting.
+
+## Model and effort discovery
+
+The app-server protocol is newline-delimited JSON-RPC without a `jsonrpc` member. A client first sends
+`initialize`, then an `initialized` notification, and can request `model/list`. The generated schema
+defines each model's id, visibility, default status, default reasoning effort, supported reasoning
+efforts, and optional multi-agent runtime. The model list should be discovered rather than frozen into
+the adapter because it is an account- and release-sensitive catalog.
+
+The observed visible catalog on 2026-09-04 included:
+
+| Model | Supported effort | Default effort | Multi-agent runtime |
+|---|---|---|---|
+| `gpt-6-astra` | low, medium, high, xhigh, max, ultra | medium | v2 |
+| `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra | low | v2 |
+| `gpt-5.6-terra` | low, medium, high, xhigh, max, ultra | medium | v2 |
+| `gpt-5.6-luna` | low, medium, high, xhigh, max | medium | v1 |
+| `gpt-5.5` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
+| `gpt-5.4` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
+| `gpt-5.4-mini` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
+| `gpt-5.3-codex-spark` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
+
+`gpt-6-astra` was marked as the catalog default. The response also contained hidden entries; the
+sanitized fixture deliberately omits them. Visibility must be honored rather than inferred from a
+model-name allowlist.
+
+## Sandbox and approval behavior
+
+The CLI documents `read-only` and `workspace-write` sandbox modes. Its configuration surface also
+includes `sandbox_workspace_write.network_access` and writable-root settings.
+
+The observed host behavior was narrower than the requested CLI mode:
+
+- In a synthetic temporary directory, read-only turns that attempted shell commands were rejected by
+  host policy.
+- Repeating the synthetic write probe with `-s workspace-write` and
+  `-c approval_policy="never"` still reported a read-only sandbox and rejected the write.
+- Despite that failed tool item, the stream ended with an agent message and `turn.completed`, and the
+  process exited `0`.
+
+This is evidence of a **managed-host override on this desktop host**, not evidence that
+`workspace-write` is universally broken. An adapter must not promise write capability solely because it
+requested the flag. Its smoke test must verify an actual file mutation in the intended writable root,
+and a denial must remain visible in the structured result.
+
+## Terminal and error handling
+
+For `codex exec`, `turn.completed` is the observed successful terminal event. `turn.failed` and `error`
+are documented failure events. A parser should prefer these typed events over prose and should preserve
+the last completed agent message separately from terminal status.
+
+The app-server `0.153.2` schema additionally exposes structured `codexErrorInfo` categories including
+`usageLimitExceeded`, `rateLimitExceeded`, `unauthorized`, `badRequest`, and `sandboxError`. These are
+stronger classification evidence than message matching when app-server notifications are available.
+The included error fixture is schema-derived rather than a live quota-wall capture.
+
+## Known unknowns
+
+- No live Codex quota exhaustion was induced, so the exact `codex exec --json` quota-wall payload,
+  reset-time availability, retry behavior, and process exit code remain unmeasured.
+- The reusable probe observed three app-server rate-limit windows with used percentages and reset
+  instants. It did not establish human-facing names or how each window maps to ChatGPT product limits,
+  so they must not be relabelled or presented as an inferred token allowance.
+- `workspace-write`, extra writable roots, network enablement, and an outbox-only write arrangement have
+  not succeeded under this host's managed policy. Their documented switches are not proof that a Baton
+  grant was enforced.
+- Codex exposes workspace reads through command execution on the measured surface. Baton cannot
+  currently express either complete filesystem-read denial or a read-files-without-command grant.
+  Codex 0.153's `execpolicy` supports ordered command prefixes, not Baton's option-token-anywhere
+  deny semantics, so the denies carried by `implement` and `janitor` are also inexact. Consequently
+  every current built-in role fails closed; there is no claimed compatibility set yet.
+- The effect of every feature disable switch on spawned tools and subagents has not been exhaustively
+  measured. Effort labels are therefore validated only as model-supported reasoning settings; delegation
+  remains controlled independently by the multi-agent feature switches.
+- Model availability, supported efforts, defaults, visibility, and multi-agent versions can change;
+  the dated table is evidence for this host and date, not a permanent registry.
+- Token fields were observed per turn, but how subscription limits debit cached input, reasoning tokens,
+  tool activity, and retries is not exposed by these streams.
+- Cancellation, timeout, malformed JSONL, CLI crash, and resume of an expired or missing thread still
+  need dedicated probes.
+
+## Sanitized fixture index
+
+- `codex-exec-success.jsonl` — observed successful event ordering and first-turn usage.
+- `codex-exec-resume-success.jsonl` — same sanitized thread id with per-turn resume usage.
+- `codex-exec-tool-denied-completes.jsonl` — failed command item followed by a successful turn.
+- `codex-exec-turn-failed.jsonl` — documented failed terminal event, represented synthetically.
+- `codex-exec-error.jsonl` — documented top-level error event, represented synthetically.
+- `codex-app-server-model-list.jsonl` — sanitized model/effort discovery response.
+- `codex-app-server-errors.jsonl` — schema-derived structured limit notifications.

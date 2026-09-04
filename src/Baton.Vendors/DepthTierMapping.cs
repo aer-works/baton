@@ -50,6 +50,15 @@ public static class DepthTierMapping
     private static readonly IReadOnlyDictionary<string, string> AgyByModel =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    private static readonly IReadOnlyDictionary<string, string> CodexByModel =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["gpt-6-astra"] = Deep,
+            ["gpt-5.6-sol"] = Deep,
+            ["gpt-5.6-terra"] = Balanced,
+            ["gpt-5.6-luna"] = Fast,
+        };
+
     /// <summary>
     /// True and <paramref name="purpose"/> set only when <paramref name="adapterName"/> is a vendor
     /// this mapping knows and <paramref name="model"/> is one of that vendor's rows in
@@ -65,6 +74,7 @@ public static class DepthTierMapping
             {
                 "claude" => ClaudeByModel,
                 "agy" => AgyByModel,
+                "codex" => CodexByModel,
                 _ => null,
             };
 

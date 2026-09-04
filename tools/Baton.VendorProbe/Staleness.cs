@@ -16,7 +16,7 @@ namespace Baton.VendorProbe;
 /// </para>
 /// <para>
 /// <b>CI cannot answer this question, and pretending otherwise would be the trap.</b> No runner has
-/// an authenticated <c>claude</c> or <c>agy</c> on PATH, so a CI job would see both vendors absent
+/// authenticated vendor CLIs on PATH, so a CI job would see the vendors absent
 /// and report "nothing has changed" forever — a green check that means only that the vendors were
 /// never there. That is precisely the shape of the false negative this whole suite was built after.
 /// A check with no vendor to inspect therefore reports <see cref="Verdict.Uninspectable"/>, which is
@@ -118,7 +118,7 @@ public static class Staleness
         foreach (var vendor in vendors)
         {
             var known = recorded.FirstOrDefault(v => v.Vendor == vendor);
-            var installed = Cli.Version(vendor);
+            var installed = Cli.Version(Probes.ProgramName(vendor));
 
             var verdict = (known, installed) switch
             {
