@@ -37,6 +37,23 @@ narrowed daemon, and bindings/permissions. If this README and the spec disagree,
 `spec/baton.md` is the authority on every verb's exact contract — this table is an index, not a
 restatement.
 
+## Fleet Glass push notifications
+
+`tools/fleet-glass/pusher.py` can push terminal/attention-worthy fleet events (a failed lane, a
+stalled room, a pusher-level anomaly) to a phone via [ntfy](https://ntfy.sh) — see
+[`spec/baton.md`](spec/baton.md) §6 for the full behavior (tier table, quiet hours, dedup). To
+enable it, copy `tools/fleet-glass/pusher.config.example.json` to `pusher.config.json` and set:
+
+| Key | Purpose |
+|---|---|
+| `ntfy_topic` | The ntfy topic to push to. **Unset or blank disables the feature entirely** (one startup log line, no error). |
+| `ntfy_server` | ntfy server base URL; defaults to `https://ntfy.sh`. A self-hosted instance requiring auth also needs `ntfy_token` in `secrets.local.json` (see `secrets.local.example.json`) — never in `pusher.config.json`. |
+| `ntfy_quiet_hours` | Optional `{"start", "end", "timezone"}` (24h `HH:MM`, wrapping past midnight allowed; timezone defaults to `America/New_York`). Suppresses every tier below `urgent`; omit for no quiet hours at all. |
+| `ntfy_state_file` | Where the dedup ledger is persisted; defaults to `ntfy-state.local.json` beside `pusher.py`. |
+
+Event type → ntfy priority (`NTFY_EVENT_TIERS`, spec/baton.md §6): `lane_failed` → urgent,
+`zombie_detected` / `pusher_anomaly` → high, `lane_succeeded_with_warnings` → default.
+
 ## Vendor authentication
 
 Baton does not authenticate to any model provider. It spawns the vendor's own first-party CLI
