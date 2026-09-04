@@ -17,7 +17,8 @@ namespace Baton.Outcomes;
 /// next mutation call. A <see cref="WorkerBinding.Process"/> target's unfulfilled request
 /// is left untouched here — delivering it to a live Core execution is Phase 2's machinery. A
 /// quota-parked target (#1607) is also left untouched here — that arrest path is
-/// <c>MutationInterface.SettleParkedCancelIntentsAsync</c>'s, not this detector's (#1556 PR 1:
+/// <c>MutationInterface.SettleArrestIntentsAsync</c>'s (the #1556 PR 2 generalization of the
+/// parked-only seam), not this detector's (#1556 PR 1:
 /// <see cref="ArrestableExecutions.All"/> yields a parked target too, filtered back out below).
 /// </summary>
 public static class NonProcessCancellationDetector
@@ -55,7 +56,7 @@ public static class NonProcessCancellationDetector
             if (target.StepId is not null)
             {
                 // Step-tied: only a Running step bound to NonProcess is this detector's to finalize.
-                // A quota-parked step's request stays unfulfilled here (SettleParkedCancelIntentsAsync
+                // A quota-parked step's request stays unfulfilled here (SettleArrestIntentsAsync
                 // owns it), and so does a Process-bound target's (Phase 2 delivers it to Core).
                 if (target.Status != StepStatus.Running
                     || !workerBindings.TryGetValue(target.Worker, out var binding)

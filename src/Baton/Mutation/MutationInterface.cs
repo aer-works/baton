@@ -1300,12 +1300,12 @@ public static class MutationInterface
                 }
 
                 // #1634/#1762: a poller-less pump (e.g. CancelCommand's DIRECT path) never delivers a
-                // parked step's cancel through MarkParkedCancelIntent/SettleParkedCancelIntentsAsync,
+                // parked step's cancel through MarkArrestIntent/SettleArrestIntentsAsync (#1556),
                 // so read the ledger directly here, before GetRetryObligations/
                 // DependencyResolver.GetReadySteps get a chance to redispatch it instead. Sourced from
                 // cancellationRequestedExecutionIds -- already Origin: Operator only, see its own
                 // remarks -- filtered through IsParkedRetryTarget, the same terminal
-                // SettleParkedCancelIntentsAsync would produce. Also gated on !hostStopRequested, same
+                // SettleArrestIntentsAsync would produce. Also gated on !hostStopRequested, same
                 // guard readyStepIds uses below -- why both this gate AND Origin: spec/baton.md §2.
                 // Filters state.Steps directly
                 // rather than the accumulator's own HashSet -- state.Steps is itself built by
@@ -2391,7 +2391,7 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// The fail-closed check behind <see cref="SettleParkedCancelIntentsAsync"/>: true only for a
+    /// The fail-closed check behind <see cref="SettleArrestIntentsAsync"/>: true only for a
     /// step whose LATEST execution is <paramref name="targetExecutionId"/>, currently
     /// <see cref="StepStatus.Failed"/>, and sitting on a scheduled <see cref="StepState.RetryNotBefore"/>
     /// — the idle-deferral park's exact shape. A step that already redispatched (a new
