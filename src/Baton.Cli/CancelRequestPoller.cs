@@ -16,12 +16,12 @@ namespace Baton.Cli;
 /// alongside its own <see cref="MutationInterface.StartWorkflowAsync"/> call — the registry it is
 /// given must be the same instance that call bound to the run's <c>IEventLogWriter</c>.
 /// <para>
-/// #1556 (generalized from #1563's narrower quota-parked-only case, S0 of the quota design, #802): a
-/// target that has no live process to deliver to AND is not genuinely settled — a step Failed with a
-/// scheduled <see cref="Domain.StepState.RetryNotBefore"/> (a vendor-quota park), a still-Running
-/// non-process step, or a still-pending step-less execution — is marked via
-/// <see cref="InFlightExecutionRegistry.MarkArrestIntent"/> instead of being told it is too late (or,
-/// pre-#1556, silently left to the bounded retry with no mark at all for the non-parked shapes). That
+/// #1556 (generalized from #1563's narrower quota-parked-only case, S0 of the quota design, #802):
+/// any target <see cref="Projection.ArrestableExecutions.Find"/> still admits but with no live
+/// process to deliver to is marked via <see cref="InFlightExecutionRegistry.MarkArrestIntent"/>
+/// instead of being told it is too late (or, pre-#1556, silently left to the bounded retry with no
+/// mark at all for the non-parked shapes — see <c>spec/baton.md</c>'s arrest section for the full
+/// shape list this now covers). That
 /// mark records nothing by itself; the pump validates and appends the durable events once it wakes,
 /// exactly as <c>RequestCancellationAsync</c> does for a live process — and it wakes on TWO separate
 /// waits, not one: the idle-deferral wait (nothing else in flight) and the busy wait (a sibling
@@ -183,12 +183,11 @@ public static class CancelRequestPoller
         var stillArrestable = ArrestableExecutions.Find(settleCheckState, snapshot, targetExecutionId) is not null;
 
         // #1556 (generalized from #1563's narrower quota-parked-only mark, "three independent locks"
-        // finding #802): ANY still-arrestable target with no live process to register with — a step
-        // sitting on a future RetryNotBefore (the worker already exited), a Running non-process step,
-        // or a still-pending step-less execution — is marked on the SAME registry the pump's two
-        // waits watch, instead of reporting the false "too late" verdict below or (pre-#1556, for the
-        // non-parked shapes) silently falling through to the bounded retry with no mark at all. This
-        // poller cannot itself tell non-process from a Process step that has not registered yet (no
+        // finding #802): every shape `stillArrestable` can be true for (see spec/baton.md's arrest
+        // section for the enumerated list) is marked on the SAME registry the pump's two waits watch,
+        // instead of reporting the false "too late" verdict below or (pre-#1556, for the non-parked
+        // shapes) silently falling through to the bounded retry with no mark at all. This poller
+        // cannot itself tell non-process from a Process step that has not registered yet (no
         // workerBindings in scope) — that fail-closed proof is MutationInterface.SettleArrestIntentsAsync's,
         // so marking here is unconditional and the pump is the one that may still record nothing.
         // Idempotent: safe to re-mark on every tick until the pump drains it.

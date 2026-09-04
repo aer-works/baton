@@ -2301,19 +2301,19 @@ public static class MutationInterface
     /// — the SAME journal shape <see cref="RequestCancellationAsync"/>'s direct path writes, even
     /// when the target has already reached a terminal outcome (intent-first ordering) — and returns
     /// to let the caller <c>continue</c> the pump loop. The very next round's own derived obligations
-    /// finalize it: <see cref="NonProcessCancellationDetector"/> for a Running non-process or
-    /// step-less target, or the ledger-read parked-cancel block further down this loop (the one
-    /// <see cref="IsParkedRetryTarget"/> guards) for a quota-parked one — one settle shape, not a
-    /// second one bolted on here.
+    /// finalize it: <see cref="NonProcessCancellationDetector"/> handles the Running/step-less
+    /// shapes, and the ledger-read parked-cancel block further down this loop (the one
+    /// <see cref="IsParkedRetryTarget"/> guards) handles the quota-parked one — this method writes no
+    /// finalizing event of its own (spec/baton.md's arrest section has the fuller rationale).
     /// <para>
     /// A target <see cref="ArrestableExecutions.Find"/> no longer admits (redispatched,
     /// already terminal, or never a real target at all — a mismatched/stale execution id,
     /// <c>Marking_an_intent_for_a_mismatched_execution_id...</c> pins exactly this) is dropped, named
     /// in one diagnostic line so the drop is not silent, and nothing is appended for it. A step-tied
     /// target still <see cref="StepStatus.Running"/> is admitted only if it resolves to a
-    /// <see cref="WorkerBinding.NonProcess"/> binding — the fail-closed gate that keeps this seam from
-    /// ever recording an intent for a live <see cref="WorkerBinding.Process"/> target that simply
-    /// has not registered with <paramref name="inFlightExecutions"/> yet (the exact race
+    /// <see cref="WorkerBinding.NonProcess"/> binding, so a live <see cref="WorkerBinding.Process"/>
+    /// target that simply has not registered with <paramref name="inFlightExecutions"/> yet is never
+    /// mistaken for one (the exact race
     /// <c>False_but_still_running_execution_is_left_pending_then_delivered_on_later_tick_after_registration</c>
     /// pins): that target is left unrecorded here, and the poller's own re-mark on its next tick
     /// re-offers it once the race resolves either way. A parked (<see cref="StepStatus.Failed"/> with
