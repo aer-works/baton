@@ -2672,8 +2672,9 @@ _COMPARE_SHAPE_ONLY_KEYS = {
 }
 
 # #1807: fields on a Running room that legitimately move between the daemon's file sample and this
-# process's derive sample (taken ~30s-ish apart, `_DAEMON_PROJECTION_WRITE_INTERVAL_S` below) --
-# excluded from the byte-identity comparison the same way `_COMPARE_SHAPE_ONLY_KEYS` is, and
+# process's derive sample (taken ~30s-ish apart, the daemon's own write cadence,
+# src/Baton.Cli/Daemon/FleetProjectionWriter.cs `DefaultInterval`) -- excluded from the byte-identity
+# comparison the same way `_COMPARE_SHAPE_ONLY_KEYS` is, and
 # checked instead by `_compare_volatile_live`'s tolerance rules below. Chose per-field tolerance
 # over the issue's other option (excluding Running rooms from `live.*` entirely) because it keeps
 # checking Running rooms -- a counter that goes backwards, or a field that vanishes, is still a
@@ -2694,12 +2695,6 @@ _COMPARE_SHAPE_ONLY_KEYS = {
 # once a room is settled (`_room_is_settled`), so a reintroduced sum-vs-level mismatch reds again.
 _MONOTONE_LIVE_COUNTER_KEYS = ("billedTokens", "toolCalls", "turns")
 _LEVEL_LIVE_KEYS = ("contextTokens", "cacheReadTokens")
-
-# spec/baton.md §7 / src/Baton.Cli/Daemon/FleetProjectionWriter.cs `DefaultInterval`: the daemon
-# writes the projection file on this cadence. A room counts as "settled" for the ≥3-settled-rooms
-# floor below once its last activity is at least one full write interval old -- by then the file
-# could not still be catching up to a value the derive path just observed.
-_DAEMON_PROJECTION_WRITE_INTERVAL_S = 30
 
 # spec/baton.md §6 PR-B2 gate (#1807): a compare that is green because it had nothing live to check
 # is not evidence -- require at least this many settled rooms before a clean diff counts as a pass.
@@ -2878,21 +2873,22 @@ def _diff_room(path: str, derive_room: dict, file_room: dict, derive_is_later: b
 
 
 def _room_is_settled(file_room: dict) -> bool:
-    """#1807: a room counts toward `_MIN_SETTLED_ROOMS_FOR_GREEN` once its counters can no longer
-    legitimately be moving -- either it's in `_TERMINAL_STATES`, or its own (unquantized)
-    `live.lastActivityAt` is already older than one daemon write interval, so the file's sample
-    could not still be catching up to what the derive path just observed."""
+    """#1814: a room counts toward `_MIN_SETTLED_ROOMS_FOR_GREEN` only once there is EVIDENCE its
+    counters can no longer move -- either the projection carries a terminal `state`
+    (`_TERMINAL_STATES`), or the room's own directory holds `terminal.json` (`is_terminal_room`, the
+    same fast-path fleet_status itself uses). Quiet time is NOT evidence: a Running room whose
+    worker is inside one long tool call (a build, a test run, a lock wait) can go quiet for far
+    longer than one daemon write interval without its counters having stopped moving -- #1814 found
+    this misreading a still-Running room as settled and reding its `live.contextTokens` on ordinary
+    derive/file sampling drift, not a real derivation bug. A Running room with no terminal fact
+    stays Running however quiet it looks, and stays under the presence/shape-only + monotone checks
+    `_compare_volatile_live` already gives a still-Running room."""
     if file_room.get("state") in _TERMINAL_STATES:
         return True
-    live = file_room.get("live")
-    ts = live.get("lastActivityAt") if isinstance(live, dict) else None
-    if not isinstance(ts, str):
+    path = file_room.get("path")
+    if not isinstance(path, str):
         return False
-    try:
-        epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return False
-    return (time.time() - epoch) > _DAEMON_PROJECTION_WRITE_INTERVAL_S
+    return is_terminal_room(path)
 
 
 def _derive_is_later(derive_derived_at: str | None, file_derived_at: str | None) -> bool | None:
@@ -5487,12 +5483,21 @@ def _selftest() -> int:
 
     check("#1807 settled-rooms floor: a terminal room counts as settled",
           _room_is_settled({"state": "Succeeded"}) is True)
-    check("#1807 settled-rooms floor: a Running room active within the last write interval does not",
-          _room_is_settled({"state": "Running",
-                             "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}) is False)
-    check("#1807 settled-rooms floor: a Running room quiet longer than one write interval does",
-          _room_is_settled({"state": "Running", "live": {"lastActivityAt": datetime.fromtimestamp(
-              time.time() - _DAEMON_PROJECTION_WRITE_INTERVAL_S - 1, tz=timezone.utc).isoformat()}}) is True)
+    with tempfile.TemporaryDirectory() as settled_tmp:
+        quiet_room = {"state": "Running", "path": settled_tmp,
+                      "live": {"lastActivityAt": datetime.fromtimestamp(
+                          time.time() - 600, tz=timezone.utc).isoformat()}}
+        check("#1814 settled-rooms floor: a Running room quiet for 10 minutes with no terminal fact "
+              "is NOT settled -- quiet time is not evidence",
+              _room_is_settled(quiet_room) is False)
+
+        terminal_dir = Path(settled_tmp) / "term-room"
+        terminal_dir.mkdir()
+        (terminal_dir / "terminal.json").write_text("{}", encoding="utf-8")
+        check("#1814 settled-rooms floor: a Running room whose dir holds terminal.json IS settled",
+              _room_is_settled({"state": "Running", "path": str(terminal_dir),
+                                 "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}) is True)
+
     fewer_than_floor = [{"state": "Running",
                           "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}] * 2
     check(f"#1807 settled-rooms floor: {_MIN_SETTLED_ROOMS_FOR_GREEN} is the actual floor "

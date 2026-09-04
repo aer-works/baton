@@ -2653,9 +2653,11 @@ them, for the reason and design `_compare_volatile_live`'s own doc comment in `p
 (canonical — not restated here): `billedTokens`/`toolCalls`/`turns` tolerate forward motion only, in
 whichever direction each side's own `derived_at` says is actually later (#1812 — never assumed from
 call order); `contextTokens`/`cacheReadTokens`/`stdoutTail` tolerate a moving value only on a room
-that is still Running, going back to exact comparison once `_room_is_settled` says a room's counters
-can no longer legitimately be moving (#1812 — the tolerance was masking a genuine `cacheReadTokens`
-sum-vs-level derivation bug, `WorkerUsage.CacheReadLevelTokens` in `src/Baton/Domain/WorkerUsage.cs`).
+that is still Running, going back to exact comparison once `_room_is_settled` finds EVIDENCE a
+room's counters can no longer move — a terminal `state` or the room's own `terminal.json`, never
+quiet time alone, since a Running room mid-tool-call can go quiet far longer than one daemon write
+interval without settling (#1814). (#1812 — the tolerance was masking a genuine `cacheReadTokens`
+sum-vs-level derivation bug, `WorkerUsage.CacheReadLevelTokens` in `src/Baton/Domain/WorkerUsage.cs`.)
 A clean diff still is not enough on its own to gate PR-B2 if it happened to run against zero or few
 settled rooms — the `_MIN_SETTLED_ROOMS_FOR_GREEN` floor above exists so "green because nothing live
 was actually checked" can't pass. See `_compare_volatile_live`/`_room_is_settled` in `pusher.py` for
