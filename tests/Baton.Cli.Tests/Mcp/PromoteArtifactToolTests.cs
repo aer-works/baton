@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Baton.Artifacts;
 using Baton.Cli.Mcp;
+using Baton.Tests.Shared;
 
 namespace Baton.Cli.Tests.Mcp;
 
@@ -35,7 +36,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            File.Delete(sourcePath);
+            FileCleanup.Delete(sourcePath);
         }
     }
 
@@ -64,7 +65,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            File.Delete(sourcePath);
+            FileCleanup.Delete(sourcePath);
         }
     }
 
@@ -133,7 +134,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            File.Delete(sourcePath);
+            FileCleanup.Delete(sourcePath);
         }
     }
 
@@ -159,7 +160,7 @@ public class PromoteArtifactToolTests
         finally
         {
             DeleteIfExists(roomDir);
-            File.Delete(sourcePath);
+            FileCleanup.Delete(sourcePath);
         }
     }
 
