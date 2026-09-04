@@ -4218,6 +4218,17 @@ filter, so no assembly can ever be a zero-match; `pixi.toml` owns the exact proj
 Both are `pixi.toml`'s member facts, not restated further here; `-m:1`'s replacement is C-13's own
 amendment, not this entry's.
 
+**Coverage exclusions (#1846, amended in place).** `pixi run coverage` moved to MTP's
+`Microsoft.Testing.Extensions.CodeCoverage`, dropping the prior `coverage.runsettings`'s
+attribute-based exclusion of source-generated code — a gap #1843 shipped rather than blocking on.
+#1846 restored it: `--coverage-settings coverage.settings.xml` (a schema-conformant
+`<Configuration><CodeCoverage><Attributes><Exclude>` file at the repo root) MEASURED passing
+command-line validation against Microsoft.Testing.Extensions.CodeCoverage 18.11.0 on SDK 10.0.204
+and excluding `GeneratedCodeAttribute`/`CompilerGeneratedAttribute`/
+`ExcludeFromCodeCoverageAttribute`-marked types from the cobertura report. In the measured control,
+the generated `QuotaResetDurationRegex_0.RunnerFactory.Runner` contributed 197 coverable lines;
+with the settings file, that type and every `RegexGenerator.g.cs` class were absent.
+
 ---
 
 ## Appendix: full subsystem ruling table
