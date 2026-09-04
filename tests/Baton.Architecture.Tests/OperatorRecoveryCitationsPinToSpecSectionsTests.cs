@@ -59,13 +59,14 @@ public sealed class OperatorRecoveryCitationsPinToSpecSectionsTests
             "naming the conductor's own judgement after inspecting the \" + \"workspace. See spec/baton.md §3.\");",
             Section: 3,
             "the conductor's own judgement after inspecting the workspace IS something to reject"),
-        // ResolveCommand.cs: a VerifyFailed/Arrested Indeterminate is pointed at `--close --reason`
-        // (#1622 (d)/#1700) or at fixing the underlying cause and re-dispatching.
+        // ResolveCommand.cs: a VerifyFailed/Arrested/BuildLockBusy Indeterminate is pointed at
+        // `--close --reason` (#1622 (d)/#1700, widened by #1796) or at fixing the underlying cause and
+        // re-dispatching.
         new(
             "src/Baton.Cli/ResolveCommand.cs",
             "and re-dispatch — a fresh execution reopens the step. See spec/baton.md §3.\");",
             Section: 3,
-            "**`--close --reason <text>` (#1622 (d)/#1700) is the verb for the other two producers**"),
+            "**`--close --reason <text>` (#1622 (d)/#1700, widened by #1796) is the verb for the other three producers**"),
         // RedispatchCommand.cs: a parent room with no terminal.json (engine died mid-wait) is pointed
         // at the same section 3 --room-dir recovery.
         new(

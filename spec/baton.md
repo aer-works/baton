@@ -792,12 +792,14 @@ fields. `StepStatus` itself stays untouched by this ruling too: a step whose lat
 `Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
 ahead of the ordinary `Failed`/`Rejected` read).
 
-**Five sources, four producer values, since #1608, #1593, #1623 and #1373.** S1 added only the
+**Six sources, five producer values, since #1608, #1593, #1623, #1373 and #1796.** S1 added only the
 vocabulary, its consumer obligations below, and the missing retry-foreclosure primitive (next
 paragraph) — nothing in `src/` wrote `Indeterminate` from that slice alone. `Domain.IndeterminateProducer`
-still has **four** values: #1373's timeout arm is a fifth *source* that settles onto the existing
-`ContractFailure` value, because it admits exactly that value's verbs and a fifth value distinguishable
-only by name is vocabulary the resolve grammar cannot act on. What writes it now:
+now has **five** values: #1373's timeout arm is a *source* that settles onto the existing
+`ContractFailure` value, because it admits exactly that value's verbs and a value distinguishable
+only by name is vocabulary the resolve grammar cannot act on; #1796's build-lock-busy arm, by
+contrast, gets its own value because it admits `VerifyFailed`/`Arrested`'s verbs (`--close --reason`),
+not `ContractFailure`'s. What writes it now:
 
 | Producer | Event | `Domain.IndeterminateProducer` | Landed |
 |---|---|---|---|
@@ -806,12 +808,13 @@ only by name is vocabulary the resolve grammar cannot act on. What writes it now
 | The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | `VerifyFailed` | #1623 |
 | A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | `Arrested` | #1623 |
 | `OutcomeClassifier.Classify`'s #1373 timeout arm — Flow's own dispatch timeout killed the execution and the workspace it was killed in carries work (see the paragraph below) | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1373 |
+| Verify actually started, but its only failing member(s) were blocked on `tools/buildlock.py`'s build lock, not genuinely broken — contention, never a gate defect | `FlowEvent.VerifyNotRun` (`BuildLockBusy: true`) | `BuildLockBusy` | #1796 |
 
-Every other Failed/Cancelled/Succeeded path is unchanged. All five raise the **one** flag
+Every other Failed/Cancelled/Succeeded path is unchanged. All six raise the **one** flag
 `Domain.StepState.IndeterminateAwaitingResolution` (`Projection.StateProjector`), which is the single
 predicate `Status.WorkflowOutcome.DescribeTerminal` and `Scheduling.RetryEngine.MayRetry` each read —
 one arm apiece, never one check per producer. Alongside it, `Domain.StepState.IndeterminateProducer`
-(F1, #1593 review) records which of the four `Domain.IndeterminateProducer` values raised it — the
+(F1, #1593 review) records which of the five `Domain.IndeterminateProducer` values raised it — the
 discriminant `baton resolve`'s admission
 test reads (Consumer obligations, below), replacing an earlier `LatestCapturedResponseFile` null/not-null
 read that could not tell `ContractFailure` (which DOES have something to reject: the conductor's
@@ -954,7 +957,7 @@ stderr warning. The fleet glass renders a distinct `INDETERMINATE` chip and its 
 section, the same placement `"Stalled"` earned in #1513/#1582 (`tools/fleet-glass/glass.html`).
 **Nothing settles FROM `Indeterminate` except an explicit, recorded conductor resolution** — never
 silently, never by default. `baton resolve` (#1608, `src/Baton.Cli/ResolveCommand.cs` +
-`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for all four
+`Mutation.MutationInterface.RecordCaptureResolutionAsync`) is that resolution verb **for all five
 producers**, split across three verbs — see §2's table for the grammar and the table just below for
 which verb each producer admits.
 `RecordCaptureResolutionAsync` admits a target on `Domain.IndeterminateProducer` (F1, #1593 review), not
@@ -963,16 +966,16 @@ a bare `LatestCapturedResponseFile` null/not-null read: `CapturedResponse` admit
 only `--reject --reason <text>` admits it — the conductor's own judgement after inspecting the
 workspace IS something to reject, even with nothing captured.
 
-**`--close --reason <text>` (#1622 (d)/#1700) is the verb for the other two producers** —
-`VerifyFailed`/`ExecutionArrested`, and a step Indeterminate for no recorded producer at all (the legacy
-pre-#1593 shape) — none of which ever carried a captured response for `--accept-capture`/`--reject` to
-act on. Before #1622 these three producers had NO resolve path at all: measured 9/2 on room
-`dispatch-implement-d898ff0f`, `baton resolve --reject` answered "settled Indeterminate without a
-captured response … nothing for 'baton resolve' to accept or reject", and the only way to stop the room
-reading "awaiting conductor resolution" on the glass was `baton room delete`. `--close` settles the step
-`Failed` through the identical `Domain.FlowEvent.CaptureResolved(Accepted: false)` room fact `--reject`
-uses — same journal shape, same downstream reading, admitted for a different producer set. **The
-settle-shape table, stated once:**
+**`--close --reason <text>` (#1622 (d)/#1700, widened by #1796) is the verb for the other three
+producers** — `VerifyFailed`/`ExecutionArrested`/`BuildLockBusy`, and a step Indeterminate for no
+recorded producer at all (the legacy pre-#1593 shape) — none of which ever carried a captured response
+for `--accept-capture`/`--reject` to act on. Before #1622 the first three of these had NO resolve path
+at all: measured 9/2 on room `dispatch-implement-d898ff0f`, `baton resolve --reject` answered "settled
+Indeterminate without a captured response … nothing for 'baton resolve' to accept or reject", and the
+only way to stop the room reading "awaiting conductor resolution" on the glass was `baton room delete`.
+`--close` settles the step `Failed` through the identical `Domain.FlowEvent.CaptureResolved(Accepted:
+false)` room fact `--reject` uses — same journal shape, same downstream reading, admitted for a
+different producer set. **The settle-shape table, stated once:**
 
 | Producer | `--accept-capture` | `--reject --reason` | `--close --reason` |
 |---|---|---|---|
@@ -980,6 +983,7 @@ settle-shape table, stated once:**
 | `ContractFailure` | refused (nothing captured to accept) | admits — settles resolved-`Failed` | refused |
 | `VerifyFailed` | refused | refused | admits — settles resolved-`Failed` |
 | `ExecutionArrested` | refused | refused | admits — settles resolved-`Failed` |
+| `BuildLockBusy` (#1796) | refused | refused | admits — settles resolved-`Failed` |
 | no producer recorded (legacy) | refused | refused | admits — settles resolved-`Failed` |
 
 **Both `--reject` and `--close` clear the "awaiting conductor resolution" text (#1622 (c)/(d)).** Before
@@ -1243,9 +1247,11 @@ repo-declared command line is not pre-probed at all.** It runs through `cmd.exe 
 intrinsic (`echo`, `call`, `exit`, `cd`) is perfectly runnable while resolving to no file on PATH — so
 the filesystem lookup that used to run here answered a question the shell was never going to ask, and
 answering it wrong skipped a real gate. The exit code decides instead: a command line that cannot run
-fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **`VerifyNotRun` has
-exactly two producers, and both are POSITIVE evidence that `pixi run <task>` does not exist in this
-workspace** — never an inference from something failing:
+fails, and a failing verify is a `VerifyFailed` with output, never a silent pass. **The pre-flight
+(`BuildLockBusy: false`) shape of `VerifyNotRun` has exactly two producers, and both are POSITIVE
+evidence that `pixi run <task>` does not exist in this workspace** — never an inference from something
+failing (a THIRD, `BuildLockBusy: true` shape exists since #1796 for a verify run that DID start; see
+below, after this pre-flight probe's own two producers):
 
 - **The workspace is not a pixi project** (#1708): no `pixi.toml`, and no `pyproject.toml` carrying a
   `[tool.pixi]` table, in the dispatched directory or any ancestor. A filesystem read, taken **before**
@@ -1280,6 +1286,39 @@ pre-flight probe cancelled by the operator's own cancellation token is never rea
 it falls through as if runnable, so the real (already-cancelled) attempt below resolves the SAME
 cancellation the ordinary verify-window handling above already covers, rather than a second, divergent
 cancellation path.
+
+**A build-lock wait timeout is `BLOCKED`, not `FAIL` (#1796).** `tools/buildlock.py` serializes every
+MSBuild-owning `pixi` task on this machine (see that file's own docstring); a verify run whose gate
+suite includes `lint`/`fmt-check`/`test-no-build` can lose the race for that lock to an unrelated
+concurrent lane and time out waiting for it — contention, not a broken gate. `buildlock.py` exits its
+own distinct code (75, `BUILDLOCK_BLOCKED_EXIT`) on that timeout rather than the generic 1 a wrapped
+command's own failure would use, and prints one machine-recognizable line starting `buildlock:
+BLOCKED`. `tools/gates/gates.py` reads that exit code alone (never the message text — the module's own
+"exit code, not text, is the contract" rule extends here) and reports that member `BLOCKED` rather than
+`FAIL`; its own summary line reads `GATES: BLOCKED n of m -- <names>` when every non-passing member is
+blocked, but still `GATES: FAIL n of m -- <names>` (naming only the real failures) when a genuine
+failure sits alongside a blocked member — a real failure always wins the headline. A blocked-only run
+is not a pass either: `gates.py` deletes rather than writes its own local gate receipt for one, so a
+following `pre-push` hook cannot read a blocked run as "gates already ran".
+
+`Baton.Mutation.VerifyRunner` parses gates.py's summary line the same way it already parses `GATES:
+FAIL` (§ above): a `GATES: BLOCKED` line with no `GATES: FAIL` line present yields
+`VerifyFailedKind.BuildLockBusy` (a `VerifyRunner`-internal discriminator, never written onto
+`FlowEvent.VerifyFailed` itself) and a reason string of the shape `"build lock busy for Ns (holder:
+<cmd> since <t>)"`, parsed out of buildlock's own BLOCKED line inside that member's tail — a parse miss
+degrades to a bare `"build lock busy"` rather than fabricating a holder. `MutationInterface` appends
+`FlowEvent.VerifyNotRun(ExecutionId, Reason, BuildLockBusy: true)` for this outcome, **not**
+`VerifyFailed` — unlike the pre-flight shape above, `VerifyStarted` for this execution DID fire (the
+run genuinely started), so this is a distinct shape of the same event, not a repeat of the "never
+started at all" case. `StateProjector`'s `VerifyNotRun` arm treats `BuildLockBusy: true` as its own
+branch: it settles the room `Indeterminate` (`IndeterminateProducer.BuildLockBusy`, admitting `baton
+resolve --close --reason <text>` the same way `VerifyFailed`/`Arrested` do — see the producer table
+above and "Consumer obligations" below) rather than the diagnostic-only, still-`Succeeded` reading the
+pre-flight shape gets — see `FlowEvent.VerifyNotRun.BuildLockBusy`'s own doc for why a lock-contention
+timeout may not be silently read as a pass. `fleet_status`/`baton status --json` surface it exactly
+as any other `Indeterminate` reason (`firstFailureReason`, `indeterminateProducerKind`), not through the
+`verify: "not-run"` field the pre-flight shape uses — that field stays reserved for a step still read
+as ordinarily `Succeeded`.
 
 **Post-exit delivery check (#1788).** For a role whose catalog entry sets `WorkerRole.DeliversBranch`
 (today, only `implement`) — a role whose brief convention ends in a push — `MutationInterface` runs one

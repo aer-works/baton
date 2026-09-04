@@ -1986,6 +1986,72 @@ public class StateProjectorTests
     }
 
     [Fact]
+    public void VerifyNotRun_with_BuildLockBusy_settles_Indeterminate_with_the_BuildLockBusy_producer()
+    {
+        // #1796: unlike the pre-flight (BuildLockBusy: false) shape, this one DID start a real
+        // verify run -- VerifyStarted fires first -- and must settle Indeterminate rather than
+        // staying diagnostic-only.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyStarted(executionId),
+            new FlowEvent.VerifyNotRun(executionId, "build lock busy for 1800s (holder: PID 1234 (dotnet build) since 2026-09-04 01:00:00)", BuildLockBusy: true),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Failed, architect.Status);
+        Assert.True(architect.IndeterminateAwaitingResolution);
+        Assert.Equal(IndeterminateProducer.BuildLockBusy, architect.IndeterminateProducer);
+        Assert.Equal(
+            "build lock busy for 1800s (holder: PID 1234 (dotnet build) since 2026-09-04 01:00:00) — awaiting conductor resolution.",
+            architect.IndeterminateReason);
+        Assert.False(Baton.Scheduling.RetryEngine.MayRetry(architect, new RetryPolicy(MaxAttempts: 5)));
+    }
+
+    [Fact]
+    public void VerifyNotRun_with_BuildLockBusy_clears_UnmatchedVerifyExecutionIds()
+    {
+        // Mirrors VerifyFailed's own clear -- VerifyStarted DID fire for this shape, unlike the
+        // pre-flight VerifyNotRun, so the crash-recovery bookkeeping must not treat it as orphaned.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.VerifyStarted(executionId),
+            new FlowEvent.VerifyNotRun(executionId, "build lock busy", BuildLockBusy: true),
+        };
+
+        var (_, checkpoint) = StateProjector.ProjectAndCheckpoint(events, TwoStepSnapshot(), null, 0);
+
+        Assert.DoesNotContain(executionId, checkpoint.State.UnmatchedVerifyExecutionIds);
+    }
+
+    [Fact]
+    public void VerifyNotRun_without_BuildLockBusy_stays_diagnostic_only_not_Indeterminate()
+    {
+        // Polarity partner: the pre-#1796 pre-flight shape (default BuildLockBusy: false) must be
+        // unaffected by the new branch -- still no Indeterminate consequence.
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionSucceeded(executionId),
+            new FlowEvent.VerifyNotRun(executionId, "no pixi project: gates-quiet"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+        var architect = StepFor(state, Architect);
+
+        Assert.Equal(StepStatus.Succeeded, architect.Status);
+        Assert.False(architect.IndeterminateAwaitingResolution);
+        Assert.Null(architect.IndeterminateReason);
+        Assert.Equal("no pixi project: gates-quiet", architect.VerifyNotRunReason);
+    }
+
+    [Fact]
     public void VerifyPassed_and_VerifyStarted_are_diagnostic_only()
     {
         var executionId = new ExecutionId("exec-1");

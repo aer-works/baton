@@ -282,7 +282,8 @@ public static class MutationInterface
         // VerifyFailed/Arrested/null — mirroring ResolveCommand's own widened admission one layer up.
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
             && (close
-                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested
+                    or IndeterminateProducer.BuildLockBusy or null
                 : effectiveProducer == IndeterminateProducer.CapturedResponse
                     || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
         if (!admitsThisVerb)
@@ -2101,6 +2102,20 @@ public static class MutationInterface
                         // gets this arm.
                         await eventLogWriter.AppendAsync(
                             new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
+                    else if (verifyOutcome.Kind == VerifyFailedKind.BuildLockBusy)
+                    {
+                        // #1796: see FlowEvent.VerifyNotRun.BuildLockBusy's own doc for the condition
+                        // this reports and why it settles differently from the VerifyFailed branch
+                        // below. VerifyStarted already fired above, distinguishing this from the
+                        // pre-flight not-run shape appended earlier in this method.
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.VerifyNotRun(
+                                prepared.Request.ExecutionId,
+                                verifyOutcome.NotRunReason ?? "build lock busy",
+                                BuildLockBusy: true),
                             CancellationToken.None).ConfigureAwait(false);
                         return;
                     }

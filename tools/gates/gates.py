@@ -150,6 +150,27 @@ def _dedupe(names):
 
 PASS_MARK = "GATES: PASS"
 FAIL_MARK = "GATES: FAIL"
+# #1796: a member's own tools/buildlock.py wrapper timed out waiting for the build lock --
+# contention, not a broken gate. Distinct exit code (buildlock.py's own BUILDLOCK_BLOCKED_EXIT,
+# not imported here to keep this module's only dependency on that file's public contract, its exit
+# code, rather than its implementation) so a blocked run is reported and exits differently from
+# both a pass and a real failure.
+BUILDLOCK_BLOCKED_EXIT = 75
+BLOCKED_MARK = "GATES: BLOCKED"
+# This process's own exit code for a blocked-only run (no real failures): distinct from PASS (0)
+# and FAIL (1) so a caller reading only the exit code -- not summarise()'s text -- still sees three
+# outcomes, matching the module docstring's "the verdict is the exit code alone" rule applied one
+# level up.
+BLOCKED_EXIT_CODE = 3
+
+
+def _status_word(code):
+    """pass/FAIL/BLOCKED for one gate member's exit code (#1796)."""
+    if code == 0:
+        return "pass"
+    if code == BUILDLOCK_BLOCKED_EXIT:
+        return "BLOCKED"
+    return "FAIL"
 
 # #1648: git exports these to every hook (a pre-push hook, in particular). A fixture that spawns
 # `git init`/`git -C` under an inherited GIT_DIR re-initializes the INVOKING repo, not its own path
@@ -210,50 +231,66 @@ def shutdown_build_servers(run=subprocess.run):
 
 
 def run_gates(names, runner, shutdown=shutdown_build_servers):
-    """Run each gate, print a per-gate line, return the names that failed.
+    """Run each gate, print a per-gate line, return (failed, blocked) name lists (#1796).
 
     #1671: also shuts down the MSBuild build servers after every gate whose name starts with
     "test", pass or fail. Why that scope: spec/baton.md §11 C-13.
     """
     failed = []
+    blocked = []
     for name in names:
         code = runner(name)
-        print(f"  {'pass' if code == 0 else 'FAIL':>4}  {name}  (exit {code})", flush=True)
-        if code != 0:
+        status = _status_word(code)
+        print(f"  {status:>4}  {name}  (exit {code})", flush=True)
+        if status == "FAIL":
             failed.append(name)
+        elif status == "BLOCKED":
+            blocked.append(name)
         if name.startswith("test"):
             shutdown()
-    return failed
+    return failed, blocked
 
 
 def join_gates(procs, quiet=False):
-    """Join overlapped gates: re-print each one's output verbatim, return the names that failed.
+    """Join overlapped gates: re-print each one's output verbatim, return (failed, blocked) (#1796).
 
     The re-print is byte-for-byte, no decode and no filter -- re-printing is where the filtering
     the module docstring describes creeps back in, so nothing here inspects the text. The verdict
-    is the exit code alone. Under --quiet a passing gate's output is dropped and a failing
-    gate's is tail-bounded (#1560); the exit-code contract is unchanged.
+    is the exit code alone. Under --quiet a passing gate's output is dropped and a failing (or
+    blocked) gate's is tail-bounded (#1560); the exit-code contract is unchanged.
     """
     failed = []
+    blocked = []
     for name, proc in procs:
         out, _ = proc.communicate()
         code = proc.returncode
+        status = _status_word(code)
         if not quiet:
             sys.stdout.flush()
             sys.stdout.buffer.write(out)
             sys.stdout.buffer.flush()
         elif code != 0:
             emit_failure_output(name, out)
-        print(f"  {'pass' if code == 0 else 'FAIL':>4}  {name}  (exit {code})", flush=True)
-        if code != 0:
+        print(f"  {status:>4}  {name}  (exit {code})", flush=True)
+        if status == "FAIL":
             failed.append(name)
-    return failed
+        elif status == "BLOCKED":
+            blocked.append(name)
+    return failed, blocked
 
 
-def summarise(names, failed):
-    """The single line worth reading. Exit code, not this text, is the contract."""
+def summarise(names, failed, blocked=()):
+    """The single line worth reading. Exit code, not this text, is the contract.
+
+    #1796: a real failure always wins the headline even alongside a blocked member -- naming only
+    the real failures, the same precedence VerifyRunner's own marker-preference mirrors on the
+    engine side. A run with no real failures but at least one blocked member reports BLOCKED, never
+    PASS -- a blocked run is not a green run.
+    """
     if failed:
         return f"{FAIL_MARK} {len(failed)} of {len(names)} -- {', '.join(failed)}"
+    if blocked:
+        return f"{BLOCKED_MARK} {len(blocked)} of {len(names)} -- {', '.join(blocked)}"
     return f"{PASS_MARK} {len(names)} of {len(names)}"
 
 
@@ -286,15 +323,22 @@ def run_all(after_build, spawner=pixi_spawner, runner=pixi_runner, quiet=False, 
 
     `skip` (#1676) drops CI_SKIP-marked names from every phase before anything runs -- `--ci`'s way
     of excluding them, rather than running and discarding their result.
+
+    Returns `(names, failed, blocked)` (#1796) -- `blocked` names a buildlock-timeout member
+    distinctly from a real failure, same precedence `summarise` applies to the headline.
     """
     overlap = [n for n in OVERLAP if n not in skip]
     build_phase = [n for n in BUILD_PHASE if n not in skip]
     after_build = [n for n in after_build if n not in skip]
     procs = [(name, spawner(name)) for name in overlap]
-    failed = run_gates(build_phase, runner)
-    failed += join_gates(procs, quiet=quiet)
-    failed += run_gates(after_build, runner)
-    return overlap + build_phase + after_build, failed
+    failed, blocked = run_gates(build_phase, runner)
+    join_failed, join_blocked = join_gates(procs, quiet=quiet)
+    failed += join_failed
+    blocked += join_blocked
+    after_failed, after_blocked = run_gates(after_build, runner)
+    failed += after_failed
+    blocked += after_blocked
+    return overlap + build_phase + after_build, failed, blocked
 
 
 def run_gates_and_shutdown(after_build, runner, quiet, shutdown=shutdown_build_servers, run_all_fn=run_all,
@@ -613,16 +657,36 @@ def selftest():
     """
     ok = True
 
-    failed = run_gates(["a", "b"], lambda name: 0)
-    line = summarise(["a", "b"], failed)
-    if failed or not line.startswith(PASS_MARK):
+    failed, blocked = run_gates(["a", "b"], lambda name: 0)
+    line = summarise(["a", "b"], failed, blocked)
+    if failed or blocked or not line.startswith(PASS_MARK):
         print(f"  control FAILED: an all-pass run did not report pass -- {line}")
         ok = False
 
-    failed = run_gates(["a", "b"], lambda name: 1 if name == "b" else 0)
-    line = summarise(["a", "b"], failed)
-    if failed != ["b"] or not line.startswith(FAIL_MARK) or "b" not in line:
+    failed, blocked = run_gates(["a", "b"], lambda name: 1 if name == "b" else 0)
+    line = summarise(["a", "b"], failed, blocked)
+    if failed != ["b"] or blocked or not line.startswith(FAIL_MARK) or "b" not in line:
         print(f"  control FAILED: a failing gate was not reported -- {line}")
+        ok = False
+
+    # #1796: a BLOCKED member (buildlock's own exit code) must be reported distinctly from a real
+    # failure -- named in `blocked`, not `failed` -- and the headline must read BLOCKED, not PASS.
+    failed, blocked = run_gates(["a", "b"], lambda name: BUILDLOCK_BLOCKED_EXIT if name == "b" else 0)
+    line = summarise(["a", "b"], failed, blocked)
+    if failed or blocked != ["b"] or not line.startswith(BLOCKED_MARK) or "b" not in line:
+        print(f"  control FAILED: a blocked gate was not reported distinctly -- failed={failed} "
+              f"blocked={blocked} line={line!r}")
+        ok = False
+
+    # A real failure alongside a blocked member must still headline FAIL, naming only the real
+    # failure -- the same precedence VerifyRunner's own marker-preference mirrors on the engine side.
+    failed, blocked = run_gates(
+        ["a", "b", "c"],
+        lambda name: {"a": 0, "b": BUILDLOCK_BLOCKED_EXIT, "c": 1}[name])
+    line = summarise(["a", "b", "c"], failed, blocked)
+    if failed != ["c"] or blocked != ["b"] or not line.startswith(FAIL_MARK) or "b" in line:
+        print(f"  control FAILED: a mixed failed+blocked run did not headline the real failure "
+              f"alone -- failed={failed} blocked={blocked} line={line!r}")
         ok = False
 
     # The overlapped path, with real subprocesses so communicate()/returncode are the real thing.
@@ -631,16 +695,24 @@ def selftest():
             [sys.executable, "-c", f"print('overlap-output'); raise SystemExit({code})"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    failed = join_gates([("good", fake_spawner(0)), ("bad", fake_spawner(3))])
-    if failed != ["bad"]:
-        print(f"  control FAILED: the overlapped path did not report the failing gate -- {failed}")
+    failed, blocked = join_gates([("good", fake_spawner(0)), ("bad", fake_spawner(3))])
+    if failed != ["bad"] or blocked:
+        print(f"  control FAILED: the overlapped path did not report the failing gate -- "
+              f"failed={failed} blocked={blocked}")
+        ok = False
+
+    failed, blocked = join_gates(
+        [("good", fake_spawner(0)), ("stuck", fake_spawner(BUILDLOCK_BLOCKED_EXIT))])
+    if failed or blocked != ["stuck"]:
+        print(f"  control FAILED: the overlapped path did not report the blocked gate -- "
+              f"failed={failed} blocked={blocked}")
         ok = False
 
     # #1671: build-server shutdown must be reached on a FAILING test* gate, not only a passing run
     # -- proven with an injected counting fake, red-first (this arm would have caught the shutdown
     # call being placed only after a success check, or only inside a passing branch).
     shutdown_calls = []
-    failed = run_gates(["test-x"], lambda name: 1, shutdown=lambda: shutdown_calls.append(1))
+    failed, _ = run_gates(["test-x"], lambda name: 1, shutdown=lambda: shutdown_calls.append(1))
     if failed != ["test-x"] or not shutdown_calls:
         print(
             f"  control FAILED: build-server shutdown was not reached after a failing test* "
@@ -679,7 +751,7 @@ def selftest():
     # (named in the failed list -- quiet must never eat a red), and a passing gate's output must
     # actually be dropped. Both arms discriminate: without the quiet branch the second arm sees
     # "overlap-output"; if quiet ever stopped collecting failures the first arm goes green-blind.
-    failed = join_gates([("good", fake_spawner(0)), ("bad", fake_spawner(3))], quiet=True)
+    failed, _ = join_gates([("good", fake_spawner(0)), ("bad", fake_spawner(3))], quiet=True)
     if failed != ["bad"]:
         print(f"  control FAILED: the quiet overlapped path did not report the failing gate -- {failed}")
         ok = False
@@ -1006,13 +1078,14 @@ def selftest():
     try:
         OVERLAP[:] = ["overlap-x"]
         BUILD_PHASE[:] = ["build-x"]
-        names, failed = run_all(["after-x"], spawner=_refusing_spawner, runner=_refusing_runner,
-                                 skip=frozenset({"overlap-x", "build-x", "after-x"}))
+        names, failed, blocked = run_all(["after-x"], spawner=_refusing_spawner, runner=_refusing_runner,
+                                          skip=frozenset({"overlap-x", "build-x", "after-x"}))
     finally:
         OVERLAP[:] = orig_overlap
         BUILD_PHASE[:] = orig_build_phase
-    if names or failed:
-        print(f"  control FAILED: run_all's skip= did not exclude every member -- names={names} failed={failed}")
+    if names or failed or blocked:
+        print(f"  control FAILED: run_all's skip= did not exclude every member -- "
+              f"names={names} failed={failed} blocked={blocked}")
         ok = False
 
     print("selftest: pass" if ok else "selftest: FAIL")
@@ -1084,7 +1157,7 @@ def main():
     skip = frozenset(CI_SKIP) if args.ci else frozenset()
 
     start_snapshot = telemetry_snapshot()
-    names, failed = run_gates_and_shutdown(
+    names, failed, blocked = run_gates_and_shutdown(
         after_build, quiet_pixi_runner if quiet else pixi_runner, quiet, skip=skip)
     end_snapshot = telemetry_snapshot()
     write_telemetry(mode, start_snapshot, end_snapshot)
@@ -1104,12 +1177,22 @@ def main():
             delete_receipt()
             return 1
 
-    print(summarise(names, failed))
-    if failed:
+    print(summarise(names, failed, blocked))
+    # #1796: a blocked-only run is not a pass -- it must not write a receipt a later push would
+    # read as "gates already ran" (the receipt is exactly what a passing run's exit lets a future
+    # push skip re-running). BLOCKED_EXIT_CODE (3) is distinct from both PASS (0) and a real FAIL
+    # (1): the room-level engine caller (Baton.Mutation.VerifyRunner) discriminates on gates.py's
+    # printed marker line, not this process's own exit code, but a human or CI script reading only
+    # the exit code must still see three distinct outcomes.
+    if failed or blocked:
         delete_receipt()
     else:
         write_receipt(mode)
-    return 1 if failed else 0
+    if failed:
+        return 1
+    if blocked:
+        return BLOCKED_EXIT_CODE
+    return 0
 
 
 if __name__ == "__main__":
