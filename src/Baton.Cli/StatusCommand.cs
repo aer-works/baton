@@ -738,9 +738,8 @@ public static class StatusCommand
         // misreported as abandoned.
         if (step.LatestExecutionId is { } latestExecutionId)
         {
-            // #1577: same newest-stamp-wins read as WorkflowStatusView's engineIdentityByExecutionId
-            // loop -- FlowEvent.StepRetryScheduled.EnginePid's own remarks have why a revival renewal
-            // can land here too, not only ExecutionRequestAccepted.
+            // #1577: mirrors WorkflowStatusView's engineIdentityByExecutionId loop -- newest stamp
+            // across both event kinds wins, so this human rendering never disagrees with fleet_status.
             int? enginePid = null;
             DateTimeOffset? engineStartTime = null;
             foreach (var evt in events)
