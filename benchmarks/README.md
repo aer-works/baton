@@ -9,6 +9,23 @@ never an edit to an old one.
 | [`deepswe/2026-09-04`](deepswe/2026-09-04/README.md) | 36 vendor/model/effort configurations from the DeepSWE v1.1 selector: pass@1, API-cost proxy, output tokens, agent steps. | Tier pins (#1861, #1863) |
 | [`subscription-usage/2026-09-04`](subscription-usage/2026-09-04/README.md) | Baton-launched versus native Claude Code sessions, 2026-08-31 to 09-04: responses, output, cache-read, implement-room outcomes. | #1848, #1849, #1391 |
 
+## Derived scores
+
+[`deepswe/derive_scores.py`](deepswe/derive_scores.py) writes `derived-scores.csv` beside a date
+directory's raw file, leaving the raw capture untouched. It adds two plain ratios
+(`quality_per_100_steps`, `quality_per_usd`, kept because people ask for them and labelled as ratios: on
+their own they rank a bad cheap answer above a good dearer one), two Pareto flags on quality versus
+steps (`on_frontier` across every vendor, `on_vendor_frontier` within one, the comparison that matters
+when subscriptions do not trade against each other), and one composite, `utility_lambda_<L>` =
+quality minus L times steps. L is the coefficient to argue about: it is a script argument, it is
+written into the column header, and `--sweep` prints the top rows under several values so the argument
+can be had with the table in front of you. `--check` fails if the committed derived file is stale.
+
+At the default L of 0.10 (one quality point forfeited per ten agent steps) the 2026-09-04 order is Sol
+max, Sol xhigh, Opus high, Sol high, Opus max, Opus medium. Raise L to 0.20 and Opus medium passes
+Opus high; at 0.40 nothing over 60 steps survives the top five. The two Gemini 3.8 Flash rows lead on
+raw quality and fall to tenth and eleventh once steps count at all.
+
 ## Reading rules the snapshots share
 
 - Results are specific to their harness. They compare configurations inside that harness; they do
