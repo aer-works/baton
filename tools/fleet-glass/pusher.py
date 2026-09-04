@@ -1944,9 +1944,12 @@ def seconds_left_in_day(now_ts: float) -> float:
 
 
 def load_budget_ledger(state: dict, now_ts: float) -> dict:
-    """Today's {date, snapshot, deliver, heartbeat, exhausted_notice_sent} counters. A missing/
-    corrupt persisted ledger returns a fresh, zeroed ledger for today. A stored date strictly EARLIER
-    than today rolls over to a fresh, zeroed ledger for today, same as always.
+    """Today's {date, snapshot, deliver, heartbeat, exhausted_notice_sent, kv_write_cap_resets_at}
+    counters. A missing/corrupt persisted ledger returns a fresh, zeroed ledger for today. A stored
+    date strictly EARLIER than today rolls over to a fresh, zeroed ledger for today, same as always
+    -- including `kv_write_cap_resets_at` (#1829): a real Cloudflare daily cap cannot still be live
+    once the ledger has rolled to a new day, so it is dropped on rollover rather than carried
+    forward.
 
     F10 (2026-09-02 review) monotonic guard against a clock rollback -- what it guards against and
     why an all-zero stored ledger is exempt: spec/baton.md §6, "Fleet Glass write budget", not
@@ -1958,6 +1961,7 @@ def load_budget_ledger(state: dict, now_ts: float) -> dict:
             v = raw.get(key)
             return v if isinstance(v, int) and not isinstance(v, bool) else 0
         stored_date = raw["date"]
+        kv_write_cap_resets_at = raw.get("kv_write_cap_resets_at")
         stored = {
             "date": stored_date,
             "snapshot": _count("snapshot"),
@@ -1965,6 +1969,8 @@ def load_budget_ledger(state: dict, now_ts: float) -> dict:
             "heartbeat": _count("heartbeat"),
             "exhausted_notice_sent": bool(raw.get("exhausted_notice_sent", False)),
         }
+        if isinstance(kv_write_cap_resets_at, str) and kv_write_cap_resets_at:
+            stored["kv_write_cap_resets_at"] = kv_write_cap_resets_at
         if stored_date == today:
             return stored
         stored_used = stored["snapshot"] + stored["deliver"] + stored["heartbeat"]
@@ -1974,7 +1980,7 @@ def load_budget_ledger(state: dict, now_ts: float) -> dict:
     return {"date": today, "snapshot": 0, "deliver": 0, "heartbeat": 0, "exhausted_notice_sent": False}
 
 
-def mark_kv_write_cap_exhausted(state: dict, now_ts: float) -> dict:
+def mark_kv_write_cap_exhausted(state: dict, now_ts: float, resets_at: str | None = None) -> dict:
     """#1712: a live 429 (reason=kv-write-cap) from the Worker is stronger evidence than the
     ledger's own count -- exhaust every producer's sub-budget for the rest of today outright, so
     the existing #1690 exhausted/skip-producer paths (snapshot_pushes_allowed / deliver_allowed /
@@ -1983,14 +1989,41 @@ def mark_kv_write_cap_exhausted(state: dict, now_ts: float) -> dict:
     "budget exhausted" snapshot is never attempted -- it is exactly the write that cannot land
     either. `max(...)` rather than a plain assignment: never regresses a sub-budget that has
     already counted higher than its own daily target (shouldn't happen, but a real KV write already
-    recorded must never be un-recorded)."""
+    recorded must never be un-recorded).
+
+    #1829: `resets_at`, when given, is the Worker's own `resets_at` from the 429 body -- stored on
+    the ledger so the NEXT payload the pusher builds (snapshot or heartbeat) can carry it verbatim
+    to the glass. This is the one REAL cap signal; glass.html's banner must key on it, not on an
+    inference from two timestamps aging together."""
     ledger = load_budget_ledger(state, now_ts)
     ledger["snapshot"] = max(ledger.get("snapshot", 0), SNAPSHOT_DAILY_WRITES)
     ledger["deliver"] = max(ledger.get("deliver", 0), DELIVER_DAILY_WRITES)
     ledger["heartbeat"] = max(ledger.get("heartbeat", 0), HEARTBEAT_DAILY_WRITES)
-    ledger["exhausted_notice_sent"] = True
+    if isinstance(resets_at, str) and resets_at:
+        # #1829: a live 429 leaves the one-shot "budget exhausted" notice (below, in main()) UNSENT
+        # -- it is the one channel that still reaches the glass, since the notice reuses the
+        # snapshot-push path rather than inventing a second one, and it now carries this real
+        # `resets_at` alongside its own locally-computed `writeBudgetExhaustedUntil`. Without a
+        # `resets_at` (the plain over-budget case, no live 429 involved), the notice is sent
+        # immediately by the caller that detected it, same as before.
+        ledger["kv_write_cap_resets_at"] = resets_at
+    else:
+        ledger["exhausted_notice_sent"] = True
     state[BUDGET_STATE_KEY] = ledger
     return ledger
+
+
+def kv_write_cap_pusher_fields(ledger: dict) -> dict:
+    """#1829: the pusher-side equivalent of glass.html's cap-banner classifier -- {} when the ledger
+    carries no `kv_write_cap_resets_at` (no live 429 has been observed today), else
+    `{"kvWriteCapResetsAt": <resets_at>}` to merge into the `pusher` object a snapshot/heartbeat
+    payload sends. glass.html's banner keys on the exact same absent/present distinction, read back
+    as `snap.pusher.kvWriteCapResetsAt` -- kept as one small pure function so the selftest can pin
+    the decision directly rather than only through the full main() loop."""
+    resets_at = ledger.get("kv_write_cap_resets_at")
+    if isinstance(resets_at, str) and resets_at:
+        return {"kvWriteCapResetsAt": resets_at}
+    return {}
 
 
 def budget_used(ledger: dict) -> int:
@@ -3516,6 +3549,15 @@ def main() -> None:
     acquire_lock(lock_path)
     atexit.register(release_lock, lock_path)
 
+    # #1829: log the ledger's own state on every restart, not only on the hourly should_log_budget
+    # cadence -- a restart is exactly the moment the ledger's persisted count is most worth
+    # confirming (the diagnosis that prompted this: a restart-caused loss was suspected, then
+    # withdrawn once the persisted file proved honest; this line is what would have shown that in
+    # the log directly instead of needing a live read of write-budget.local.json).
+    startup_ledger_state = load_push_state(budget_path)
+    startup_ledger = load_budget_ledger(startup_ledger_state, time.time())
+    log(f"starting -- {format_budget_log_line(startup_ledger, float(min_push_interval_s))}")
+
     try:
         while True:
             # #1558: default so the ntfy room-events block below (its own top-level try/except) has
@@ -3626,12 +3668,20 @@ def main() -> None:
                 if not snapshot_pushes_allowed(ledger):
                     if not ledger.get("exhausted_notice_sent"):
                         exhausted_until = next_utc_midnight_iso(now_ts)
+                        pusher_notice = {"writeBudgetExhaustedUntil": exhausted_until}
+                        # #1829: kv_write_cap_pusher_fields adds `kvWriteCapResetsAt`, a REAL
+                        # Cloudflare 429 `resets_at`, only when mark_kv_write_cap_exhausted stored
+                        # one -- the one cap signal glass.html's banner may key on, distinct from
+                        # writeBudgetExhaustedUntil above (this pusher's own locally-computed
+                        # midnight, sent even when the cap was only inferred from our own ledger
+                        # crossing its configured target, never confirmed by a live 429).
+                        pusher_notice.update(kv_write_cap_pusher_fields(ledger))
                         notice_wrapped = build_wrapped(
                             hot_rooms, gather_underhood(cfg),
                             {p: t for p, t in timelines.items() if p in hot_paths},
                             stale_hidden_count, terminal_total=terminal_total,
                             terminal_archive=terminal_archive, conductor=conductor_info,
-                            pusher={"writeBudgetExhaustedUntil": exhausted_until},
+                            pusher=pusher_notice,
                             staleness=staleness)
                         post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
                         # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
@@ -3650,10 +3700,12 @@ def main() -> None:
                             # refusing writes for real, it cannot land either. Confirm the ledger is
                             # fully exhausted (all three producers) and log the ONE line; do not
                             # retry the notice.
-                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            cap_ledger = mark_kv_write_cap_exhausted(ledger_state, now_ts, ex.resets_at)
                             save_push_state(budget_path, ledger_state)
                             log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
                                 f"no writes until {ex.resets_at}")
+                            # #1829: log the `budget:` line on every 429, not only the hourly cadence.
+                            log(format_budget_log_line(cap_ledger, effective_snapshot_interval))
                         except Exception as ex:  # noqa: BLE001 — loop must survive anything
                             log(f"ERROR (push, budget-exhausted notice) {type(ex).__name__}: {ex}")
                         else:
@@ -3696,10 +3748,11 @@ def main() -> None:
                             # hard cap -- this producer's own SNAPSHOT_KV_WRITE_COST charge above
                             # already stands (F3(b)); this widens it to all three.
                             ledger_state = load_push_state(budget_path)
-                            mark_kv_write_cap_exhausted(ledger_state, now_ts)
+                            cap_ledger = mark_kv_write_cap_exhausted(ledger_state, now_ts, ex.resets_at)
                             save_push_state(budget_path, ledger_state)
                             log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
                                 f"no writes until {ex.resets_at}")
+                            log(format_budget_log_line(cap_ledger, effective_snapshot_interval))
                         except Exception as ex:  # noqa: BLE001 — a failing push must not skip the
                             # pending-push-age computation below (finding 2's whole point), and the
                             # loop must survive regardless -- caught here, not the outer except, so
@@ -3780,10 +3833,11 @@ def main() -> None:
                 # #1712: same hard-cap posture as the snapshot producer above -- exhaust every
                 # producer's sub-budget right now, not just heartbeat's own.
                 ledger_state = load_push_state(budget_path)
-                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                cap_ledger = mark_kv_write_cap_exhausted(ledger_state, time.time(), ex.resets_at)
                 save_push_state(budget_path, ledger_state)
                 log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
                     f"no writes until {ex.resets_at}")
+                log(format_budget_log_line(cap_ledger, effective_snapshot_interval))
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
                 push_ntfy_pusher_anomaly(cfg, ntfy_secrets, ntfy_state_path, "heartbeat", ex,
@@ -3835,10 +3889,11 @@ def main() -> None:
                 # #1712: same hard-cap posture as the other two producers -- exhaust every
                 # producer's sub-budget right now, not just deliver's own.
                 ledger_state = load_push_state(budget_path)
-                mark_kv_write_cap_exhausted(ledger_state, time.time())
+                cap_ledger = mark_kv_write_cap_exhausted(ledger_state, time.time(), ex.resets_at)
                 save_push_state(budget_path, ledger_state)
                 log(f"kv write cap hit at {datetime.now(timezone.utc).isoformat()}; "
                     f"no writes until {ex.resets_at}")
+                log(format_budget_log_line(cap_ledger, effective_snapshot_interval))
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
                 push_ntfy_pusher_anomaly(cfg, ntfy_secrets, ntfy_state_path, "deliver", ex,
@@ -5695,6 +5750,44 @@ def _selftest() -> int:
     check("(#1712) mark_kv_write_cap_exhausted also marks exhausted_notice_sent, so the #1690 "
           "exhaustion-notice snapshot (itself a KV write) is never attempted",
           kv_cap_ledger["exhausted_notice_sent"] is True)
+
+    # -- #1829: mark_kv_write_cap_exhausted WITH a real resets_at (the live-429 path, all four
+    # main() call sites) leaves exhausted_notice_sent unset so the exhaustion-notice snapshot still
+    # gets its one attempt, now carrying the real resets_at -- see kv_write_cap_pusher_fields, the
+    # pusher-side equivalent of glass.html's cap-banner classifier.
+    live_cap_state: dict = {}
+    live_cap_ledger = mark_kv_write_cap_exhausted(live_cap_state, 1000.0, "2026-09-05T00:00:00+00:00")
+    check("(#1829) a live 429's resets_at is stored on the ledger",
+          live_cap_ledger.get("kv_write_cap_resets_at") == "2026-09-05T00:00:00+00:00")
+    check("(#1829) a live 429 does NOT itself mark exhausted_notice_sent -- the exhaustion-notice "
+          "snapshot still gets one attempt, now carrying the real resets_at",
+          live_cap_ledger.get("exhausted_notice_sent") is not True)
+    check("(#1829) a live 429 still exhausts all three sub-budgets, same as the plain-exhaustion path",
+          not snapshot_pushes_allowed(live_cap_ledger) and not deliver_allowed(live_cap_ledger)
+          and not heartbeat_allowed(live_cap_ledger))
+    check("(#1829) kv_write_cap_pusher_fields -- the pusher-side equivalent of glass.html's cap-"
+          "banner classifier -- adds kvWriteCapResetsAt once the ledger carries a live resets_at",
+          kv_write_cap_pusher_fields(live_cap_ledger) == {"kvWriteCapResetsAt": "2026-09-05T00:00:00+00:00"})
+    check("(control, #1829) a ledger with NO live 429 (the ordinary over-budget case) never yields "
+          "the cap-banner field -- proves the classifier discriminates rather than firing on every "
+          "exhaustion",
+          kv_write_cap_pusher_fields(kv_cap_ledger) == {})
+    check("(control, #1829) a fresh, never-exhausted ledger never yields the cap-banner field either",
+          kv_write_cap_pusher_fields(load_budget_ledger({}, 1000.0)) == {})
+
+    with tempfile.TemporaryDirectory() as cap_restart_tmp:
+        cap_restart_ledger_file = Path(cap_restart_tmp) / "write-budget.local.json"
+        cap_restart_state: dict = {}
+        mark_kv_write_cap_exhausted(cap_restart_state, 1000.0, "2026-09-05T00:00:00+00:00")
+        save_push_state(cap_restart_ledger_file, cap_restart_state)
+        # A restart re-reads the ledger from a fresh, empty in-memory dict -- exactly what a
+        # Stop-ScheduledTask/Start-ScheduledTask kill leaves main() with.
+        reloaded_cap_ledger = load_budget_ledger(load_push_state(cap_restart_ledger_file), 1000.0)
+        check("(#1829) a ledger restart keeps BOTH the exhausted sub-budget counts and the live "
+              "429's resets_at",
+              reloaded_cap_ledger.get("snapshot") == SNAPSHOT_DAILY_WRITES
+              and reloaded_cap_ledger.get("kv_write_cap_resets_at") == "2026-09-05T00:00:00+00:00")
+
     already_high_state: dict = {"__write_budget__": {"date": utc_day_str(1000.0),
                                                        "snapshot": SNAPSHOT_DAILY_WRITES + 5,
                                                        "deliver": 0, "heartbeat": 0,

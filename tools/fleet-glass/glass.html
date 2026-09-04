@@ -1889,12 +1889,12 @@ window.addEventListener("hashchange", applyRoute);
   // RUNNING_SUSPICION_MS: a coalesced-but-healthy pending age never exceeds the 90s floor by more
   // than one polling interval, so only a genuinely failing push keeps growing past minutes.
   const PUSH_FAILING_MS = 10 * 60 * 1000;
-  // #1712: the daily KV write cap fails the heartbeat write right alongside the snapshot/derived
-  // write, so heartbeat_at and derived_at go stale TOGETHER -- the pre-fix version of this banner
-  // chain had no arm for that shape and fell through to "derivation may be stuck" below, which is
-  // wrong: derivation isn't stuck, the Worker can't write anything at all. "Within one push
-  // interval of each other" is the tell: a genuinely stuck derivation leaves heartbeat_at FRESH
-  // (the heartbeat write still succeeds) while only derived_at ages: See spec/baton.md §6.
+  // #1829: heartbeat_at and derived_at aging together within this window is NOT a reliable cap
+  // tell -- pusher.py's derived-freshness ping writes both into the SAME heartbeat_at value in one
+  // POST, so they age together by construction whenever the ping's adaptive pacing widens (an idle
+  // fleet), with no cap involved at all. #1712's original reasoning here (kept only for the now-
+  // neutral banner below) mistook that construction for evidence; the real cap signal is
+  // `pusher.kvWriteCapResetsAt`, sourced from the Worker's own 429. See spec/baton.md §6.
   const KV_CAP_SYNC_MS = 3 * 60 * 1000;
   mcp.watchTool("baton", "fleet_status", {}, (ev) => {
     if(ev.type === "data"){
@@ -1924,6 +1924,16 @@ window.addEventListener("hashchange", applyRoute);
         // a dead pusher or a stuck derivation once pushed_at/derived_at start aging past it.
         const budgetExhaustedUntil = snap.pusher && typeof snap.pusher.writeBudgetExhaustedUntil === "string"
           ? snap.pusher.writeBudgetExhaustedUntil : null;
+        // #1829: the ONE real cap signal -- the Worker's own 429 `{"reason": "kv-write-cap",
+        // "resets_at"}`, surfaced by pusher.py's mark_kv_write_cap_exhausted into the `pusher`
+        // object it sends on its one-shot budget-exhausted notice. Unlike budgetExhaustedUntil
+        // above (which fires the moment the pusher's OWN ledger crosses its configured daily
+        // target -- a self-imposed, conservative stop that may never touch Cloudflare's actual
+        // cap), this field only exists when the Worker itself answered 429. `resets_at` in the
+        // past means a stale notice (the ledger has since rolled to a new day) -- treat as absent.
+        const kvWriteCapResetsAt = snap.pusher && typeof snap.pusher.kvWriteCapResetsAt === "string"
+          && Date.parse(snap.pusher.kvWriteCapResetsAt) > Date.now()
+          ? snap.pusher.kvWriteCapResetsAt : null;
         // #1557 PR-B1: absent-safe the same way as writeBudgetExhaustedUntil above -- a pusher not
         // yet running FLEET_GLASS_PROJECTION_SOURCE=file, or one whose read of the daemon's
         // projection file found it fresh, never sends `staleness` at all. Present only on a cycle
@@ -1932,7 +1942,9 @@ window.addEventListener("hashchange", applyRoute);
         // are the pusher explaining a self-diagnosed source problem, not a downstream KV/heartbeat
         // symptom the banners below would otherwise misdiagnose.
         const staleness = snap.staleness && typeof snap.staleness === "object" ? snap.staleness : null;
-        if(budgetExhaustedUntil){
+        if(kvWriteCapResetsAt){
+          banner(`<b>The worker is refusing writes</b> (Cloudflare's daily KV write cap, confirmed by a live 429; writes resume ${esc(kvWriteCapResetsAt)}). Data below is from the last push before the cap hit.`);
+        } else if(budgetExhaustedUntil){
           banner(`<b>Write budget exhausted for today.</b> The pusher hit its daily KV write cap and stopped snapshot pushes until ${esc(budgetExhaustedUntil)} — deliverables may still be landing. Data below is from the last push before the stop.`);
         } else if(staleness && staleness.stale){
           const daemonDerivedAt = typeof staleness.daemon_derived_at === "string" ? staleness.daemon_derived_at : null;
@@ -1951,9 +1963,13 @@ window.addEventListener("hashchange", applyRoute);
           banner(`<b>Push failing.</b> The pusher has had a snapshot waiting to go out for ${esc(dur(pendingPushMs))} even though derivation is healthy (derived_at ${esc(age(snap.derived_at))} ago) — check pusher.log for POST errors (413 from the 1 MB cap, 5xx, network). Data below may be stale.`);
         } else if(isFinite(hbMs) && isFinite(derivedMs) && hbMs > RUNNING_SUSPICION_MS && derivedMs > RUNNING_SUSPICION_MS
                   && Math.abs(hbMs - derivedMs) < KV_CAP_SYNC_MS){
-          // #1712: heartbeat_at and derived_at both stale, aging together -- the Worker itself is
-          // refusing writes (Cloudflare's daily KV cap), not a stuck derivation.
-          banner(`<b>The worker is refusing writes</b> (daily KV write cap hit around ${esc(age(snap.heartbeat_at))} ago; writes resume 00:00 UTC). Data below is from the last push.`);
+          // #1829: heartbeat_at and derived_at aging together is NOT evidence of a cap -- pusher.py's
+          // derived-freshness ping writes both into the same heartbeat_at value in one POST (see
+          // this file's own header), so the two always age together by construction once the ping's
+          // adaptive pacing widens past RUNNING_SUSPICION_MS on an idle fleet. Demoted (#1712's
+          // original "refusing writes" diagnosis here was a false positive) to a neutral line naming
+          // the ping cadence; the REAL cap signal is kvWriteCapResetsAt, checked above.
+          banner(`<b>No fresh write since ${esc(age(snap.heartbeat_at))} ago.</b> The derived-freshness ping's cadence has widened (idle fleet) — this is expected, not necessarily a cap. Data below is from the last push.`);
         } else if(running && isFinite(derivedMs) && derivedMs > RUNNING_SUSPICION_MS){
           banner(`<b>Snapshot derivation may be stuck.</b> The pusher is alive (heartbeat ${esc(age(snap.heartbeat_at))} ago) but its last successful derivation was ${esc(age(snap.derived_at))} ago while rooms show Running — derive_snapshot_and_timelines may be failing every cycle.`);
         } else {

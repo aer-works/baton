@@ -3096,16 +3096,24 @@ layers: `worker.core.mjs`'s `classifyKvError` recognizes the exact message on ev
 {"reason": "kv-write-cap", "resets_at": <next 00:00 UTC>}` instead of a 500. `pusher.py`'s
 `post_json` raises `KvWriteCapError` on that specific 429; every producer that catches it
 (`mark_kv_write_cap_exhausted`) forces all three write-budget sub-budgets to their daily ceiling and
-`exhausted_notice_sent` to true in one step -- reusing the #1690 exhausted/skip-producer path rather
-than a parallel one, and deliberately never attempting the exhaustion-notice snapshot itself (it is
-exactly the write that cannot land) -- and logs one line, `kv write cap hit at <t>; no writes until
-<resets_at>`, the first and only time this happens each day (every later cycle finds the ledger
-already exhausted and never re-attempts the POST that would re-trigger it). `glass.html`'s banner
+records the 429 body's `resets_at` on the ledger (#1829: no longer forcing `exhausted_notice_sent`
+true itself -- that leaves the #1690 exhausted-notice snapshot to make its own one attempt next
+cycle, now carrying this real `resets_at` as `pusher.kvWriteCapResetsAt`) -- and logs one line, `kv
+write cap hit at <t>; no writes until <resets_at>`. `glass.html`'s banner
 chain gets one new arm, placed after `writeBudgetExhaustedUntil` and before "Snapshot derivation may
 be stuck": `heartbeat_at` and `derived_at` both stale and within one push interval of each other
 reads as the worker refusing writes, not a stuck derivation -- the two ages tracking together is
 exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
 `heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
+
+**Correction (#1829): the "aging together" tell above is a false positive, not a cap signal.**
+`pusher.py`'s derived-freshness ping writes `at` and `derived_at` into the SAME `heartbeat_at` KV
+value in one POST, so the two ages track together by construction on an idle fleet once the ping's
+own adaptive pacing widens past the suspicion window, with no cap involved at all -- that arm is
+demoted to a neutral "no fresh write since \<t\>" line naming the ping cadence. The real signal is
+now `mark_kv_write_cap_exhausted`'s own `resets_at` (from the Worker's 429 body), carried on the
+next budget-exhausted notice as `pusher.kvWriteCapResetsAt`; `glass.html`'s cap banner keys ONLY on
+that field, checked ahead of `writeBudgetExhaustedUntil`.
 
 **Outbound ntfy notifications for terminal/attention-worthy fleet events (#1558, ratified as #1502's
 menu items 31/32/33, one bundle — #31 alone trains an operator to ignore their phone within a
