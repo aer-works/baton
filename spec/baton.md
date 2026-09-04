@@ -122,6 +122,12 @@ infrastructure is a separate cleanup this document does not scope — but a harn
 `room.jsonl` as **inert**: nothing in the dispatch/decide/status/fleet_status surface this spec
 describes writes to it or reads from it.
 
+**A `FlowEvent`/`LogEntry` kind this binary has never heard of reads as a newer writer having reached
+the journal first, not as damage (#1779).** `FlowEventLogReader` skips such a line and counts it,
+reporting the count once per read (first unknown kind named, on the same stderr channel the checkpoint
+fallback already uses) instead of failing the whole read, while a KNOWN kind with a lost or renamed
+member still throws `FlowEventLogReadException` exactly as before.
+
 **The progress heartbeat and the coarse lifecycle events (#1549).** §7's "false Running ⚠" entry
 below records the symptom this closes: journal-event age was useless as a liveness signal because a
 healthy lane could go a long stretch without writing to `flow.jsonl` at all. Three additions to the

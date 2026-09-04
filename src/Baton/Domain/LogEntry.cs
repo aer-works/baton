@@ -33,5 +33,11 @@ public abstract record LogEntry
 
     /// <summary>A line wrapping a room event (spec/baton.md §2's <c>room.jsonl</c> log).</summary>
     public sealed record RoomLogEntry(RoomEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
+
+    /// <summary>
+    /// The <c>owner</c> counterpart of <see cref="FlowEvent.UnknownFlowEvent"/> -- see that type's
+    /// remarks for the #1779 rationale and lifetime, both identical here one level up the union.
+    /// </summary>
+    internal sealed record UnknownLogEntry(string Owner, string RawJson) : LogEntry;
 }
 

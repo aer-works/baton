@@ -109,13 +109,15 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
 
             var flowEvents = new List<FlowEvent>(lines.Length);
             var coreEvents = new List<CoreEvent>(lines.Length);
+            var unknownCount = 0;
+            string? firstUnknownKind = null;
 
             foreach (var line in lines)
             {
-                LogEntry? entry;
+                LogEntry entry;
                 try
                 {
-                    entry = JsonSerializer.Deserialize<LogEntry>(line, FlowEventLogJson.Options);
+                    entry = FlowEventLogJson.DeserializeLine(line);
                 }
                 catch (JsonException ex)
                 {
@@ -124,11 +126,11 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
                     return await ReadFullSnapshotInternalAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                if (entry is null)
+                if (TryGetUnknownKind(entry, out var kind))
                 {
-                    Console.Error.WriteLine(
-                        "[ProjectionCheckpoint] Fallback to full replay LOUDLY: Line at seek target deserialized to null.");
-                    return await ReadFullSnapshotInternalAsync(cancellationToken).ConfigureAwait(false);
+                    unknownCount++;
+                    firstUnknownKind ??= kind;
+                    continue;
                 }
 
                 switch (entry)
@@ -141,6 +143,8 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
                         break;
                 }
             }
+
+            ReportUnknownKinds(unknownCount, firstUnknownKind);
 
             return new EventLogSnapshot(flowEvents, coreEvents, seekByteOffset + completeByteCount);
         }
@@ -184,27 +188,71 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
         var lines = completeText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
         var result = new List<LogEntry>(lines.Length);
+        var unknownCount = 0;
+        string? firstUnknownKind = null;
         foreach (var line in lines)
         {
-            LogEntry? entry;
+            LogEntry entry;
             try
             {
-                entry = JsonSerializer.Deserialize<LogEntry>(line, FlowEventLogJson.Options);
+                entry = FlowEventLogJson.DeserializeLine(line);
             }
             catch (JsonException ex)
             {
                 throw new FlowEventLogReadException($"Malformed line in the ledger: {line}", ex);
             }
 
-            if (entry is null)
+            if (TryGetUnknownKind(entry, out var kind))
             {
-                throw new FlowEventLogReadException($"Line in the ledger deserialized to null: {line}");
+                unknownCount++;
+                firstUnknownKind ??= kind;
+                continue;
             }
 
             result.Add(entry);
         }
 
+        ReportUnknownKinds(unknownCount, firstUnknownKind);
+
         return result;
+    }
+
+    /// <summary>
+    /// #1779: an unrecognized <c>eventType</c>/<c>owner</c> discriminator is a newer writer, not a
+    /// corrupt journal -- <see cref="LogEntry.UnknownLogEntry"/> and <see cref="FlowEvent.UnknownFlowEvent"/>
+    /// are <see cref="FlowEventLogJson.DeserializeLine"/>'s sentinels for exactly that, and this is
+    /// where they stop: neither type is ever returned to a caller of this reader.
+    /// </summary>
+    private static bool TryGetUnknownKind(LogEntry entry, out string? kind)
+    {
+        switch (entry)
+        {
+            case LogEntry.UnknownLogEntry unknownLogEntry:
+                kind = unknownLogEntry.Owner;
+                return true;
+            case LogEntry.FlowLogEntry { Event: FlowEvent.UnknownFlowEvent unknownFlowEvent }:
+                kind = unknownFlowEvent.Kind;
+                return true;
+            default:
+                kind = null;
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Reports once per call (not per line) on the same stderr channel
+    /// <c>[ProjectionCheckpoint] Fallback to full replay LOUDLY</c> already uses, rather than a new one.
+    /// </summary>
+    private static void ReportUnknownKinds(int unknownCount, string? firstUnknownKind)
+    {
+        if (unknownCount == 0)
+        {
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"[FlowEventLog] Skipped {unknownCount} unknown event kind line(s) while reading the ledger " +
+            $"(first: '{firstUnknownKind}') -- likely a newer writer; this binary does not recognize them.");
     }
 
     private async Task<EventLogSnapshot> ReadFullSnapshotInternalAsync(CancellationToken cancellationToken)
@@ -228,22 +276,26 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
 
         var flowEvents = new List<FlowEvent>(lines.Length);
         var coreEvents = new List<CoreEvent>(lines.Length);
+        var unknownCount = 0;
+        string? firstUnknownKind = null;
 
         foreach (var line in lines)
         {
-            LogEntry? entry;
+            LogEntry entry;
             try
             {
-                entry = JsonSerializer.Deserialize<LogEntry>(line, FlowEventLogJson.Options);
+                entry = FlowEventLogJson.DeserializeLine(line);
             }
             catch (JsonException ex)
             {
                 throw new FlowEventLogReadException($"Malformed line in the ledger: {line}", ex);
             }
 
-            if (entry is null)
+            if (TryGetUnknownKind(entry, out var kind))
             {
-                throw new FlowEventLogReadException($"Line in the ledger deserialized to null: {line}");
+                unknownCount++;
+                firstUnknownKind ??= kind;
+                continue;
             }
 
             switch (entry)
@@ -256,6 +308,8 @@ public sealed class FlowEventLogReader(string logFilePath) : IEventLogReader
                     break;
             }
         }
+
+        ReportUnknownKinds(unknownCount, firstUnknownKind);
 
         return new EventLogSnapshot(flowEvents, coreEvents, completeByteCount, IsFallbackToFull: true);
     }

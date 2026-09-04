@@ -524,4 +524,14 @@ public abstract record FlowEvent
     /// other ("abandoned").
     /// </summary>
     public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = false) : FlowEvent;
+
+    /// <summary>
+    /// #1779: an <c>eventType</c> this binary does not recognize, produced by
+    /// <see cref="Baton.Store.FlowEventLogJson.DeserializeLine"/> -- see that method's remarks for why
+    /// (the deliberate exception to <see cref="Baton.Store.FlowEventLogJson"/>'s own "loud beats
+    /// silent" rule) and for the mechanism. Filtered out by <see cref="Baton.Store.FlowEventLogReader"/>
+    /// before anything else -- including <see cref="Projection.StateProjector"/> -- ever sees it; it
+    /// never appears in a <see cref="LogEntry.FlowLogEntry.Event"/> exposed outside the reader.
+    /// </summary>
+    internal sealed record UnknownFlowEvent(string Kind, string RawJson) : FlowEvent;
 }
