@@ -28,7 +28,11 @@ public static class ProcessIdentityFixture
         finally
         {
             process.Kill();
-            process.WaitForExit();
+            if (!process.WaitForExit(TimeSpan.FromSeconds(10))) // wait-ok: bounding a post-Kill() exit, expected in milliseconds (#1804)
+            {
+                throw new TimeoutException(
+                    $"killed process {process.Id} did not exit within 10s (#1804: no wait may be unbounded)");
+            }
         }
     }
 }

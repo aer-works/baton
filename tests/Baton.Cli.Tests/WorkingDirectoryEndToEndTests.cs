@@ -213,8 +213,7 @@ public class WorkingDirectoryEndToEndTests
         }
 
         using var process = Process.Start(startInfo)!;
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        var (_, stderr) = await BoundedProcessWait.RunToExitAsync(process, TimeSpan.FromSeconds(30));
         Assert.True(process.ExitCode == 0, $"git {string.Join(' ', args)} failed: {stderr}");
     }
 
