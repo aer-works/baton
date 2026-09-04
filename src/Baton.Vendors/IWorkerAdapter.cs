@@ -143,8 +143,12 @@ public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Statu
     /// only the worker's own transcript names it. Every `agy` dispatch from the same scratch root in
     /// the session that first measured this succeeded, so this is deliberately per-adapter rather than
     /// a general room-directory constraint — an adapter that has not been measured against its own
-    /// config root answers <see langword="null"/>, the same "an unmeasured claim refuses rather than
-    /// silently allows" posture <see cref="WithheldWritesReachTheOutbox"/>'s remarks describe.
+    /// config root answers <see langword="null"/>, and <see langword="null"/> means the CLI-side refusal
+    /// does NOT fire for it. That is the opposite fail-direction from
+    /// <see cref="WithheldWritesReachTheOutbox"/>'s <see langword="false"/> default, and deliberately so:
+    /// this member names a vendor-native refusal that was measured to exist for one vendor, not a
+    /// capability AER must prove before trusting; refusing every unmeasured adapter here would block
+    /// agy dispatches that were measured to succeed (#1823 review).
     /// </remarks>
     string? SensitiveOutputRoot => null;
 }
