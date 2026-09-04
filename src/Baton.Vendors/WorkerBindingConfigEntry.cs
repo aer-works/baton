@@ -140,6 +140,16 @@ namespace Baton.Vendors;
 /// through <see cref="RoleDispatch.ToBinding"/> (the <paramref name="DeliversBranch"/> default already
 /// disables the whole check in that case).
 /// </param>
+/// <param name="AllowsSubagents">
+/// #1802: <see cref="WorkerRole.AllowsSubagents"/>, carried onto the resolved <see cref="WorkerInvocation"/>
+/// unchanged -- whether the spawned worker keeps the vendor's own subagent/fan-out tool. Defaults to
+/// <see langword="true"/> here, UNLIKE <paramref name="ChangesTree"/>/<paramref name="DeliversBranch"/>
+/// above: those two are additive signals a false default merely omits, while this one drives an actual
+/// enforcement flag on the spawn argv, so defaulting it to withhold would newly restrict every
+/// hand-authored <c>bindings.json</c> entry that predates #1802 and never opted into the restriction.
+/// <see cref="RoleDispatch.ToBinding"/> is the one caller that overrides this from the catalog role's own
+/// value for every role dispatched through the front door.
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -169,7 +179,8 @@ public sealed record WorkerBindingConfigEntry(
     string? ToolSha = null,
     bool ChangesTree = false,
     bool DeliversBranch = false,
-    bool ExpectPr = false);
+    bool ExpectPr = false,
+    bool AllowsSubagents = true);
 
 
 /// <summary>

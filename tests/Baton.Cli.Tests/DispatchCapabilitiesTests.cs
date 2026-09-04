@@ -48,8 +48,9 @@ public class DispatchCapabilitiesTests
             var timebox = $"{(int)role.Timeout.TotalMinutes}m";
             var modelPart = role.Model is not null ? $", model: {role.Model}" : "";
             var effortPart = role.Effort is not null ? $", effort: {role.Effort}" : "";
+            var subagentsPart = $", subagents: {(role.AllowsSubagents ? "allowed" : "withheld")}";
             Assert.Contains(
-                $"{role.Id,-12} {timebox,4}  (tier: {role.Tier}, adapter: {role.Adapter}{modelPart}{effortPart})",
+                $"{role.Id,-12} {timebox,4}  (tier: {role.Tier}, adapter: {role.Adapter}{modelPart}{effortPart}{subagentsPart})",
                 text);
         }
     }

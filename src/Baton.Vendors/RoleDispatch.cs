@@ -217,7 +217,9 @@ public static class RoleDispatch
             // #1788: DeliversBranch is purely catalog-controlled (no dispatch-time override exists for
             // it); ExpectPr is resolved HERE against it -- see expectPrOverride's own doc for why.
             DeliversBranch: role.DeliversBranch,
-            ExpectPr: expectPrOverride ?? role.DeliversBranch);
+            ExpectPr: expectPrOverride ?? role.DeliversBranch,
+            // #1802: purely catalog-controlled, like DeliversBranch -- no dispatch-time override exists.
+            AllowsSubagents: role.AllowsSubagents);
     }
 
     /// <summary>

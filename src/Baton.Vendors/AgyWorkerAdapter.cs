@@ -263,6 +263,14 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// four tools is narrowed by the pattern channel that bounds <c>run_command</c> — so the spawn
     /// lever has to stay pulled whenever writes are withheld even though shell itself is granted.
     /// </para>
+    /// <para>
+    /// <b>#1802 adds a second, independent trigger.</b> A grant that keeps both <c>WriteFiles</c> and
+    /// <c>RunShellCommands</c> true — <c>implement</c>'s own grant — never hit either predicate above,
+    /// so an implement worker on agy kept the subagent trio unconditionally. <see cref="BuildDeniedTools"/>'s
+    /// own <c>allowsSubagents</c> parameter (from <see cref="WorkerRole.AllowsSubagents"/>) now withholds
+    /// this trio on that basis too, same duplicate-review waste <c>ClaudeWorkerAdapter</c>'s
+    /// <c>--disallowedTools Agent,Task</c> exists to close.
+    /// </para>
     /// </remarks>
     private static readonly IReadOnlyList<string> SubagentAndTaskTools =
         ["manage_task", "invoke_subagent", "define_subagent", "manage_subagents"];
@@ -283,40 +291,45 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     /// <c>AgyHookCheckCommand</c> reads as "allow everything" — a known-empty grant, distinct from
     /// the failure paths it denies on.
     /// </summary>
-    internal static string BuildDeniedTools(PermissionGrant? grant)
+    /// <param name="grant">The structured permission grant, or null for the raw <c>PermissionScope</c> escape hatch.</param>
+    /// <param name="allowsSubagents">
+    /// #1802: <see cref="WorkerInvocation.AllowsSubagents"/> — when false, <see cref="SubagentAndTaskTools"/>
+    /// is withheld regardless of <paramref name="grant"/>'s write/shell categories, independent of (and in
+    /// addition to) the existing write-or-shell-withheld rule below.
+    /// </param>
+    internal static string BuildDeniedTools(PermissionGrant? grant, bool allowsSubagents = true)
     {
-        if (grant is null)
-        {
-            return string.Empty;
-        }
-
         List<string> denied = [];
-        if (!grant.ReadFiles)
+
+        if (grant is not null)
         {
-            denied.AddRange(ReadTools);
+            if (!grant.ReadFiles)
+            {
+                denied.AddRange(ReadTools);
+            }
+
+            if (!grant.WriteFiles)
+            {
+                denied.AddRange(WriteTools);
+            }
+
+            if (!grant.RunShellCommands)
+            {
+                denied.AddRange(ShellTools);
+            }
+
+            if (!grant.NetworkAccess)
+            {
+                denied.AddRange(NetworkTools);
+            }
         }
 
-        if (!grant.WriteFiles)
-        {
-            denied.AddRange(WriteTools);
-        }
-
-        if (!grant.RunShellCommands)
-        {
-            denied.AddRange(ShellTools);
-        }
-
-        if (!grant.WriteFiles || !grant.RunShellCommands)
+        if (!allowsSubagents || (grant is not null && (!grant.WriteFiles || !grant.RunShellCommands)))
         {
             denied.AddRange(SubagentAndTaskTools);
         }
 
-        if (!grant.NetworkAccess)
-        {
-            denied.AddRange(NetworkTools);
-        }
-
-        return string.Join(',', denied);
+        return string.Join(',', denied.Distinct(StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -604,7 +617,7 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
             // happened to carry. It does NOT currently make "nothing withheld" distinguishable
             // from "the list never arrived" -- the command collapses absent and empty to the
             // same allow. See #600.
-            (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildDeniedTools(invocation.PermissionGrant)}"),
+            (DeniedToolsVariable, $"{DeniedToolsVendorTag}:{BuildDeniedTools(invocation.PermissionGrant, invocation.AllowsSubagents)}"),
             (ShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildShellPatterns(invocation.PermissionGrant)}"),
             (DeniedShellPatternsVariable, $"{ShellPatternsVendorTag}:{BuildDeniedShellPatterns(invocation.PermissionGrant)}"),
             (DeniedShellOptionTokensVariable,

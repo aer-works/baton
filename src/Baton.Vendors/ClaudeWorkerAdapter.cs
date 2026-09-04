@@ -154,7 +154,17 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
         // against the live CLI in a clean spawn env: the same invocation refuses `hostname` with
         // --disallowedTools Bash and runs it without. --disallowedTools takes precedence over
         // --allowedTools, so the two compose — allow what's granted, deny what's withheld (0004).
+        // #1802: independent of the four PermissionGrant categories BuildDisallowedTools maps --
+        // Task/Agent sit outside all four (that method's own doc records this boundary), so a
+        // write-and-shell-granted role like implement never reaches this tool's denial through the
+        // grant alone. Both names are withheld together: Task is Agent's older name, still honoured by
+        // the CLI (docs/vendor-capabilities.md's canonical ceiling).
         var disallowed = BuildDisallowedTools(invocation.PermissionGrant);
+        if (!invocation.AllowsSubagents)
+        {
+            disallowed = disallowed.Length > 0 ? $"{disallowed},Agent,Task" : "Agent,Task";
+        }
+
         if (disallowed.Length > 0)
         {
             args.Add("--disallowedTools");

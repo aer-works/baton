@@ -66,6 +66,18 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// judgement that janitor's own stranded-local-commits case doesn't matter. Only <c>implement</c> sets
 /// this true today.
 /// </param>
+/// <param name="AllowsSubagents">
+/// #1802: whether this role's worker keeps the vendor's own subagent/fan-out tool (claude's
+/// <c>Agent</c>/<c>Task</c>, agy's <c>manage_task</c>/<c>invoke_subagent</c>/<c>define_subagent</c>/
+/// <c>manage_subagents</c> trio). Motivation: under <c>baton dispatch</c> the conductor already
+/// dispatches a dedicated <c>review</c> lane for every PR, so an implement (or review) worker launching
+/// its own in-lane <c>Agent</c> "second reader" is a duplicate review — eight such lanes carried ~80% of
+/// one night's cache-read tokens across all implement rooms (#1802). False (the default -- every role
+/// but <c>advise</c> leaves this key omitted in <c>WorkerRoles.json</c>) withholds the tool; <c>advise</c>
+/// sets it true because weighing options via fan-out is that role's whole point. CLAUDE.md rule 7 names
+/// the replacement: under baton dispatch the second reader is the conductor's own review lane, never an
+/// in-lane subagent.
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -81,7 +93,8 @@ public sealed record WorkerRole(
     TokenBudgetSpec? TokenBudget = null,
     int? MaxToolSteps = null,
     long? BilledRateLimit = null,
-    bool DeliversBranch = false);
+    bool DeliversBranch = false,
+    bool AllowsSubagents = false);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
@@ -225,7 +238,8 @@ public static class WorkerRoleCatalog
                 TokenBudget: ParseTokenBudget(raw.Id, raw.TokenBudget),
                 MaxToolSteps: raw.MaxToolSteps,
                 BilledRateLimit: raw.BilledRateLimit,
-                DeliversBranch: raw.DeliversBranch));
+                DeliversBranch: raw.DeliversBranch,
+                AllowsSubagents: raw.AllowsSubagents));
         }
 
         return roles;
@@ -390,7 +404,10 @@ public static class WorkerRoleCatalog
         long? BilledRateLimit = null,
         // #1788: optional like the flags above -- omitting it is exactly "this role's brief does not
         // end in a push", the WorkerRole default.
-        bool DeliversBranch = false);
+        bool DeliversBranch = false,
+        // #1802: optional like the flags above -- omitting it is exactly "withhold the vendor's
+        // subagent/fan-out tool", the WorkerRole default. Only advise's entry sets this true.
+        bool AllowsSubagents = false);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

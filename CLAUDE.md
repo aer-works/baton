@@ -222,6 +222,12 @@ that changes no claim about behaviour does not need one; if you are unsure, it d
 *Every recurring failure above was caught by a second reader noticing, never by the author
 re-reading their own work. An author checking their own claim is the same instrument twice.*
 
+**Under `baton dispatch`, the second reader is the conductor's own review lane, never an in-lane
+subagent.** The conductor already dispatches a dedicated `review` worker for every PR; an `implement`
+(or `review`) worker launching its own vendor subagent as a "second reader" duplicates that lane rather
+than substituting for it, and is withheld at the tool level for exactly that reason (#1802 — see
+`WorkerRole.AllowsSubagents`).
+
 Not `/code-review`, which is **operator-triggered and billed** and cannot be launched from an agent
 session; a reviewer agent spends this session's own usage, and running one is the author's job rather
 than the operator's to ask for. It is also the deliberate exception to "Delegating to subagents"

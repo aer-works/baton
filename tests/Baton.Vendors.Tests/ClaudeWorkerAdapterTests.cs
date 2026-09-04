@@ -397,6 +397,43 @@ public class ClaudeWorkerAdapterTests
         Assert.DoesNotContain("--disallowedTools", target.Args);
     }
 
+    // #1802: AllowsSubagents sits outside the four PermissionGrant categories BuildDisallowedTools
+    // maps -- a write-and-shell-granted grant like implement's own never reaches Agent/Task through
+    // the grant alone, so this needs its own coverage independent of the category tests above.
+
+    [Fact]
+    public void A_fully_permissive_grant_with_subagents_withheld_still_denies_Agent_and_Task()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: false), ArchitectContract);
+
+        Assert.Equal("Agent,Task", ArgValue(target, "--disallowedTools"));
+    }
+
+    [Fact]
+    public void Subagent_withholding_composes_with_an_already_nonempty_disallowed_list()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false, NetworkAccess: false);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: false), ArchitectContract);
+
+        var denied = ArgValue(target, "--disallowedTools")!;
+        Assert.Contains("Bash", denied);
+        Assert.Contains("WebFetch", denied);
+        Assert.Contains("Agent,Task", denied);
+    }
+
+    [Fact]
+    public void Subagents_allowed_emits_no_Agent_or_Task_denial()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: grant, AllowsSubagents: true), ArchitectContract);
+
+        Assert.DoesNotContain("--disallowedTools", target.Args);
+    }
+
     /// <summary>
     /// #533 constraints 1-2: hooks and MCP config load only from cwd's own `.claude/`, with no
     /// parent-directory fallback, and `--add-dir` loads neither on claude -- so both are passed

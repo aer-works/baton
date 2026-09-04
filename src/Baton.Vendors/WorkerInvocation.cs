@@ -117,6 +117,14 @@ namespace Baton.Vendors;
 /// -- see that member's own doc for why <see cref="ProjectCeilingGate"/> keys the project ceiling on
 /// this rather than <paramref name="WorkingDirectory"/> whenever it is set.
 /// </param>
+/// <param name="AllowsSubagents">
+/// #1802: forwarded verbatim from <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> -- whether
+/// this worker keeps the vendor's own subagent/fan-out tool. <see langword="false"/> makes
+/// <see cref="ClaudeWorkerAdapter"/> append <c>Agent</c>/<c>Task</c> to <c>--disallowedTools</c> and
+/// <see cref="AgyWorkerAdapter"/> add its subagent tool names to the denied-tools list, alongside
+/// (never instead of) whatever each already withholds from <paramref name="PermissionGrant"/>. Default
+/// <see langword="true"/> keeps today's exact argv for any invocation that predates #1802.
+/// </param>
 public sealed record WorkerInvocation(
     string PromptTemplate,
     string? Model = null,
@@ -131,5 +139,6 @@ public sealed record WorkerInvocation(
     string? Effort = null,
     TimeSpan? Timeout = null,
     bool EnableMemoryProposalTool = false,
-    string? WorktreeSourceRepository = null);
+    string? WorktreeSourceRepository = null,
+    bool AllowsSubagents = true);
 

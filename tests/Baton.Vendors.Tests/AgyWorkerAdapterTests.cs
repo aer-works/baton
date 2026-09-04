@@ -970,8 +970,16 @@ public class AgyWorkerAdapterTests
         Assert.Contains("manage_task", denied);
     }
 
+    /// <summary>
+    /// #1802 supersedes this test's original name/finding: through the write/shell channel ALONE
+    /// (the grant, with no <c>allowsSubagents</c> argument -- <c>BuildDeniedTools</c>'s own default of
+    /// <see langword="true"/>), implement's write-and-shell-granted grant still reaches none of the
+    /// trio, exactly as #1387 found. What changed is that this channel is no longer the only one:
+    /// <see cref="The_real_implement_role_denies_the_subagent_trio_through_allows_subagents_even_though_its_grant_alone_would_not"/>
+    /// pins the second, independent trigger #1802 added.
+    /// </summary>
     [Fact]
-    public void The_real_implement_role_does_not_deny_the_subagent_trio_or_manage_task()
+    public void The_real_implement_role_s_grant_alone_does_not_deny_the_subagent_trio_or_manage_task()
     {
         var implement = WorkerRoleCatalog.For("implement");
 
@@ -981,6 +989,45 @@ public class AgyWorkerAdapterTests
         Assert.DoesNotContain("invoke_subagent", denied);
         Assert.DoesNotContain("manage_subagents", denied);
         Assert.DoesNotContain("manage_task", denied);
+    }
+
+    /// <summary>
+    /// #1802: the second, independent trigger. implement's grant keeps both WriteFiles and
+    /// RunShellCommands true, so the write/shell-withheld predicate above never fires for it -- an
+    /// implement worker on agy kept the subagent trio unconditionally until this role-level flag
+    /// existed. Passing the real catalog value end to end is what a hand-typed
+    /// <c>allowsSubagents: false</c> literal would not catch (it would pass even if
+    /// <c>WorkerRoleCatalog.For("implement").AllowsSubagents</c> silently reverted to true).
+    /// </summary>
+    [Fact]
+    public void The_real_implement_role_denies_the_subagent_trio_through_allows_subagents_even_though_its_grant_alone_would_not()
+    {
+        var implement = WorkerRoleCatalog.For("implement");
+
+        var denied = AgyWorkerAdapter.BuildDeniedTools(implement.Grant, implement.AllowsSubagents).Split(',');
+
+        Assert.Contains("define_subagent", denied);
+        Assert.Contains("invoke_subagent", denied);
+        Assert.Contains("manage_subagents", denied);
+        Assert.Contains("manage_task", denied);
+    }
+
+    /// <summary>
+    /// advise's own grant already withholds writes (read-only role), so the pre-existing
+    /// write/shell-withheld predicate denies the subagent trio on agy regardless of #1802's new flag --
+    /// a pre-existing, orthogonal restriction this change does not touch. What #1802 guarantees for
+    /// advise is narrower: AllowsSubagents true adds nothing beyond what the grant alone already
+    /// denies, i.e. it never forces a denial the grant wouldn't already produce.
+    /// </summary>
+    [Fact]
+    public void The_real_advise_role_s_allows_subagents_true_adds_no_denial_beyond_its_own_grant()
+    {
+        var advise = WorkerRoleCatalog.For("advise");
+
+        Assert.True(advise.AllowsSubagents);
+        Assert.Equal(
+            AgyWorkerAdapter.BuildDeniedTools(advise.Grant),
+            AgyWorkerAdapter.BuildDeniedTools(advise.Grant, advise.AllowsSubagents));
     }
 
     /// <summary>
