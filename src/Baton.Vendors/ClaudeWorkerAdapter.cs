@@ -1821,11 +1821,10 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
             return false;
         }
 
-        // #1857: the weekly-limit wall arrives on the terminal `result` event instead of the
-        // synthetic `assistant`-line envelope above -- no `error` field, `is_error: true`,
-        // `api_error_status: 429`, and the human reset text sits directly in the string `result`
-        // field rather than under `message.content[]`. Recognised as its own shape rather than
-        // folded into IsRateLimitContainer, since it has no `error`/`quotaLimits` fields at all.
+        // #1857: the weekly-limit wall arrives on the terminal `result` event rather than the
+        // synthetic `assistant`-line envelope above (spec/baton.md's quota-park section has the
+        // full shape). Recognised separately from IsRateLimitContainer since it carries neither
+        // an `error` nor a `quotaLimits` field.
         if (IsResultRateLimitEnvelope(root))
         {
             classification = FailureClassification.ExhaustedUntil;
@@ -1905,10 +1904,9 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         errorProp.GetString() == "rate_limit";
 
     /// <summary>
-    /// The weekly-limit wall's terminal envelope (#1857): a stream-json <c>result</c> event with
-    /// <c>is_error: true</c> and <c>api_error_status: 429</c>. Distinct from
-    /// <see cref="IsRateLimitContainer"/> -- this shape carries no <c>error</c>/<c>quotaLimits</c>
-    /// fields at all, only the plain string <c>result</c> holding the human reset text.
+    /// The weekly-limit wall's terminal envelope shape (#1857, spec/baton.md's quota-park section).
+    /// Checked as an alternative to <see cref="IsRateLimitContainer"/>'s fields, which this envelope
+    /// does not carry.
     /// </summary>
     private static bool IsResultRateLimitEnvelope(JsonElement container) =>
         container.TryGetProperty("type", out var typeProp) &&
