@@ -213,9 +213,8 @@ public static class DeliveryVerifier
     private static async Task<DeliveryCheckOutcome> CheckPushedAsync(
         string gitProgram, string workingDirectory, string branch, CancellationToken cancellationToken)
     {
-        // The explicit refspec form (spec/baton.md §3 states why it's needed rather than a bare `git
-        // fetch origin <branch>`) makes the `origin/<branch>` ref read below independent of this
-        // workspace's own `remote.origin.fetch` configuration.
+        // spec/baton.md §3 states why the explicit refspec form is used here rather than a bare
+        // `git fetch origin <branch>`.
         var fetchResult = await RunNetworkAsync(
             gitProgram, ["fetch", "origin", $"+refs/heads/{branch}:refs/remotes/origin/{branch}"], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
