@@ -1815,10 +1815,33 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         retryNotBefore = null;
         quotaLimitsPlacement = null;
 
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        // #1857: the weekly-limit wall arrives on the terminal `result` event rather than the
+        // synthetic `assistant`-line envelope above (spec/baton.md's quota-park section has the
+        // full shape). Recognised separately from IsRateLimitContainer since it carries neither
+        // an `error` nor a `quotaLimits` field.
+        if (IsResultRateLimitEnvelope(root))
+        {
+            classification = FailureClassification.ExhaustedUntil;
+            quotaLimitsPlacement = "result";
+            if (root.TryGetProperty("result", out var resultProp) &&
+                resultProp.ValueKind == JsonValueKind.String &&
+                resultProp.GetString() is { Length: > 0 } resultText)
+            {
+                retryNotBefore = TryParseResetSuffixFromText(resultText, timeProvider);
+            }
+
+            return true;
+        }
+
         // #1810 review fix: `error` always sits at the envelope root in the documented shape (the CLI
         // does not repeat it under "message"), so that -- not quotaLimits's own placement -- is what
         // decides whether this is a rate-limit envelope at all.
-        if (root.ValueKind != JsonValueKind.Object || !IsRateLimitContainer(root))
+        if (!IsRateLimitContainer(root))
         {
             return false;
         }
@@ -1879,6 +1902,22 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         errorProp.ValueKind == JsonValueKind.String &&
         errorProp.GetString() == "rate_limit";
 
+    /// <summary>
+    /// The weekly-limit wall's terminal envelope shape (#1857, spec/baton.md's quota-park section).
+    /// Checked as an alternative to <see cref="IsRateLimitContainer"/>'s fields, which this envelope
+    /// does not carry.
+    /// </summary>
+    private static bool IsResultRateLimitEnvelope(JsonElement container) =>
+        container.TryGetProperty("type", out var typeProp) &&
+        typeProp.ValueKind == JsonValueKind.String &&
+        typeProp.GetString() == "result" &&
+        container.TryGetProperty("is_error", out var isErrorProp) &&
+        isErrorProp.ValueKind == JsonValueKind.True &&
+        container.TryGetProperty("api_error_status", out var statusProp) &&
+        statusProp.ValueKind == JsonValueKind.Number &&
+        statusProp.TryGetInt32(out var status) &&
+        status == 429;
+
     private static DateTimeOffset? TryReadEpochSeconds(JsonElement obj, string propertyName)
     {
         if (!obj.TryGetProperty(propertyName, out var prop))
@@ -1927,45 +1966,127 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
                 continue;
             }
 
-            var match = ResetClockTimeRegex().Match(text);
-            if (!match.Success)
+            if (TryParseResetSuffixFromText(text, timeProvider) is { } resetInstant)
             {
-                continue;
+                return resetInstant;
             }
-
-            if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var hour) ||
-                hour is < 1 or > 12)
-            {
-                continue;
-            }
-
-            var minute = 0;
-            if (match.Groups["minute"].Success &&
-                (!int.TryParse(match.Groups["minute"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out minute) ||
-                 minute is < 0 or > 59))
-            {
-                continue;
-            }
-
-            var isPm = string.Equals(match.Groups["meridiem"].Value, "pm", StringComparison.OrdinalIgnoreCase);
-            var hour24 = (hour % 12) + (isPm ? 12 : 0);
-
-            var localZone = timeProvider.LocalTimeZone;
-            var nowLocal = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), localZone);
-            var candidateLocal = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, hour24, minute, 0, DateTimeKind.Unspecified);
-            if (candidateLocal <= nowLocal.DateTime)
-            {
-                candidateLocal = candidateLocal.AddDays(1);
-            }
-
-            return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidateLocal, localZone), TimeSpan.Zero);
         }
 
         return null;
     }
 
+    /// <summary>
+    /// Text-level reset-suffix parse shared by the <c>message.content[]</c> walk above and the
+    /// weekly-limit wall's plain string <c>result</c> field (#1857), which carries the same suffix
+    /// with no surrounding content-block envelope. Tries the date-prefixed weekly-wall form first
+    /// (<c>resets &lt;Mon&gt; &lt;d&gt;, &lt;h&gt;[:&lt;mm&gt;]&lt;am|pm&gt; (&lt;IANA zone&gt;)</c>),
+    /// then falls back to the bare clock-time form the session wall uses.
+    /// </summary>
+    private static DateTimeOffset? TryParseResetSuffixFromText(string text, TimeProvider timeProvider)
+    {
+        var dateMatch = ResetDateTimeRegex().Match(text);
+        if (dateMatch.Success && TryParseClockParts(dateMatch, out var dateHour24, out var dateMinute))
+        {
+            var zone = ResolveTimeZone(dateMatch.Groups["zone"].Value, timeProvider);
+            var nowInZone = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), zone);
+
+            if (DateTime.TryParseExact(
+                    dateMatch.Groups["month"].Value,
+                    ["MMM", "MMMM"],
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var monthParse) &&
+                int.TryParse(dateMatch.Groups["day"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var day))
+            {
+                // Next occurrence of that month/day at or after now in the named zone. A day the
+                // target year lacks (Feb 29 rolling into a non-leap year) clamps to that month's last
+                // day rather than throwing -- a park a day early beats an unparked lane (#1860 review).
+                var year = nowInZone.Year;
+                var candidateLocal = BuildLocalInstant(year, monthParse.Month, day, dateHour24, dateMinute);
+                if (candidateLocal <= nowInZone.DateTime)
+                {
+                    candidateLocal = BuildLocalInstant(year + 1, monthParse.Month, day, dateHour24, dateMinute);
+                }
+
+                return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidateLocal, zone), TimeSpan.Zero);
+            }
+        }
+
+        var clockMatch = ResetClockTimeRegex().Match(text);
+        if (!clockMatch.Success || !TryParseClockParts(clockMatch, out var hour24, out var minute))
+        {
+            return null;
+        }
+
+        var localZone = timeProvider.LocalTimeZone;
+        var nowLocal = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), localZone);
+        var candidate = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, hour24, minute, 0, DateTimeKind.Unspecified);
+        if (candidate <= nowLocal.DateTime)
+        {
+            candidate = candidate.AddDays(1);
+        }
+
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidate, localZone), TimeSpan.Zero);
+    }
+
+    private static DateTime BuildLocalInstant(int year, int month, int day, int hour24, int minute)
+    {
+        var clampedDay = Math.Min(Math.Max(day, 1), DateTime.DaysInMonth(year, month));
+        return new DateTime(year, month, clampedDay, hour24, minute, 0, DateTimeKind.Unspecified);
+    }
+
+    private static bool TryParseClockParts(Match match, out int hour24, out int minute)
+    {
+        hour24 = 0;
+        minute = 0;
+
+        if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var hour) ||
+            hour is < 1 or > 12)
+        {
+            return false;
+        }
+
+        if (match.Groups["minute"].Success &&
+            (!int.TryParse(match.Groups["minute"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out minute) ||
+             minute is < 0 or > 59))
+        {
+            return false;
+        }
+
+        var isPm = string.Equals(match.Groups["meridiem"].Value, "pm", StringComparison.OrdinalIgnoreCase);
+        hour24 = (hour % 12) + (isPm ? 12 : 0);
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the reset suffix's IANA zone id (e.g. <c>America/New_York</c>). .NET on Windows maps
+    /// IANA ids since .NET 6 when ICU is present, so this normally succeeds; if the id is unrecognised
+    /// this falls back to <see cref="TimeProvider.LocalTimeZone"/> rather than null, since the text
+    /// plainly named a date -- and writes one warning line to stderr (this adapter's diagnostic
+    /// idiom, same as the commands-directory warning above) so the fallback lands in the room's
+    /// captured stderr instead of an unconfigured trace listener.
+    /// </summary>
+    private static TimeZoneInfo ResolveTimeZone(string zoneId, TimeProvider timeProvider)
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(zoneId);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            Console.Error.WriteLine(
+                $"Warning: unrecognised reset-suffix zone id '{zoneId}', falling back to the local time zone ({ex.GetType().Name}).");
+            return timeProvider.LocalTimeZone;
+        }
+    }
+
     [GeneratedRegex(@"resets\s+(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)", RegexOptions.IgnoreCase)]
     private static partial Regex ResetClockTimeRegex();
+
+    [GeneratedRegex(
+        @"resets\s+(?<month>[A-Za-z]{3,9})\s+(?<day>\d{1,2}),\s*(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)\s*\((?<zone>[^)]+)\)",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex ResetDateTimeRegex();
 
     /// <summary>
     /// #1720 review (found while fixing F1, issue #1727): this used to whole-parse the tail and then
