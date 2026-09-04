@@ -844,5 +844,32 @@ public class WorkerBindingResolverTests
         var ex = Assert.Throws<UnknownWorkerAdapterException>(() => WorkerBindingResolver.ResolveFallbacks(config, adapters));
         Assert.Equal("claude", ex.AdapterName);
     }
+
+    /// <summary>
+    /// #1838 (review LOW): <see cref="WorkerBindingResolver.ResolveFallbacks"/> routes a fallback
+    /// entry through the exact same private <c>ResolveEntry</c> the primary path uses, which is what
+    /// makes it subject to <see cref="ProjectCeilingGate"/> too -- but nothing pinned that for the
+    /// fallback path specifically until this test. Mirrors
+    /// <c>ClaudeWorkerAdapterTests.An_unseen_project_directory_is_refused_before_any_worker_spawns</c>:
+    /// a <see cref="WorkingDirectory"/> <see cref="ProjectCeilingStore"/> has never recorded a
+    /// ceiling for refuses with <see cref="ProjectNotTrustedException"/> regardless of what the
+    /// declared grant asks for, exactly like the primary binding would.
+    /// </summary>
+    [Fact]
+    public void ResolveFallbacks_is_refused_by_the_project_ceiling_gate_the_same_way_Resolve_does()
+    {
+        var unseenProject = Path.Combine(Path.GetTempPath(), $"baton-ceiling-fallback-{Guid.NewGuid():N}");
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["claude"] = new ClaudeWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "claude", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                WorkingDirectory: unseenProject,
+                FallbackOnExhaustion: new FallbackBinding("claude")),
+        };
+
+        var ex = Assert.Throws<ProjectNotTrustedException>(() => WorkerBindingResolver.ResolveFallbacks(config, adapters));
+        Assert.Equal(unseenProject, ex.ProjectPath);
+    }
 }
 

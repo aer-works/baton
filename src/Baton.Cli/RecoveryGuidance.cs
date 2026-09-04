@@ -18,10 +18,25 @@ internal static class RecoveryGuidance
     /// <summary>
     /// #802: the operator verb a vendor-quota park with no declared fallback is waiting on —
     /// <c>RedispatchCommand</c>'s already-shipped <c>--adapter</c> flag rebinds the parked step onto
-    /// a different vendor in place, without waiting for the primary's reset. Cited by
+    /// a different vendor in place, without waiting for the primary's reset. Valid only once the
+    /// room is (or is about to be) terminal — <c>RedispatchCommand</c> refuses any parent room
+    /// without a terminal sentinel, which a still-alive owning engine has not written yet; use
+    /// <see cref="CancelThenRedispatchAdapterInstruction"/> for that case instead (#1838). Cited by
     /// <c>StatusCommand.FormatStepStatus</c>/<c>FormatParkedStatus</c> rather than restated, per
     /// record-once.
     /// </summary>
     public const string RedispatchAdapterInstruction =
         "`baton redispatch <room-dir> --adapter <vendor>` rebinds it now";
+
+    /// <summary>
+    /// #1838: the no-fallback park's owning engine is still alive (<c>EngineLivenessProbe</c> read
+    /// <c>Alive</c>) — <c>RedispatchCommand</c> refuses any room without a terminal sentinel
+    /// (RedispatchCommand.cs), and a live, still-pumping <c>baton run</c> has not written one, so
+    /// naming redispatch alone sends the operator into that refusal. <c>baton cancel</c> settles the
+    /// room to terminal first (CancelCommand.cs's quota-parked-step arrest path); only then does
+    /// redispatch work. Cited by <c>StatusCommand.FormatParkedStatus</c> rather than restated, per
+    /// record-once.
+    /// </summary>
+    public const string CancelThenRedispatchAdapterInstruction =
+        "`baton cancel <room-dir>`, then `baton redispatch <room-dir> --adapter <vendor>`, rebinds it";
 }

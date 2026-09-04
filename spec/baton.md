@@ -2520,8 +2520,13 @@ already ran on the fallback, a further exhaustion parks like any undeclared one 
 `ResolveVendorExhaustionFallback`'s own remarks for the exact check. With no declared fallback, the
 step parks exactly as the two paragraphs above describe, and `baton status`'s human rendering
 (`StatusCommand.FormatStepStatus`/`FormatParkedStatus`) now names the operator's own escape hatch
-rather than only the clock — `RecoveryGuidance.RedispatchAdapterInstruction` cites the already-shipped
-`baton redispatch <room-dir> --adapter <vendor>` rather than restating it.
+rather than only the clock. `FormatParkedStatus` picks between two verbs depending on the same
+`EngineLivenessProbe` read `FormatStepStatus` already computes (#1838): a confirmed-`Alive` owning
+engine has not written the terminal sentinel `baton redispatch` requires, so the rendering names
+`RecoveryGuidance.CancelThenRedispatchAdapterInstruction` — `baton cancel <room-dir>`, then
+`baton redispatch <room-dir> --adapter <vendor>`; a `Dead` or `Unknown` read (or no recorded engine
+identity) names `RecoveryGuidance.RedispatchAdapterInstruction` — the already-shipped
+`baton redispatch <room-dir> --adapter <vendor>` alone — rather than restating either string.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan

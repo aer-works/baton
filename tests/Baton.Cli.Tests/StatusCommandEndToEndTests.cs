@@ -655,6 +655,12 @@ public class StatusCommandEndToEndTests
         }
     }
 
+    /// <summary>
+    /// #1838: no engine identity was ever recorded for this execution (the fixture's default
+    /// <c>enginePid: null</c>), so <c>EngineLivenessProbe</c> reads <c>Unknown</c> rather than
+    /// <c>Alive</c> -- the plain single-verb redispatch instruction is what must render, pinned in
+    /// full so a regression that silently widens the two-step wording to this shape is caught.
+    /// </summary>
     [Fact]
     public async Task Status_of_a_quota_parked_step_renders_its_classification_and_local_retry_time()
     {
@@ -669,7 +675,46 @@ public class StatusCommandEndToEndTests
 
             var text = output.ToString();
             var expectedLocalTime = retryNotBefore.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-            Assert.Contains($"implement: parked (vendor quota) — retries {expectedLocalTime}", text);
+            Assert.Contains(
+                $"implement: parked (vendor quota) — retries {expectedLocalTime}; no fallback declared — "
+                + "`baton redispatch <room-dir> --adapter <vendor>` rebinds it now, or wait",
+                text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    /// <summary>
+    /// #1838 (review HIGH-1 against #802's shipped wording): the owning engine is still alive --
+    /// same <c>EngineLivenessProbe</c> read <see cref="Status_of_a_parked_step_with_a_dead_engine_names_it_and_says_manual_intervention_is_needed"/>
+    /// uses a dead identity for, this uses <see cref="Process.GetCurrentProcess"/> for a
+    /// confirmed-<c>Alive</c> one. <see cref="RecoveryGuidance.CancelThenRedispatchAdapterInstruction"/>'s
+    /// own doc has why `baton redispatch` alone (the pre-fix wording) sent the operator into a refusal
+    /// in exactly this shape -- not restated here.
+    /// </summary>
+    [Fact]
+    public async Task Status_of_a_quota_parked_step_with_a_live_engine_names_cancel_before_redispatch()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            var currentProcess = Process.GetCurrentProcess();
+            var liveStartTime = new DateTimeOffset(currentProcess.StartTime).ToUniversalTime();
+            var (_, _, _, retryNotBefore) = await WriteParkedStepFixtureAsync(
+                testRoot, roomDirectory, enginePid: currentProcess.Id, engineStartTime: liveStartTime);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            var expectedLocalTime = retryNotBefore.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Contains(
+                $"implement: parked (vendor quota) — retries {expectedLocalTime}; no fallback declared — "
+                + "`baton cancel <room-dir>`, then `baton redispatch <room-dir> --adapter <vendor>`, rebinds it, or wait",
+                text);
         }
         finally
         {
