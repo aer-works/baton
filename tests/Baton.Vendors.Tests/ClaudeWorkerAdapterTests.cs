@@ -1266,30 +1266,84 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
-    /// #599: with no operator-configured config root, <see cref="ClaudeWorkerAdapter.SensitiveOutputRoot"/>
-    /// names claude's own default (<c>~/.claude</c>) — the root measured to silently refuse every
-    /// write into <c>BATON_OUTPUT_DIR</c> when a room directory resolves inside it.
+    /// #1834's measurement (#1827, CLI 2.1.258): a room directory with a <c>.claude</c> path component
+    /// anywhere is refused, even with no operator-configured config root at all -- the refusal keys on
+    /// the component, not on <c>CLAUDE_CONFIG_DIR</c>'s value.
     /// </summary>
     [Fact]
-    public void SensitiveOutputRoot_defaults_to_the_users_dot_claude_directory()
+    public void HasSensitiveOutputPathComponent_refuses_a_dot_claude_component_mid_path()
     {
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
-        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+        var roomDirectory = OperatingSystem.IsWindows()
+            ? @"C:\repo\.claude\worktrees\room1"
+            : "/repo/.claude/worktrees/room1";
 
-        Assert.Equal(expected, new ClaudeWorkerAdapter().SensitiveOutputRoot);
+        var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
+
+        Assert.True(matched);
+        Assert.Equal(".claude", offendingComponent);
     }
 
-    /// <summary>#599: an operator-configured config root is the sensitive root too, not just the default.</summary>
+    /// <summary>
+    /// #1834's measurement: a room directory under a <c>CLAUDE_CONFIG_DIR</c> override whose own leaf is
+    /// NOT named <c>.claude</c> is allowed -- the override's value plays no part in the predicate.
+    /// </summary>
     [Fact]
-    public void SensitiveOutputRoot_follows_an_operator_configured_config_root()
+    public void HasSensitiveOutputPathComponent_allows_a_room_under_a_non_dot_claude_config_root_override()
     {
-        var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        var configRoot = OperatingSystem.IsWindows() ? @"C:\baton\cfg" : "/baton/cfg";
         using var scope = BatonEnvironmentSnapshot.BeginScope(
-            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = configRoot });
 
-        Assert.Equal(testPath, new ClaudeWorkerAdapter().SensitiveOutputRoot);
+        var roomDirectory = OperatingSystem.IsWindows() ? @"C:\baton\cfg\room1" : "/baton/cfg/room1";
+
+        var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
+
+        Assert.False(matched);
+        Assert.Null(offendingComponent);
+    }
+
+    /// <summary>
+    /// #1834's measurement: only a component literally named <c>.claude</c> matches -- a look-alike
+    /// like <c>.claudex</c> is a different name and does not.
+    /// </summary>
+    [Fact]
+    public void HasSensitiveOutputPathComponent_allows_a_dot_claudex_lookalike_component()
+    {
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
+
+        var roomDirectory = OperatingSystem.IsWindows()
+            ? @"C:\repo\.claudex\room1"
+            : "/repo/.claudex/room1";
+
+        var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
+
+        Assert.False(matched);
+        Assert.Null(offendingComponent);
+    }
+
+    /// <summary>
+    /// #1834's measurement: comparison is case-insensitive on Windows (matching claude's own
+    /// filesystem-backed refusal there) and Windows-only -- a case variant is a different, case-sensitive
+    /// file name elsewhere, so this is skipped rather than asserted false on Unix.
+    /// </summary>
+    [Fact]
+    public void HasSensitiveOutputPathComponent_refuses_a_windows_case_variant()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "the refusal's case-insensitivity is a Windows-filesystem fact only (#1834)");
+
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
+
+        var roomDirectory = @"C:\repo\.Claude\worktrees\room1";
+
+        var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
+
+        Assert.True(matched);
+        Assert.Equal(".Claude", offendingComponent);
     }
 
     /// <summary>

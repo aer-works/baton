@@ -2052,7 +2052,10 @@ segment, CLAUDE_CONFIG_DIR notwithstanding." `ClaudeConfigRootOverride` (`BatonE
 is operator-authored and has no reason to be named anything but `.claude` in practice, so this does
 not contradict any dispatch this refusal has actually gated — recorded here because it narrows the
 claim, not because anything currently depends on the wider one. Sentinel:
-`claude.sensitive-root-write-refused` (`tools/vendor-verify/verify.py`).
+`claude.sensitive-root-write-refused` (`tools/vendor-verify/verify.py`). #1834 realigned the code to
+this measurement: `ClaudeWorkerAdapter.HasSensitiveOutputPathComponent` now matches on the literal
+`.claude` path component rather than the config-root value, so this finding is closed, not merely
+recorded.
 
 ### Still not settled — recorded as untested, not refuted
 

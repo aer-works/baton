@@ -474,11 +474,11 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// #599: refuse before <see cref="WorktreeWorkspaces.Provision"/> or any dispatch when a binding's
-    /// resolved adapter names a <see cref="IWorkerAdapter.SensitiveOutputRoot"/> the room directory
-    /// falls inside — that adapter's own vendor CLI would silently refuse every write into
-    /// <c>BATON_OUTPUT_DIR</c> regardless of the grant, so nothing this room's workers write would ever
-    /// satisfy their contract. An entry naming an unknown adapter is left for
+    /// #599, corrected to a component match by #1834: refuse before
+    /// <see cref="WorktreeWorkspaces.Provision"/> or any dispatch when a binding's resolved adapter's
+    /// <see cref="IWorkerAdapter.HasSensitiveOutputPathComponent"/> matches the room directory — see
+    /// <see cref="SensitiveOutputRootException"/>'s own remarks for what that means and why it is
+    /// refused this early. An entry naming an unknown adapter is left for
     /// <see cref="WorkerBindingResolver.Resolve"/>'s own <see cref="UnknownWorkerAdapterException"/>
     /// below rather than duplicated here.
     /// </summary>
@@ -494,9 +494,9 @@ public static class RunCommand
                 continue;
             }
 
-            if (adapter.SensitiveOutputRoot is { } sensitiveRoot && OutboxPath.IsInside(roomDirectoryPath, sensitiveRoot))
+            if (adapter.HasSensitiveOutputPathComponent(roomDirectoryPath, out var offendingComponent))
             {
-                throw new SensitiveOutputRootException(workerName, roomDirectoryPath, sensitiveRoot);
+                throw new SensitiveOutputRootException(workerName, roomDirectoryPath, offendingComponent!);
             }
         }
     }
