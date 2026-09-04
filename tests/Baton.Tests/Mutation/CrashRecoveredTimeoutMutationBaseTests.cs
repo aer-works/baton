@@ -9,12 +9,12 @@ using Baton.Tests.TestSupport;
 namespace Baton.Tests.Mutation;
 
 /// <summary>
-/// #1373 follow-up (spec/baton.md §3's "per-attempt start sha is journaled" paragraph — not restated
-/// here): pins <see cref="FlowEvent.ExecutionAttemptStarted"/>'s effect on a SECOND-OR-LATER attempt's
-/// crash-recovered classification specifically. Every fixture here hand-authors the exact log lines a
-/// real crash mid-attempt-2 would leave behind, matching <c>MutationInterfaceCrashRecoveryTests</c>'
-/// own style, against a real git worktree (<c>TimeoutOnMutatedWorkspaceEndToEndTests</c>' own remarks
-/// explain why a real tree, not a fabricated one).
+/// See <see cref="FlowEvent.ExecutionAttemptStarted"/>'s own remarks (spec/baton.md §3) for the
+/// change these fixtures pin: a SECOND-OR-LATER attempt's crash-recovered classification. Every
+/// fixture here hand-authors the exact log lines a real crash mid-attempt-2 would leave behind,
+/// matching <c>MutationInterfaceCrashRecoveryTests</c>' own style, against a real git worktree
+/// (<c>TimeoutOnMutatedWorkspaceEndToEndTests</c>' own remarks explain why a real tree, not a
+/// fabricated one).
 /// </summary>
 public class CrashRecoveredTimeoutMutationBaseTests
 {
