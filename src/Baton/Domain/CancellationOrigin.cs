@@ -15,8 +15,9 @@ public enum CancellationOrigin
     /// <summary>
     /// An operator named this execution: <c>CancelCommand</c>'s direct path
     /// (<see cref="Mutation.MutationInterface.RequestCancellationAsync"/>), its live-pump
-    /// fall-through poller settling a parked intent
-    /// (<c>MutationInterface.SettleParkedCancelIntentsAsync</c>), or
+    /// fall-through poller's marked arrest intent settling
+    /// (<c>MutationInterface.SettleArrestIntentsAsync</c>, #1556 — generalized from #1563's
+    /// narrower <c>SettleParkedCancelIntentsAsync</c>), or
     /// <see cref="Mutation.InFlightExecutionRegistry.RequestCancellationAsync"/> delivering to a
     /// still-registered in-process execution.
     /// </summary>

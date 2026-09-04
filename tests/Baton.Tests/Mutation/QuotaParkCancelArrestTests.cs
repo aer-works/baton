@@ -14,7 +14,7 @@ namespace Baton.Tests.Mutation;
 /// <c>flow.lock</c> indefinitely, is described once at
 /// <see cref="CancelRequestPoller.TickAsync"/>'s own remarks — this fixture only drives it. A
 /// quota-parked lane must notice a cancel delivered through
-/// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> without ever waiting out the
+/// <see cref="InFlightExecutionRegistry.MarkArrestIntent"/> without ever waiting out the
 /// park. Mirrors the fabricated-parked-history fixture
 /// <c>MutationInterfaceRetryBackoffTests.Test815</c> already uses for the same shape.
 /// </summary>
@@ -120,7 +120,7 @@ public class QuotaParkCancelArrestTests
             // The cancel channel's own delivery point (CancelRequestPoller.TickAsync marks the same
             // way once it sees this step Failed with a pending RetryNotBefore) — called directly
             // here to isolate the pump-side wake from the file-polling machinery around it.
-            registry.MarkParkedCancelIntent(firstAttempt);
+            registry.MarkArrestIntent(firstAttempt, "test: quota-parked");
 
             // fakeTime is NEVER advanced: if the mark's wake were not wired into the deferral wait's
             // WhenAny, this would hang until AdvanceUntilPumpCompletesAsync-style intervention —
@@ -224,11 +224,11 @@ public class QuotaParkCancelArrestTests
 
             // Mark the mismatched id first — if IsParkedRetryTarget did not actually validate
             // against projected state, this alone could spuriously settle the real park.
-            registry.MarkParkedCancelIntent(mismatchedTarget);
+            registry.MarkArrestIntent(mismatchedTarget, "test: mismatched target");
             // Then mark the REAL target: its settlement below is the positive control (F4) proving
             // the wake/drain path genuinely ran — a broken drain hangs this test out to the WaitAsync
             // timeout below instead of a same-shape negative silently passing for the wrong reason.
-            registry.MarkParkedCancelIntent(firstAttempt);
+            registry.MarkArrestIntent(firstAttempt, "test: quota-parked");
 
             var finalState = await pumpTask.WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
 
@@ -354,7 +354,7 @@ public class QuotaParkCancelArrestTests
                 await Task.Delay(20, TestContext.Current.CancellationToken); // wait-ok: poll interval inside a 20s-bounded loop, not the wait ceiling itself
             }
 
-            registry.MarkParkedCancelIntent(firstAttempt);
+            registry.MarkArrestIntent(firstAttempt, "test: quota-parked");
 
             // Positive signal, polled well inside StepB's 4s sleep: proves the busy branch's own
             // WhenAny woke on the mark rather than waiting for StepB's dispatch, a host stop, or
@@ -384,7 +384,7 @@ public class QuotaParkCancelArrestTests
 
     // #1634: the redispatch race a poller-less pump loses. CancelCommand's DIRECT path (no live
     // `baton run` holding flow.lock) never runs CancelRequestPoller, so nothing ever calls
-    // MarkParkedCancelIntent for it -- MutationInterface.RequestCancellationAsync journals
+    // MarkArrestIntent for it -- MutationInterface.RequestCancellationAsync journals
     // CancellationRequested itself (intent-first) and then drives its OWN pump to a fixed point.
     // Reachable only against an already-OVERDUE park (a still-future one is refused earlier by
     // CancelCommand's own hasFutureDeferral gate, spec/baton.md's "direct path" paragraph) --
@@ -444,7 +444,7 @@ public class QuotaParkCancelArrestTests
             var dispatcher = new CoreDispatcher(writer);
 
             // The DIRECT path itself: no CancelRequestPoller runs alongside this call, and
-            // MarkParkedCancelIntent is never invoked. RequestCancellationAsync journals
+            // MarkArrestIntent is never invoked. RequestCancellationAsync journals
             // CancellationRequested before starting its own pump (intent-first ordering) -- the
             // ledger already carries the fact by the time the pump's first round runs.
             var finalState = await MutationInterface.RequestCancellationAsync(

@@ -20,8 +20,8 @@ public sealed class InFlightExecutionRegistry
 {
     private readonly Lock _lock = new();
     private readonly Dictionary<ExecutionId, CancellationTokenSource> _entries = new();
-    private readonly HashSet<ExecutionId> _parkedCancelIntents = new();
-    private TaskCompletionSource _parkedCancelWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Dictionary<ExecutionId, string> _arrestIntents = new();
+    private TaskCompletionSource _arrestWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IEventLogWriter? _eventLogWriter;
 
     /// <summary>
@@ -164,61 +164,79 @@ public sealed class InFlightExecutionRegistry
     }
 
     /// <summary>
-    /// #1563 (S0 of the quota design, #802 §"S0's mechanism"): marks a cancel intent for a target
-    /// this pump has no live PROCESS dispatch for — the worker already exited and the step sits on
-    /// a future <see cref="Domain.StepState.RetryNotBefore"/> (a quota park) — and wakes whichever of
-    /// the pump's two waits is currently parked (the idle-deferral wait when nothing else is in
-    /// flight, or the busy wait when a DIFFERENT step's dispatch still is) so the next round can
-    /// validate and record it from projected state, the same intent-first discipline
-    /// <see cref="RequestCancellationAsync"/> already follows for a live process. Idempotent:
-    /// re-marking the same id before the pump drains it is a no-op. Deliberately narrower than the
-    /// fuller pump-side arrest seam #1556 is building (<c>MarkArrestIntent</c>/<c>DrainArrestIntents</c>
-    /// covering every non-process shape, not just a quota-parked retry) — #1556 should fold this
-    /// latch into that machinery rather than keep both.
+    /// #1556 (folding #1563's narrower <c>MarkParkedCancelIntent</c> into this general seam, per that
+    /// method's own follow-up note): marks an arrest intent for a target this pump has no live
+    /// PROCESS dispatch for — a step bound to a <see cref="WorkerBinding.NonProcess"/> worker, a
+    /// step-less supplementary execution, or a step Failed with a future
+    /// <see cref="Domain.StepState.RetryNotBefore"/> (a quota park; the worker process behind it
+    /// already exited) — and wakes whichever of the pump's two waits is currently parked (the
+    /// idle-deferral wait when nothing else is in flight, or the busy wait when a DIFFERENT step's
+    /// dispatch still is) so the next round can validate and record it from projected state, the same
+    /// intent-first discipline <see cref="RequestCancellationAsync"/> already follows for a live
+    /// process. Idempotent: re-marking the same id before the pump drains it is a no-op (the reason is
+    /// simply overwritten with the latest). <paramref name="reason"/> is diagnostic only — surfaced
+    /// verbatim if the pump ultimately cannot settle this intent (already settled by the time it
+    /// drains, or the id was never accepted) — never itself part of the settle decision, which is
+    /// re-derived from projected state alone.
     /// </summary>
-    public void MarkParkedCancelIntent(ExecutionId targetExecutionId)
+    public void MarkArrestIntent(ExecutionId targetExecutionId, string reason)
     {
+        ArgumentException.ThrowIfNullOrEmpty(reason);
         lock (_lock)
         {
-            _parkedCancelIntents.Add(targetExecutionId);
-            _parkedCancelWake.TrySetResult();
+            _arrestIntents[targetExecutionId] = reason;
+            _arrestWake.TrySetResult();
         }
     }
 
-    /// <summary>Every parked-cancel intent marked since the last drain, and clears them.</summary>
-    internal IReadOnlyList<ExecutionId> DrainParkedCancelIntents()
+    /// <summary>Every arrest intent marked since the last drain, with the reason it was marked, and clears them.</summary>
+    internal IReadOnlyList<(ExecutionId ExecutionId, string Reason)> DrainArrestIntents()
     {
         lock (_lock)
         {
-            var drained = _parkedCancelIntents.ToList();
-            _parkedCancelIntents.Clear();
+            var drained = _arrestIntents.Select(kv => (kv.Key, kv.Value)).ToList();
+            _arrestIntents.Clear();
             return drained;
+        }
+    }
+
+    /// <summary>
+    /// True while at least one arrest intent is still undrained — the fixed-point guard: a round
+    /// heading for the pump's idle return must recheck this immediately before returning, since a
+    /// mark landing after this round's own drain would otherwise be silently dropped when the pump
+    /// exits and the poller that could re-offer it is cancelled in the same instant.
+    /// </summary>
+    internal bool HasPendingArrestIntents()
+    {
+        lock (_lock)
+        {
+            return _arrestIntents.Count > 0;
         }
     }
 
     /// <summary>
     /// The awaitable the deferral wait parks on alongside its delay and host-stop watchers. Captured
     /// fresh each time the wait is entered — never reused across rounds without going through
-    /// <see cref="ResetParkedCancelWake"/> — so a mark that lands anywhere before this is captured is
+    /// <see cref="ResetArrestWake"/> — so a mark that lands anywhere before this is captured is
     /// never lost: the returned task is already complete, and the caller's own <c>WhenAny</c> resolves
     /// it immediately.
     /// </summary>
-    internal Task NextParkedCancelWake()
+    internal Task NextArrestWake()
     {
         lock (_lock)
         {
-            return _parkedCancelWake.Task;
+            return _arrestWake.Task;
         }
     }
 
     /// <summary>Swaps in a fresh wake latch, but only if <paramref name="observed"/> is still the current one.</summary>
-    internal void ResetParkedCancelWake(Task observed)
+    internal void ResetArrestWake(Task observed)
     {
         lock (_lock)
         {
-            if (_parkedCancelWake.Task == observed)
+            if (_arrestWake.Task == observed)
             {
-                _parkedCancelWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _arrestWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
     }

@@ -171,6 +171,52 @@ public class CancelRequestPollerTests
         }
     }
 
+    // Polarity control for the test above, one condition apart: the step-less target has ALREADY been
+    // cancelled by the time this tick re-checks (the seam settled it a moment before, not "despite"
+    // this request). Pre-fix this read Steps-only and always reported "too late" here, because a
+    // step-less execution has no StepState to read Cancelled off — the exact false claim #802's F7
+    // finding named, now reachable because #1556 PR 2 lets the poller mark a step-less target at all.
+    [Fact]
+    public async Task A_step_less_execution_the_seam_just_cancelled_is_reported_arrested_not_too_late()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        var originalError = Console.Error;
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-step-less-cancelled");
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeStepLessRequest(execId)), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.CancellationRequested(execId, CancellationOrigin.Operator), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionCancelled(execId), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-step-less-cancelled", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath), "a settled target consumes the request file");
+            Assert.True(File.Exists($"{requestPath}.consumed"));
+            Assert.Contains("arrested by this request", stderr.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("too late", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [Fact]
     public async Task False_but_still_running_execution_is_left_pending_then_delivered_on_later_tick_after_registration()
     {
@@ -255,7 +301,7 @@ public class CancelRequestPollerTests
             var rejected = await CancelRequestFile.TryReadRejectedAsync(rejectedPath, TestContext.Current.CancellationToken);
             Assert.NotNull(rejected);
             Assert.Equal("exec-non-process", rejected.Target);
-            Assert.Contains("target still running but not reachable through the in-flight registry (likely non-process work, #1530)", rejected.Reason);
+            Assert.Contains("arrest requested (#1556) but not yet confirmed settled after 5 polls", rejected.Reason);
 
             // #1549: this rejection resolved a concrete ExecutionId, so it also becomes a content-free
             // journal fact alongside the file-and-stderr rejection above.
@@ -309,7 +355,7 @@ public class CancelRequestPollerTests
             Assert.True(File.Exists(requestPath), "request must remain pending until the pump actually settles the park");
             Assert.False(File.Exists($"{requestPath}.consumed"));
             Assert.False(File.Exists($"{requestPath}.rejected"));
-            Assert.Contains(execId, registry.DrainParkedCancelIntents());
+            Assert.Contains(execId, registry.DrainArrestIntents().Select(intent => intent.ExecutionId));
         }
         finally
         {
@@ -323,7 +369,7 @@ public class CancelRequestPollerTests
     /// <see cref="RunningExecutionResolver"/> is what makes a bare <c>baton cancel &lt;room&gt;</c>
     /// reach a parked lane through this poller's <c>latest</c> resolution at
     /// <see cref="CancelRequestPoller"/>'s own line above. Everything past resolution (the
-    /// <c>isParked</c> re-check and <c>MarkParkedCancelIntent</c> call) is identical to the explicit-id
+    /// <c>isParked</c> re-check and <c>MarkArrestIntent</c> call) is identical to the explicit-id
     /// test — this test's own value is entirely in reaching that machinery via <c>latest</c> at all,
     /// which the pre-#1607 resolver could never do for a parked-only room.
     /// </summary>
@@ -356,7 +402,7 @@ public class CancelRequestPollerTests
             Assert.True(File.Exists(requestPath), "request must remain pending until the pump actually settles the park");
             Assert.False(File.Exists($"{requestPath}.consumed"));
             Assert.False(File.Exists($"{requestPath}.rejected"));
-            Assert.Contains(execId, registry.DrainParkedCancelIntents());
+            Assert.Contains(execId, registry.DrainArrestIntents().Select(intent => intent.ExecutionId));
         }
         finally
         {

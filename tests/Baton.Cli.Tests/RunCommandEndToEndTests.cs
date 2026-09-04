@@ -443,7 +443,7 @@ public class RunCommandEndToEndTests
     /// block used to cancel the poller before its own next tick could ever consume the pending
     /// <c>cancel.request</c> file — a pending file left behind in a room whose cancel actually
     /// SUCCEEDED. Drives this through the real <see cref="RunCommand.ExecuteAsync"/> entry point
-    /// (not <c>MutationInterface</c> directly, and not <c>InFlightExecutionRegistry.MarkParkedCancelIntent</c>
+    /// (not <c>MutationInterface</c> directly, and not <c>InFlightExecutionRegistry.MarkArrestIntent</c>
     /// called in-process, which <c>QuotaParkCancelArrestTests</c> already covers) — the file channel
     /// end to end is this test's own scope.
     /// </summary>

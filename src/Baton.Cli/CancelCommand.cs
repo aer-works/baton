@@ -33,7 +33,8 @@ namespace Baton.Cli;
 /// <see cref="RunningExecutionResolver"/> now also resolves a quota-parked step (<c>Failed</c> with a
 /// scheduled <c>RetryNotBefore</c>) as a candidate, retiring #802 §"doesn't work alone" objection
 /// now that PR #1605 gave a parked mark a real delivery point
-/// (<c>InFlightExecutionRegistry.MarkParkedCancelIntent</c>). A parked candidate resolved here still
+/// (<c>InFlightExecutionRegistry.MarkArrestIntent</c>, generalized by #1556 from that PR's narrower
+/// <c>MarkParkedCancelIntent</c>). A parked candidate resolved here still
 /// only reaches the pump through the SAME two paths this method already had: the direct call below
 /// (only ever reachable against an already-*overdue* park when a live pump is confirmed, since a
 /// genuinely still-future one is refused by the dead-holder check above before the resolver ever

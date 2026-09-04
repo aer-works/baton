@@ -17,7 +17,7 @@ namespace Baton.Cli.Tests;
 /// idle (no live pump) direct path is deliberately NOT covered here: <c>MutationInterface</c>'s own
 /// pump has no way to drain a parked-cancel-intent mark without <see cref="CancelRequestPoller"/>
 /// running alongside it (only <see cref="CancelRequestPoller.TickAsync"/> ever calls
-/// <c>InFlightExecutionRegistry.MarkParkedCancelIntent</c>), so a direct-path parked cancel against a
+/// <c>InFlightExecutionRegistry.MarkArrestIntent</c>), so a direct-path parked cancel against a
 /// still-future <c>RetryNotBefore</c> would hang this test for the length of that deferral — see the
 /// #1607 issue thread's Phase 1 table for why that gap is pre-existing (reachable identically via an
 /// explicit <c>--execution</c> today) and out of this issue's scope.

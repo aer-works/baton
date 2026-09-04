@@ -446,8 +446,8 @@ exactly one candidate's latest execution, refused (naming every candidate) on ze
 one — `Failed` with a scheduled `RetryNotBefore`, the identical shape `MutationInterface`'s
 `IsParkedRetryTarget` and `CancelRequestPoller`'s own `isParked` check already use. A parked
 candidate is not delivered the same way a running one is: it is settled through the dedicated path
-#1605 built (`InFlightExecutionRegistry.MarkParkedCancelIntent` /
-`MutationInterface.SettleParkedCancelIntentsAsync`), never through `CoreEventAggregation` or
+#1605 built and #1556 PR 2 generalized (`InFlightExecutionRegistry.MarkArrestIntent` /
+`MutationInterface.SettleArrestIntentsAsync`), never through `CoreEventAggregation` or
 `NonProcessCancellationDetector`'s own Running-only filters, which stay unmodified and unconsulted
 for a parked target.
 
@@ -460,8 +460,37 @@ shims over unchanged; `Find` is the settle re-check, now step-less-aware — `Ar
 own remarks state the D2 fix this buys; `All` is what `NonProcessCancellationDetector` filters down
 to its own Running-only, `NonProcess`-binding arm.
 A quota-parked target is unaffected: `All` still yields one (so `Find` still recognizes it), but
-`NonProcessCancellationDetector` still filters it back out — that arrest path stays
-`SettleParkedCancelIntentsAsync`'s alone, exactly as before the collapse.
+`NonProcessCancellationDetector` still filters it back out — that arrest path stayed a dedicated one
+(pre-#1556 PR 2: `SettleParkedCancelIntentsAsync`'s alone; #1556 PR 2 on: the ledger-read
+`parkedCancelExecutionIds` block below, `IsParkedRetryTarget`-guarded), exactly as before the
+collapse.
+
+**#1556 PR 2 folded #1563's narrower quota-parked-only mark into one general seam.** The gap PR 1 left
+open: a poller tick that finds a target `ArrestableExecutions.Find` still admits, but with no live
+process registered for it, only had a real delivery point for the quota-parked shape
+(`MarkParkedCancelIntent`) — a genuinely `Running` non-process step or a still-pending step-less
+execution fell through to the bounded 5-tick retry with no mark at all, eventually rejected as
+"likely non-process work" even though the seam existed right next to it. `InFlightExecutionRegistry`'s
+mark/drain/wake latch is now general-purpose (`MarkArrestIntent(executionId, reason)` /
+`DrainArrestIntents()` — `reason` is diagnostic only, surfaced verbatim if the intent cannot be
+settled), and `CancelRequestPoller` marks unconditionally whenever `Find` still admits the target,
+not only when it is parked. `MutationInterface.PumpToFixedPointAsync` gained one derived-obligation
+block, `SettleArrestIntentsAsync`, placed after the completion detector and before the cancellation
+detector (Q2: completion still beats arrest within a round) — it appends only
+`FlowEvent.CancellationRequested`, the SAME journal shape the direct (idle-room) `RequestCancellationAsync`
+path already writes, then lets the round's own pre-existing derived obligations finalize it on a
+later round: `NonProcessCancellationDetector` for a Running non-process or step-less target, the
+ledger-read `parkedCancelExecutionIds` block for a parked one. One settle shape, not a second one
+bolted on beside it. A step-tied `Running` target is admitted only once its resolved `WorkerBinding`
+proves `NonProcess` — the fail-closed gate that stops the seam from ever recording an intent for a
+live `Process` target that simply has not registered with `InFlightExecutionRegistry` yet (a real
+race the poller itself cannot resolve, since it has no `workerBindings` in scope). A target `Find` no
+longer admits by the time its mark drains (redispatched, already terminal, or never a real id at all)
+is dropped with one diagnostic line naming why — "already settled" or "unknown execution id" — never
+silently. The pump's own fixed-point return additionally rechecks for an undrained mark immediately
+before returning: a mark landing after a round's own drain but before that exact instant would
+otherwise be silently lost, since returning releases `flow.lock` and (via `RunCommand`'s poller
+lifetime) cancels the very poller that could have re-offered it.
 
 **Behaviour change from the widening, not just an addition:** a room with one
 `Running` step and a sibling sitting in ordinary retry backoff — previously an unambiguous single
@@ -528,8 +557,9 @@ apart.** The distinction is made durable, not a flag: `FlowEvent.CancellationReq
 `Origin` (`CancellationOrigin`: `Operator` or `HostStop`), nullable, defaulting to `null` on replay of
 any line written before this field existed. `RequestStopAsync` writes `HostStop`. Every other
 appender — `CancelCommand`'s direct path (`MutationInterface.RequestCancellationAsync`), the poller's
-in-process live delivery (`InFlightExecutionRegistry.RequestCancellationAsync`), and the poller's
-parked-intent settle (`SettleParkedCancelIntentsAsync`) — writes `Operator`. The ledger-read rule now
+in-process live delivery (`InFlightExecutionRegistry.RequestCancellationAsync`), and the pump's own
+arrest-intent settle (`SettleArrestIntentsAsync`, #1556 PR 2 — the poller's marked intents drain
+through it) — writes `Operator`. The ledger-read rule now
 accumulates only `Origin == Operator` lines, so a `HostStop` line is excluded regardless of which
 process, or how many rounds later, reads it. A `null` `Origin` (a line written before #1762 shipped)
 is likewise never accumulated. Because the `Origin` field and the ledger-read rule that consults it
