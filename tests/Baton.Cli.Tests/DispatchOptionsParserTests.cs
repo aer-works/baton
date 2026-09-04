@@ -380,6 +380,32 @@ public class DispatchOptionsParserTests
         Assert.Contains("--repo", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>#1381: --continue mirrors --repo's own resolve-to-absolute-path rule.</summary>
+    [Fact]
+    public void The_continue_option_parses_to_an_absolute_path()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--continue", "."]);
+
+        Assert.Equal(Path.GetFullPath("."), options.ContinueFromRoomDirectoryPath);
+    }
+
+    [Fact]
+    public void Omitting_continue_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["review", "--spec", "t.md"]);
+
+        Assert.Null(options.ContinueFromRoomDirectoryPath);
+    }
+
+    [Fact]
+    public void A_continue_option_with_no_value_throws()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--continue"]));
+
+        Assert.Contains("--continue", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>#1686 review F11: --max-tool-steps mirrors --token-budget end to end.</summary>
     [Fact]
     public void The_max_tool_steps_option_parses_to_a_positive_int()

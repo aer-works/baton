@@ -103,6 +103,17 @@ namespace Baton.Cli;
 /// is. Null keeps the role's own default (true for a role with <c>Baton.Vendors.WorkerRole.DeliversBranch</c>
 /// set, meaningless — never checked — for one without it).
 /// </param>
+/// <param name="ContinueFromRoomDirectoryPath">
+/// <c>--continue &lt;room-dir&gt;</c> (#1381): rehire the worker that ran in this terminal room —
+/// resume its vendor session for a follow-on brief rather than starting cold. Role dispatch only,
+/// rejected for a workflow template the same way <paramref name="TokenBudget"/> is (a template has no
+/// single worker to rehire). Resolution — the prior room's own single-worker bindings entry, its
+/// adapter/SessionId, and the loud refusals when either is missing or the vendor differs — lives in
+/// <see cref="DispatchCommand"/>, not here; this record carries only the raw path the operator passed.
+/// Accepts a room directory only, not a bare execution id, despite the issue's own "room-or-execution-id"
+/// phrasing — see <see cref="DispatchCommand"/>'s remarks on why that second form is refused rather than
+/// silently only-sometimes honored.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -125,4 +136,5 @@ public sealed record DispatchOptions(
     string? VerifyCommand = null,
     string? SpecText = null,
     bool SpecFromStdin = false,
-    bool? ExpectPr = null);
+    bool? ExpectPr = null,
+    string? ContinueFromRoomDirectoryPath = null);

@@ -15,7 +15,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true|false>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -74,6 +74,7 @@ public static class DispatchOptionsParser
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
+        string? continueFromRoomDirectoryPath = null;
         var attachments = new List<string>();
         var listCapabilities = false;
 
@@ -159,6 +160,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--repo":
                     repoPath = RequireValue(args, ref i, arg);
+                    break;
+                case "--continue":
+                    continueFromRoomDirectoryPath = RequireValue(args, ref i, arg);
                     break;
                 case "--list-capabilities":
                     listCapabilities = true;
@@ -248,7 +252,8 @@ public static class DispatchOptionsParser
             verifyCommand,
             specText,
             specFromStdin,
-            expectPr);
+            expectPr,
+            continueFromRoomDirectoryPath is null ? null : RoomDirectoryPath.Resolve(continueFromRoomDirectoryPath));
     }
 
     /// <summary>

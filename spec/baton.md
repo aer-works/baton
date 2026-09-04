@@ -361,7 +361,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true\|false>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true\|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
@@ -893,6 +893,49 @@ journal already holds. Scoped to a retry after a **timeout** — an ordinary fai
 — and to the pump's own dispatch path: `baton resume` mints its request elsewhere and carries the
 operator's own message instead. **Out of scope, deliberately:** extending a RUNNING lane's budget
 mid-flight (the 2026-08-31 comment on #1373); that stays open on the issue.
+
+**`baton dispatch <role> --continue <room-dir>` rehires a veteran into a NEW room for a follow-on
+brief (#1381, 2026-09-01 design ratification), the general manual counterpart to #1373's automatic
+retry-with-continuation above — same underlying mechanism (`WorkerInvocation.SessionId`/
+`ResumeSession`, claude's `--resume`, M24), different trigger.** The named room's own single-worker
+`bindings.json` entry is the one record of a vendor session id (`WorkerBindingConfigEntry.SessionId`
+— the same field `baton resume`'s same-room continuation already reads, #1359 F6); `--continue`
+carries it forward onto the new room's binding (`SessionId` + `ResumeSession: true`) rather than
+minting a second record. **Q1 scope: claude only** — agy rehire is gated on its own headless
+conversation-id-resume measurement, not yet run; refused (both the veteran's recorded adapter and
+this dispatch's own resolved one must be `claude`) rather than silently falling back to a cold start.
+**Fails the dispatch loudly** (Q4) on every check performable before the vendor spawns: the named room
+missing, its bindings.json unreadable or naming more than one worker, an adapter mismatch, no
+`SessionId` recorded (the ordinary, undecorated terminal case — a dispatch that was never itself a
+`--continue` and was never hand-annotated mints nothing automatically, see below), or the veteran room
+not yet terminal (a still-running worker resumed concurrently races the vendor's own session-id guard,
+which is an existence check, not a lock — `durability.session-id-guard-is-not-a-lock`,
+docs/vendor-doc-audit.md). **Not detectable, and not claimed:** the vendor silently minting a fresh
+session under the resumed id instead of truly continuing it — closing that gap needs the #546
+existence-check-not-lock measurement to distinguish resume-refused from silently-started-fresh, a
+separate, unshipped prerequisite pin.
+<br><br>
+**Why an ordinary `baton dispatch` mints no session id automatically, and why that is deliberate
+rather than an oversight left for later:** `WorkerInvocation`/the resolved `CoreDispatchTarget` argv
+is built once per binding and reused verbatim across every #1373 retry of that binding. Minting a
+client-side `--session-id` at bind time would bake it into that frozen argv — and claude's own
+`--session-id` reuse is existence-guarded (sequential reuse refused, same sentinel as above), so a
+retry after a timeout would fail outright rather than merely restart cold, a live regression on the
+default dispatch path for the sake of a `--continue` chain's own root. `--continue` sidesteps this
+entirely by only ever ferrying a session id FORWARD from an explicit prior dispatch, using `--resume`
+(not existence-guarded the identical way) — so a chain's second, third, … link works exactly like the
+first, and the ordinary no-`--continue` path is untouched. Automatically capturing a session id on
+every dispatch — closing the loop so any veteran, not only one already reached via `--continue`, can
+be rehired — is unshipped follow-up work, not part of this pin.
+<br><br>
+Provenance is journaled on the NEW room's own `.baton/room.json` marker — the identical
+`ParentRoomDirectoryPath`/`ParentExecutionId` fields #1441's redispatch lineage already writes (both
+verbs mean "the antecedent room/execution this one derives from"; sharing them is record-once, not
+a coincidence), plus one field neither verb wrote before: `ContinuedSessionId`, non-null exactly when
+this lineage came from `--continue` rather than `baton redispatch`. `fleet_status` (§6) surfaces it
+under `continuedSessionId` on the identical `parentRoomPath`/`parentExecutionId` read path, so the
+glass can render "continued from `<room>`" apart from "redispatched from `<room>`" by that field's
+presence alone.
 
 **The exit-0 quota veto (#1622 (a)).** A satisfied exit-0 run still settles `Failed`/`ExhaustedUntil`
 — parked by `RetryEngine` exactly as an exit-1 quota failure is — when the vendor's own
@@ -2355,6 +2398,7 @@ Output: a JSON array of
   "workstream"?: string,  // #1619: the room's --workstream, WorkerBindingConfigEntry.Workstream
   "parentRoomPath"?: string,   // #1441/#1620: redispatch lineage -- the parent room this one was redispatched from
   "parentExecutionId"?: string, // #1441/#1620: the parent room's own execution id at redispatch time
+  "continuedSessionId"?: string, // #1381: non-null exactly when parentRoomPath/parentExecutionId name a room `--continue` rehired rather than `baton redispatch` reran -- see §3's dispatch entry
   "terminalAt"?: string,        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
   "delivery"?: { "pr": number, "state": string } // #734: the room's latest recorded delivery fact (§2, §7) -- "state" is one of Opened/ChecksGreen/ChecksRed/Merged/Closed. Absent until the poller has recorded a first fact, including for a room whose outputs resolved no PR number at all (no delivery reference, or a branch-only one). Read from `flow.jsonl` directly, even on the terminal-sentinel fast path -- delivery facts keep appending after a room's own workflow goes Terminal
 }
