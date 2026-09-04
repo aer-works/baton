@@ -3019,6 +3019,28 @@ reads as the worker refusing writes, not a stuck derivation -- the two ages trac
 exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
 `heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
 
+**Outbound ntfy notifications for terminal/attention-worthy fleet events (#1558, ratified as #1502's
+menu items 31/32/33, one bundle — #31 alone trains an operator to ignore their phone within a
+week).** Independent of the Cloudflare mailbox above — a separate outbound POST to an ntfy topic
+(`tools/fleet-glass/pusher.py`'s "NTFY PUSH" section, `ntfy_topic`/`ntfy_quiet_hours` in
+`pusher.config.json`, an optional `ntfy_token` in `secrets.local.json`), no write-budget ledger, and
+no secret gate needed — that section's own comment states why. Four event types map to three ntfy
+priorities —
+`ntfy_priority_for_event`/`NTFY_EVENT_TIERS` is the one table, never restated: lane failed →
+urgent, zombie/stalled detected → high, a pusher-level anomaly (an uncaught exception in the
+snapshot/heartbeat/deliver loop) → high, lane succeeded-with-warnings → default. Quiet hours
+(`in_quiet_hours`) suppress every tier below urgent inside an operator-local window (default
+`America/New_York`, config-driven, injectable clock for tests) — urgent always sends regardless.
+Dedup (`ntfy_dedup_decision`) gives a standing condition (a lane still Failed, a room still
+Stalled) the first-occurrence/fold/magnitude-increase shape #1558's brief specified (citing basis
+#922's anomaly dedup as the reference shape): the first occurrence alerts, an unchanged repeat
+folds, and a magnitude increase (a failed lane's retry count climbing) re-alerts; a room leaving
+its notifiable state clears its dedup entry so a later recurrence reads as fresh rather than
+folding forever. `pusher.py` itself carried no prior anomaly-dedup code to reuse at the time this
+landed (checked: no `anomaly`/standing-condition-dedup function existed anywhere in the file) — this
+is a fresh implementation of that shape, not a reuse of one. An unconfigured `ntfy_topic` never
+raises — `main()` logs one line and every notification call is a no-op from there on.
+
 ---
 
 ## §7 The daemon, narrowed

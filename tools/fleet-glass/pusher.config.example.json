@@ -10,5 +10,9 @@
   "rooms_root": "",
   "secret_patterns_file": "",
   "push_state_file": "",
-  "underhood_dirs": []
+  "underhood_dirs": [],
+  "ntfy_topic": "",
+  "ntfy_server": "https://ntfy.sh",
+  "ntfy_quiet_hours": { "start": "22:00", "end": "07:00", "timezone": "America/New_York" },
+  "ntfy_state_file": ""
 }
