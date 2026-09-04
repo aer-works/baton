@@ -15,6 +15,7 @@ public static class WorkerAdapterRegistry
     {
         ["claude"] = new ClaudeWorkerAdapter(),
         ["agy"] = new AgyWorkerAdapter(),
+        ["codex"] = new CodexWorkerAdapter(),
         [NoOpWorkerAdapter.AdapterName] = new NoOpWorkerAdapter(),
         [WorkflowTemplateComposer.CaptureAdapter] = new CaptureWorkerAdapter(),
         [CommandWorkerAdapter.AdapterName] = new CommandWorkerAdapter(),

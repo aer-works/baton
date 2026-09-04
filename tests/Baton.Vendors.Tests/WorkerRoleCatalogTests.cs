@@ -663,6 +663,7 @@ public class WorkerRoleCatalogTests
         var budget = Assert.IsType<TokenBudgetSpec.PerAdapter>(WorkerRoleCatalog.For("review").TokenBudget);
         Assert.Equal(250_000, budget.ByAdapter["claude"]);
         Assert.Equal(250_000, budget.ByAdapter["agy"]);
+        Assert.Equal(250_000, budget.ByAdapter["codex"]);
     }
 
     /// <summary>#1745: every other shipped role keeps today's single-number shape unchanged.</summary>

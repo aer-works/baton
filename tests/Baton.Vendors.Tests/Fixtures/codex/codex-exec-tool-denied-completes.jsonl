@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"synthetic-write-command","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"synthetic-write-command","status":"failed","exit_code":1,"aggregated_output":"SYNTHETIC: write rejected because the managed host retained a read-only sandbox."}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"SYNTHETIC_TOOL_DENIAL_REPORTED"}}
+{"type":"turn.completed","usage":{"input_tokens":46632,"cached_input_tokens":40192,"output_tokens":210,"reasoning_output_tokens":48}}

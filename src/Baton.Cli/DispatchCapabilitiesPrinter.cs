@@ -8,17 +8,18 @@ namespace Baton.Cli;
 /// <see cref="WorkerRoleCatalog.All"/> is the same catalog <c>ModelAndEffortValidationTests</c>
 /// reads directly. The role and effort sections cannot drift from what dispatch actually accepts, but
 /// that is single-source construction, not test coverage: this printer and
-/// <c>ClaudeWorkerAdapter.Resolve</c>/<c>AgyWorkerAdapter.Resolve</c> both read the same
+/// the vendor adapters all read the same
 /// <see cref="EffortTierMapping"/> statics, so they cannot disagree regardless of what any test
 /// exercises. <c>ModelAndEffortValidationTests</c> only exercises <c>AgyRawValues</c> end to end —
-/// it never hands Claude an <c>--effort</c> at all, and no test passes a canonical word
-/// (quick/standard/careful/exhaustive) to either vendor — so do not cite that suite as validating
-/// <c>ClaudeRawValues</c> or either vendor's canonical table (#1500 second-reader MED-3).
+/// it never hands Claude an <c>--effort</c> at all. Codex has separate registration and adapter
+/// coverage for its raw and canonical values; neither suite validates <c>ClaudeRawValues</c> or
+/// Claude's canonical table (#1500 second-reader MED-3).
 /// <see cref="ClaudeWorkerAdapter.ModelAliases"/> is read live too, but that list has no validation
 /// surface of its own (every alias always resolves to a vendor-current model, so nothing rejects one)
 /// and is not exercised by that suite either. agy has no equivalent model-alias catalog (its models
 /// are suffix-parametrized, not enumerated), so its printed model examples are illustrative text, not
-/// a sourced table.
+/// a sourced table. Codex's printed line deliberately points to dynamic app-server discovery instead
+/// of freezing the account-sensitive model list into this display.
 /// </summary>
 public static class DispatchCapabilitiesPrinter
 {
@@ -43,6 +44,15 @@ public static class DispatchCapabilitiesPrinter
         sb.AppendLine($"    Canonical:  {agyCanonical}");
         sb.AppendLine($"    Raw Effort: {string.Join(", ", EffortTierMapping.AgyRawValues)}");
         sb.AppendLine("    Note:       On agy, model suffix (-low, -medium, -high) and --effort must agree.");
+
+        // Codex
+        sb.AppendLine("  codex:");
+        sb.AppendLine("    Models:     discovered dynamically from codex app-server model/list");
+        var codexCanonical = string.Join(
+            ", ", EffortTierMapping.CanonicalWords.Select(w => $"{w} (-> {EffortTierMapping.CodexByCanonical[w]})"));
+        sb.AppendLine($"    Canonical:  {codexCanonical}");
+        sb.AppendLine($"    Raw Effort: {string.Join(", ", EffortTierMapping.CodexRawValues)}");
+        sb.AppendLine("    Note:       Efforts are model-specific. No built-in role currently has a grant Codex can express exactly; all fail closed.");
 
         sb.AppendLine();
         sb.AppendLine("Role Timebox Defaults:");

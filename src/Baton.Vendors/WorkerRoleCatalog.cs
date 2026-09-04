@@ -144,7 +144,7 @@ public static class WorkerRoleCatalog
     /// dispatched through this catalog, so admitting them here would let a typo in a real vendor's name
     /// (e.g. "cluade") pass as a config for a fake one instead of failing loudly at load.
     /// </summary>
-    public static readonly IReadOnlyCollection<string> KnownTokenBudgetAdapters = ["claude", "agy"];
+    public static readonly IReadOnlyCollection<string> KnownTokenBudgetAdapters = ["claude", "agy", "codex"];
 
     private const string TiersDefaultFileName = "WorkerTiers.json";
     private const string RolesDefaultFileName = "WorkerRoles.json";

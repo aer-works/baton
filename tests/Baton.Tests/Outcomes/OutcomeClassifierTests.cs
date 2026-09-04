@@ -374,6 +374,33 @@ public class OutcomeClassifierTests
         }
     }
 
+    [Fact]
+    public void Classify_scans_before_a_terminal_usage_line_for_the_last_recognized_response()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, ExecutionStreamLogger.StdoutLogFileName),
+                "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"answer\"}}\n" +
+                "{\"type\":\"turn.completed\",\"usage\":{\"output_tokens\":7}}\n");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("advice.md")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.Natural), contract, directory,
+                responseParser: new MatchingResponseParser("item.completed", "answer"));
+
+            Assert.Equal(OutputMaterializer.CapturedResponseFileName, classification.CapturedResponseFile);
+            Assert.Contains(
+                "answer",
+                File.ReadAllText(Path.Combine(directory, OutputMaterializer.CapturedResponseFileName)));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
     private static void WriteStdoutLog(string outputDirectory, string lastLine) =>
         File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), lastLine + "\n");
 
@@ -384,6 +411,18 @@ public class OutcomeClassifierTests
             response2 = response;
             return response is not null;
         }
+    }
+
+    private sealed class MatchingResponseParser(string marker, string parsed) : IWorkerResponseParser
+    {
+        public bool TryParseFinalResponse(string rawLine, out string? response)
+        {
+            response = rawLine.Contains(marker, StringComparison.Ordinal) ? parsed : null;
+            return response is not null;
+        }
+
+        public bool IsPostResponseTerminalLine(string rawLine) =>
+            rawLine.Contains("turn.completed", StringComparison.Ordinal);
     }
 
     private sealed class FakeUsageParser(WorkerUsage? usage) : IWorkerUsageParser

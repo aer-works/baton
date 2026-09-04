@@ -29,14 +29,15 @@ public class RoleDispatchTests
     }
 
     /// <summary>
-    /// #1089, #1540: dispatch turns on stream-json for agy and claude so a running lane's stdout log
+    /// Dispatch turns on stream-json for every structured vendor so a running lane's stdout log
     /// fills incrementally, while agy's terminal result event reaches the timeout guard.
     /// </summary>
     [Fact]
-    public void StreamJson_is_enabled_for_agy_and_claude()
+    public void StreamJson_is_enabled_for_each_structured_vendor()
     {
         Assert.True(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "agy").StreamJson);
         Assert.True(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "claude").StreamJson);
+        Assert.True(RoleDispatch.ToBinding(Review, "Review the change.", adapterOverride: "codex").StreamJson);
     }
 
     [Fact]

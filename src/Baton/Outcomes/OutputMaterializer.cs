@@ -205,15 +205,52 @@ public static class OutputMaterializer
     /// <summary>
     /// Reads the execution's own <c>.stdout.log</c> (<see cref="ExecutionStreamLogger"/>) — the same,
     /// full-fidelity, per-execution capture <see cref="Status.ExecutionUsageProjector"/> already reads
-    /// for token attribution — and hands the last non-blank line to <paramref name="responseParser"/>.
+    /// for token attribution — and reads the final non-blank line. A parser may explicitly recognize
+    /// a vendor-defined terminal trailer and permit the immediately preceding line to be considered;
+    /// Codex JSONL needs that because its final agent message precedes <c>turn.completed</c>. Any
+    /// unrecognized trailing line still refuses extraction instead of triggering an arbitrary
+    /// backward search.
     /// Never <see cref="CoreDispatchResult.StdoutTail"/>: that field is capped at
     /// <see cref="CoreDispatcher.MaxRetainedStderrLength"/> (2000 characters), far short of a worker's
     /// real final report.
     /// </summary>
     private static string? TryReadFinalResponse(string outputDirectory, IWorkerResponseParser responseParser)
     {
-        var line = TryReadLastNonBlankLine(outputDirectory);
-        return line is null ? null : responseParser.TryParseFinalResponse(line, out var response) ? response : null;
+        var stdoutPath = Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName);
+        if (!File.Exists(stdoutPath))
+        {
+            return null;
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(stdoutPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            if (string.IsNullOrWhiteSpace(lines[i]))
+            {
+                continue;
+            }
+
+            if (responseParser.TryParseFinalResponse(lines[i], out var response))
+            {
+                return response;
+            }
+
+            if (!responseParser.IsPostResponseTerminalLine(lines[i]))
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

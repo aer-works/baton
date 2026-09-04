@@ -200,8 +200,20 @@
           "xunit.v3.runner.common": "[4.0.0]"
         }
       },
-      "baton.vendorprobe": {
+      "Baton.Engine.RestoreGraphName": {
         "type": "Project"
+      },
+      "baton.vendorprobe": {
+        "type": "Project",
+        "dependencies": {
+          "Baton.Vendors": "[0.31.1, )"
+        }
+      },
+      "baton.vendors": {
+        "type": "Project",
+        "dependencies": {
+          "Baton.Engine.RestoreGraphName": "[0.31.1, )"
+        }
       }
     }
   }

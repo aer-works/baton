@@ -15,8 +15,9 @@ namespace Baton.Architecture.Tests;
 /// the findings were established against?</em>
 /// </para>
 /// <para>
+/// record-once-ok: #1853 tools/Baton.VendorProbe/Staleness.cs
 /// <b>Why this lives in the local test suite rather than in CI.</b> No CI runner has an
-/// authenticated <c>claude</c> or <c>agy</c> on PATH, so a CI job would find both vendors absent and
+/// authenticated vendor CLIs on PATH, so a CI job would find the vendors absent and
 /// go green forever — a pass that means only "the vendors were never here". That green would be
 /// worse than no check at all, because it looks like coverage. The machine that can answer the
 /// question is the operator's, which is also the only machine where the CLIs self-update, so the
@@ -27,7 +28,7 @@ namespace Baton.Architecture.Tests;
 /// </remarks>
 public class VendorProbeStalenessTests
 {
-    private static readonly string[] Vendors = ["claude", "agy"];
+    private static IReadOnlyList<string> Vendors => Program.SupportedVendors;
 
     /// <summary>
     /// #1487: drift is no longer an immediate hard-fail. The verdict — grace-window pass, or a

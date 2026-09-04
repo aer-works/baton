@@ -44,6 +44,7 @@ docs/runbooks/sep-1036-url-elicitation.md
 docs/runbooks/vendor-probe.md
 docs/vendor-capabilities.md
 docs/vendor-capabilities.probe.md
+docs/vendor-codex-probe-2026-09-04.md
 docs/vendor-coverage.md
 docs/vendor-doc-audit.md
 spec/baton.md

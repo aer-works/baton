@@ -1,0 +1,773 @@
+using Baton.Dispatch;
+using Baton.Domain;
+using Baton.Outcomes;
+using Baton.Tests.Shared;
+
+namespace Baton.Vendors.Tests;
+
+[Collection(LaunchConfigCollection.Name)]
+public sealed class CodexWorkerAdapterTests
+{
+    private static readonly WorkerContract SingleOutputContract = new(
+        "architect", ["goal"], [new ProducedOutput("plan.md")], []);
+
+    private static readonly WorkerContract NoOutputContract = new(
+        "chat", [], [], []);
+
+    private static string OutputDirectory =>
+        OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
+
+    private static char DirectorySeparator => OperatingSystem.IsWindows() ? '\\' : '/';
+
+    [Fact]
+    public void Windows_npm_shim_resolves_to_its_native_platform_binary_without_a_shell()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"baton-codex-resolver-{Guid.NewGuid():N}");
+        var native = Path.Combine(
+            root, "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-win32-x64",
+            "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(native)!);
+            File.WriteAllText(Path.Combine(root, "codex.cmd"), "synthetic shim");
+            File.WriteAllText(native, "synthetic native binary");
+
+            var resolved = CodexExecutableResolver.Resolve(
+                root, System.Runtime.InteropServices.Architecture.X64, isWindows: true);
+
+            Assert.Equal(native, resolved);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                DirectoryCleanup.DeleteRecursively(root);
+            }
+        }
+    }
+
+    [Fact]
+    public void A_direct_windows_executable_wins_at_its_path_position()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"baton-codex-direct-{Guid.NewGuid():N}");
+        var direct = Path.Combine(root, "codex.exe");
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(direct, "synthetic native binary");
+
+            var resolved = CodexExecutableResolver.Resolve(
+                root, System.Runtime.InteropServices.Architecture.X64, isWindows: true);
+
+            Assert.Equal(direct, resolved);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                DirectoryCleanup.DeleteRecursively(root);
+            }
+        }
+    }
+
+    [Fact]
+    public void Unsupported_or_missing_native_install_falls_back_to_the_actionable_program_name()
+    {
+        Assert.Equal(
+            "codex",
+            CodexExecutableResolver.Resolve(
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+                System.Runtime.InteropServices.Architecture.X64,
+                isWindows: true));
+        Assert.Equal(
+            "codex",
+            CodexExecutableResolver.Resolve("ignored", System.Runtime.InteropServices.Architecture.X64, isWindows: false));
+    }
+
+    [Fact]
+    public void New_turn_targets_codex_exec_with_the_prompt_last()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan."), NoOutputContract);
+
+        Assert.Contains(Path.GetFileName(target.Program), new[] { "codex", "codex.exe" });
+        Assert.Equal("exec", target.Args[0]);
+        Assert.Equal("read-only", ArgValue(target, "--sandbox"));
+        Assert.Contains("--json", target.Args);
+        Assert.Contains("--ignore-user-config", target.Args);
+        Assert.Contains("--skip-git-repo-check", target.Args);
+        Assert.DoesNotContain("resume", target.Args);
+        Assert.Equal("Draft a plan.", target.Args[^1]);
+        Assert.Equal(target.PromptText, target.Args[^1]);
+        Assert.Equal("Draft a plan.", target.PromptText);
+        Assert.NotNull(target.OversizePromptWrapper);
+        Assert.Contains("%BATON_PROMPT_FILE%", target.OversizePromptWrapper);
+    }
+
+    [Fact]
+    public void Resume_turn_places_common_exec_options_before_resume_then_session_and_prompt()
+    {
+        const string sessionId = "00000000-0000-0000-0000-000000000001";
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Continue the work.",
+                SessionId: sessionId,
+                ResumeSession: true),
+            NoOutputContract);
+
+        var resumeIndex = IndexOf(target, "resume");
+        Assert.True(resumeIndex > IndexOf(target, "--skip-git-repo-check"));
+        Assert.Equal(sessionId, target.Args[resumeIndex + 1]);
+        Assert.Equal("Continue the work.", target.Args[resumeIndex + 2]);
+        Assert.Equal(resumeIndex + 3, target.Args.Count);
+        Assert.Equal(target.PromptText, target.Args[^1]);
+    }
+
+    [Fact]
+    public void Session_id_without_resume_does_not_emit_a_resume_subcommand()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Start fresh.",
+                SessionId: "00000000-0000-0000-0000-000000000009",
+                ResumeSession: false),
+            NoOutputContract);
+
+        Assert.DoesNotContain("resume", target.Args);
+        Assert.DoesNotContain("00000000-0000-0000-0000-000000000009", target.Args);
+    }
+
+    [Fact]
+    public void Prompt_and_archived_prompt_are_identical_and_name_all_contract_paths()
+    {
+        var contract = new WorkerContract(
+            "implementor",
+            ["goal", "brief"],
+            [new ProducedOutput("patch.diff"), new ProducedOutput("notes.md")],
+            []);
+
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Implement exactly this change."), contract);
+
+        Assert.Equal(target.PromptText, target.Args[^1]);
+        Assert.StartsWith("Implement exactly this change.", target.PromptText);
+        Assert.Contains($"goal: {(OperatingSystem.IsWindows() ? "%BATON_INPUT_0%" : "$BATON_INPUT_0")}", target.PromptText);
+        Assert.Contains($"brief: {(OperatingSystem.IsWindows() ? "%BATON_INPUT_1%" : "$BATON_INPUT_1")}", target.PromptText);
+        Assert.Contains($"patch.diff: {OutputDirectory}{DirectorySeparator}patch.diff", target.PromptText);
+        Assert.Contains($"notes.md: {OutputDirectory}{DirectorySeparator}notes.md", target.PromptText);
+    }
+
+    [Fact]
+    public void Single_output_contract_emits_one_output_last_message_path()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan."), SingleOutputContract);
+
+        var outputFlags = target.Args.Count(arg => arg is "-o" or "--output-last-message");
+        Assert.Equal(1, outputFlags);
+        Assert.Equal(
+            $"{OutputDirectory}{DirectorySeparator}plan.md",
+            ArgValue(target, "-o") ?? ArgValue(target, "--output-last-message"));
+    }
+
+    [Fact]
+    public void Multiple_outputs_do_not_emit_the_single_output_option()
+    {
+        var contract = new WorkerContract(
+            "implementor", [], [new ProducedOutput("patch.diff"), new ProducedOutput("notes.md")], []);
+
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Implement."), contract);
+
+        Assert.DoesNotContain("-o", target.Args);
+        Assert.DoesNotContain("--output-last-message", target.Args);
+    }
+
+    [Fact]
+    public void Adapter_wide_withheld_write_support_stays_false_until_every_output_shape_is_measured()
+    {
+        Assert.False(new CodexWorkerAdapter().WithheldWritesReachTheOutbox);
+    }
+
+    [Theory]
+    [MemberData(nameof(InexactReadGrants))]
+    public void Grants_without_an_exact_codex_read_and_command_shape_are_refused(
+        PermissionGrant grant,
+        string expectedReason)
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Null(mode);
+        Assert.Contains(expectedReason, reason);
+        Assert.Throws<PermissionGrantUnsupportedException>(
+            () => adapter.Resolve(new WorkerInvocation("Review.", PermissionGrant: grant), SingleOutputContract));
+    }
+
+    public static TheoryData<PermissionGrant, string> InexactReadGrants => new()
+    {
+        { new PermissionGrant(), "filesystem-read denial" },
+        { new PermissionGrant(ReadFiles: true), "without RunShellCommands" },
+        { new PermissionGrant(ReadFiles: true, WriteFiles: true), "without RunShellCommands" },
+    };
+
+    [Fact]
+    public void Granted_workspace_writes_root_at_the_project_and_add_only_baton_output_roots()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-codex-write-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(project, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var grant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true);
+
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Implement.", PermissionGrant: grant, WorkingDirectory: project),
+            SingleOutputContract);
+
+        Assert.Equal("workspace-write", ArgValue(target, "--sandbox"));
+        Assert.Equal(project, ArgValue(target, "--cd"));
+        Assert.Equal(project, target.WorkingDirectory);
+        Assert.Equal([OutputDirectory], ArgValues(target, "--add-dir"));
+        Assert.DoesNotContain("shell_tool", ArgValues(target, "--disable"));
+        Assert.DoesNotContain("unified_exec", ArgValues(target, "--disable"));
+    }
+
+    [Fact]
+    public void Network_grant_enables_sandbox_network_and_live_web_search()
+    {
+        var grant = new PermissionGrant(
+            ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: true);
+
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Research.", PermissionGrant: grant), NoOutputContract);
+
+        Assert.Contains("sandbox_workspace_write.network_access=true", ArgValues(target, "--config"));
+        Assert.Contains("web_search=\"live\"", ArgValues(target, "--config"));
+        Assert.DoesNotContain("sandbox_workspace_write.network_access=false", ArgValues(target, "--config"));
+    }
+
+    [Fact]
+    public void Withheld_network_disables_sandbox_network_and_web_search()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true);
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Inspect.", PermissionGrant: grant), NoOutputContract);
+
+        Assert.Contains("sandbox_workspace_write.network_access=false", ArgValues(target, "--config"));
+        Assert.Contains("web_search=\"disabled\"", ArgValues(target, "--config"));
+    }
+
+    [Fact]
+    public void External_side_effect_features_are_disabled_for_every_worker()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Inspect."), NoOutputContract);
+
+        var disabled = ArgValues(target, "--disable");
+        Assert.Contains("apps", disabled);
+        Assert.Contains("browser_use", disabled);
+        Assert.Contains("computer_use", disabled);
+        Assert.Contains("image_generation", disabled);
+    }
+
+    [Fact]
+    public void Subagents_are_disabled_by_default()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Inspect."), NoOutputContract);
+
+        Assert.Contains("multi_agent", ArgValues(target, "--disable"));
+        Assert.Contains("multi_agent_v2", ArgValues(target, "--disable"));
+    }
+
+    [Fact]
+    public void Explicit_subagent_grant_omits_both_multi_agent_disable_switches()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Conduct.", AllowsSubagents: true), NoOutputContract);
+
+        Assert.DoesNotContain("multi_agent", ArgValues(target, "--disable"));
+        Assert.DoesNotContain("multi_agent_v2", ArgValues(target, "--disable"));
+    }
+
+    public static TheoryData<PermissionGrant, string> UnsupportedPatternGrants => new()
+    {
+        { new PermissionGrant(RunShellCommands: true, ShellCommandPatterns: ["git diff*"]), "command-pattern" },
+        { new PermissionGrant(DeniedShellCommandPatterns: ["git push*"]), "command-pattern" },
+        { new PermissionGrant(DeniedShellOptionTokens: ["--output"]), "option-token" },
+    };
+
+    [Theory]
+    [MemberData(nameof(UnsupportedPatternGrants))]
+    public void Pattern_and_option_scoped_shell_permissions_are_refused(
+        PermissionGrant grant,
+        string expectedReason)
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Null(mode);
+        Assert.Contains(expectedReason, reason);
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(
+            () => adapter.Resolve(
+                new WorkerInvocation("Inspect.", PermissionGrant: grant), NoOutputContract));
+        Assert.Equal("codex", exception.AdapterName);
+        Assert.Contains(expectedReason, exception.Message);
+    }
+
+    [Fact]
+    public void Read_and_write_permission_without_execution_tools_is_refused()
+    {
+        var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false);
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Null(mode);
+        Assert.Contains("without RunShellCommands", reason);
+        Assert.Throws<PermissionGrantUnsupportedException>(
+            () => adapter.Resolve(
+                new WorkerInvocation("Implement.", PermissionGrant: grant), SingleOutputContract));
+    }
+
+    [Fact]
+    public void Unrestricted_and_dangerous_raw_permission_scopes_are_refused()
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(
+            () => adapter.Resolve(
+                new WorkerInvocation("Implement.", PermissionScope: "danger-full-access"),
+                NoOutputContract));
+
+        Assert.Equal("codex", exception.AdapterName);
+        Assert.Contains("read-only", exception.Message);
+        Assert.Contains("workspace-write", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("quick", "low")]
+    [InlineData("standard", "medium")]
+    [InlineData("careful", "high")]
+    [InlineData("exhaustive", "max")]
+    [InlineData("xhigh", "xhigh")]
+    public void Model_and_effort_are_emitted_with_canonical_translation(
+        string requestedEffort,
+        string expectedEffort)
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Implement.",
+                Model: "gpt-5.6-sol",
+                Effort: requestedEffort),
+            NoOutputContract);
+
+        Assert.Equal("gpt-5.6-sol", ArgValue(target, "--model"));
+        Assert.Contains($"model_reasoning_effort=\"{expectedEffort}\"", ArgValues(target, "--config"));
+    }
+
+    [Fact]
+    public void Ultra_is_independent_of_subagent_permission_and_features_remain_disabled()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Implement.",
+                Model: "gpt-5.6-sol",
+                Effort: "ultra",
+                AllowsSubagents: false),
+            NoOutputContract);
+
+        Assert.Contains("model_reasoning_effort=\"ultra\"", ArgValues(target, "--config"));
+        Assert.Contains("multi_agent", ArgValues(target, "--disable"));
+        Assert.Contains("multi_agent_v2", ArgValues(target, "--disable"));
+    }
+
+    [Fact]
+    public void Ultra_is_emitted_when_the_model_supports_it_and_subagents_are_allowed()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation(
+                "Conduct.",
+                Model: "gpt-5.6-sol",
+                Effort: "ultra",
+                AllowsSubagents: true),
+            NoOutputContract);
+
+        Assert.Contains("model_reasoning_effort=\"ultra\"", ArgValues(target, "--config"));
+        Assert.DoesNotContain("multi_agent", ArgValues(target, "--disable"));
+        Assert.DoesNotContain("multi_agent_v2", ArgValues(target, "--disable"));
+    }
+
+    [Fact]
+    public void Ultra_is_refused_for_a_known_model_that_does_not_advertise_it()
+    {
+        var exception = Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Conduct.",
+                    Model: "gpt-5.6-luna",
+                    Effort: "ultra",
+                    AllowsSubagents: true),
+                NoOutputContract));
+
+        Assert.Contains("does not advertise 'ultra'", exception.Message);
+    }
+
+    [Fact]
+    public void Ultra_is_refused_for_codex_spark_which_only_advertises_through_xhigh()
+    {
+        var exception = Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation(
+                    "Conduct.",
+                    Model: "gpt-5.3-codex-spark",
+                    Effort: "ultra",
+                    AllowsSubagents: true),
+                NoOutputContract));
+
+        Assert.Contains("does not advertise 'ultra'", exception.Message);
+    }
+
+    [Fact]
+    public void Unknown_effort_is_refused_before_dispatch()
+    {
+        Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation("Inspect.", Model: "gpt-5.6-sol", Effort: "turbo"),
+                NoOutputContract));
+    }
+
+    [Fact]
+    public void Unknown_future_model_is_rejected_by_the_current_capability_snapshot()
+    {
+        var exception = Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation("Inspect.", Model: "gpt-future", Effort: "high"),
+                NoOutputContract));
+
+        Assert.Contains("absent from the current probed", exception.Message);
+    }
+
+    [Fact]
+    public void Explicit_effort_without_a_model_is_refused_before_dispatch()
+    {
+        var exception = Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation("Inspect.", Effort: "high"),
+                NoOutputContract));
+
+        Assert.Contains("requires an explicit model", exception.Message);
+    }
+
+    [Fact]
+    public void Success_fixture_exposes_session_progress_final_response_and_terminal_usage()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var lines = FixtureLines("codex-exec-success.jsonl");
+
+        Assert.True(adapter.TryParseSessionId(lines[0], out var sessionId));
+        Assert.Equal("00000000-0000-0000-0000-000000000001", sessionId);
+        AssertProgress(adapter, lines[0], "status", "Session started");
+        AssertProgress(adapter, lines[1], "status", "Turn started");
+        AssertProgress(adapter, lines[2], "text", "SYNTHETIC_OK");
+        Assert.True(adapter.TryParseFinalResponse(lines[2], out var response));
+        Assert.Equal("SYNTHETIC_OK", response);
+        AssertProgress(adapter, lines[3], "result", "success");
+        Assert.True(adapter.TryParseFinalUsage(lines[3], out var usage));
+        Assert.Equal(5790, usage!.TokensIn);
+        Assert.Equal(8960, usage.CacheReadTokens);
+        Assert.Equal(11, usage.TokensOut);
+    }
+
+    [Fact]
+    public void Resume_fixture_preserves_the_thread_id_and_returns_the_new_message()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var lines = FixtureLines("codex-exec-resume-success.jsonl");
+
+        Assert.True(adapter.TryParseSessionId(lines[0], out var sessionId));
+        Assert.Equal("00000000-0000-0000-0000-000000000001", sessionId);
+        Assert.True(adapter.TryParseFinalResponse(lines[2], out var response));
+        Assert.Equal("SYNTHETIC_RESUME_OK", response);
+        Assert.True(adapter.TryParseFinalUsage(lines[3], out var usage));
+        Assert.Equal(8571, usage!.TokensIn);
+        Assert.Equal(11008, usage.CacheReadTokens);
+        Assert.Equal(9, usage.TokensOut);
+    }
+
+    [Fact]
+    public void Failed_and_top_level_error_fixtures_surface_error_progress()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var failed = FixtureLines("codex-exec-turn-failed.jsonl");
+        var error = FixtureLines("codex-exec-error.jsonl");
+
+        AssertProgress(adapter, failed[^1], "result", "error — SYNTHETIC_TURN_FAILURE");
+        AssertProgress(adapter, error[^1], "result", "error — SYNTHETIC_TOP_LEVEL_ERROR");
+    }
+
+    [Fact]
+    public void Unrelated_and_malformed_lines_are_not_session_progress_or_final_response()
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryParseSessionId("not json", out var sessionId));
+        Assert.Null(sessionId);
+        Assert.False(adapter.TryParseProgressEvent("not json", out var progress));
+        Assert.Null(progress);
+        Assert.False(adapter.TryParseFinalResponse("{\"type\":\"turn.completed\"}", out var response));
+        Assert.Null(response);
+    }
+
+    [Fact]
+    public void Terminal_detectors_distinguish_success_from_any_terminal_result()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var target = adapter.Resolve(new WorkerInvocation("Inspect."), NoOutputContract);
+        var success = FixtureLines("codex-exec-success.jsonl")[^1];
+        var failed = FixtureLines("codex-exec-turn-failed.jsonl")[^1];
+        var error = FixtureLines("codex-exec-error.jsonl")[^1];
+
+        Assert.NotNull(target.DetectsTerminalSuccess);
+        Assert.NotNull(target.DetectsTerminalResult);
+        Assert.True(target.DetectsTerminalSuccess!(success));
+        Assert.False(target.DetectsTerminalSuccess!(failed));
+        Assert.False(target.DetectsTerminalSuccess!(error));
+        Assert.True(target.DetectsTerminalResult!(success));
+        Assert.True(target.DetectsTerminalResult!(failed));
+        Assert.True(target.DetectsTerminalResult!(error));
+        Assert.False(target.DetectsTerminalResult!("not json"));
+        Assert.True(adapter.IsPostResponseTerminalLine(success));
+        Assert.False(adapter.IsPostResponseTerminalLine(failed));
+        Assert.False(adapter.IsPostResponseTerminalLine(error));
+        Assert.False(adapter.IsPostResponseTerminalLine("stray trailing output"));
+    }
+
+    [Fact]
+    public void Tool_denial_fixture_counts_only_the_started_command_and_keeps_completed_turn_success()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var lines = FixtureLines("codex-exec-tool-denied-completes.jsonl");
+
+        Assert.Equal("synthetic-write-command", adapter.TryParseToolName(lines[2]));
+        Assert.Equal(1, adapter.CountToolSteps(lines[2]));
+        Assert.Equal(0, adapter.CountToolSteps(lines[3]));
+        Assert.Equal(0, adapter.CountToolSteps(lines[4]));
+        AssertProgress(adapter, lines[2], "tool", "synthetic-write-command");
+        AssertProgress(
+            adapter, lines[3], "tool",
+            "synthetic-write-command failed — SYNTHETIC: write rejected because the managed host retained a read-only sandbox.");
+        AssertProgress(adapter, lines[4], "text", "SYNTHETIC_TOOL_DENIAL_REPORTED");
+        AssertProgress(adapter, lines[5], "result", "success");
+
+        Assert.False(adapter.TryClassifySatisfiedRunFailure(
+            null,
+            string.Join(Environment.NewLine, lines),
+            TimeProvider.System,
+            out var classification,
+            out var retryNotBefore));
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"item.started\",\"item\":{\"type\":\"file_change\"}}", "file change")]
+    [InlineData("{\"type\":\"item.started\",\"item\":{\"type\":\"mcp_tool_call\",\"tool\":\"baton.yield\"}}", "baton.yield")]
+    [InlineData("{\"type\":\"item.started\",\"item\":{\"type\":\"web_search\"}}", "web search")]
+    public void Each_supported_started_tool_item_counts_one_step(string line, string expectedTool)
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.Equal(expectedTool, adapter.TryParseToolName(line));
+        Assert.Equal(1, adapter.CountToolSteps(line));
+        AssertProgress(adapter, line, "tool", expectedTool);
+    }
+
+    [Fact]
+    public void App_server_notifications_are_not_misclassified_as_exec_terminal_failures()
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        foreach (var line in FixtureLines("codex-app-server-errors.jsonl"))
+        {
+            Assert.False(adapter.TryClassifyFailure(
+                null, line, TimeProvider.System, out var classification, out var retryNotBefore));
+            Assert.Null(classification);
+            Assert.Null(retryNotBefore);
+        }
+    }
+
+    [Fact]
+    public void Agent_prose_cannot_trigger_failure_classification()
+    {
+        const string line = """
+            {"type":"item.completed","item":{"type":"agent_message","text":"I reviewed authentication, sandbox, and usage limit behavior."}}
+            """;
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryClassifyFailure(
+            null, line, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void Structured_quota_error_preserves_a_reported_reset_instant()
+    {
+        const string line = """
+            {"type":"error","error":{"codexErrorInfo":"usageLimitExceeded","resetsAt":1893456000}}
+            """;
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.True(adapter.TryClassifyFailure(
+            null, line, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000), retryNotBefore);
+    }
+
+    [Fact]
+    public void An_out_of_range_quota_reset_is_ignored_without_failing_classification()
+    {
+        const string line = """
+            {"type":"error","error":{"codexErrorInfo":"usageLimitExceeded","resetsAt":9223372036854775807}}
+            """;
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.True(adapter.TryClassifyFailure(
+            null, line, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Theory]
+    [InlineData("unknown model gpt-missing")]
+    [InlineData("unsupported reasoning effort turbo")]
+    [InlineData("not logged in")]
+    [InlineData("invalid config: malformed override")]
+    public void Configuration_and_authentication_failures_are_permanent(string evidence)
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.True(adapter.TryClassifyFailure(
+            evidence, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Equal(FailureClassification.Permanent, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Theory]
+    [InlineData("tool denied by managed policy")]
+    [InlineData("rejected by user approval settings")]
+    [InlineData("permission denied")]
+    [InlineData("sandbox prevented the operation")]
+    public void Permission_and_sandbox_failures_are_tool_denied(string evidence)
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.True(adapter.TryClassifyFailure(
+            evidence, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Equal(FailureClassification.ToolDenied, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void Ordinary_failure_text_remains_unclassified()
+    {
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.False(adapter.TryClassifyFailure(
+            "SYNTHETIC_TURN_FAILURE", TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void Typed_failed_turn_is_classified_even_when_the_process_exit_was_satisfied()
+    {
+        const string stream = """
+            {"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000008"}
+            {"type":"turn.failed","error":{"message":"quota exceeded","resetsAt":"2030-01-01T00:00:00Z"}}
+            """;
+        var adapter = new CodexWorkerAdapter();
+
+        Assert.True(adapter.TryClassifySatisfiedRunFailure(
+            null, stream, TimeProvider.System, out var classification, out var retryNotBefore));
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(DateTimeOffset.Parse("2030-01-01T00:00:00Z"), retryNotBefore);
+    }
+
+    [Fact]
+    public void App_server_model_list_fixture_discovers_visible_models_and_every_effort_pair()
+    {
+        var line = Assert.Single(FixtureLines("codex-app-server-model-list.jsonl"));
+
+        Assert.True(CodexWorkerAdapter.TryParseModelListResponse(line, out var capabilities));
+        Assert.Equal("codex", capabilities.Vendor);
+        Assert.Equal(
+            ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+            capabilities.Models);
+        Assert.Equal(23, capabilities.Items.Count);
+        Assert.Contains(capabilities.Items, item => item.Name == "gpt-6-astra[ultra]" && item.Kind == "mode");
+        Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-sol[high]" && item.Kind == "mode");
+        Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-terra[max]" && item.Kind == "mode");
+        Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-luna[max]" && item.Kind == "mode");
+        Assert.DoesNotContain(capabilities.Items, item => item.Name == "gpt-5.6-luna[ultra]");
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"id\":1,\"result\":{\"data\":[]}}")]
+    [InlineData("{\"id\":2,\"result\":{}}")]
+    public void Non_model_list_responses_are_not_misparsed(string line)
+    {
+        Assert.False(CodexWorkerAdapter.TryParseModelListResponse(line, out var capabilities));
+        Assert.Equal("codex", capabilities.Vendor);
+        Assert.Empty(capabilities.Models);
+        Assert.Empty(capabilities.Items);
+    }
+
+    private static IReadOnlyList<string> ArgValues(CoreDispatchTarget target, string flag)
+    {
+        List<string> values = [];
+        for (var index = 0; index < target.Args.Count - 1; index++)
+        {
+            if (target.Args[index] == flag)
+            {
+                values.Add(target.Args[index + 1]);
+            }
+        }
+
+        return values;
+    }
+
+    private static string? ArgValue(CoreDispatchTarget target, string flag) =>
+        ArgValues(target, flag).FirstOrDefault();
+
+    private static int IndexOf(CoreDispatchTarget target, string value)
+    {
+        for (var index = 0; index < target.Args.Count; index++)
+        {
+            if (target.Args[index] == value)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static string[] FixtureLines(string fileName) =>
+        File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex", fileName));
+
+    private static void AssertProgress(
+        CodexWorkerAdapter adapter,
+        string line,
+        string expectedKind,
+        string expectedText)
+    {
+        Assert.True(adapter.TryParseProgressEvent(line, out var progress));
+        Assert.NotNull(progress);
+        Assert.Equal(expectedKind, progress.Kind);
+        Assert.Equal(expectedText, progress.Text);
+        Assert.False(progress.IsPartial);
+    }
+}

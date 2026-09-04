@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Baton.Vendors;
 
 namespace Baton.VendorProbe;
 
@@ -11,13 +12,19 @@ public static class Probes
 {
     public static IReadOnlyList<Finding> RunAll(string vendor)
     {
-        var version = Cli.Version(vendor);
+        var program = ProgramName(vendor);
+        var version = Cli.Version(program);
         if (version is null)
         {
             return [Finding.Absent(
                 "the CLI itself", vendor, [Surfaces.Help],
                 $"'{vendor} --version' did not succeed — the CLI is not installed or not on PATH. "
                 + "Every other row for this vendor is unknown, not absent.", null)];
+        }
+
+        if (IsCodex(vendor))
+        {
+            return RunCodex(vendor, program, version);
         }
 
         // Established once and shared: what this CLI does with a flag it has never heard of. Without
@@ -75,6 +82,9 @@ public static class Probes
     }
 
     private static bool IsAgy(string vendor) => string.Equals(vendor, "agy", StringComparison.OrdinalIgnoreCase);
+    private static bool IsCodex(string vendor) => string.Equals(vendor, "codex", StringComparison.OrdinalIgnoreCase);
+    internal static string ProgramName(string vendor) =>
+        IsCodex(vendor) ? CodexExecutableResolver.Resolve() : vendor;
 
     /// <summary>
     /// The stream-json invocation for THIS vendor. The two CLIs disagree on the grammar, and passing
@@ -87,7 +97,9 @@ public static class Probes
     /// <c>{"event":"init"} → {"event":"step_update"} → {"event":"result",…,"usage":{…}}</c> on stdout.
     /// </summary>
     internal static string[] StreamJsonArgs(string vendor, string prompt) =>
-        IsAgy(vendor)
+        IsCodex(vendor)
+            ? CodexProbe.ExecJsonArgs(prompt)
+            : IsAgy(vendor)
             ? ["-p", prompt, "--output-format", "stream-json"]
             : ["-p", "--output-format", "stream-json", "--verbose", prompt];
 
@@ -120,6 +132,239 @@ public static class Probes
         {
             return false;
         }
+    }
+
+    private static IReadOnlyList<Finding> RunCodex(string vendor, string program, string version)
+    {
+        var execHelp = Cli.Invoke(program, ["exec", "--help"], TimeSpan.FromSeconds(45)).All;
+        var auth = Cli.Invoke(program, ["login", "status"], TimeSpan.FromSeconds(45));
+        var subscriptionAuth = CodexProbe.IsChatGptSubscriptionAuth(auth.All);
+        var turn = subscriptionAuth
+            ? Cli.Invoke(
+                program,
+                CodexProbe.ExecJsonArgs("Reply with exactly: ok"),
+                TimeSpan.FromMinutes(2))
+            : new Cli.Run(
+                -1, string.Empty,
+                "paid turn skipped because ChatGPT subscription authentication was not confirmed",
+                TimedOut: false);
+        var resume = subscriptionAuth && CodexProbe.TryReadThreadId(turn.StdOut, out var sessionId)
+            ? Cli.Invoke(
+                program,
+                CodexProbe.ResumeJsonArgs(sessionId, "Reply with exactly: resumed-ok"),
+                TimeSpan.FromMinutes(2))
+            : new Cli.Run(
+                -1, string.Empty,
+                "resume probe skipped because no authenticated initial thread id was captured",
+                TimedOut: false);
+
+        var seenResponses = new HashSet<int>();
+        var appServer = Cli.InvokeProtocol(
+            program,
+            CodexProbe.AppServerArgs(),
+            CodexProbe.AppServerRequests(),
+            line =>
+            {
+                if (CodexProbe.IsRequestedResponse(line, CodexProbe.ModelListRequestId))
+                {
+                    seenResponses.Add(CodexProbe.ModelListRequestId);
+                }
+
+                if (CodexProbe.IsRequestedResponse(line, CodexProbe.RateLimitsRequestId))
+                {
+                    seenResponses.Add(CodexProbe.RateLimitsRequestId);
+                }
+
+                return seenResponses.Count == 2;
+            },
+            TimeSpan.FromSeconds(45));
+
+        return
+        [
+            CodexAuthentication(vendor, version, auth),
+            CodexPlanUsage(vendor, version, appServer),
+            CodexPerTurnCost(vendor, version, turn),
+            CodexStructuredOutput(vendor, version, turn),
+            CodexResume(vendor, version, turn, resume),
+            CodexPermissionControl(vendor, version, execHelp),
+            CodexEffort(vendor, version, appServer),
+            CodexAddDir(vendor, version, execHelp),
+            CodexModels(vendor, version, appServer),
+        ];
+    }
+
+    private static Finding CodexResume(string vendor, string version, Cli.Run initial, Cli.Run resume)
+    {
+        const string cap = "resume & per-turn usage";
+        string[] surfaces = [Surfaces.StructuredOutput];
+        var initialUsage = CodexProbe.HasTurnUsage(initial.StdOut);
+        var resumedUsage = CodexProbe.HasTurnUsage(resume.StdOut);
+        return CodexProbe.TryReadThreadId(initial.StdOut, out var initialId)
+               && CodexProbe.TryReadThreadId(resume.StdOut, out var resumedId)
+               && string.Equals(initialId, resumedId, StringComparison.Ordinal)
+               && initialUsage
+               && resumedUsage
+            ? Finding.Seen(
+                cap, vendor, "`codex exec resume` — same thread id, usage on both turns", surfaces,
+                "The second tiny Luna/low turn resumed the captured thread id and emitted its own `turn.completed.usage` object. Raw identifiers are not written into the finding.",
+                version)
+            : Finding.Absent(
+                cap, vendor, surfaces,
+                "The probe did not observe the same thread id and a terminal usage object on both the initial and resumed turns. "
+                + $"Initial exit {initial.ExitCode}, resume exit {resume.ExitCode}; timeouts: {initial.TimedOut}/{resume.TimedOut}.",
+                version);
+    }
+
+    private static Finding CodexAuthentication(string vendor, string version, Cli.Run auth)
+    {
+        const string cap = "subscription authentication";
+        string[] surfaces = [Surfaces.Subcommands];
+        return CodexProbe.IsChatGptSubscriptionAuth(auth.All)
+            ? Finding.Seen(
+                cap, vendor, "`codex login status` — ChatGPT subscription", surfaces,
+                "The probe scrubbed API-key and provider-override environment variables before the CLI confirmed ChatGPT authentication.",
+                version)
+            : Finding.Absent(
+                cap, vendor, surfaces,
+                "`codex login status` did not confirm ChatGPT authentication. The paid exec probe was skipped; API-key fallback is never allowed.",
+                version);
+    }
+
+    private static Finding CodexPlanUsage(string vendor, string version, Cli.Run appServer)
+    {
+        const string cap = "plan usage & reset";
+        string[] surfaces = [Surfaces.AppServer];
+        if (CodexProbe.TryDescribeRateLimits(appServer.StdOut, out var summary))
+        {
+            return Finding.Seen(
+                cap,
+                vendor,
+                $"`account/rateLimits/read` — {summary}",
+                surfaces,
+                "The initialized app-server returned structured used-percent windows. Reset timestamps are "
+                + "reported only where the summary includes one; the probe does not infer how tokens debit a window.",
+                version);
+        }
+
+        return Finding.Absent(
+            cap,
+            vendor,
+            surfaces,
+            "The initialized app-server's `account/rateLimits/read` response did not contain a window with "
+            + "both recognizable usage fields and semantics. This is unknown rather than zero remaining. "
+            + $"Protocol timeout: {appServer.TimedOut}.",
+            version);
+    }
+
+    private static Finding CodexPerTurnCost(string vendor, string version, Cli.Run turn)
+    {
+        const string cap = "per-turn cost";
+        string[] surfaces = [Surfaces.StructuredOutput];
+        var hasUsage = CodexProbe.HasTurnUsage(turn.StdOut);
+        return Finding.Absent(
+            cap,
+            vendor,
+            surfaces,
+            "No dollar-denominated cost field was found in the `codex exec --json` stream. "
+            + (hasUsage
+                ? "The completed turn did carry per-turn token usage, so the native evidence is token-denominated; any API-equivalent cost requires a versioned external price table."
+                : "The run did not yield a recognized `turn.completed.usage` object, so token usage is also unverified for this version."),
+            version);
+    }
+
+    private static Finding CodexStructuredOutput(string vendor, string version, Cli.Run turn)
+    {
+        const string cap = "structured output";
+        string[] surfaces = [Surfaces.ExecHelp, Surfaces.StructuredOutput];
+        if (CodexProbe.LooksLikeExecJson(turn.StdOut))
+        {
+            return Finding.Seen(
+                cap,
+                vendor,
+                "`codex exec --json` JSONL",
+                surfaces,
+                $"The trivial turn emitted {turn.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length} JSONL event line(s). "
+                + "Model and quota discovery separately exercise initialized app-server JSON-RPC.",
+                version);
+        }
+
+        return Finding.Absent(
+            cap,
+            vendor,
+            surfaces,
+            $"`codex exec --json` produced no recognized typed JSONL event. Exit {turn.ExitCode}; timeout: {turn.TimedOut}.",
+            version);
+    }
+
+    private static Finding CodexPermissionControl(string vendor, string version, string execHelp)
+    {
+        const string cap = "--permission-prompt-tool";
+        string[] surfaces = [Surfaces.ExecHelp];
+        var hasSandbox = execHelp.Contains("--sandbox", StringComparison.OrdinalIgnoreCase);
+        return Finding.Absent(
+            cap,
+            vendor,
+            surfaces,
+            "Codex exposes no `--permission-prompt-tool` equivalent on the inspected surfaces. "
+            + (hasSandbox
+                ? "Its distinct control surface is `codex exec --sandbox` plus approval-policy configuration; that is not represented as an equivalent callback."
+                : "The expected `--sandbox` control was also absent from `codex exec --help`, so permissions need re-probing before adapter use."),
+            version);
+    }
+
+    private static Finding CodexEffort(string vendor, string version, Cli.Run appServer)
+    {
+        const string cap = "effort";
+        string[] surfaces = [Surfaces.AppServer];
+        return CodexProbe.TryDescribeModels(appServer.StdOut, out var summary)
+            ? Finding.Seen(
+                cap,
+                vendor,
+                "model-specific reasoning efforts from `model/list`",
+                surfaces,
+                $"The visible model catalog reported these model/effort pairs: {summary}.",
+                version)
+            : Finding.Absent(
+                cap,
+                vendor,
+                surfaces,
+                "The initialized app-server returned no parseable visible model/effort catalog.",
+                version);
+    }
+
+    private static Finding CodexAddDir(string vendor, string version, string execHelp)
+    {
+        const string cap = "extra directories";
+        string[] surfaces = [Surfaces.ExecHelp];
+        return execHelp.Contains("--add-dir", StringComparison.OrdinalIgnoreCase)
+            ? Finding.Read(
+                cap,
+                vendor,
+                "`codex exec --add-dir`",
+                surfaces,
+                "Read from `codex exec --help`; the adapter must still verify that managed host policy honors the requested writable roots.",
+                version)
+            : Finding.Absent(cap, vendor, surfaces, "No `--add-dir` in `codex exec --help`.", version);
+    }
+
+    private static Finding CodexModels(string vendor, string version, Cli.Run appServer)
+    {
+        const string cap = "models";
+        string[] surfaces = [Surfaces.AppServer];
+        return CodexProbe.TryDescribeModels(appServer.StdOut, out var summary)
+            ? Finding.Seen(
+                cap,
+                vendor,
+                "visible models from `model/list`",
+                surfaces,
+                $"The account-sensitive app-server catalog reported: {summary}.",
+                version)
+            : Finding.Absent(
+                cap,
+                vendor,
+                surfaces,
+                "No visible model catalog was parsed from the initialized app-server `model/list` response.",
+                version);
     }
 
     /// <summary>API-equivalent cost per turn — the "what would this have cost on a key" number.</summary>

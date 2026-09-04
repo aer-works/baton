@@ -23,6 +23,19 @@ public sealed class ProbeGrammarTests
     private const string AgyProseWhenMisinvoked =
         "Could you specify how you would like to use `--output-format`? For assistant responses...";
 
+    private const string CodexTurn = """
+        {"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000001"}
+        {"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}
+        """;
+
+    private const string CodexModels = """
+        {"id":2,"result":{"data":[{"model":"gpt-example","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},{"model":"hidden-reserve","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}}
+        """;
+
+    private const string CodexRateLimits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":42,"resetsAt":1893456000},"secondary":{"usedPercent":7}}}}
+        """;
+
     [Fact]
     public void Agy_stream_json_args_use_flag_value_grammar_and_omit_claude_verbose()
     {
@@ -50,6 +63,129 @@ public sealed class ProbeGrammarTests
         Assert.Equal("--output-format", args[p + 1]); // NOT the prompt — claude grammar differs from agy
         Assert.Contains("--verbose", args);
         Assert.Equal("Reply with exactly: ok", args[^1]);
+    }
+
+    [Fact]
+    public void Codex_stream_json_args_use_exec_json_grammar_and_a_read_only_sandbox()
+    {
+        var args = Probes.StreamJsonArgs("codex", "Reply with exactly: ok");
+
+        Assert.Equal("exec", args[0]);
+        Assert.Contains("--json", args);
+        Assert.Contains("--ignore-user-config", args);
+        Assert.Contains("--skip-git-repo-check", args);
+        Assert.Equal("read-only", args[Array.IndexOf(args, "--sandbox") + 1]);
+        Assert.Equal("gpt-5.6-luna", args[Array.IndexOf(args, "--model") + 1]);
+        Assert.Contains("model_reasoning_effort=\"low\"", args);
+        Assert.Contains("approval_policy=\"never\"", args);
+        Assert.Contains("shell_tool", args);
+        Assert.Contains("unified_exec", args);
+        Assert.Contains("multi_agent", args);
+        Assert.Contains("multi_agent_v2", args);
+        Assert.Equal("Reply with exactly: ok", args[^1]);
+        Assert.DoesNotContain("-p", args);
+        Assert.DoesNotContain("--output-format", args);
+    }
+
+    [Fact]
+    public void Codex_resume_keeps_common_options_before_the_subcommand_and_prompt_last()
+    {
+        var args = CodexProbe.ResumeJsonArgs(
+            "00000000-0000-0000-0000-000000000001", "Reply with exactly: resumed-ok");
+        var resume = Array.IndexOf(args, "resume");
+
+        Assert.True(resume > Array.IndexOf(args, "--json"));
+        Assert.Equal("00000000-0000-0000-0000-000000000001", args[resume + 1]);
+        Assert.Equal("Reply with exactly: resumed-ok", args[^1]);
+    }
+
+    [Fact]
+    public void Codex_app_server_uses_stdio_and_initializes_before_requests()
+    {
+        Assert.Equal(["app-server", "--stdio"], CodexProbe.AppServerArgs());
+
+        var requests = CodexProbe.AppServerRequests();
+        Assert.Equal(4, requests.Length);
+        Assert.Contains("\"method\":\"initialize\"", requests[0]);
+        Assert.Contains("\"method\":\"initialized\"", requests[1]);
+        Assert.Contains("\"method\":\"model/list\"", requests[2]);
+        Assert.Contains("\"id\":2", requests[2]);
+        Assert.Contains("\"includeHidden\":false", requests[2]);
+        Assert.Contains("\"method\":\"account/rateLimits/read\"", requests[3]);
+        Assert.Contains("\"id\":3", requests[3]);
+        Assert.Contains("\"params\":null", requests[3]);
+        Assert.All(requests, request =>
+        {
+            Assert.DoesNotContain("\"jsonrpc\"", request);
+            Assert.NotNull(System.Text.Json.JsonDocument.Parse(request));
+        });
+    }
+
+    [Fact]
+    public void Codex_response_matching_ignores_notifications_and_malformed_lines()
+    {
+        Assert.False(CodexProbe.IsRequestedResponse("not json", 2));
+        Assert.False(CodexProbe.IsRequestedResponse("{\"method\":\"thread/started\",\"params\":{}}", 2));
+        Assert.True(CodexProbe.IsRequestedResponse(CodexModels, 2));
+        Assert.False(CodexProbe.IsRequestedResponse(CodexModels, 3));
+    }
+
+    [Fact]
+    public void Codex_paid_probe_requires_explicit_chatgpt_subscription_status()
+    {
+        Assert.True(CodexProbe.IsChatGptSubscriptionAuth("Logged in using ChatGPT"));
+        Assert.False(CodexProbe.IsChatGptSubscriptionAuth("Logged in using an API key"));
+        Assert.False(CodexProbe.IsChatGptSubscriptionAuth("not logged in"));
+    }
+
+    [Theory]
+    [InlineData("CLAUDE_CODE_ENTRYPOINT")]
+    [InlineData("OPENAI_API_KEY")]
+    [InlineData("OPENAI_BASE_URL")]
+    [InlineData("AZURE_OPENAI_API_KEY")]
+    [InlineData("CODEX_API_KEY")]
+    [InlineData("CODEX_BASE_URL")]
+    public void Vendor_probe_scrubs_parent_sessions_api_credentials_and_provider_overrides(string variable)
+    {
+        Assert.True(Cli.IsCredentialOrParentSessionVariable(variable));
+        Assert.False(Cli.IsCredentialOrParentSessionVariable("CODEX_HOME"));
+        Assert.False(Cli.IsCredentialOrParentSessionVariable("PATH"));
+    }
+
+    [Fact]
+    public void Codex_exec_json_and_turn_usage_are_recognized_across_the_stream()
+    {
+        Assert.True(CodexProbe.LooksLikeExecJson("diagnostic\n" + CodexTurn));
+        Assert.True(CodexProbe.HasTurnUsage(CodexTurn));
+        Assert.False(CodexProbe.HasTurnUsage("{\"type\":\"turn.completed\"}"));
+        Assert.False(CodexProbe.LooksLikeExecJson("plain prose"));
+        Assert.True(CodexProbe.TryReadThreadId(CodexTurn, out var sessionId));
+        Assert.Equal("00000000-0000-0000-0000-000000000001", sessionId);
+        Assert.False(CodexProbe.TryReadThreadId("not json", out _));
+    }
+
+    [Fact]
+    public void Codex_model_list_preserves_model_specific_effort_sets()
+    {
+        Assert.True(CodexProbe.TryDescribeModels(CodexModels, out var summary));
+        Assert.Equal("gpt-example[low/high]", summary);
+        Assert.DoesNotContain("hidden-reserve", summary);
+        Assert.False(CodexProbe.TryDescribeModels("{\"id\":1,\"result\":{}}", out _));
+    }
+
+    [Fact]
+    public void Codex_rate_limits_require_structured_used_percent_windows()
+    {
+        Assert.True(CodexProbe.TryDescribeRateLimits(CodexRateLimits, out var summary));
+        Assert.Contains("42% used, resets 2030-01-01T00:00:00.0000000+00:00", summary);
+        Assert.Contains("7% used", summary);
+        Assert.False(CodexProbe.TryDescribeRateLimits("{\"id\":3,\"result\":{\"planType\":\"pro\"}}", out _));
+    }
+
+    [Fact]
+    public void Program_recognizes_codex_as_a_default_probe_and_drift_vendor()
+    {
+        Assert.Equal(["claude", "agy", "codex"], Program.SupportedVendors);
     }
 
     [Fact]

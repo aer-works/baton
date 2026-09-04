@@ -13,6 +13,7 @@ public static class StandardWorkerUsageParsers
         {
             ["claude"] = new ClaudeUsageParser(),
             ["agy"] = new AgyUsageParser(),
+            ["codex"] = new CodexUsageParser(),
         };
 }
 

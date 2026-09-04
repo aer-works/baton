@@ -21,4 +21,13 @@ public interface IWorkerResponseParser
         response = null;
         return false;
     }
+
+    /// <summary>
+    /// True only when <paramref name="rawLine"/> is a vendor-defined terminal trailer that may
+    /// legitimately follow the line carrying the final response. The default is false so a stray
+    /// trailing line remains a hard boundary rather than making the materializer search arbitrarily
+    /// far backward. Codex is the current exception: its <c>turn.completed</c> usage line follows the
+    /// completed <c>agent_message</c> item.
+    /// </summary>
+    bool IsPostResponseTerminalLine(string rawLine) => false;
 }
