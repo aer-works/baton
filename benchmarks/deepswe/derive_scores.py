@@ -3,14 +3,12 @@
 The raw `selected-configurations.csv` in a date directory is an immutable capture and sorts only by
 pass@1. This writes `derived-scores.csv` beside it with:
 
-- quality_per_100_steps, quality_per_usd: plain ratios, kept because people ask for them, labelled as
-  what they are (they rank a bad cheap answer above a good dearer one).
-- on_frontier: no other row has >= quality with <= steps (Pareto, quality vs steps, all vendors).
-- on_vendor_frontier: the same test restricted to rows from the same vendor -- the comparison that
-  matters when subscriptions do not trade against each other.
-- utility_lambda_<L>: quality - L x steps. L is the one coefficient to argue about; it is a script
-  argument and is recorded in the column header so a reader can see which argument produced the
-  ranking. --sweep prints the top rows under several L values instead of writing anything.
+- quality_per_100_steps, quality_per_usd: plain ratios.
+- on_frontier / on_vendor_frontier: Pareto flags on quality vs steps, across all vendors and within one.
+- utility_lambda_<L>: quality - L x steps; L is the --lambda argument and is named in the header.
+
+What each column is for, and why a ratio alone misleads, is written once in benchmarks/README.md
+("Derived scores"); --sweep prints the top rows under several L values instead of writing anything.
 
 Usage:
     python benchmarks/deepswe/derive_scores.py benchmarks/deepswe/2026-09-04 [--lambda 0.10] [--sweep]
