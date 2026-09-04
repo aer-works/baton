@@ -247,6 +247,29 @@ declared name(s) — `baton resolve` is the one permitted writer here (spec/bato
 | `janitor` | cheap | `janitor.md`, `branch.diff` | Running named mechanical checkers to green after an implementer, without changing behaviour. |
 | `orchestrate` | orchestrator | `turn-actions.json` | A resident room turn that reads room state and emits turn actions. |
 
+Each tier pins one vendor, model and effort in
+[`src/Baton.Vendors/WorkerTiers.json`](../src/Baton.Vendors/WorkerTiers.json). As of #1861 (2026-09-04)
+`frontier` is claude opus at high effort and `standard` is claude opus at medium: in
+[`benchmarks/deepswe/2026-09-04`](../benchmarks/deepswe/2026-09-04/README.md) Opus medium scored 69%
+at 52 agent steps while Sonnet never exceeded 54% at any effort and took about twice the steps at
+matched effort (108 vs 52 at medium, 147 vs 73 at high, 268 vs 99 at max), and
+[`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
+shows Baton sessions re-reading roughly 10M cached tokens each at median; that snapshot attributes the
+early weekly exhaustion to fleet volume with cache re-reads as the amplifier, and "steps rather than
+output drain the plan" is this paragraph's inference from it. High buys review four more points for
+about 40% more steps; xhigh holds that score for 22% more steps, and max adds one point for about
+twice the cost. Moving `standard` onto claude also changes `advise`'s default shape: on agy its
+withheld write ran audited in a fresh worktree, on claude it runs enforced against the caller's own
+directory (a genuine read-only lane, see §4 of `docs/agents/invoking-baton.md`), which is the
+better fit for a second opinion that must not touch the tree. One caveat the snapshot itself states: its dollar
+column is tokens at API list price, so it carries the per-token price gap between models but not the
+subscription meter's own weighting, which the vendor does not publish. Opus medium is better on
+quality and steps for certain; cheaper on the plan only if that weighting is roughly proportional to
+price, which the conductor's per-launch model/effort log is what will show. The `standard` pin is interim — `cheap` keeps agy's
+flash-low for when that quota is idle, and the codex adapter (#1853) is expected to add a compact
+route (Sol high: 69% at 37 steps in the same snapshot) worth comparing against Opus medium for
+`implement` once it exists.
+
 The prompt each worker receives is the spec followed by the role's own output instructions, so the
 worker is told to produce exactly what the contract asserts. A dispatched worker is also told its turn
 is one-shot (#1095): do the work to completion now and write the outputs before the turn ends — never
