@@ -113,8 +113,7 @@ public class VendorExhaustionFallbackTests
             Assert.Equal("claude", accepted[1].Request.Adapter);
             Assert.Equal("sonnet", accepted[1].Request.Model);
 
-            // The one journaled fact naming the original binding, the fallback binding, and the
-            // reset time the fallback rescued this step from waiting out.
+            // The StepRebound journal line PrepareExecutionAsync's dispatch-loop caller appends.
             var rebound = Assert.Single(events.OfType<FlowEvent.StepRebound>());
             Assert.Equal(StepA, rebound.StepId);
             Assert.Equal(accepted[1].Request.ExecutionId, rebound.ForExecutionId);

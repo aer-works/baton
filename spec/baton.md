@@ -2504,26 +2504,24 @@ absent and the chip showing no time — #1115 still forbids fabricating an insta
 observed, live or bundle-derived.
 
 **Declared vendor-exhaustion fallback (#802, shipped).** A `WorkerBindingConfigEntry` may declare
-`FallbackOnExhaustion: {Adapter, Model?, Effort?}` — resolved through the identical
-`WorkerBindingResolver.Resolve` adapter/permission/ceiling pipeline as the primary binding
-(`WorkerBindingResolver.ResolveFallbacks`), so a fallback can never widen what a role is permitted to
-do. When a step's latest attempt classifies `ExhaustedUntil` and its role declares a not-yet-tried
-fallback, `MutationInterface.GetRetryObligations` paces the retry to now instead of the vendor's own
-reset instant (known or not — a fallback needs no reset instant to redispatch against), and the pump
-dispatches on the fallback binding rather than the primary — one round, no wait. The one room fact
-this records is `FlowEvent.StepRebound` (the same event #1583 introduced for crash-recovery binding
-divergence, reused here for its stated §3.3 purpose), naming the previous adapter/model, the new
-adapter/model, and the reset instant it rescued the step from waiting out, in `Reason`. The
-retry/attempt counters (`ConsecutiveFailureCount`, `ExecutionCount`) treat the fallback dispatch as an
-ordinary new attempt of the same step — no special-casing needed, since it is an ordinary
-`ExecutionRequestAccepted`. A single declared hop is the whole feature: a fallback binding's own park
-(its `LatestExecutionId`'s recorded adapter already matches the fallback's) parks normally rather than
-chaining a further rebind, and undeclared/automatic cross-role failover stays permanently out of scope
-(operator ruling, 2026-09-01). With no declared fallback, the step parks exactly as the two paragraphs
-above describe, and `baton status`'s human rendering (`StatusCommand.FormatStepStatus`/
-`FormatParkedStatus`) now names the operator's own escape hatch rather than only the clock —
-`RecoveryGuidance.RedispatchAdapterInstruction` cites the already-shipped `baton redispatch
-<room-dir> --adapter <vendor>` rather than restating it.
+`FallbackOnExhaustion: {Adapter, Model?, Effort?}` — that field's own doc comment has the scope
+ruling and the resolution/ceiling guarantee, not restated here. When a step's latest attempt
+classifies `ExhaustedUntil` and its role declares a not-yet-tried fallback (`WorkerBindingResolver.
+ResolveFallbacks`'s output), `MutationInterface.GetRetryObligations` paces the retry to now instead of
+the vendor's own reset instant (known or not — redispatching elsewhere needs no reset instant to pace
+against), and the pump dispatches on that binding rather than the primary — one round, no wait. The
+one room fact this records is `FlowEvent.StepRebound` (the same event #1583 introduced for
+crash-recovery binding divergence, reused here for its stated §3.3 purpose), carrying the previous
+adapter/model, the new adapter/model, and the reset instant it rescued the step from waiting out (in
+`Reason`). The retry/attempt counters (`ConsecutiveFailureCount`, `ExecutionCount`) need no
+special-casing: a fallback dispatch is an ordinary `ExecutionRequestAccepted`, so they already count
+it as a fresh attempt of the same step. Chaining stops at one hop: once a step's `LatestExecutionId`
+already ran on the fallback, a further exhaustion parks like any undeclared one — see
+`ResolveVendorExhaustionFallback`'s own remarks for the exact check. With no declared fallback, the
+step parks exactly as the two paragraphs above describe, and `baton status`'s human rendering
+(`StatusCommand.FormatStepStatus`/`FormatParkedStatus`) now names the operator's own escape hatch
+rather than only the clock — `RecoveryGuidance.RedispatchAdapterInstruction` cites the already-shipped
+`baton redispatch <room-dir> --adapter <vendor>` rather than restating it.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan

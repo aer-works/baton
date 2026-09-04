@@ -109,9 +109,9 @@ public static class WorkerBindingConfigParser
                     + "which would kill the worker the moment it starts.");
             }
 
-            // #802: a fallback that names the same adapter as the primary binding reads as a safety
-            // net and provides none -- refused here rather than left to silently loop back onto the
-            // vendor it was declared to escape.
+            // #802: the self-fallback refusal FallbackBinding's own doc names -- enforced here,
+            // at parse time, rather than left to silently loop back onto the vendor it was declared
+            // to escape.
             if (entry.FallbackOnExhaustion is { } fallback
                 && string.Equals(fallback.Adapter, entry.Adapter, StringComparison.Ordinal))
             {

@@ -815,10 +815,8 @@ public class WorkerBindingResolverTests
     [Fact]
     public void ResolveFallbacks_drops_the_primarys_Model_when_the_fallback_declares_none()
     {
-        // #1082's rule, applied to a declared fallback the same way an operator --adapter swap
-        // already applies it: a Model authored for the PRIMARY vendor's tier words has no correct
-        // translation onto the fallback's, so an unset fallback Model must resolve to the fallback
-        // adapter's own default rather than silently carrying the primary's Model across.
+        // FallbackBinding's own doc has the #1082 reasoning this pins -- an unset fallback Model
+        // must NOT inherit the primary's.
         var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
