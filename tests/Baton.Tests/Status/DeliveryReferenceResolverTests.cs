@@ -126,4 +126,21 @@ public sealed class DeliveryReferenceResolverTests : IDisposable
 
         Assert.Null(DeliveryReferenceResolver.Resolve(outputs));
     }
+
+    /// <summary>
+    /// #734 review: a value that merely ENDS in digits must not resolve. Why the whole shape matters is
+    /// written once, on <c>DeliveryReferenceResolver</c>'s regex.
+    /// </summary>
+    [Theory]
+    [InlineData("--repo=owner/other-123")]
+    [InlineData("-R owner/other 123")]
+    [InlineData("123 --repo owner/other")]
+    [InlineData("https://evil.example/pull/123")]
+    [InlineData("see PR 123")]
+    public void A_pr_file_whose_whole_content_is_not_a_number_or_github_pr_url_resolves_nothing(string content)
+    {
+        var outputs = new[] { Write(DeliveryReferenceOutputNames.PullRequest, content) };
+
+        Assert.Null(DeliveryReferenceResolver.Resolve(outputs));
+    }
 }

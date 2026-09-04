@@ -30,8 +30,13 @@ public sealed record DeliveryReference(int? PullRequestNumber, string? PullReque
 public static class DeliveryReferenceResolver
 {
     // spec/baton.md §2 names the two shapes a worker plausibly writes here (a bare number, a full
-    // URL) plus the hand-typed "#123" case; all three read off the same trailing digits.
-    private static readonly Regex TrailingNumber = new(@"(\d+)\s*$", RegexOptions.Compiled);
+    // GitHub PR URL) plus the hand-typed "#123" case. The WHOLE content must be one of them: the
+    // reference is handed to `gh pr view` as a bare argument, and gh's own flag parser would read a
+    // worker-written "--repo=owner/other-123" as a flag, not a PR — a trailing-digits match alone would
+    // let a steered worker point the poll at another repo's PR. Anything else declares no PR.
+    private static readonly Regex WholeReference = new(
+        @"^(?:#?(\d+)|https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)/?)$",
+        RegexOptions.Compiled);
 
     public static DeliveryReference? Resolve(IReadOnlyList<string>? outputs)
     {
@@ -47,11 +52,12 @@ public static class DeliveryReferenceResolver
         int? pullRequestNumber = null;
         if (prText is not null)
         {
-            reference = prText.StartsWith('#') ? prText[1..] : prText;
-            var match = TrailingNumber.Match(prText);
-            if (match.Success && int.TryParse(match.Groups[1].Value, out var parsed))
+            var match = WholeReference.Match(prText);
+            var digits = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
+            if (match.Success && int.TryParse(digits, out var parsed))
             {
                 pullRequestNumber = parsed;
+                reference = prText.StartsWith('#') ? prText[1..] : prText;
             }
         }
 
