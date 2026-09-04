@@ -2049,6 +2049,64 @@ def _skills_config_dir_flat_and_shadow():
         shutil.rmtree(proj, ignore_errors=True)
 
 
+@check("claude.sensitive-root-write-refused", "durability",
+       "claude refuses (or silently withholds) a Write whose target sits under a `.claude`-named "
+       "config root while the identical write outside it succeeds; the live measurement "
+       "`ClaudeWorkerAdapter.SensitiveOutputRoot`/`RunCommand`'s dispatch-time refusal (#1823, #599) "
+       "rests on", sentinel=True)
+def _claude_sensitive_root_write_refused():
+    """The full measurement, its rationale, and what it narrows in IWorkerAdapter.SensitiveOutputRoot's
+    own doc comment all live in docs/vendor-doc-audit.md's #1827 entry -- read that first.
+
+    Mechanically: an `in_root` arm and a control, sharing one CLAUDE_CONFIG_DIR override (credentials
+    copied in, as the skills check above does, never the operator's real ~/.claude), differing only
+    in where each writes relative to it. That override's own leaf directory is spelled `.claude`
+    rather than a random prefix -- the audit entry explains why this is load-bearing, not cosmetic.
+    A control that fails to write settles nothing about the other arm either way.
+    """
+    real_creds = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
+    if not os.path.isfile(real_creds):
+        return INCONCLUSIVE, f"no credentials file found at {real_creds!r} to seed the fresh root"
+
+    cfg_parent = tempfile.mkdtemp(prefix="v-sensroot-cfg-")
+    cfg = os.path.join(cfg_parent, ".claude")
+    outside = tempfile.mkdtemp(prefix="v-sensroot-out-")
+    try:
+        os.makedirs(cfg)
+        shutil.copyfile(real_creds, os.path.join(cfg, ".credentials.json"))
+
+        def arm(in_root):
+            wd = tempfile.mkdtemp(prefix="v-sensroot-in-", dir=cfg) if in_root \
+                else tempfile.mkdtemp(prefix="v-sensroot-ctl-", dir=outside)
+            target = os.path.join(wd, "out.txt")
+            rc, out, err = run(["claude", "-p",
+                                f"Create {target} containing the word OK using the Write tool.",
+                                "--add-dir", wd, "--allowedTools", "Write",
+                                "--output-format", "text"],
+                               timeout=180, cwd=wd, extra_env={"CLAUDE_CONFIG_DIR": cfg})
+            wrote = os.path.isfile(target)
+            content = open(target, encoding="utf-8").read().strip() if wrote else None
+            return wrote, content, (out + err)
+
+        in_wrote, in_content, in_blob = arm(True)
+        out_wrote, out_content, out_blob = arm(False)
+    finally:
+        shutil.rmtree(cfg_parent, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+    if not out_wrote or out_content != "OK":
+        return INCONCLUSIVE, (f"the control arm (outside the config root) did not write; "
+                              f"control output: {out_blob!r}")
+    if not in_wrote:
+        named = "sensitive file" in in_blob.lower()
+        return PASS, (f"in-root write refused (names 'sensitive file'={named}); control wrote "
+                      f"outside the root as expected. in-root output: {in_blob!r}")
+    return FAIL, (f"claude WROTE under its own config root -- the refusal SensitiveOutputRoot's "
+                  f"dispatch-time check rests on no longer reproduces on this CLI version.\n"
+                  f"in-root arm: wrote={in_wrote} content={in_content!r} output={in_blob!r}\n"
+                  f"control arm: wrote={out_wrote} content={out_content!r} output={out_blob!r}")
+
+
 @check("durability.agy-home-redirect-isolates-state", "durability",
        "agy launched with redirected HOME/USERPROFILE creates its state tree under the redirect "
        "and completes a model call without touching the real ~/.gemini")
