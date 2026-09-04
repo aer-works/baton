@@ -79,8 +79,7 @@ public class WorkerRoleCatalogTests
 
         var review = WorkerRoleCatalog.For("review");
         Assert.Equal("claude", review.Adapter);
-        // #1861: frontier is opus/high (benchmarks/deepswe/2026-09-04 -- Sonnet never beat 54% at any
-        // effort and took two to five times the steps; docs/dispatch.md has the tier paragraph).
+        // #1861: frontier is opus/high -- docs/dispatch.md's tier paragraph has the measurements.
         Assert.Equal("opus", review.Model);
         Assert.Equal("high", review.Effort);
         Assert.False(review.Grant.WriteFiles);
