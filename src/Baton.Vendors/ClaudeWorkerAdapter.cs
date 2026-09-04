@@ -1614,6 +1614,51 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         }
     }
 
+    /// <summary>
+    /// #1841: recovers claude's own session id from a <c>stream-json</c> <c>"type":"system"</c>,
+    /// <c>"subtype":"init"</c> line — read-side only, never minted client-side (see
+    /// <c>WorkerBindingConfigEntry.SessionId</c>'s dispatch-path caller for why: the resolved
+    /// <see cref="Baton.Dispatch.CoreDispatchTarget"/> argv is frozen once per binding and reused
+    /// verbatim across every #1373 retry, and claude's own <c>--session-id</c> reuse is
+    /// existence-guarded, so a client-minted id baked into that argv would fail a retry outright).
+    /// Confirmed against a recorded fixture
+    /// (<c>tests/Baton.Cli.Tests/Fixtures/claude-stream-json-sample.log</c>'s own <c>init</c> line) —
+    /// unlike <see cref="TryParseFinalResponse"/>, no terminal <c>"type":"result"</c> line carrying
+    /// <c>session_id</c> has been recorded, so that arm is deliberately not parsed here; every
+    /// observed envelope carries <c>session_id</c> on <c>init</c>, so this is the one shape claimed.
+    /// </summary>
+    public bool TryParseSessionId(string rawLine, out string? sessionId)
+    {
+        sessionId = null;
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawLine);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "system"
+                || !root.TryGetProperty("subtype", out var subtypeProp) || subtypeProp.GetString() != "init"
+                || !root.TryGetProperty("session_id", out var sessionIdProp)
+                || sessionIdProp.ValueKind != JsonValueKind.String
+                || sessionIdProp.GetString() is not { Length: > 0 } id)
+            {
+                return false;
+            }
+
+            sessionId = id;
+            return true;
+        }
+        catch (JsonException)
+        {
+            // A line split across a stdout chunk boundary, or a non-JSON line -- not a session id.
+            return false;
+        }
+    }
+
     private static bool TryParseStreamEvent(JsonElement root, out WorkerProgressEvent? progressEvent)
     {
         progressEvent = null;

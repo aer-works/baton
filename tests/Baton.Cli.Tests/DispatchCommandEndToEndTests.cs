@@ -83,6 +83,125 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Dispatching_a_role_records_the_session_id_reported_by_its_adapter()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-session-id-{Guid.NewGuid():N}");
+        try
+        {
+            var adapter = new SessionIdEmittingWorkerAdapter("session-from-worker");
+            var adapters = new Dictionary<string, IWorkerAdapter> { ["fake"] = adapter };
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+
+            await DispatchCommand.ExecuteAsync(
+                new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake"),
+                adapters,
+                TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("session-from-worker", bindings["advise"].SessionId);
+            Assert.False(bindings["advise"].ResumeSession);
+            Assert.Equal(1, adapter.ResolveCallCount);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_that_reports_no_session_id_leaves_the_binding_empty()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-session-id-{Guid.NewGuid():N}");
+        try
+        {
+            var adapter = new SessionIdEmittingWorkerAdapter(null);
+            var adapters = new Dictionary<string, IWorkerAdapter> { ["fake"] = adapter };
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+
+            await DispatchCommand.ExecuteAsync(
+                new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake"),
+                adapters,
+                TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Null(bindings["advise"].SessionId);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatching_a_role_records_the_latest_session_id_reported_by_an_attempt()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-session-id-latest-{Guid.NewGuid():N}");
+        try
+        {
+            var adapter = new SessionIdEmittingWorkerAdapter("first-session", laterSessionId: "latest-session");
+            var adapters = new Dictionary<string, IWorkerAdapter> { ["fake"] = adapter };
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+
+            await DispatchCommand.ExecuteAsync(
+                new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake"),
+                adapters,
+                TestContext.Current.CancellationToken);
+
+            var bindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(roomDirectory, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("latest-session", bindings["advise"].SessionId);
+            Assert.Equal(1, adapter.ResolveCallCount);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Session_id_persistence_failure_does_not_hide_the_dispatch_result()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-session-id-write-failure-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        try
+        {
+            var specPath = await WriteSpecAsync(testRoot, "Weigh the options for X.");
+            var roomDirectory = Path.Combine(testRoot, "task");
+            var bindingsPath = Path.Combine(roomDirectory, "bindings.json");
+            var adapter = new SessionIdEmittingWorkerAdapter(
+                "session-from-worker",
+                () =>
+                {
+                    FileCleanup.EnsureDeleted(bindingsPath);
+                    Directory.CreateDirectory(bindingsPath);
+                });
+            var adapters = new Dictionary<string, IWorkerAdapter> { ["fake"] = adapter };
+            using var error = new StringWriter();
+            Console.SetError(error);
+
+            var result = await DispatchCommand.ExecuteAsync(
+                new DispatchOptions("advise", specPath, roomDirectory, Adapter: "fake"),
+                adapters,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            Assert.Contains("could not record the vendor session id", error.ToString());
+            Assert.Contains("the newly reported id was not recorded", error.ToString());
+            Assert.Contains("may refuse when no prior session id exists", error.ToString());
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     /// <summary>
     /// #1518: there is no on-disk spec artifact for a file dispatch to land in today -- the spec becomes
     /// <c>PromptTemplate</c> inside <c>bindings.json</c> via <see cref="Baton.Vendors.RoleDispatch.Materialize"/>,

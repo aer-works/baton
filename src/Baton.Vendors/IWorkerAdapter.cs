@@ -103,6 +103,20 @@ public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Statu
         return false;
     }
 
+    /// <summary>
+    /// Attempts to recover this vendor's own session id from one raw stdout line of a completed
+    /// dispatch (#1841) — the read-side capture, never a client-minted id (see
+    /// <c>ClaudeWorkerAdapter.TryParseSessionId</c> for why minting one at bind time would break a
+    /// #1373 retry). False (and a null <paramref name="sessionId"/>) for a line this vendor doesn't
+    /// recognize or that carries no session id — the default here, since most adapters have never had
+    /// this capability measured.
+    /// </summary>
+    bool TryParseSessionId(string rawLine, out string? sessionId)
+    {
+        sessionId = null;
+        return false;
+    }
+
 
     /// <summary>
     /// True when a worker this adapter spawns with <see cref="PermissionGrant.WriteFiles"/> withheld
