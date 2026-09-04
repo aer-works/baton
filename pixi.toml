@@ -167,17 +167,20 @@ smoke-preflight = { cmd = "python -u tools/smoke-preflight/preflight.py" }
 # M11 Phase 4 (#87), the milestone's completion gate: a real draft → review workflow through
 # `baton run` against `claude`, never `pixi run test`'s stub/shell-stub path.
 # docs/runbooks/live-claude-smoke.md
-smoke-claude = { cmd = "dotnet test tests/Baton.Cli.SmokeTests", depends-on = ["smoke-preflight"] }
+# #1833: the smoke project moved to MTP with the rest (root `global.json` applies to every `dotnet
+# test`), so these three use `--project` and xunit's own `--filter-class` -- VSTest's positional
+# project path and `--filter FullyQualifiedName~…` no longer parse here (review finding on #1843).
+smoke-claude = { cmd = "dotnet test --project tests/Baton.Cli.SmokeTests/Baton.Cli.SmokeTests.csproj --minimum-expected-tests 1", depends-on = ["smoke-preflight"] }
 
 # #649's completion gate: a withheld-write worker writes its declared output into BATON_OUTPUT_DIR and
 # leaves its workspace empty. Three mechanisms have to compose; unit tests cover each part and only a
 # live run covers the composition. docs/runbooks/live-claude-smoke.md
-smoke-readonly = { cmd = "dotnet test tests/Baton.Cli.SmokeTests --filter FullyQualifiedName~LiveReadOnlyReviewerSmokeTest", depends-on = ["smoke-preflight"] }
+smoke-readonly = { cmd = "dotnet test --project tests/Baton.Cli.SmokeTests/Baton.Cli.SmokeTests.csproj --filter-class Baton.Cli.SmokeTests.LiveReadOnlyReviewerSmokeTest --minimum-expected-tests 1", depends-on = ["smoke-preflight"] }
 
 # M12 Phase 4 (#98), this milestone's completion gate: a real draft (`claude`) → review (`agy`)
 # workflow, paused at review's declared PausePoint and resumed via `baton decide`. Needs BOTH vendors.
 # docs/runbooks/live-mixed-vendor-smoke.md
-smoke-mixed-vendor = { cmd = "dotnet test tests/Baton.Cli.SmokeTests --filter FullyQualifiedName~LiveMixedVendorPausedRunSmokeTest", depends-on = ["smoke-preflight"] }
+smoke-mixed-vendor = { cmd = "dotnet test --project tests/Baton.Cli.SmokeTests/Baton.Cli.SmokeTests.csproj --filter-class Baton.Cli.SmokeTests.LiveMixedVendorPausedRunSmokeTest --minimum-expected-tests 1", depends-on = ["smoke-preflight"] }
 
 # Vendor probe (#504): establishes what each vendor CLI can actually do, and writes both the
 # findings matrix and docs/vendor-probe.lock.json (the versions those findings were established
