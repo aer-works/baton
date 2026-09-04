@@ -751,9 +751,8 @@ public static class DispatchCommand
 
         var (parentWorkerName, parentEntry) = parentBindings.Single();
 
-        // Q1 scope (spec/baton.md §3): claude only. Checking BOTH the veteran's recorded adapter and
-        // this dispatch's own resolved one closes an adapter-swap escape (--adapter agy against a
-        // claude veteran, or the reverse) that checking either alone would miss.
+        // Q1 scope (spec/baton.md §3). Checking both sides below closes an adapter-swap escape
+        // (--adapter agy against a claude veteran, or the reverse) that checking only one would miss.
         if (!string.Equals(parentEntry.Adapter, "claude", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(entry.Adapter, "claude", StringComparison.OrdinalIgnoreCase))
         {
