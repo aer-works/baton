@@ -3006,8 +3006,8 @@ folds, and a magnitude increase (a failed lane's retry count climbing) re-alerts
 its notifiable state clears its dedup entry so a later recurrence reads as fresh rather than
 folding forever. `pusher.py` itself carried no prior anomaly-dedup code to reuse at the time this
 landed (checked: no `anomaly`/standing-condition-dedup function existed anywhere in the file) — this
-is a fresh implementation of that shape, not a reuse of one. A missing/blank `ntfy_topic` disables
-the feature silently (one startup log line, never a crash).
+is a fresh implementation of that shape, not a reuse of one. An unconfigured `ntfy_topic` never
+raises — `main()` logs one line and every notification call is a no-op from there on.
 
 ---
 
