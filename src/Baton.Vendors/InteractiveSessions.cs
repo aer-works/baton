@@ -142,12 +142,9 @@ public static class InteractiveSessionMaterializer
     /// </summary>
     /// <param name="ContinuedSessionId">
     /// The prior room's own vendor session id this room's worker resumed (issue #1381,
-    /// <c>baton dispatch &lt;role&gt; --continue &lt;room&gt;</c>) -- non-null exactly when
-    /// <see cref="ParentRoomDirectoryPath"/>/<see cref="ParentExecutionId"/> name the veteran room a
-    /// <c>--continue</c> dispatch rehired, rather than the room <c>baton redispatch</c> reran. The two
-    /// verbs share the same two parent fields (both mean "the antecedent room/execution this one
-    /// derives from") but only <c>--continue</c> ever sets this third one, so a reader (<c>fleet_status</c>)
-    /// can tell "continued from" apart from "redispatched from" by its presence alone.
+    /// <c>baton dispatch &lt;role&gt; --continue &lt;room&gt;</c>). Why this is a third field rather
+    /// than folded into the two above, and what it lets a reader tell apart: spec/baton.md §3's
+    /// dispatch entry.
     /// </param>
     public sealed record RoomLineage(
         string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null, string? ContinuedSessionId = null)

@@ -699,20 +699,8 @@ public static class DispatchCommand
     /// rehire — the vendor session id lives on that room's own single-worker <c>bindings.json</c> entry
     /// (<see cref="WorkerBindingConfigEntry.SessionId"/>, the exact field <see cref="ResumeCommand"/>
     /// already reads for the same-room <c>baton resume</c> case, M24/#1359) — do not add a second
-    /// record. A cold room (never itself dispatched with <c>--continue</c>, and never hand-edited the
-    /// way <c>baton resume</c>'s own precedent allows) has no SessionId recorded and refuses here, which
-    /// is the honest terminal case, not a gap this method fills.
-    /// <para>
-    /// Q4's "fail the dispatch loudly" ruling covers what is checkable before the vendor spawns: adapter
-    /// mismatch and a missing SessionId, both refused below as <see cref="CliArgumentException"/> (Program's
-    /// typed boundary turns this into a <c>ValidationRefused</c> exit before anything is dispatched — no
-    /// half-provisioned room). The vendor silently minting a fresh session under the resumed id instead of
-    /// truly resuming is NOT detectable here — that would need the #546 existence-check-not-lock
-    /// measurement to distinguish resume-refused from silently-started-fresh, which is a separate,
-    /// unshipped pin (docs/vendor-doc-audit.md; sentinel <c>durability.session-id-guard-is-not-a-lock</c>
-    /// confirms only that <c>--session-id</c> reuse is existence-guarded, not that <c>--resume</c> proves
-    /// its own success). Stated here rather than silently claimed.
-    /// </para>
+    /// record. What this can and cannot detect before the vendor spawns, and why: spec/baton.md §3's
+    /// dispatch entry.
     /// </summary>
     /// <param name="continueFromRoomDirectoryPath">The prior room directory the operator named with <c>--continue</c>.</param>
     /// <param name="entry">
@@ -792,12 +780,8 @@ public static class DispatchCommand
                 + "--continue dispatch.");
         }
 
-        // Refuse a still-running veteran outright: --resume's own vendor-measured guarantee is an
-        // existence check, not a lock (docs/vendor-doc-audit.md; sentinel
-        // durability.session-id-guard-is-not-a-lock) — two processes resuming the SAME session id
-        // concurrently both win the race and both run, which for a worker that might still be mid-turn
-        // is exactly the silent-corruption shape Q4's "fail loudly" ruling exists to prevent, not a
-        // vendor refusal there would be nothing loud to catch.
+        // Refuse a still-running veteran outright -- concurrently resuming the same session id is not
+        // vendor-guarded against; spec/baton.md §3's dispatch entry has the measurement this rests on.
         var parentTerminal = await TerminalSentinelWriter.TryReadAsync(continueFromRoomDirectoryPath, cancellationToken)
             .ConfigureAwait(false);
         if (parentTerminal is null)

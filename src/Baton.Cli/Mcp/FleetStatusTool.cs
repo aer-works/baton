@@ -716,9 +716,8 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("parentExecutionId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ParentExecutionId = null,
-    // #1381: non-null exactly when ParentRoomPath/ParentExecutionId name a room `baton dispatch
-    // --continue` rehired, rather than one `baton redispatch` reran -- see RoomLineage.ContinuedSessionId's
-    // own doc. Lets the glass render "continued from <room>" instead of "redispatched from <room>".
+    // #1381: see RoomLineage.ContinuedSessionId's own doc / spec/baton.md §6 for what this
+    // distinguishes and why.
     [property: JsonPropertyName("continuedSessionId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ContinuedSessionId = null,
