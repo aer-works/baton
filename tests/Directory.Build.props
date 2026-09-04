@@ -15,6 +15,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)Shared\CleanupRetry.cs" Link="TestSupport\CleanupRetry.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\DirectoryCleanup.cs" Link="TestSupport\DirectoryCleanup.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Shared\FileCleanup.cs" Link="TestSupport\FileCleanup.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Shared\BoundedProcessWait.cs" Link="TestSupport\BoundedProcessWait.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -250,7 +250,8 @@ public class ResumeCommandEndToEndTests : IDisposable
             using (var runProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory))
             {
-                await runProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                await BoundedProcessWait.RunToExitAsync(
+                    runProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 Assert.Equal(0, runProcess.ExitCode);
             }
 
@@ -262,7 +263,8 @@ public class ResumeCommandEndToEndTests : IDisposable
             using var resumeProcess = StartBatonProcess(
                 "resume", roomDirectory, "--worker", "solo", "--message", "continue",
                 "--bindings", bindingsFilePath);
-            await resumeProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await BoundedProcessWait.RunToExitAsync(
+                resumeProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             Assert.Equal(0, resumeProcess.ExitCode);
 
             var secondView = JsonSerializer.Deserialize<WorkflowStatusView>(
@@ -291,16 +293,16 @@ public class ResumeCommandEndToEndTests : IDisposable
             using (var runProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory))
             {
-                await runProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                await BoundedProcessWait.RunToExitAsync(
+                    runProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 Assert.Equal(0, runProcess.ExitCode);
             }
 
             using var resumeProcess = StartBatonProcess(
                 "resume", roomDirectory, "--worker", "solo", "--message", "continue",
                 "--bindings", bindingsFilePath);
-            var stderrTask = resumeProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await resumeProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stderr = await stderrTask;
+            var (_, stderr) = await BoundedProcessWait.RunToExitAsync(
+                resumeProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal((int)RunExitCode.ValidationRefused, resumeProcess.ExitCode);
             Assert.Contains("SessionId", stderr, StringComparison.Ordinal);

@@ -36,11 +36,11 @@ public class TerminalSentinelEndToEndTests
         // the command it names is real. Round-tripped through the real binary since knownSubcommands
         // is a top-level-statement local with no other test seam.
         using var process = StartBatonProcess("templates");
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        var (stdout, _) = await BoundedProcessWait.RunToExitAsync(
+            process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
         Assert.Equal(0, process.ExitCode);
-        Assert.Contains("Available built-in workflow templates", await stdoutTask);
+        Assert.Contains("Available built-in workflow templates", stdout);
     }
 
     [Fact]
@@ -188,7 +188,8 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             Assert.Equal(0, process.ExitCode);
 
             Assert.True(File.Exists(sentinelPath));
@@ -226,9 +227,8 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
-            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stderr = await stderrTask;
+            var (_, stderr) = await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(2, process.ExitCode);
             Assert.Contains("not-registered", stderr);
@@ -265,7 +265,8 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(0, process.ExitCode);
 
@@ -299,7 +300,8 @@ public class TerminalSentinelEndToEndTests
             using (var firstProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", goodBindingsFilePath, "--room-dir", roomDirectory))
             {
-                await firstProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+                await BoundedProcessWait.RunToExitAsync(
+                    firstProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 Assert.Equal(0, firstProcess.ExitCode);
             }
 
@@ -316,9 +318,8 @@ public class TerminalSentinelEndToEndTests
             var badBindingsFilePath = await WriteUnregisteredAdapterBindingsAsync(testRoot);
             using var secondProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", badBindingsFilePath, "--room-dir", roomDirectory);
-            var stderrTask = secondProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await secondProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stderr = await stderrTask;
+            var (_, stderr) = await BoundedProcessWait.RunToExitAsync(
+                secondProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal((int)RunExitCode.ValidationRefused, secondProcess.ExitCode);
             Assert.Contains("not-registered", stderr);
@@ -354,9 +355,8 @@ public class TerminalSentinelEndToEndTests
             {
                 using var process = StartBatonProcess(
                     "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
-                var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-                var stderr = await stderrTask;
+                var (_, stderr) = await BoundedProcessWait.RunToExitAsync(
+                    process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
                 Assert.Equal((int)RunExitCode.RoomHeld, process.ExitCode);
                 Assert.Contains("already locked", stderr);
@@ -370,7 +370,8 @@ public class TerminalSentinelEndToEndTests
             // (see the next test, which pins that mechanism and the fix it requires).
             using var retryProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
-            await retryProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await BoundedProcessWait.RunToExitAsync(
+                retryProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             Assert.Equal(0, retryProcess.ExitCode);
             Assert.True(File.Exists(sentinelPath));
         }
@@ -408,9 +409,8 @@ public class TerminalSentinelEndToEndTests
             {
                 using var refusedProcess = StartBatonProcess(
                     "run", workflowFilePath, "--bindings", goodBindingsFilePath, "--room-dir", roomDirectory);
-                var refusedStderrTask = refusedProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-                await refusedProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
-                var refusedStderr = await refusedStderrTask;
+                var (_, refusedStderr) = await BoundedProcessWait.RunToExitAsync(
+                    refusedProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 Assert.True((int)RunExitCode.RoomHeld == refusedProcess.ExitCode, $"stderr: {refusedStderr}");
             }
 
@@ -424,9 +424,8 @@ public class TerminalSentinelEndToEndTests
             var badBindingsFilePath = await WriteUnregisteredAdapterBindingsAsync(testRoot);
             using var secondProcess = StartBatonProcess(
                 "run", workflowFilePath, "--bindings", badBindingsFilePath, "--room-dir", roomDirectory);
-            var stderrTask = secondProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await secondProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stderr = await stderrTask;
+            var (_, stderr) = await BoundedProcessWait.RunToExitAsync(
+                secondProcess, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal((int)RunExitCode.ValidationRefused, secondProcess.ExitCode);
             Assert.Contains("not-registered", stderr);
@@ -492,11 +491,8 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "resolve", roomDirectory, "--execution", executionId.Value, "--reject", "--reason", "not honest advice.md");
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
+            var (stdout, stderr) = await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.False(
                 File.Exists(sentinelPath),
@@ -565,11 +561,8 @@ public class TerminalSentinelEndToEndTests
 
             using var process = StartBatonProcess(
                 "resolve", roomDirectory, "--execution", executionId.Value, "--accept-capture");
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
+            var (stdout, stderr) = await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.True(
                 stdout.Contains("Workflow status: Paused", StringComparison.Ordinal),
