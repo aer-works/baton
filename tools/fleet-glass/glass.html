@@ -66,7 +66,8 @@
   --ok:#66BB6A; --run:#5EA3E8; --warn:#E0A458; --bad:#E57373; --idle:#7C828C;
   --chip-ok:#1D2E1E; --chip-run:#1A2735; --chip-warn:#332818; --chip-bad:#331D1B; --chip-idle:#242830;
 }
-body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px;}
+html{overflow-x:hidden;}
+body{background:var(--paper); color:var(--ink); font:15px/1.55 'Public Sans',system-ui,sans-serif; margin:0; padding:20px 16px 60px; overflow-x:hidden; max-width:100vw;}
 main{max-width:62rem; margin:0 auto;}
 h1{font-family:'Sora',sans-serif; font-size:1.25rem; margin:0; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:.2rem .5rem;}
 h1 .fresh{font:400 .72rem var(--mono); color:var(--ink-soft);}
@@ -108,9 +109,9 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .lane .deliverables a, .board-detail-side .deliverables a{color:var(--accent); text-decoration:none; cursor:pointer;}
 .lane details{margin:.4rem 0 0; font-size:.74rem;}
 .lane details summary{font:600 .72rem 'Public Sans'; color:var(--ink-soft);}
-.tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem;}
-.tl-entry .tl-type{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.tl-entry .tl-age{color:var(--ink-soft); white-space:nowrap;}
+.tl-entry{display:flex; justify-content:space-between; gap:.5rem; padding:.15rem 0; border-top:1px solid var(--line); font-size:.7rem; min-width:0;}
+.tl-entry .tl-type{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; min-width:0;}
+.tl-entry .tl-age{color:var(--ink-soft); white-space:nowrap; flex:0 0 auto;}
 .verbs{margin-top:.35rem; display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;}
 .copybtn{font:500 .68rem 'Public Sans'; padding:.25em .65em; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); cursor:pointer;}
 .copybtn:active{background:var(--chip-idle);}
@@ -170,8 +171,8 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
    losing the dock. ≤480px (the phone breakpoint the ruling names explicitly): carousel pills pick
    one board column at a time, and tapping a card replaces the board with the pane plus Back. */
 .board-detail-layout{display:flex; gap:1rem; align-items:flex-start; margin-top:.5rem;}
-.board-area{flex:2 1 0; min-width:0;}
-.board-detail-side{flex:1 1 0; min-width:16rem; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.75rem .9rem; position:sticky; top:.75rem; max-height:calc(100vh - 1.5rem); overflow-y:auto;}
+.board-area{flex:2 1 0; min-width:0; max-width:100%;}
+.board-detail-side{flex:1 1 0; min-width:16rem; max-width:100%; box-sizing:border-box; background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.75rem .9rem; position:sticky; top:.75rem; max-height:calc(100vh - 1.5rem); overflow-y:auto; overflow-x:hidden;}
 .phone-carousel-pills{display:none;}
 .board-container{display:grid; grid-template-columns:repeat(3, 1fr); gap:.6rem;}
 .board-column{background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:.6rem; display:flex; flex-direction:column; gap:.4rem; min-height:6rem; min-width:0;}
@@ -189,24 +190,26 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
 .board-card-dismiss{flex-shrink:0;}
 .detail-top{display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; flex-wrap:wrap;}
 .detail-title{font:700 .92rem 'Sora',sans-serif;}
-.detail-path{font-size:.72rem; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; margin:.2rem 0;}
-.detail-path.expanded{white-space:normal; word-break:break-all;}
+.detail-path{font-size:.72rem; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; margin:.2rem 0; max-width:100%; overflow-wrap:anywhere;}
+.detail-path.expanded{white-space:normal; word-break:break-all; overflow-wrap:anywhere;}
 .section-heading{font:600 .7rem 'Public Sans'; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:.6rem 0 .2rem;}
 .stdout-asof{text-transform:none; letter-spacing:normal; font-weight:400;}
 /* #1710: a bounded, internally-scrolling box regardless of viewport -- its own max-height rather than
    growing with the pane (#1693's own rules let the pane itself grow unbounded on the phone breakpoint;
    a multi-KB stdout tail must not drag the whole page down with it there). */
-.stdout-tail{font-size:.72rem; line-height:1.35; white-space:pre-wrap; word-break:break-word; max-height:12rem; overflow-y:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem;}
+.stdout-tail{font-size:.72rem; line-height:1.35; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-width:100%; box-sizing:border-box; max-height:12rem; overflow-y:auto; overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem;}
 .detail-back-btn{display:none; align-self:flex-start; background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:.25em .7em; font:500 .74rem 'Public Sans'; cursor:pointer; color:var(--ink); margin-bottom:.4rem;}
 @media (max-width:900px){
   .board-detail-layout{flex-direction:column;}
   /* #1693: in a column, the desktop `flex:1 1 0` is a ZERO height basis with nothing to grow into,
-     and the base overflow-y:auto then clips the pane to its padding; width:100% + padding also
-     overflowed the viewport under content-box sizing. */
+     and the base overflow-y:auto then clips the pane to its padding. #1792: `.board-detail-side`
+     carries its own box-sizing:border-box (base rule above) so its width:100% here includes its
+     padding/border instead of adding to it -- the phone-width overflow this pane used to cause. */
   .board-area{flex:none; width:100%;}
-  .board-detail-side{flex:none; position:static; max-height:none; overflow:visible; width:auto; min-width:0;}
+  .board-detail-side{flex:none; position:static; max-height:none; overflow:visible; width:100%; min-width:0; max-width:100%;}
 }
 @media (max-width:480px){
+  .board-detail-side .ev{white-space:normal; overflow-wrap:anywhere; text-overflow:clip;}
   .phone-carousel-pills{display:flex; gap:.3rem; margin-bottom:.5rem; background:var(--card); padding:.2rem; border-radius:8px; border:1px solid var(--line);}
   .carousel-tab-btn{flex:1; min-width:0; background:transparent; border:none; font:600 .68rem 'Public Sans'; color:var(--ink-soft); padding:.35em .2em; border-radius:6px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .carousel-tab-btn.active{background:var(--paper); color:var(--accent);}
