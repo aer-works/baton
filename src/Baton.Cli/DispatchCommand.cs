@@ -711,9 +711,8 @@ public static class DispatchCommand
     /// </param>
     /// <exception cref="CliArgumentException">
     /// The named room does not exist, its bindings.json is unreadable or dispatched more than one
-    /// worker, its adapter (or this dispatch's own resolved adapter) is not <c>claude</c> (Q1 scope —
-    /// agy rehire is gated on its own headless-resume measurement, not yet run), or it has no
-    /// <see cref="WorkerBindingConfigEntry.SessionId"/> recorded.
+    /// worker, its adapter (or this dispatch's own resolved adapter) is not <c>claude</c> (Q1 scope,
+    /// spec/baton.md §3), or it has no <see cref="WorkerBindingConfigEntry.SessionId"/> recorded.
     /// </exception>
     private static async Task<(WorkerBindingConfigEntry Entry, ContinuationProvenance Provenance)> ResolveContinuationAsync(
         string continueFromRoomDirectoryPath, WorkerBindingConfigEntry entry, CancellationToken cancellationToken)
@@ -752,10 +751,8 @@ public static class DispatchCommand
 
         var (parentWorkerName, parentEntry) = parentBindings.Single();
 
-        // Q1 scope (2026-09-01 design ratification, #1381): claude first — ClaudeWorkerAdapter is the
-        // only adapter whose --resume path is wired today. agy rehire is gated on its own headless
-        // conversation-id-resume measurement, not yet run; checking BOTH the veteran's recorded adapter
-        // and this dispatch's own resolved one closes an adapter-swap escape (--adapter agy against a
+        // Q1 scope (spec/baton.md §3): claude only. Checking BOTH the veteran's recorded adapter and
+        // this dispatch's own resolved one closes an adapter-swap escape (--adapter agy against a
         // claude veteran, or the reverse) that checking either alone would miss.
         if (!string.Equals(parentEntry.Adapter, "claude", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(entry.Adapter, "claude", StringComparison.OrdinalIgnoreCase))
