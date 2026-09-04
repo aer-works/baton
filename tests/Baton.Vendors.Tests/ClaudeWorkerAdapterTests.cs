@@ -1266,6 +1266,33 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #599: with no operator-configured config root, <see cref="ClaudeWorkerAdapter.SensitiveOutputRoot"/>
+    /// names claude's own default (<c>~/.claude</c>) — the root measured to silently refuse every
+    /// write into <c>BATON_OUTPUT_DIR</c> when a room directory resolves inside it.
+    /// </summary>
+    [Fact]
+    public void SensitiveOutputRoot_defaults_to_the_users_dot_claude_directory()
+    {
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
+
+        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+
+        Assert.Equal(expected, new ClaudeWorkerAdapter().SensitiveOutputRoot);
+    }
+
+    /// <summary>#599: an operator-configured config root is the sensitive root too, not just the default.</summary>
+    [Fact]
+    public void SensitiveOutputRoot_follows_an_operator_configured_config_root()
+    {
+        var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        using var scope = BatonEnvironmentSnapshot.BeginScope(
+            BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
+
+        Assert.Equal(testPath, new ClaudeWorkerAdapter().SensitiveOutputRoot);
+    }
+
+    /// <summary>
     /// Tripwire for the leak the CI post-test pollution check caught (see
     /// <see cref="BatonEnvironmentSnapshot.Blank"/>'s remarks): under a <c>BeginScope</c> home
     /// override, the launch config <see cref="ClaudeWorkerAdapter.Resolve"/> writes on every call must

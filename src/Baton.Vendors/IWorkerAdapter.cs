@@ -128,4 +128,27 @@ public interface IWorkerAdapter : Baton.Outcomes.IFailureClassifier, Baton.Statu
     /// </para>
     /// </remarks>
     bool WithheldWritesReachTheOutbox => false;
+
+    /// <summary>
+    /// The absolute directory this adapter's own vendor CLI treats as sensitive and refuses to write
+    /// under, regardless of the grant AER hands it — <see langword="null"/> when the adapter has no
+    /// such root (#599).
+    /// </summary>
+    /// <remarks>
+    /// Measured on claude only (2.1.220, Windows): a room directory under <c>~/.claude</c> (claude's
+    /// own config root) makes every write into <c>BATON_OUTPUT_DIR</c> refuse with "which is a
+    /// sensitive file", even though <see cref="WithheldWritesReachTheOutbox"/> is <see langword="true"/>
+    /// and the tool is otherwise pre-approved — a claude-native protection AER's own grant plumbing
+    /// cannot see or override. The refused write is silent from AER's own exit code (0, natural exit);
+    /// only the worker's own transcript names it. Every `agy` dispatch from the same scratch root in
+    /// the session that first measured this succeeded, so this is deliberately per-adapter rather than
+    /// a general room-directory constraint — an adapter that has not been measured against its own
+    /// config root answers <see langword="null"/>, and <see langword="null"/> means the CLI-side refusal
+    /// does NOT fire for it. That is the opposite fail-direction from
+    /// <see cref="WithheldWritesReachTheOutbox"/>'s <see langword="false"/> default, and deliberately so:
+    /// this member names a vendor-native refusal that was measured to exist for one vendor, not a
+    /// capability AER must prove before trusting; refusing every unmeasured adapter here would block
+    /// agy dispatches that were measured to succeed (#1823 review).
+    /// </remarks>
+    string? SensitiveOutputRoot => null;
 }
