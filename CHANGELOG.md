@@ -7,6 +7,28 @@ and `src/Baton.Vendors/CHANGELOG.md`, kept as history. New entries are prepended
 `vX.Y.Z`. See `release-please-config.json`. Everything below this line predates the split: the
 repo's single shared version through `0.14.0`.
 
+## [0.31.1](https://github.com/philipreese/baton/compare/v0.31.0...v0.31.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **glass:** Key the KV-cap banner on the worker's real 429 instead of two timestamps that share a write ([#1831](https://github.com/philipreese/baton/issues/1831)) ([4eb2578](https://github.com/philipreese/baton/commit/4eb2578ecc61e0025e5dabff1e490cee7fa764b2))
+
+
+### Documentation
+
+* **glass:** List the ntfy push configuration keys in the README ([#1830](https://github.com/philipreese/baton/issues/1830)) ([b2a94ae](https://github.com/philipreese/baton/commit/b2a94aed9496a9d4a3358f409bb876d5cc35c59c))
+
+
+### Tests
+
+* **vendor-verify:** Pin the claude sensitive-root write refusal as a sentinel ([#1832](https://github.com/philipreese/baton/issues/1832)) ([c3fcaae](https://github.com/philipreese/baton/commit/c3fcaae60492e9da6b5c2d9979110b5d04d2cc5a))
+
+
+### Miscellaneous
+
+* **release:** Collapse the three release-please components into one root package named baton ([#1837](https://github.com/philipreese/baton/issues/1837)) ([bcb4db7](https://github.com/philipreese/baton/commit/bcb4db7fe301ce1c81d337892693102d6892c7af))
+
 ## [0.14.0](https://github.com/aer-works/aer-flow/compare/v0.13.0...v0.14.0) (2026-07-18)
 
 
