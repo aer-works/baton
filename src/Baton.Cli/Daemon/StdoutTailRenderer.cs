@@ -246,10 +246,19 @@ internal static class StdoutTailRenderer
     /// </summary>
     private static string ProseFirstLine(string text, int limit = ProseFieldLimit)
     {
+        // This input is a parsed JSON string field, not the '\n'-only raw log SplitLines is scoped to:
+        // a tool_result echoing a Windows subprocess can carry CRLF. Python's str.splitlines() treats
+        // every universal-newline boundary as one break, so the first line ends at the first such char
+        // (Trim() has already removed any leading ones).
         var stripped = text.Trim();
-        var first = stripped.Length > 0 ? (SplitLines(stripped) is { Count: > 0 } lines ? lines[0] : "") : "";
+        var cut = stripped.IndexOfAny(PythonLineBoundaries);
+        var first = cut < 0 ? stripped : stripped[..cut];
         return CapToCodepoints(first, limit);
     }
+
+    /// <summary>The boundary set of Python's <c>str.splitlines()</c>.</summary>
+    private static readonly char[] PythonLineBoundaries =
+        ['\n', '\r', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029'];
 
     /// <summary>
     /// Port of pusher.py's <c>_prose_summarize_tool_input</c>: a <c>key=value, ...</c> one-liner off a

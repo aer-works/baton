@@ -122,7 +122,27 @@ public sealed class StdoutTailRendererTests : IDisposable
     }
 
     /// <summary>
-    /// Pins <see cref="StdoutTailRenderer.ElideBlobTokens"/>'s codepoint-vs-UTF-16-unit distinction
+    /// A tool_result body carrying CRLF (a Windows subprocess echoed back through the vendor): Python's
+    /// <c>str.splitlines()</c> treats "\r\n" as ONE boundary, so the first prose line is "line1" with no
+    /// stray '\r'. Second-reader review finding on PR-A2.
+    /// </summary>
+    [Fact]
+    public void ComputeTail_FirstProseLine_StopsAtCarriageReturn_LikePythonSplitlines()
+    {
+        var path = WriteLog("crlf.stdout.log", [
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"first\r\nsecond"}]}}""",
+            """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"abc","content":"dir out\r\nmore"}]}}""",
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"lone\rcr"}]}}""",
+        ]);
+
+        var tail = StdoutTailRenderer.ComputeTail(path, patterns: []);
+
+        Assert.Equal("first\n[tool_result: dir out]\nlone", tail);
+        Assert.DoesNotContain('\r', tail!);
+    }
+
+    /// <summary>
+    /// Pins the blob elider's codepoint-vs-UTF-16-unit distinction
     /// (see that method's doc comment) against a real pusher.py run. Second-reader review finding.
     /// </summary>
     [Fact]
