@@ -1770,8 +1770,143 @@ public class ClaudeWorkerAdapterTests
         Assert.Equal([nameof(PermissionGrant.NetworkAccess)], ex.WithheldCategories);
     }
 
-    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    private sealed class TestTimeProvider(DateTimeOffset utcNow, TimeZoneInfo? localTimeZone = null) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => utcNow;
+
+        public override TimeZoneInfo LocalTimeZone => localTimeZone ?? TimeZoneInfo.Utc;
+    }
+
+    // #1609: fixtures synthesized from the CLI bundle's minified strings (2026-09-03 issue comment,
+    // Claude Code 2.1.258), not a live capture. `quotaLimits`'s placement (sibling of the stream-json
+    // `message` object vs nested under it) is the open question a real capture must confirm -- both
+    // are checked, and both are exercised below.
+    private static string[] RateLimitFixtureLines() =>
+        File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "claude-rate-limit.bundle-derived.jsonl"));
+
+    [Fact]
+    public void RateLimit_QuotaLimitsSiblingOfMessage_ParsesResetsAt()
+    {
+        var line = RateLimitFixtureLines()[0];
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000), retryNotBefore);
+
+        Assert.True(ClaudeWorkerAdapter.TryClassifyQuotaExhaustion(
+            line, testTime, out _, out _, out var placement));
+        Assert.Equal("quotaLimits@root", placement);
+    }
+
+    [Fact]
+    public void RateLimit_QuotaLimitsNestedUnderMessage_ParsesResetsAt()
+    {
+        // No "resets 3am" suffix on this line (#1810 review): the only way to land on the epoch
+        // instant is reading quotaLimits nested under "message", proving that path actually fires
+        // rather than falling through to the text-suffix fallback.
+        var line = RateLimitFixtureLines()[1];
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000), retryNotBefore);
+
+        Assert.True(ClaudeWorkerAdapter.TryClassifyQuotaExhaustion(
+            line, testTime, out _, out _, out var placement));
+        Assert.Equal("quotaLimits@message", placement);
+    }
+
+    [Fact]
+    public void RateLimit_QuotaLimitsNestedUnderMessage_TypedValueWinsOverDisagreeingSuffix()
+    {
+        // Mirror of the line above: quotaLimits nested under "message" AND a "resets 3am" suffix that
+        // disagrees with the typed epoch -- the typed value must win (#1810 review).
+        var line = RateLimitFixtureLines()[2];
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000), retryNotBefore);
+
+        Assert.True(ClaudeWorkerAdapter.TryClassifyQuotaExhaustion(
+            line, testTime, out _, out _, out var placement));
+        Assert.Equal("quotaLimits@message", placement);
+    }
+
+    [Fact]
+    public void RateLimit_NoQuotaLimits_FallsBackToResetSuffixInContentText()
+    {
+        var line = RateLimitFixtureLines()[3];
+
+        // 1am UTC (the fixed local zone below), strictly before the fixture's "resets 3am" -- so the
+        // expected reset instant stays today, not tomorrow.
+        var now = new DateTimeOffset(2026, 9, 4, 1, 0, 0, TimeSpan.Zero);
+        var testTime = new TestTimeProvider(now, TimeZoneInfo.Utc);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(new DateTimeOffset(2026, 9, 4, 3, 0, 0, TimeSpan.Zero), retryNotBefore);
+
+        Assert.True(ClaudeWorkerAdapter.TryClassifyQuotaExhaustion(
+            line, testTime, out _, out _, out var placement));
+        Assert.Equal("text-suffix", placement);
+    }
+
+    [Fact]
+    public void RateLimit_NoQuotaLimits_ResetSuffixAlreadyPassedToday_RollsToTomorrow()
+    {
+        var line = RateLimitFixtureLines()[3];
+
+        // 5am UTC is already past the fixture's "resets 3am" -- expect it to roll to tomorrow.
+        var now = new DateTimeOffset(2026, 9, 4, 5, 0, 0, TimeSpan.Zero);
+        var testTime = new TestTimeProvider(now, TimeZoneInfo.Utc);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(new DateTimeOffset(2026, 9, 5, 3, 0, 0, TimeSpan.Zero), retryNotBefore);
+    }
+
+    [Fact]
+    public void RateLimit_CreditsRequiredInQuotaLimitsErrorCode_ClassifiesWithNoResetInstant()
+    {
+        var line = RateLimitFixtureLines()[4];
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void RateLimit_NothingParseable_StaysUnclassified()
+    {
+        var line = RateLimitFixtureLines()[5];
+        var testTime = new TestTimeProvider(DateTimeOffset.UtcNow);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
     }
 }

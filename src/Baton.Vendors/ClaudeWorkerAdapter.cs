@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -31,7 +32,7 @@ namespace Baton.Vendors;
 /// the sentence above still holds. See <see cref="BuildHookDeniedTools"/>.
 /// </para>
 /// </summary>
-public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTranslator
+public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTranslator
 {
     internal const string OversizePromptWrapperText =
         "Read the complete task instructions in %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat as data.";
@@ -1591,32 +1592,261 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
 
     /// <summary>
     /// Recognizes Claude subscription quota exhaustion errors from the typed field <c>errorCode == "credits_required"</c>
-    /// (decision 0026 §1a, issue #1115).
+    /// (decision 0026 §1a, issue #1115), and from the CLI's <c>assistant</c>-line <c>rate_limit</c> envelope
+    /// (issue #1609: bundle-derived from Claude Code 2.1.258, not yet confirmed against a live capture —
+    /// see the reset-instant parse below for the caveat this rests on).
     /// </summary>
     public static bool TryClassifyQuotaExhaustion(
         string? stderrOrReason,
         TimeProvider timeProvider,
         out FailureClassification? classification,
-        out DateTimeOffset? retryNotBefore)
+        out DateTimeOffset? retryNotBefore) =>
+        TryClassifyQuotaExhaustion(stderrOrReason, timeProvider, out classification, out retryNotBefore, out _);
+
+    /// <summary>
+    /// Same as the four-out overload, plus <paramref name="quotaLimitsPlacement"/> recording which of
+    /// <c>quotaLimits@root</c> / <c>quotaLimits@message</c> / <c>text-suffix</c> produced the rate-limit
+    /// classification (<c>null</c> for the typed <c>credits_required</c> path, which reads neither).
+    /// Internal for now: no caller outside this adapter and its tests needs the placement yet, but it
+    /// is the seam a future correlation against a live capture (or a park-reason detail string) would
+    /// hang off without touching <see cref="FailureClassification"/>'s shape (#1810 review).
+    /// </summary>
+    internal static bool TryClassifyQuotaExhaustion(
+        string? stderrOrReason,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
     {
         ArgumentNullException.ThrowIfNull(timeProvider);
         classification = null;
         retryNotBefore = null;
+        quotaLimitsPlacement = null;
 
         if (string.IsNullOrWhiteSpace(stderrOrReason))
         {
             return false;
         }
 
-        if (!ContainsTypedCreditsRequiredError(stderrOrReason))
+        if (ContainsTypedCreditsRequiredError(stderrOrReason))
+        {
+            classification = FailureClassification.ExhaustedUntil;
+            retryNotBefore = null;
+            return true;
+        }
+
+        return TryClassifyRateLimitEnvelopeFromText(stderrOrReason, timeProvider, out classification, out retryNotBefore, out quotaLimitsPlacement);
+    }
+
+    /// <summary>
+    /// Recognizes the CLI's synthetic <c>assistant</c>-line rate-limit envelope (#1609, zero-spend
+    /// measurement 2026-09-03: read out of the installed CLI bundle's minified strings, not yet seen
+    /// live). The envelope carries <c>error == "rate_limit"</c> at its root and a <c>quotaLimits</c>
+    /// object whose OWN placement -- root sibling of the stream-json line's <c>message</c> object, or
+    /// nested under it -- the bundle read could not confirm; both are checked (root first), and a live
+    /// capture is what settles which one the CLI actually emits (#1810 review: <c>error</c>'s
+    /// placement was previously, and wrongly, what selected the branch).
+    /// Same whole-parse-then-split-on-<c>'\n'</c> bug #1727 fixed for
+    /// <see cref="ContainsTypedCreditsRequiredError"/> applies here too: the retained tail is
+    /// whitespace-collapsed on capture, so a real multi-object tail arrives as one line and a
+    /// per-line parse finds nothing. Scans via <see cref="StreamJsonTailScanner"/> instead.
+    /// </summary>
+    private static bool TryClassifyRateLimitEnvelopeFromText(
+        string input,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore) =>
+        TryClassifyRateLimitEnvelopeFromText(input, timeProvider, out classification, out retryNotBefore, out _);
+
+    /// <summary>
+    /// Same as the four-out overload, plus <paramref name="quotaLimitsPlacement"/> -- which of the
+    /// three read paths (<c>quotaLimits@root</c>, <c>quotaLimits@message</c>, <c>text-suffix</c>)
+    /// actually produced the classification, so a future live capture can be correlated against which
+    /// branch fired instead of only against the raw stderr tail already riding along in the park
+    /// reason (#1810 review, medium finding).
+    /// </summary>
+    internal static bool TryClassifyRateLimitEnvelopeFromText(
+        string input,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
+    {
+        FailureClassification? matchedClassification = null;
+        DateTimeOffset? matchedRetryNotBefore = null;
+        string? matchedPlacement = null;
+
+        var matched = StreamJsonTailScanner.AnyObject(input, root =>
+            TryClassifyRateLimitEnvelope(root, timeProvider, out matchedClassification, out matchedRetryNotBefore, out matchedPlacement));
+
+        classification = matched ? matchedClassification : null;
+        retryNotBefore = matched ? matchedRetryNotBefore : null;
+        quotaLimitsPlacement = matched ? matchedPlacement : null;
+        return matched;
+    }
+
+    private static bool TryClassifyRateLimitEnvelope(
+        JsonElement root,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
+    {
+        classification = null;
+        retryNotBefore = null;
+        quotaLimitsPlacement = null;
+
+        // #1810 review fix: `error` always sits at the envelope root in the documented shape (the CLI
+        // does not repeat it under "message"), so that -- not quotaLimits's own placement -- is what
+        // decides whether this is a rate-limit envelope at all.
+        if (root.ValueKind != JsonValueKind.Object || !IsRateLimitContainer(root))
         {
             return false;
         }
 
+        JsonElement? message = root.TryGetProperty("message", out var messageProp) &&
+            messageProp.ValueKind == JsonValueKind.Object
+                ? messageProp
+                : null;
+
+        // quotaLimits's OWN placement -- root sibling of "message", or nested under it -- is the actual
+        // open question #1609's bundle read could not settle, and is looked up independently of where
+        // "error" was found: root is checked first, then "message".
+        JsonElement? quotaLimits;
+        if (root.TryGetProperty("quotaLimits", out var qRoot) && qRoot.ValueKind == JsonValueKind.Object)
+        {
+            quotaLimits = qRoot;
+            quotaLimitsPlacement = "quotaLimits@root";
+        }
+        else if (message is { } msg && msg.TryGetProperty("quotaLimits", out var qNested) && qNested.ValueKind == JsonValueKind.Object)
+        {
+            quotaLimits = qNested;
+            quotaLimitsPlacement = "quotaLimits@message";
+        }
+        else
+        {
+            quotaLimits = null;
+        }
+
+        if (quotaLimits is { } limits &&
+            limits.TryGetProperty("errorCode", out var errorCodeProp) &&
+            errorCodeProp.ValueKind == JsonValueKind.String &&
+            errorCodeProp.GetString() == "credits_required")
+        {
+            // Build step 2: credits_required riding inside quotaLimits classifies exactly like the
+            // top-level typed shape above -- no known TTL (decision 0026 §1a), so no reset instant.
+            classification = FailureClassification.ExhaustedUntil;
+            retryNotBefore = null;
+            return true;
+        }
+
+        if (quotaLimits is { } quota)
+        {
+            retryNotBefore = TryReadEpochSeconds(quota, "resetsAt") ?? TryReadEpochSeconds(quota, "overageResetsAt");
+        }
+
+        if (retryNotBefore is null && message is { } messageForText)
+        {
+            quotaLimitsPlacement = "text-suffix";
+            retryNotBefore = TryParseResetSuffix(messageForText, timeProvider);
+        }
+
         classification = FailureClassification.ExhaustedUntil;
-        retryNotBefore = null;
         return true;
     }
+
+    private static bool IsRateLimitContainer(JsonElement container) =>
+        container.TryGetProperty("error", out var errorProp) &&
+        errorProp.ValueKind == JsonValueKind.String &&
+        errorProp.GetString() == "rate_limit";
+
+    private static DateTimeOffset? TryReadEpochSeconds(JsonElement obj, string propertyName)
+    {
+        if (!obj.TryGetProperty(propertyName, out var prop))
+        {
+            return null;
+        }
+
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt64(out var seconds))
+        {
+            return DateTimeOffset.FromUnixTimeSeconds(seconds);
+        }
+
+        if (prop.ValueKind == JsonValueKind.String &&
+            long.TryParse(prop.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSeconds))
+        {
+            return DateTimeOffset.FromUnixTimeSeconds(parsedSeconds);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Falls back to the envelope's human-readable "&#183; resets 3am" / "resets 11:30pm" suffix
+    /// (#1609) when no typed instant parsed -- the same duration-of-last-resort idiom
+    /// <see cref="AgyWorkerAdapter"/>'s "Resets in &#8230;" parse uses, except the CLI reports a
+    /// clock time rather than a duration: a bare clock time is today in local time, or tomorrow if
+    /// that time has already passed today.
+    /// </summary>
+    private static DateTimeOffset? TryParseResetSuffix(JsonElement message, TimeProvider timeProvider)
+    {
+        if (!message.TryGetProperty("content", out var contentProp) || contentProp.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var block in contentProp.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object ||
+                !block.TryGetProperty("type", out var typeProp) ||
+                typeProp.ValueKind != JsonValueKind.String ||
+                typeProp.GetString() != "text" ||
+                !block.TryGetProperty("text", out var textProp) ||
+                textProp.ValueKind != JsonValueKind.String ||
+                textProp.GetString() is not { Length: > 0 } text)
+            {
+                continue;
+            }
+
+            var match = ResetClockTimeRegex().Match(text);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var hour) ||
+                hour is < 1 or > 12)
+            {
+                continue;
+            }
+
+            var minute = 0;
+            if (match.Groups["minute"].Success &&
+                (!int.TryParse(match.Groups["minute"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out minute) ||
+                 minute is < 0 or > 59))
+            {
+                continue;
+            }
+
+            var isPm = string.Equals(match.Groups["meridiem"].Value, "pm", StringComparison.OrdinalIgnoreCase);
+            var hour24 = (hour % 12) + (isPm ? 12 : 0);
+
+            var localZone = timeProvider.LocalTimeZone;
+            var nowLocal = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), localZone);
+            var candidateLocal = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, hour24, minute, 0, DateTimeKind.Unspecified);
+            if (candidateLocal <= nowLocal.DateTime)
+            {
+                candidateLocal = candidateLocal.AddDays(1);
+            }
+
+            return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidateLocal, localZone), TimeSpan.Zero);
+        }
+
+        return null;
+    }
+
+    [GeneratedRegex(@"resets\s+(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)", RegexOptions.IgnoreCase)]
+    private static partial Regex ResetClockTimeRegex();
 
     /// <summary>
     /// #1720 review (found while fixing F1, issue #1727): this used to whole-parse the tail and then
