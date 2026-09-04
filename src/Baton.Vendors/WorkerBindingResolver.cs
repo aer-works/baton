@@ -164,7 +164,7 @@ public static class WorkerBindingResolver
 
     /// <summary>
     /// #529, refused at the execution choke point. The rule itself lives on
-    /// <see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool)"/> — every surface that needs the
+    /// <see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/> — every surface that needs the
     /// same answer asks it there rather than restating the conditions (#645).
     /// </summary>
     private static void RefuseIfShellDefeatsAWithheldCategory(string workerName, PermissionGrant? grant)

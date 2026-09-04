@@ -3102,12 +3102,17 @@ the vendor's own `--allowedTools` matcher — and under agy's `--dangerously-ski
 but its tool-name list (#623) — so baton cannot guarantee e.g. `gh pr view*` reaches only github.com,
 and the operator's outer bound must not lean on that assertion. A role that needs `gh` under a
 network-denied ceiling is supposed to stop working; that is the ceiling doing its job. Built:
-`PermissionGrant.CategoriesDefeatedByTheShell(bool honorReadOnlyAssertion = true)` takes a
-caller-supplied "honour the author's read-only assertion?" input, defaulting `true` (#1456's behaviour
-everywhere else — `WorkerBindingResolver`, `DispatchSpecLinter` via `NetworkReachable`); `ProjectCeilingGate.Apply`
-is the one caller that passes `false`, so a capped grant that still carries `RunShellCommands` with
-any pattern (scoped or not) reaching a category the ceiling withholds is refused as incoherent exactly
-as an unscoped shell would be — never narrowed into a false "coherent" state by the author's own vouch.
+`PermissionGrant.CategoriesDefeatedByTheShell(bool honorReadOnlyAssertion = true, IReadOnlySet<string>?
+strictCategories = null)` takes a caller-supplied "honour the author's read-only assertion?" input,
+defaulting `true` (#1456's behaviour everywhere else — `WorkerBindingResolver`, `DispatchSpecLinter`
+via `NetworkReachable`), plus a per-category override: `strictCategories` names the subset of
+`WriteFiles`/`NetworkAccess` for which the exemption is withheld regardless of that default.
+`ProjectCeilingGate.Apply` is the one caller that populates it — with the categories the CEILING itself
+sets `false`, not the post-cap grant — so a category the ceiling actually closes is refused exactly as
+an unscoped shell would be, while a category the ceiling leaves open stays exempt even when the role's
+own grant already declares it `false` (the #1456 canonical shape, e.g. the built-in `review` role:
+`WriteFiles:false` + `NetworkAccess:false` + `ShellCommandsAreReadOnly`) — the ceiling's cap is a
+boolean AND of both sources, so the capped value alone cannot tell which one closed it.
 
 **Grants fail closed — as a dispatch-time obligation, not a measured runtime property.** The rule:
 if a denial cannot be enforced for the chosen vendor, the run must not start. Read it together with
