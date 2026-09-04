@@ -2055,23 +2055,14 @@ def _skills_config_dir_flat_and_shadow():
        "`ClaudeWorkerAdapter.SensitiveOutputRoot`/`RunCommand`'s dispatch-time refusal (#1823, #599) "
        "rests on", sentinel=True)
 def _claude_sensitive_root_write_refused():
-    """Two arms, one variable: whether the write target sits inside CLAUDE_CONFIG_DIR. Both arms run
-    with the SAME CLAUDE_CONFIG_DIR override -- never the operator's real ~/.claude, which is only
-    ever read for its .credentials.json bytes (copied in, as the skills check above does, and
-    removed after) -- so the only difference between arms is the target path's location relative to
-    that redirected root.
+    """The full measurement, its rationale, and what it narrows in IWorkerAdapter.SensitiveOutputRoot's
+    own doc comment all live in docs/vendor-doc-audit.md's #1827 entry -- read that first.
 
-    The redirected root's own directory is deliberately named `.claude` (`<tmp>/.claude`, not just
-    `<tmp>`): a probe run first, live, found the refusal keys off a literal `.claude` path segment
-    rather than off the CLAUDE_CONFIG_DIR *value* -- an override pointed at an arbitrarily-named temp
-    dir wrote through with no refusal at all, on this same CLI build, while the identical override
-    named `.claude` reproduced it. That is narrower than IWorkerAdapter.SensitiveOutputRoot's own
-    doc comment implies (it reads as config-root-value-aware); recorded as its own row in
-    docs/vendor-doc-audit.md rather than silently working around it here.
-
-    The outside-root arm is the control: without it, a write that fails for some unrelated reason
-    (auth, a flaky model turn, the --add-dir boundary) would look identical to the vendor's own
-    refusal. If the control does not write, this settles nothing about the refusal either way.
+    Mechanically: an `in_root` arm and a control, sharing one CLAUDE_CONFIG_DIR override (credentials
+    copied in, as the skills check above does, never the operator's real ~/.claude), differing only
+    in where each writes relative to it. That override's own leaf directory is spelled `.claude`
+    rather than a random prefix -- the audit entry explains why this is load-bearing, not cosmetic.
+    A control that fails to write settles nothing about the other arm either way.
     """
     real_creds = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
     if not os.path.isfile(real_creds):
