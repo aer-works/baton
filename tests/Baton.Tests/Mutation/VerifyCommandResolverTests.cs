@@ -489,14 +489,9 @@ public sealed class VerifyCommandResolverTests
     }
 
     /// <summary>
-    /// #1797, red-first: exit 0 with output that enumerates NOTHING is not the positive listing
-    /// spec/baton.md §3's second producer requires ("A SUCCESSFUL `pixi task list` whose output
-    /// positively does not contain the role's task") — it is the probe having answered without actually
-    /// listing anything (a degraded/short-circuited run under contention, a warning-only stderr with no
-    /// stdout, etc.), the same engine-environment class as a non-zero exit. Before this fix, an empty
-    /// exit-0 output was indistinguishable from a real listing that omits the task and returned
-    /// <c>"task absent: gates-quiet"</c> — the pre-flight `VerifyNotRun` producer, which never returns
-    /// (MutationInterface.cs) and so let a step whose verify never ran settle Succeeded.
+    /// #1797, red-first: a stub that exits 0 without printing pixi's own listing header. Rationale for
+    /// why this must defer rather than read as absence lives on <see cref="VerifyCommandResolver.TaskListHeader"/>'s
+    /// own doc — not restated here.
     /// </summary>
     [Fact]
     public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_exits_zero_with_no_listing()
@@ -590,6 +585,7 @@ public sealed class VerifyCommandResolverTests
             var resolved = VerifyCommandResolver.Resolve(
                 committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
 
+            // wait-ok: forces cancellation mid-sleep against the 30s sleeper below, not a wait for external state.
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
 
             var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
