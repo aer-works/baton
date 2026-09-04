@@ -33,5 +33,13 @@ public abstract record LogEntry
 
     /// <summary>A line wrapping a room event (spec/baton.md §2's <c>room.jsonl</c> log).</summary>
     public sealed record RoomLogEntry(RoomEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
+
+    /// <summary>
+    /// #1779: an <c>owner</c> discriminator this binary does not recognize -- a newer writer's log
+    /// entry kind, not corrupt data. Same shape and same lifetime as <see cref="FlowEvent.UnknownFlowEvent"/>:
+    /// constructed only by <see cref="Baton.Store.FlowEventLogJson"/>'s converter and filtered out by
+    /// <see cref="Baton.Store.FlowEventLogReader"/> before it is ever returned.
+    /// </summary>
+    internal sealed record UnknownLogEntry(string Owner, string RawJson) : LogEntry;
 }
 

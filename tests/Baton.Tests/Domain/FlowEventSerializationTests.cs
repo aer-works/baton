@@ -190,10 +190,36 @@ public class FlowEventSerializationTests
         Assert.Equal(original.GetType(), deserialized.GetType());
     }
 
+    /// <summary>
+    /// #1779 owner ruling: an unrecognized <c>eventType</c> is a newer writer, not corruption -- it
+    /// deserializes to the internal <see cref="FlowEvent.UnknownFlowEvent"/> sentinel rather than
+    /// throwing. Goes through <see cref="FlowEventLogJson.DeserializeLine"/> rather than a bare
+    /// <c>JsonSerializer.Deserialize&lt;FlowEvent&gt;</c> call, because the tolerance lives at that
+    /// line-level entry point (see its own remarks for why it isn't a <see cref="JsonConverter{T}"/>
+    /// on <see cref="FlowEventLogJson.Options"/>). <see cref="Store.FlowEventLogReaderTests"/> covers
+    /// the skip-and-count behaviour the sentinel exists to enable; this only pins the contract.
+    /// </summary>
     [Fact]
-    public void Deserializing_an_unknown_event_type_discriminator_throws()
+    public void Deserializing_an_unknown_event_type_discriminator_does_not_throw()
     {
-        const string json = """{"eventType":"somethingElse"}""";
+        const string json = """{"owner":"flow","Event":{"eventType":"somethingElse"}}""";
+
+        var deserialized = FlowEventLogJson.DeserializeLine(json);
+
+        var flowLogEntry = Assert.IsType<LogEntry.FlowLogEntry>(deserialized);
+        var unknown = Assert.IsType<FlowEvent.UnknownFlowEvent>(flowLogEntry.Event);
+        Assert.Equal("somethingElse", unknown.Kind);
+    }
+
+    /// <summary>
+    /// Polarity control for the test above: a KNOWN kind with a lost/renamed required member must
+    /// still throw -- "loud beats silent" is unchanged for that case, only for a genuinely unknown
+    /// discriminator (#1779).
+    /// </summary>
+    [Fact]
+    public void Deserializing_a_known_event_type_missing_a_required_member_still_throws()
+    {
+        const string json = """{"eventType":"executionFailed"}"""; // ExecutionId has no default -- required.
 
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<FlowEvent>(json, FlowEventLogJson.Options));
     }

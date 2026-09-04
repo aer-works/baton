@@ -3,9 +3,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Baton.Domain;
 using Baton.Store;
+using Baton.Tests.Projection;
 
 namespace Baton.Tests.Store;
 
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public class FlowEventLogReaderTests
 {
     private static FlowEvent.ExecutionSucceeded MakeEvent(string id) => new(new ExecutionId(id));
@@ -342,5 +344,63 @@ public class FlowEventLogReaderTests
 
         var sharingEx = new IOException("Sharing violation", hresult: FileHolderProbe.ErrorSharingViolationHResult);
         Assert.True(FileHolderProbe.IsSharingViolation(sharingEx));
+    }
+
+    /// <summary>
+    /// #1779 owner ruling: an unrecognized <c>eventType</c>/<c>owner</c> is a newer writer, not
+    /// corruption — the read still succeeds, the unrecognized lines are dropped from the returned
+    /// sequence, and the count is reported once (not per line) on the same stderr channel
+    /// <c>[ProjectionCheckpoint] Fallback to full replay LOUDLY</c> already uses.
+    /// </summary>
+    [Fact]
+    public async Task ReadAllAsync_skips_and_counts_unknown_event_kinds_instead_of_throwing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var known1 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-1")), typeof(LogEntry), FlowEventLogJson.Options);
+            var known2 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-2")), typeof(LogEntry), FlowEventLogJson.Options);
+            var known3 = JsonSerializer.Serialize(
+                (LogEntry)new LogEntry.FlowLogEntry(MakeEvent("exec-3")), typeof(LogEntry), FlowEventLogJson.Options);
+
+            // A "flow" line (known owner) carrying an eventType this binary has never heard of --
+            // the shape a newer CLI writes and an older one must still be able to read past.
+            const string unknownEventKind = """{"owner":"flow","Event":{"eventType":"somethingNewer"}}""";
+            // An owner discriminator this binary has never heard of at all.
+            const string unknownOwnerKind = """{"owner":"somethingEvenNewer"}""";
+
+            await File.WriteAllTextAsync(
+                path,
+                string.Join('\n', [known1, unknownEventKind, known2, unknownOwnerKind, known3, string.Empty]),
+                Encoding.UTF8,
+                TestContext.Current.CancellationToken);
+
+            using var sw = new StringWriter();
+            var originalErr = Console.Error;
+            Console.SetError(sw);
+
+            IReadOnlyList<FlowEvent> events;
+            try
+            {
+                events = await new FlowEventLogReader(path).ReadAllAsync(TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                Console.SetError(originalErr);
+            }
+
+            var ids = events.Cast<FlowEvent.ExecutionSucceeded>().Select(e => e.ExecutionId.Value);
+            Assert.Equal(new[] { "exec-1", "exec-2", "exec-3" }, ids);
+
+            var errOutput = sw.ToString();
+            Assert.Contains("Skipped 2 unknown event kind line(s)", errOutput);
+            Assert.Contains("somethingNewer", errOutput);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
     }
 }

@@ -46,12 +46,36 @@ public class LogEntrySerializationTests
     }
 
 
+    /// <summary>
+    /// #1779 owner ruling: an unrecognized <c>owner</c> is a newer writer, not corruption -- it
+    /// deserializes to the internal <see cref="LogEntry.UnknownLogEntry"/> sentinel rather than
+    /// throwing. Goes through <see cref="FlowEventLogJson.DeserializeLine"/> (see its own remarks for
+    /// why the tolerance lives there rather than in a <see cref="JsonConverter{T}"/> on
+    /// <see cref="FlowEventLogJson.Options"/>). <see cref="Store.FlowEventLogReaderTests"/> covers the
+    /// skip-and-count behaviour the sentinel exists to enable; this only pins the contract.
+    /// </summary>
     [Fact]
-    public void Deserializing_an_unknown_owner_discriminator_throws()
+    public void Deserializing_an_unknown_owner_discriminator_does_not_throw()
     {
         const string json = """{"owner":"somethingElse"}""";
 
-        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<LogEntry>(json, FlowEventLogJson.Options));
+        var deserialized = FlowEventLogJson.DeserializeLine(json);
+
+        var unknown = Assert.IsType<LogEntry.UnknownLogEntry>(deserialized);
+        Assert.Equal("somethingElse", unknown.Owner);
+    }
+
+    /// <summary>
+    /// Polarity control for the test above: a KNOWN owner ("flow") whose payload is missing a required
+    /// member still throws -- "loud beats silent" is unchanged for that case, only for a genuinely
+    /// unknown discriminator (#1779).
+    /// </summary>
+    [Fact]
+    public void Deserializing_a_known_owner_with_a_malformed_event_still_throws()
+    {
+        const string json = """{"owner":"flow","Event":{"eventType":"executionFailed"}}""";
+
+        Assert.Throws<JsonException>(() => FlowEventLogJson.DeserializeLine(json));
     }
 
     [Fact]
