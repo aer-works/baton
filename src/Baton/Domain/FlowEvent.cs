@@ -179,11 +179,21 @@ public abstract record FlowEvent
     public sealed record WorkflowResumed(DecisionId DecisionId) : FlowEvent;
 
     /// <summary>Flow has scheduled a retry backoff deadline for a failed step attempt.</summary>
+    /// <param name="EnginePid">
+    /// #1577: the same (pid, start-time) pair <see cref="ExecutionRequestAccepted"/> stamps -- why a
+    /// step's retry wait needs its own copy is <see cref="Mutation.MutationInterface"/>'s
+    /// <c>engineStampedStepIds</c> remarks. A later, identical-schedule re-append with a NEW identity
+    /// is a revival renewal, never a re-schedule -- <see cref="Projection.StateProjector"/> applies it
+    /// the same idempotent way as the first.
+    /// </param>
+    /// <param name="EngineStartTime">Paired with <paramref name="EnginePid"/>; see its remarks.</param>
     public sealed record StepRetryScheduled(
         StepId StepId,
         ExecutionId ForExecutionId,
         DateTimeOffset RetryNotBefore,
-        int RetryDelayMs) : FlowEvent;
+        int RetryDelayMs,
+        int? EnginePid = null,
+        DateTimeOffset? EngineStartTime = null) : FlowEvent;
 
     /// <summary>
     /// #1586 S1: a scheduled retry (<see cref="StepRetryScheduled"/>) was voided without ever being

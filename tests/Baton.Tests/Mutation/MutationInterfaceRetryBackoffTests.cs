@@ -1762,4 +1762,109 @@ public class MutationInterfaceRetryBackoffTests
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }
+
+    // #1577: pins MutationInterface.PumpToFixedPointAsync's engineStampedStepIds renewal (its own
+    // remarks have why) at the pump level -- a fresh StepRetryScheduled, this process's own pid,
+    // before the wait on the (unchanged) deadline actually starts.
+    [Fact]
+    public async Task Test1577_Revived_pump_stamps_its_own_identity_on_a_backoff_it_did_not_create()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var now = new DateTimeOffset(2026, 9, 4, 12, 0, 0, TimeSpan.Zero);
+        var fakeTime = new FakeTimeProvider(now);
+        var retryNotBefore = now.AddMinutes(30);
+
+        try
+        {
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-retry-1577"),
+                new WorkflowTemplateId("template-retry-1577"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(StepA, "worker-a", [], ["out.txt"], DependsOn: [], RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady))
+                ]);
+
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
+                    ExitWithFailureCode(),
+                    TimeSpan.FromSeconds(30))
+            };
+
+            // The stranded shape: a prior pump (crashed, or a plain exit) already scheduled this
+            // step's backoff and recorded no engine identity for it (the legacy/foreign-pump shape --
+            // whether never stamped or stamped by a since-dead process reads identically here, since
+            // this pump has no memory of having written it either way).
+            var firstAttempt = new ExecutionId("a-1");
+            await using (var writerInit = new FlowEventLogWriter(logPath))
+            {
+                var ct = TestContext.Current.CancellationToken;
+                await writerInit.AppendAsync(new FlowEvent.ExecutionRequestAccepted(
+                    new ExecutionRequest(firstAttempt, new WorkflowId("wf-1577"), StepA, "worker-a", [], ["out.txt"], TimeSpan.FromSeconds(30), [], new Dictionary<StepId, ExecutionId>())), ct);
+                await writerInit.AppendAsync(new FlowEvent.ExecutionFailed(firstAttempt, FailureClassification.Retryable, "boom"), ct);
+                await writerInit.AppendAsync(new FlowEvent.StepRetryScheduled(StepA, firstAttempt, retryNotBefore, RetryDelayMs: 1_800_000), ct);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var dispatcher = new CoreDispatcher(writer);
+
+            var pumpTask = MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-1577"),
+                roomDirectory,
+                snapshot,
+                bindings,
+                artifactsRoot,
+                reader,
+                writer,
+                dispatcher,
+                timeProvider: fakeTime,
+                jitterSource: () => 0.0,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            // Positive signal that this revived pump is the one now waiting: a SECOND
+            // StepRetryScheduled for the same step/execution/deadline, carrying THIS process's own
+            // identity (the pump runs in-process in this test, so its pid is the test's own).
+            var stopwatch = Stopwatch.StartNew();
+            FlowEvent.StepRetryScheduled? renewal = null;
+            while (renewal is null)
+            {
+                var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+                renewal = events.OfType<FlowEvent.StepRetryScheduled>()
+                    .FirstOrDefault(e => e.ForExecutionId == firstAttempt && e.EnginePid is not null);
+
+                if (renewal is null)
+                {
+                    if (pumpTask.IsCompleted)
+                    {
+                        await pumpTask;
+                        Assert.Fail("Pump completed without renewing the revived step's engine identity.");
+                    }
+
+                    Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(60), "Timed out waiting for the identity renewal.");
+                    await Task.Delay(10, TestContext.Current.CancellationToken); // wait-ok: short poll interval, bounded by the 60s stopwatch above
+                }
+            }
+
+            Assert.Equal(StepA, renewal.StepId);
+            Assert.Equal(retryNotBefore, renewal.RetryNotBefore);
+            Assert.Equal(Environment.ProcessId, renewal.EnginePid);
+            Assert.NotNull(renewal.EngineStartTime);
+
+            // Only one renewal for the whole wait -- not once per MaxParkWaitChunk re-arm.
+            var eventsMid = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Single(eventsMid.OfType<FlowEvent.StepRetryScheduled>(), e => e.EnginePid is not null);
+
+            var finalState = await AdvanceUntilPumpCompletesAsync(fakeTime, pumpTask, TimeSpan.FromMinutes(5));
+            Assert.Equal(StepStatus.Failed, finalState.Steps.Single(s => s.StepId == StepA).Status);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
 }

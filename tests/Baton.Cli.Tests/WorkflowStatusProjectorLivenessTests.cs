@@ -223,6 +223,63 @@ public sealed class WorkflowStatusProjectorLivenessTests
     }
 
     [Fact]
+    public void A_revived_pump_renewing_a_pending_backoff_reports_liveness_alive_off_the_new_stamp()
+    {
+        // #1577: pins WorkflowStatusView's engineIdentityByExecutionId read (its own remarks have
+        // why) -- the renewal, chronologically after the original accept, must be what the probe
+        // reads, live pid included, not the dead identity the original accept still carries.
+        var executionId = new ExecutionId("exec-1");
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId), EnginePid: deadPid, EngineStartTime: deadStartTime);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddMinutes(5);
+        var livePid = Environment.ProcessId;
+        var liveStartTime = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, "transient", RetryNotBefore: retryNotBefore),
+            new FlowEvent.StepRetryScheduled(StepId, executionId, retryNotBefore, RetryDelayMs: 5000, EnginePid: deadPid, EngineStartTime: deadStartTime),
+            // The revival renewal: same schedule, THIS (live) process's identity.
+            new FlowEvent.StepRetryScheduled(StepId, executionId, retryNotBefore, RetryDelayMs: 5000, EnginePid: livePid, EngineStartTime: liveStartTime),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("Failed", step.State);
+        Assert.Equal("alive", step.Liveness);
+    }
+
+    [Fact]
+    public void A_genuinely_dead_engine_with_no_revival_renewal_still_reports_liveness_dead()
+    {
+        // Control for the test above: without a renewal event, the same shape must keep reading dead
+        // -- #1577's fix must not accidentally soften the real Stalled case it leaves untouched.
+        var executionId = new ExecutionId("exec-1");
+        var (deadPid, deadStartTime) = DeadProcessIdentity();
+        var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId), EnginePid: deadPid, EngineStartTime: deadStartTime);
+        var retryNotBefore = DateTimeOffset.UtcNow.AddMinutes(5);
+        var events = new FlowEvent[]
+        {
+            accepted,
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Retryable, "transient", RetryNotBefore: retryNotBefore),
+            new FlowEvent.StepRetryScheduled(StepId, executionId, retryNotBefore, RetryDelayMs: 5000, EnginePid: deadPid, EngineStartTime: deadStartTime),
+        };
+
+        var state = StateProjector.Project(events, OneStepSnapshot());
+        var entries = events.Select(e => (LogEntry)new LogEntry.FlowLogEntry(e)).ToList();
+
+        var view = WorkflowStatusProjector.Project(state, OneStepSnapshot(), Path.GetTempPath(), entries);
+
+        var step = Assert.Single(view.Steps);
+        Assert.Equal("Failed", step.State);
+        Assert.Equal("dead", step.Liveness);
+    }
+
+    [Fact]
     public void A_Stalled_park_keeps_reporting_its_now_past_reset_instant_rather_than_clearing_it()
     {
         // #1513: liveness confirming the scheduling engine dead is a display-only downgrade at the
