@@ -42,6 +42,18 @@ public class CancelRequestPollerTests
             Environment: [],
             UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
 
+    private static ExecutionRequest MakeStepLessRequest(ExecutionId executionId)
+        => new(
+            executionId,
+            new WorkflowId("poller-test"),
+            StepId: null,
+            "worker",
+            Inputs: [],
+            Outputs: [],
+            Timeout: null,
+            Environment: [],
+            UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
     [Fact]
     public async Task Successful_delivery_when_registry_holds_target_delivers_and_consumes()
     {
@@ -106,6 +118,55 @@ public class CancelRequestPollerTests
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // D2 (#1530 seam design, #1556 PR 1 fix): a step-less supplementary execution has no StepState of
+    // its own, so the pre-collapse settle re-check — which read FlowState.Steps only — could never
+    // find it and always fell through to "too late (it already settled)", even while the execution
+    // was still pending. ArrestableExecutions.Find now sees it via FlowState.StepLessExecutions. Its
+    // control is the pre-existing settled-and-registered-nowhere test above (both report the target
+    // as not delivered; only a step-less-but-still-pending one must be told "still pending", not
+    // "too late" — one condition apart, per the v-and-v polarity requirement).
+    [Fact]
+    public async Task A_step_less_execution_still_pending_is_left_pending_not_declared_too_late()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        var originalError = Console.Error;
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-step-less");
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeStepLessRequest(execId)), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "exec-step-less", TestContext.Current.CancellationToken);
+
+            // Not in the registry (no live process behind a step-less execution ever registers) —
+            // delivery fails, so the settle re-check is what decides whether this is too-late or
+            // still-pending.
+            var registry = new InFlightExecutionRegistry();
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.True(File.Exists(requestPath), "request must remain pending — the target has not settled");
+            Assert.False(File.Exists($"{requestPath}.consumed"));
+            Assert.False(File.Exists($"{requestPath}.rejected"));
+            Assert.DoesNotContain("too late", stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }

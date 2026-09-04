@@ -106,6 +106,27 @@ public class NonProcessCancellationDetectorTests
         Assert.Equal([executionId], cancelled);
     }
 
+    // #1556 PR 1: ArrestableExecutions.All (the collapsed predicate this detector now filters) also
+    // yields a quota-parked step (#1607 — Failed with a scheduled RetryNotBefore), unlike this
+    // detector's own pre-collapse Running-only loop. That park path stays
+    // MutationInterface.SettleParkedCancelIntentsAsync's, not this detector's — this pins the filter
+    // that keeps it that way.
+    [Fact]
+    public void A_quota_parked_non_process_step_with_an_unfulfilled_cancellation_request_is_left_for_the_parked_settle_path()
+    {
+        var executionId = new ExecutionId("h1");
+        var snapshot = SnapshotWith(Step(Human, "human-worker"));
+        var state = new FlowState(
+            snapshot.WorkflowDefinitionSnapshotId,
+            [new StepState(Human, StepStatus.Failed, executionId, NoUpstream, RetryNotBefore: DateTimeOffset.UtcNow.AddHours(1))],
+            CancellationRequestedExecutionIds: [executionId]);
+        var bindings = new Dictionary<string, WorkerBinding> { ["human-worker"] = new WorkerBinding.NonProcess(HumanContract) };
+
+        var cancelled = NonProcessCancellationDetector.GetCancelledExecutions(state, snapshot, bindings);
+
+        Assert.Empty(cancelled);
+    }
+
     private static WorkflowStepDefinition Step(StepId stepId, string worker) =>
         new(stepId, worker, [], [], DependsOn: [], RetryPolicy: new RetryPolicy(1));
 

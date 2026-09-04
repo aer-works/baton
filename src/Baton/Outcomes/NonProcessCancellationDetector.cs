@@ -1,5 +1,6 @@
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Projection;
 
 namespace Baton.Outcomes;
 
@@ -14,7 +15,10 @@ namespace Baton.Outcomes;
 /// round, exactly like <see cref="NonProcessCompletionDetector"/>'s derived obligation, so a crash
 /// between the intent and this finalization simply re-evaluates the identical projected fact on the
 /// next mutation call. A <see cref="WorkerBinding.Process"/> target's unfulfilled request
-/// is left untouched here — delivering it to a live Core execution is Phase 2's machinery.
+/// is left untouched here — delivering it to a live Core execution is Phase 2's machinery. A
+/// quota-parked target (#1607) is also left untouched here — that arrest path is
+/// <c>MutationInterface.SettleParkedCancelIntentsAsync</c>'s, not this detector's (#1556 PR 1:
+/// <see cref="ArrestableExecutions.All"/> yields a parked target too, filtered back out below).
 /// </summary>
 public static class NonProcessCancellationDetector
 {
@@ -37,41 +41,33 @@ public static class NonProcessCancellationDetector
             return [];
         }
 
-        var stepStateByStepId = state.Steps.ToDictionary(step => step.StepId);
         var cancelled = new List<ExecutionId>();
 
-        // Snapshot declaration order, for the same determinism reason every other round-level
-        // append in MutationInterface follows it rather than a projected list's iteration order.
-        foreach (var stepDefinition in snapshot.Steps)
+        // ArrestableExecutions.All is already in FlowState.Steps order then StepLessExecutions
+        // order — the same determinism every other round-level append in MutationInterface follows.
+        foreach (var target in ArrestableExecutions.All(state, snapshot))
         {
-            var stepState = stepStateByStepId[stepDefinition.StepId];
-            if (stepState.Status != StepStatus.Running || stepState.LatestExecutionId is not { } executionId)
+            if (!state.CancellationRequestedExecutionIds.Contains(target.ExecutionId))
             {
                 continue;
             }
 
-            if (!state.CancellationRequestedExecutionIds.Contains(executionId))
+            if (target.StepId is not null)
             {
-                continue;
+                // Step-tied: only a Running step bound to NonProcess is this detector's to finalize.
+                // A quota-parked step's request stays unfulfilled here (SettleParkedCancelIntentsAsync
+                // owns it), and so does a Process-bound target's (Phase 2 delivers it to Core).
+                if (target.Status != StepStatus.Running
+                    || !workerBindings.TryGetValue(target.Worker, out var binding)
+                    || binding is not WorkerBinding.NonProcess)
+                {
+                    continue;
+                }
             }
 
-            // A Process-bound target's request stays unfulfilled here — Phase 2 delivers it to Core.
-            if (!workerBindings.TryGetValue(stepDefinition.Worker, out var binding) || binding is not WorkerBinding.NonProcess)
-            {
-                continue;
-            }
-
-            cancelled.Add(executionId);
-        }
-
-        foreach (var stepLessExecution in state.StepLessExecutions)
-        {
-            // Step-less executions are only ever minted against a non-process binding
-            // (RecordSupplementaryExecutionAsync), so no binding lookup is needed here.
-            if (state.CancellationRequestedExecutionIds.Contains(stepLessExecution.ExecutionId))
-            {
-                cancelled.Add(stepLessExecution.ExecutionId);
-            }
+            // A step-less target (StepId is null) is only ever minted against a non-process binding
+            // (RecordSupplementaryExecutionAsync), so no binding lookup is needed for it.
+            cancelled.Add(target.ExecutionId);
         }
 
         return cancelled;

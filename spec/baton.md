@@ -430,7 +430,21 @@ candidate is not delivered the same way a running one is: it is settled through 
 #1605 built (`InFlightExecutionRegistry.MarkParkedCancelIntent` /
 `MutationInterface.SettleParkedCancelIntentsAsync`), never through `CoreEventAggregation` or
 `NonProcessCancellationDetector`'s own Running-only filters, which stay unmodified and unconsulted
-for a parked target. **Behaviour change from the widening, not just an addition:** a room with one
+for a parked target.
+
+**#1556 PR 1 collapsed the three-place predicate into one register.** `RunningExecutionResolver.cs`'s
+step-tied candidate list above, `CancelRequestPoller`'s settle re-check, and
+`NonProcessCancellationDetector`'s two Running/step-less arms each used to restate this "is this
+execution still arrestable" shape independently (PR #1528 review finding F10). `Baton.Projection.ArrestableExecutions`
+is now the single reader: `ResolveSingleStepLane` is the step-tied-only list `RunningExecutionResolver`
+shims over unchanged; `Find` is the settle re-check, now step-less-aware — `ArrestableExecutions.cs`'s
+own remarks state the D2 fix this buys; `All` is what `NonProcessCancellationDetector` filters down
+to its own Running-only, `NonProcess`-binding arm.
+A quota-parked target is unaffected: `All` still yields one (so `Find` still recognizes it), but
+`NonProcessCancellationDetector` still filters it back out — that arrest path stays
+`SettleParkedCancelIntentsAsync`'s alone, exactly as before the collapse.
+
+**Behaviour change from the widening, not just an addition:** a room with one
 `Running` step and a sibling sitting in ordinary retry backoff — previously an unambiguous single
 `Running` candidate — is now ambiguous and refuses/rejects, since the sibling's `RetryNotBefore` makes
 it a second candidate. Deliberately pinned
