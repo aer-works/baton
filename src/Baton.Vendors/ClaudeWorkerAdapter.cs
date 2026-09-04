@@ -154,15 +154,9 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         // file is not rewritten to get there.
         var (settingsPath, mcpConfigPath) = EnsureLaunchConfigFiles();
 
-        // #532: since #649 the PreToolUse hook is the SOLE bound on where a write-family tool call
-        // lands -- Edit/Write/NotebookEdit are always pre-approved on --allowedTools and never
-        // withheld on --disallowedTools (BuildDisallowedTools), so nothing else stops a write once
-        // BuildSettingsJson's File.Exists guard has already passed. That guard only proves the hook
-        // assembly is present, not that it can actually run -- a truncated build, a wrong .NET
-        // runtime on this host, or an edit made between vendor-verify's build-time check and this
-        // spawn all pass File.Exists and fail exactly the way gate.broken-hook-fails-open measures.
-        // This probe runs the hook for real, the same way agy's #1680 resolve-time probe does, and
-        // refuses fail-closed rather than warning and continuing.
+        // #532: confirm the hook this dispatch is about to rely on can actually run -- see
+        // IClaudeHookLivenessProbe's own doc comment for why BuildSettingsJson's File.Exists guard
+        // above is not enough on its own. Fails closed, never warns and continues.
         var hookAssemblyPath = HookAssemblyPath;
         var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
         if (!probeResult.IsLive)

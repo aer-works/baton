@@ -3438,17 +3438,12 @@ neither field (`null`), and the replay falls back to re-deriving from today's bi
 did before this fix, for that older history only. agy's own fail-open behaviour is otherwise
 unchanged.
 
-**#532: claude's counterpart resolve-time probe.** Since #649 the `PreToolUse` hook is the SOLE
-bound on where a write-family tool call lands on claude — `Edit`/`Write`/`NotebookEdit` are always
-pre-approved on `--allowedTools` and never named on `--disallowedTools` — and
-`ClaudeWorkerAdapter.BuildSettingsJson`'s own `File.Exists` guard only proves the hook assembly is
-present, not that it can execute, which is exactly the failure `gate.broken-hook-fails-open` measures
-as a silent allow. `ClaudeWorkerAdapter.Resolve` now runs `IClaudeHookLivenessProbe` unconditionally
-(`ProcessClaudeHookLivenessProbe`, `src/Baton.Vendors/ClaudeHookLivenessProbe.cs`) before every
-dispatch: `dotnet <Baton.Cli.dll> hook-check`, the identical exec-form command the settings file
-carries, fed a synthetic denied `Write` call with `BATON_OUTPUT_DIR`/`BATON_WORKSPACE_DIR` stripped,
-and refuses (`ClaudeHookUnverifiedException`, naming the path) unless it exits the deny code. Cached
-per hook path within a process the same way `ProcessAgyHookLivenessProbe` is, for the same reason.
+**#532: claude's counterpart resolve-time probe.** `ClaudeWorkerAdapter.Resolve` now runs
+`IClaudeHookLivenessProbe` (`ProcessClaudeHookLivenessProbe`,
+`src/Baton.Vendors/ClaudeHookLivenessProbe.cs` — its own doc comment has the "why", record-once
+canonical) unconditionally before every dispatch, refusing with `ClaudeHookUnverifiedException`
+unless the real hook answers deny to a synthetic call. Same cached-per-process shape as
+`ProcessAgyHookLivenessProbe` above, for the same reason.
 
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),
