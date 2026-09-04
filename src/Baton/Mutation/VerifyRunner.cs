@@ -95,10 +95,14 @@ public static class VerifyRunner
     /// 2026-09-04 12:00:00 -- raise BATON_BUILDLOCK_TIMEOUT_S or find out why the holder is
     /// stuck"</c>. Parsed out of a BLOCKED member's own tail so <see cref="VerifyOutcome.NotRunReason"/>
     /// can name the seconds waited and the holder without re-deriving either — a shape miss (the
-    /// message text drifting) degrades to null rather than fabricating a holder.
+    /// message text drifting) degrades to null rather than fabricating a holder. The holder capture runs
+    /// to buildlock.py's fixed trailing sentinel, not to the first <c>" --"</c> it meets: the holder text
+    /// embeds the wrapped command line verbatim, and nearly every buildlock-wrapped pixi task carries a
+    /// <c>--</c> flag (<c>--no-incremental</c>, <c>--verify-no-changes</c>, <c>-- --check</c>), so a bare
+    /// <c>" --"</c> terminator truncated the holder mid-command (#1813 review).
     /// </summary>
     private static readonly Regex BuildLockBlockedLine = new(
-        @"buildlock: BLOCKED after (?<secs>\d+)s waiting for the build lock held by (?<holder>.+?) --",
+        @"buildlock: BLOCKED after (?<secs>\d+)s waiting for the build lock held by (?<holder>.+?) -- raise BATON_BUILDLOCK_TIMEOUT_S",
         RegexOptions.Compiled);
 
     /// <summary>

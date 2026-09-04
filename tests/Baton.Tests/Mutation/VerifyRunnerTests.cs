@@ -198,6 +198,27 @@ public sealed class VerifyRunnerTests
     }
 
     [Fact]
+    public async Task A_holder_whose_own_command_line_carries_double_dash_flags_is_named_whole_not_truncated()
+    {
+        // #1813 review: the holder text embeds the wrapped command verbatim, and vendor-check's is the
+        // worst case -- a standalone `--` token AND a `--check` flag. The capture must run to
+        // buildlock.py's trailing sentinel, never stop at the first ` --` inside the command.
+        var command = string.Join(" & ", new[]
+        {
+            "echo buildlock: BLOCKED after 1800s waiting for the build lock held by PID 4242 (dotnet run --project tools/Baton.VendorProbe -- --check) since 2026-09-04 02:00:00 -- raise BATON_BUILDLOCK_TIMEOUT_S or find out why the holder is stuck",
+            "echo   BLOCKED  vendor-check  (exit 75)",
+            "echo GATES: BLOCKED 1 of 25 -- vendor-check",
+        }) + " & exit 3";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.Equal(Baton.Domain.VerifyFailedKind.BuildLockBusy, outcome.Kind);
+        Assert.Equal(
+            "build lock busy for 1800s (holder: PID 4242 (dotnet run --project tools/Baton.VendorProbe -- --check) since 2026-09-04 02:00:00)",
+            outcome.NotRunReason);
+    }
+
+    [Fact]
     public async Task A_BLOCKED_verdict_with_no_recognizable_buildlock_line_leaves_NotRunReason_null_not_fabricated()
     {
         var outcome = await VerifyRunner.RunProcessAsync(
