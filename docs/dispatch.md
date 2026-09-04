@@ -254,9 +254,9 @@ Each tier pins one vendor, model and effort in
 at 52 agent steps while Sonnet never exceeded 54% at any effort and took about twice the steps at
 matched effort (108 vs 52 at medium, 147 vs 73 at high, 268 vs 99 at max), and
 [`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
-shows Baton sessions re-reading roughly 10M cached tokens each at median, which makes steps rather than
-output the leading candidate for what drained the weekly allowance (that snapshot stops short of a
-causal claim, and so does this paragraph). High buys review four more points for
+shows Baton sessions re-reading roughly 10M cached tokens each at median; that snapshot attributes the
+early weekly exhaustion to fleet volume with cache re-reads as the amplifier, and "steps rather than
+output drain the plan" is this paragraph's inference from it. High buys review four more points for
 about 40% more steps; xhigh holds that score for 22% more steps, and max adds one point for about
 twice the cost. Moving `standard` onto claude also changes `advise`'s default shape: on agy its
 withheld write ran audited in a fresh worktree, on claude it runs enforced against the caller's own
