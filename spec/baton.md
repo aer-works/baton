@@ -2627,17 +2627,10 @@ match exactly.
 **#1807: `rooms[].live` on a Running room needed a second exclusion tier, not more strict-equality
 exceptions.** A live compare run on this machine's own overnight fleet (34+ Running rooms) reads RED
 on `billedTokens`/`cacheReadTokens`/`contextTokens`/`toolCalls`/`turns`/`stdoutTail` on every one of
-them: the daemon writes the projection file on a ~30s cadence (`FleetProjectionWriter.DefaultInterval`)
-and the derive path samples seconds later, so two legitimately-different values of a field that moves
-while the room runs. Chose the issue's monotone-tolerance design over quiescing (excluding Running
-rooms from `live.*` entirely) because it keeps checking Running rooms — a field that goes backwards
-or vanishes is still a bug. Split further than the issue proposed once measured against real data:
-`billedTokens`/`toolCalls`/`turns` are true running counters (derive, sampled later, must be ≥ file);
-`contextTokens`/`cacheReadTokens` are a LEVEL from the latest turn (`live_telemetry_for_room`'s own
-doc), not cumulative, and moved DOWN by 8× on a real room in that run, so they get presence/shape
-checking only, no ordering; `stdoutTail` gets the same presence/shape-only treatment, for its own
-caching reason (`_compare_volatile_live`'s own doc comment in `pusher.py` is canonical). A clean diff still is not
-enough on its own to gate PR-B2 if it happened to run against zero or few settled rooms — the
+them, for the reason and design `_compare_volatile_live`'s own doc comment in `pusher.py` gives
+(canonical — not restated here): `billedTokens`/`toolCalls`/`turns` tolerate forward motion only,
+`contextTokens`/`cacheReadTokens`/`stdoutTail` tolerate any shape-valid value. A clean diff still is
+not enough on its own to gate PR-B2 if it happened to run against zero or few settled rooms — the
 `_MIN_SETTLED_ROOMS_FOR_GREEN` floor above exists so "green because nothing live was actually
 checked" can't pass. See `_compare_volatile_live`/`_room_is_settled` in `pusher.py` for the mechanics.
 
