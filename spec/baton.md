@@ -2991,9 +2991,9 @@ exactly what a shared write failure looks like, whereas a genuinely stuck deriva
 bundle — shipped together, since #31 alone trains an operator to ignore their phone within a
 week).** Independent of the Cloudflare mailbox above — a separate outbound POST to an ntfy topic
 (`tools/fleet-glass/pusher.py`'s "NTFY PUSH" section, `ntfy_topic`/`ntfy_quiet_hours` in
-`pusher.config.json`, an optional `ntfy_token` in `secrets.local.json`), no write-budget ledger, no
-secret gate (the pushed title/message is a short, content-free-by-construction line naming the
-event, never stdout/prompt text). Four event types map to three ntfy priorities —
+`pusher.config.json`, an optional `ntfy_token` in `secrets.local.json`), no write-budget ledger, and
+no secret gate needed — that section's own comment states why. Four event types map to three ntfy
+priorities —
 `ntfy_priority_for_event`/`NTFY_EVENT_TIERS` is the one table, never restated: lane failed →
 urgent, zombie/stalled detected → high, a pusher-level anomaly (an uncaught exception in the
 snapshot/heartbeat/deliver loop) → high, lane succeeded-with-warnings → default. Quiet hours
