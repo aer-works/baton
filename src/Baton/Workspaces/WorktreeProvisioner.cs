@@ -423,6 +423,74 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
+    /// #1373: reads <paramref name="workspacePath"/> for surviving work — see
+    /// <see cref="WorkspaceMutationReading"/> for what the result means and why this is a fourth entry
+    /// point rather than a fifth caller of <see cref="IsWorkspaceUntouched"/>.
+    /// <para>
+    /// Returns <see langword="null"/> — distinct from <see cref="WorkspaceMutationReading.Unmeasurable"/>
+    /// — when there is no workspace to read at all: no path, or a path that does not exist. "This
+    /// execution had nowhere to leave work" and "this execution's workspace could not be read" are
+    /// opposite answers to the retry question, and folding them together would foreclose the retry of
+    /// every timed-out execution that never had a workspace in the first place.
+    /// </para>
+    /// </summary>
+    /// <param name="sinceRef">
+    /// The commit the workspace was at when this attempt started
+    /// (<c>Mutation.MutationInterface.DispatchAndRecordOutcomeAsync</c> reads it just before spawning),
+    /// falling back to the worktree's provisioned base. Null drops to the same reflog heuristic
+    /// <see cref="IsWorkspaceUntouched"/> falls back to, which can only answer whether a commit
+    /// happened, not how many — <see cref="WorkspaceMutationReading.NewCommitCount"/> stays null there
+    /// rather than being fabricated.
+    /// </param>
+    public static WorkspaceMutationReading? ReadWorkspaceMutation(string? workspacePath, string? sinceRef)
+    {
+        if (string.IsNullOrWhiteSpace(workspacePath) || !Directory.Exists(workspacePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var (statusCode, statusOut, _) = RunGit(workspacePath, "status", "--porcelain", "--untracked-files=normal");
+            if (statusCode != 0)
+            {
+                return WorkspaceMutationReading.Unmeasurable;
+            }
+
+            var changedPathCount = statusOut
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Length;
+
+            if (!string.IsNullOrWhiteSpace(sinceRef))
+            {
+                var (countCode, countOut, _) = RunGit(workspacePath, "rev-list", "--count", $"{sinceRef}..HEAD");
+                if (countCode != 0 || !int.TryParse(countOut.Trim(), out var newCommitCount))
+                {
+                    // The status read succeeded, but half a reading is not a reading: a workspace whose
+                    // commit count could not be established is exactly the "cannot rule work out" case.
+                    return WorkspaceMutationReading.Unmeasurable;
+                }
+
+                return WorkspaceMutationReading.FromCounts(changedPathCount, newCommitCount);
+            }
+
+            var (refCode, refOut, _) = RunGit(workspacePath, "log", "-g", "-n", "1", "--format=%gs");
+            if (refCode != 0)
+            {
+                return WorkspaceMutationReading.Unmeasurable;
+            }
+
+            var committed = !string.IsNullOrWhiteSpace(refOut)
+                && refOut.Trim().StartsWith("commit", StringComparison.OrdinalIgnoreCase);
+            return new WorkspaceMutationReading(true, changedPathCount, NewCommitCount: null, HasNewCommits: committed);
+        }
+        catch (Exception ex) when (ex is WorktreeProvisioningException or IOException)
+        {
+            return WorkspaceMutationReading.Unmeasurable;
+        }
+    }
+
+    /// <summary>
     /// The TRI-STATE reading of the same question <see cref="IsWorkspaceUntouched"/> answers, for the
     /// #1390 work-product evidence (<c>workspaceChanged</c>/<c>hollow</c>, spec/baton.md §3): returns
     /// false when git could not answer at all — <paramref name="worktreePath"/> null/missing, not a

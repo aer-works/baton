@@ -65,7 +65,8 @@ public sealed record ProjectionCheckpointState(
     Dictionary<StepId, bool?>? HollowByStepId = null,
     Dictionary<StepId, string?>? HollowReasonByStepId = null,
     Dictionary<StepId, string?>? VerifyNotRunReasonByStepId = null,
-    HashSet<StepId>? ConductorRejectedStepIds = null)
+    HashSet<StepId>? ConductorRejectedStepIds = null,
+    Dictionary<ExecutionId, string>? WorkspaceHeadShaAtStartByExecutionId = null)
 {
     public Dictionary<StepId, int> ExecutionCountByStepId { get; init; } = ExecutionCountByStepId ?? new();
 
@@ -116,7 +117,7 @@ public sealed record ProjectionCheckpointState(
 
     /// <summary>
     /// F1 (#1593 review): a companion to <see cref="IndeterminateAwaitingResolutionStepIds"/>, never a
-    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four sources raised it, for
+    /// second flag — which of <see cref="Domain.IndeterminateProducer"/>'s four values raised it, for
     /// <c>baton resolve</c>'s admission test. Same trailing-optional replay-safety shape as
     /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing note
     /// applies.
@@ -181,6 +182,14 @@ public sealed record ProjectionCheckpointState(
     /// already follows.
     /// </summary>
     public Dictionary<StepId, string?> VerifyNotRunReasonByStepId { get; init; } = VerifyNotRunReasonByStepId ?? new();
+
+    /// <summary>
+    /// #1373 follow-up: the durable half of <see cref="FlowEvent.ExecutionAttemptStarted"/> — see that
+    /// event's own remarks. Same trailing-optional replay-safety shape as
+    /// <see cref="RetryForeclosedStepIds"/> above, and the same <see cref="DeepCopy"/> load-bearing
+    /// note applies.
+    /// </summary>
+    public Dictionary<ExecutionId, string> WorkspaceHeadShaAtStartByExecutionId { get; init; } = WorkspaceHeadShaAtStartByExecutionId ?? new();
 
     public static ProjectionCheckpointState CreateEmpty() => new(
         new Dictionary<StepId, ExecutionId>(),
@@ -250,5 +259,6 @@ public sealed record ProjectionCheckpointState(
         new Dictionary<StepId, bool?>(HollowByStepId),
         new Dictionary<StepId, string?>(HollowReasonByStepId),
         new Dictionary<StepId, string?>(VerifyNotRunReasonByStepId),
-        new HashSet<StepId>(ConductorRejectedStepIds));
+        new HashSet<StepId>(ConductorRejectedStepIds),
+        new Dictionary<ExecutionId, string>(WorkspaceHeadShaAtStartByExecutionId));
 }

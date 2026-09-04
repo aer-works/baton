@@ -65,6 +65,8 @@ public class FlowEventLogJsonTests
         // does, so a strip test run only against one polarity would never notice a fail-open default.
         new FlowEvent.DeliveryMerged(123, Merged: true),
         new FlowEvent.DeliveryMerged(123, Merged: false),
+        // #1373: the per-attempt start sha the crash-recovery timeout probe reads back.
+        new FlowEvent.ExecutionAttemptStarted(ExecutionId, "0f2b9ac1"),
     ];
 
     /// <summary>

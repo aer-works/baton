@@ -1157,12 +1157,17 @@ public static class MutationInterface
                             hookVerdictCount = countHookVerdicts(outputDirectory);
                         }
 
+                        // #1373 follow-up (spec/baton.md §3): the journaled FlowEvent.ExecutionAttemptStarted
+                        // is used when present; falls back to binding.WorktreeBaseSha and then the
+                        // reflog heuristic exactly as before when absent.
+                        var workspaceHeadShaAtStart =
+                            latestCheckpoint.State.WorkspaceHeadShaAtStartByExecutionId.GetValueOrDefault(executionId);
                         var classification = OutcomeClassifier.Classify(
                             new CoreDispatchResult(exit.ExitCode, exit.Reason, exit.StderrTail), contract, outputDirectory,
                             grantAuditMode: grantAuditMode, worktreePath: worktreePath, responseParser: responseParser,
                             usageParser: usageParser, worktreeBaseRef: worktreeBaseRef, changesTree: changesTree,
                             changesTreeWorkingDirectory: changesTreeWorkingDirectory, toolCallCount: toolCallCount,
-                            hookVerdictCount: hookVerdictCount);
+                            hookVerdictCount: hookVerdictCount, workspaceHeadShaAtStart: workspaceHeadShaAtStart);
 
                         // #1709: no TokenBudgetMonitor in scope on this path -- this classifies a
                         // RECORDED exit from a possibly-defunct workspace, never a live process, so
@@ -1748,11 +1753,22 @@ public static class MutationInterface
             HookVerdictLedgerFileName: hookVerdictLedgerFileName);
 
 
+        // #1373: built from the step as projected BEFORE the accept below is appended, which is what
+        // leaves LatestFailureReason still naming the predecessor's timeout. Null for a first attempt,
+        // for an ordinary failure's retry, and for a non-process worker (nothing spawns, so there is no
+        // prompt to prepend to). A `baton resume` dispatch mints its own request in RecordResumeAsync
+        // and never reaches here -- deliberately: a resume carries the operator's own message, and
+        // RetryEngine never auto-retries a resumed step anyway (StepState.LinkedFromExecutionId).
+        var continuationBrief = processBindingForRequest is null
+            ? null
+            : Scheduling.ContinuationBrief.ForRetryAfterTimeout(
+                stateByStepId[step.StepId], step.RetryPolicy.MaxAttempts, processBindingForRequest.Timeout);
+
         // The write-sequence rule: intent recorded and fsync'd before Core is ever asked to run.
         await eventLogWriter.AppendAsync(CreateExecutionRequestAccepted(request), cancellationToken)
             .ConfigureAwait(false);
 
-        return new PreparedExecution(request, outputDirectory);
+        return new PreparedExecution(request, outputDirectory, continuationBrief);
     }
 
     // #1741: the one fact every Process-dispatch ExecutionRequest construction site must journal --
@@ -1797,6 +1813,15 @@ public static class MutationInterface
             // unwatched rather than refusing to dispatch.
             TokenBudgetMonitor? budgetMonitor = null;
             var target = binding.Target;
+
+            // #1373: applied before every other `target with` rewrite below, and to the ARGUMENT the
+            // worker is invoked with as well as the archival PromptText -- see
+            // CoreDispatchTarget.WithPromptPreamble for why prepending to only one of the two would put
+            // the brief in prompt.txt and nowhere the worker can read it.
+            if (prepared.ContinuationBrief is { } continuationBrief)
+            {
+                target = target.WithPromptPreamble(continuationBrief);
+            }
             // #1682: a monitor now arms on EITHER trigger existing -- a role with only a tool-step cap
             // and no token budget still watches, where before this issue a budget was required for a
             // monitor to be constructed at all.
@@ -1842,6 +1867,38 @@ public static class MutationInterface
                     CancellationToken.None).ConfigureAwait(false);
             }
 
+            // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
+            // repository — see WorkerBinding.Process.IsWorktree's remarks.
+            var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
+            // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
+            // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
+            var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
+
+            // #1373: read HERE, before the worker is spawned, because "new commits since this attempt
+            // started" has no meaning read afterwards. Best-effort by construction (ResolveBaseCommit
+            // returns null on any git failure rather than throwing), and a null only costs the probe its
+            // exact commit count -- OutcomeClassifier.Classify falls back to the worktree's provisioned
+            // base and then to the reflog heuristic, both of which still answer in the fail-closed
+            // direction. Off the intent-append path deliberately: this shells out to git, and the loop
+            // that appends ExecutionRequestAccepted for a whole round must not wait on one.
+            var mutationProbePath = worktreePath ?? changesTreeWorkingDirectory;
+            var workspaceHeadShaAtStart = mutationProbePath is null
+                ? null
+                : Workspaces.WorktreeProvisioner.ResolveBaseCommit(mutationProbePath, "HEAD");
+
+            // #1373 follow-up (spec/baton.md §3): journaled here, still off the round's own
+            // intent-append loop -- this method runs per-execution, not inside PrepareExecutionAsync's
+            // loop above. See FlowEvent.ExecutionAttemptStarted's own remarks for why. Never appended
+            // when there is no mutation-probe path -- nothing for a recovered classification to
+            // compare against.
+            if (workspaceHeadShaAtStart is not null)
+            {
+                await eventLogWriter.AppendAsync(
+                        new FlowEvent.ExecutionAttemptStarted(prepared.Request.ExecutionId, workspaceHeadShaAtStart),
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
             // Rests on ICoreDispatcher's contract that cancellation via its token argument comes back
             // as a normal CoreDispatchResult (CoreExitReason.CancelRequested), never as
             // OperationCanceledException — CoreDispatcher converts BatonCancelException two layers
@@ -1884,12 +1941,6 @@ public static class MutationInterface
             // The request's mode was set from this binding at preparation; null can only mean a
             // request shape that predates the mode, and those were never promised an audit.
             var grantAuditMode = prepared.Request.GrantAuditMode ?? GrantAuditMode.Enforced;
-            // F4 (#1593 review): only an ACTUALLY-provisioned worktree, never the operator's own
-            // repository — see WorkerBinding.Process.IsWorktree's remarks.
-            var worktreePath = binding.IsWorktree ? binding.Target.WorkingDirectory : null;
-            // #1622/#1390: deliberately NOT gated on binding.IsWorktree the way worktreePath above is —
-            // see OutcomeClassifier.Classify's own changesTreeWorkingDirectory parameter doc for why.
-            var changesTreeWorkingDirectory = binding.ChangesTree ? binding.Target.WorkingDirectory : null;
 
             // #1680/#1732 review WIRING: the first-verdict canary's two counts. Both stay null unless
             // this dispatch's own CoreDispatchTarget carries a live CountHookVerdicts delegate --
@@ -1909,7 +1960,7 @@ public static class MutationInterface
             var classification = OutcomeClassifier.Classify(
                 dispatchResult, binding.Contract, prepared.OutputDirectory, binding.FailureClassifier, timeProvider,
                 grantAuditMode, worktreePath, binding.ResponseParser, usageParser, binding.WorktreeBaseSha, binding.ChangesTree,
-                changesTreeWorkingDirectory, toolCallCount, hookVerdictCount);
+                changesTreeWorkingDirectory, toolCallCount, hookVerdictCount, workspaceHeadShaAtStart);
 
             // #1623 (contract: spec/baton.md §3): the engine's own verify
             // step, spawned here -- between Classify returning Succeeded and the outcome event append
@@ -2052,6 +2103,21 @@ public static class MutationInterface
                     CancellationToken.None)
                 .ConfigureAwait(false);
             await AppendZeroOutputsTripwireIfAnyAsync(eventLogWriter, prepared.Request.ExecutionId, classification, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Dispatch.PromptPreambleException ex)
+        {
+            // #1373: a deterministic refusal to spawn, the same shape as the guard below and recorded
+            // for the same reason — the intent is already journalled, so an uncaught throw here would
+            // leave the room stuck at ExecutionRequestAccepted forever, which is exactly what that
+            // arm's own comment says it exists to prevent. Permanent: an adapter whose prompt is not
+            // one of its arguments refuses identically on every resubmission.
+            await eventLogWriter.AppendAsync(
+                new FlowEvent.ExecutionFailed(
+                    prepared.Request.ExecutionId,
+                    FailureClassification.Permanent,
+                    ex.Message),
+                CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (CommandLineTooLongException ex)
@@ -2232,7 +2298,19 @@ public static class MutationInterface
             && s.Status == StepStatus.Failed
             && s.RetryNotBefore is not null);
 
-    private sealed record PreparedExecution(ExecutionRequest Request, string OutputDirectory);
+    /// <param name="ContinuationBrief">
+    /// #1373: non-null exactly when this dispatch is a retry of an attempt the dispatch timeout killed
+    /// — <see cref="Scheduling.ContinuationBrief.ForRetryAfterTimeout"/>'s text, applied to the target's
+    /// prompt in <see cref="DispatchAndRecordOutcomeAsync"/>. In memory rather than on
+    /// <see cref="ExecutionRequest"/>: every input to it (attempt count, recorded failure reason,
+    /// binding timeout) is already journalled, so a field here would be a second copy of a projection
+    /// — and the prompt the worker actually ran with is durably captured either way, as this
+    /// execution's own <c>prompt.txt</c>.
+    /// </param>
+    private sealed record PreparedExecution(
+        ExecutionRequest Request,
+        string OutputDirectory,
+        string? ContinuationBrief = null);
 
     private sealed record RetryObligation(
         StepId StepId,

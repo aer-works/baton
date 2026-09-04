@@ -76,7 +76,55 @@ public sealed record CoreDispatchTarget(
     // record the arming fact durably (ExecutionRequest.HookVerdictLedgerFileName) rather than only
     // holding a delegate that cannot survive a journal round-trip. Non-null exactly when
     // CountHookVerdicts is non-null -- same gate, same reason.
-    string? HookVerdictLedgerFileName = null);
+    string? HookVerdictLedgerFileName = null)
+{
+    /// <summary>
+    /// #1373: returns this target with <paramref name="preamble"/> prepended to the instructional text
+    /// the worker actually receives — <b>both</b> <see cref="PromptText"/> and the <see cref="Args"/>
+    /// element that carries it, which must stay byte-identical.
+    /// <para>
+    /// Why both: <see cref="PromptText"/> is archival (<see cref="CoreDispatcher.DispatchAsync"/> writes
+    /// it to <c>prompt.txt</c> for display, and CLAUDE.md Architecture Rule 1 forbids reading it back to
+    /// route). The string the vendor CLI is actually invoked with is the <see cref="Args"/> element —
+    /// every shipped adapter passes the same object as both (<c>["-p", prompt]</c> plus
+    /// <c>PromptText: prompt</c>). Prepending to <see cref="PromptText"/> alone would put the preamble
+    /// in the archive and nowhere else, and a test reading <c>prompt.txt</c> would certify it. Their
+    /// identity is also what <see cref="CoreDispatcher.DispatchAsync"/>'s #748 oversize swap already
+    /// depends on (it finds the prompt argument by <c>IndexOf(PromptText)</c>), so this rewrite
+    /// preserves that lookup rather than breaking it.
+    /// </para>
+    /// </summary>
+    /// <exception cref="PromptPreambleException">
+    /// <see cref="PromptText"/> is set but no <see cref="Args"/> element equals it — the invariant above
+    /// is broken, and the preamble would silently vanish. Refused loudly rather than dropped: a worker
+    /// that never received its continuation brief looks exactly like one that ignored it.
+    /// </exception>
+    public CoreDispatchTarget WithPromptPreamble(string preamble)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(preamble);
+
+        if (PromptText is not { } promptText)
+        {
+            // An adapter with no prose prompt to prepend to (CommandWorkerAdapter's declared argv) —
+            // a deliberate no-op, the same reading DispatchAsync's own null-PromptText guard takes.
+            return this;
+        }
+
+        var args = Args.ToList();
+        var promptArgIndex = args.IndexOf(promptText);
+        if (promptArgIndex < 0)
+        {
+            throw new PromptPreambleException(
+                $"Cannot prepend a prompt preamble for '{Program}': its PromptText is set but no argument " +
+                "equals it, so the preamble would reach prompt.txt and never the worker. An adapter must " +
+                "pass the same prompt string as both an argument and PromptText.");
+        }
+
+        var prefixed = preamble + promptText;
+        args[promptArgIndex] = prefixed;
+        return this with { Args = args, PromptText = prefixed };
+    }
+}
 
 /// <summary>
 /// A launch-configuration file an adapter needs written into place before its worker spawns, where the

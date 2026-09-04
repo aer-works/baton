@@ -727,9 +727,12 @@ fields. `StepStatus` itself stays untouched by this ruling too: a step whose lat
 `Domain.StepState.IndeterminateAwaitingResolution` (`Status.WorkflowOutcome.DescribeTerminal`, checked
 ahead of the ordinary `Failed`/`Rejected` read).
 
-**Four producers, since #1608, #1593 and #1623.** S1 added only the vocabulary, its consumer
-obligations below, and the missing retry-foreclosure primitive (next paragraph) — nothing in `src/`
-wrote `Indeterminate` from that slice alone. What writes it now:
+**Five sources, four producer values, since #1608, #1593, #1623 and #1373.** S1 added only the
+vocabulary, its consumer obligations below, and the missing retry-foreclosure primitive (next
+paragraph) — nothing in `src/` wrote `Indeterminate` from that slice alone. `Domain.IndeterminateProducer`
+still has **four** values: #1373's timeout arm is a fifth *source* that settles onto the existing
+`ContractFailure` value, because it admits exactly that value's verbs and a fifth value distinguishable
+only by name is vocabulary the resolve grammar cannot act on. What writes it now:
 
 | Producer | Event | `Domain.IndeterminateProducer` | Landed |
 |---|---|---|---|
@@ -737,12 +740,14 @@ wrote `Indeterminate` from that slice alone. What writes it now:
 | `OutcomeClassifier.Classify`'s #1593 uncaptured contract-failure arm — declared outputs simply absent or failed validation, or a dead worker (stream-json ending without a `result` record) on a mutated workspace, with no response to capture; also #1680's first-verdict canary (a natural, contract-satisfied exit whose caller reports ≥1 tool call and zero agy `PreToolUse` hook verdicts — the hook may never have run, and this vendor reads that silence as an ALLOW rather than an error) | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1593, #1680 |
 | The role's engine-run verify command exited non-zero after a clean, contract-satisfied worker exit | `FlowEvent.VerifyFailed` | `VerifyFailed` | #1623 |
 | A live execution crossed its role's token budget and was arrested | `FlowEvent.ExecutionArrested` | `Arrested` | #1623 |
+| `OutcomeClassifier.Classify`'s #1373 timeout arm — Flow's own dispatch timeout killed the execution and the workspace it was killed in carries work (see the paragraph below) | `FlowEvent.ExecutionIndeterminate` (null `CapturedResponseFile`) | `ContractFailure` | #1373 |
 
-Every other Failed/Cancelled/Succeeded path is unchanged. All four raise the **one** flag
+Every other Failed/Cancelled/Succeeded path is unchanged. All five raise the **one** flag
 `Domain.StepState.IndeterminateAwaitingResolution` (`Projection.StateProjector`), which is the single
 predicate `Status.WorkflowOutcome.DescribeTerminal` and `Scheduling.RetryEngine.MayRetry` each read —
 one arm apiece, never one check per producer. Alongside it, `Domain.StepState.IndeterminateProducer`
-(F1, #1593 review) records which of the four raised it — the discriminant `baton resolve`'s admission
+(F1, #1593 review) records which of the four `Domain.IndeterminateProducer` values raised it — the
+discriminant `baton resolve`'s admission
 test reads (Consumer obligations, below), replacing an earlier `LatestCapturedResponseFile` null/not-null
 read that could not tell `ContractFailure` (which DOES have something to reject: the conductor's
 judgement after inspecting the workspace) from `VerifyFailed`/`Arrested` (which never do).
@@ -766,6 +771,60 @@ contract has done unknown work on the workspace, whether the contract violation 
 failed condition, so re-running it blind is wrong either way. A worker relying on the old
 retry-until-satisfied pattern now settles `Indeterminate` on its first unsatisfied attempt and needs an
 explicit `baton resolve --reject --reason <text>` before a fresh dispatch can try again.
+
+**A timeout on a mutated workspace (#1373, operator ruling 2026-09-01).** Same class as #1593's
+exit-0/no-output ruling, reached from the other exit reason. A `CoreExitReason.TimedOut` kill keeps
+today's retryable `Failed` **only while the workspace has nothing to lose**: the failed attempt's
+`WorkerBinding` — and therefore its workspace — is reused across attempts within a step, so attempt
+N+1 starting from zero re-does or clobbers whatever attempt N left on disk. Measured 2026-09-01 (four
+implement lanes, 60-minute timeout each): all four hit the timeout, all four were auto-retried onto a
+workspace attempt 1 had already mutated — two carrying a finished commit, two carrying 18 and 2
+uncommitted files — and the conductor cancelled all four by hand to salvage the trees. `Workspaces.
+WorktreeProvisioner.ReadWorkspaceMutation` is the reading (its fourth entry point, per #1720 F2's
+own reasoning about consumers with opposite safe defaults); it is asked about the provisioned worktree
+when there is one and a tree-changing role's own working directory otherwise. Its safe default is
+**mutated**: an unreadable workspace is one whose surviving work cannot be ruled out.
+
+**This RELAXES F4 (#1593 review), deliberately, and the cost is real.** F4 keeps
+`WorkerBinding.Target.WorkingDirectory` away from a *retry* decision because the operator's own
+repository is routinely dirty for reasons unrelated to the execution; `changesTreeWorkingDirectory`
+was the narrow exemption from it, safe precisely because #1622/#1390's evidence string decides
+nothing. This makes it decide something — and it has to, because a write grant never gets an
+auto-provisioned worktree (`RoleDispatch.ToBinding`), so **every** `ChangesTree` binding, `implement`
+and `janitor` included, is the operator's own repository and F4's rule would exempt exactly the
+population the ruling is about. Two consequences to know rather than discover: the commit half is a
+delta against the sha read at spawn, while the **changed-path half is absolute** — `git status` counts
+whatever is there, with no baseline taken — so a lane dispatched into an already-dirty tree settles
+Indeterminate on a timeout even if its worker wrote nothing. The ruling accepts that: its own wording
+is "uncommitted changes, untracked files" without a baseline, and the failure it prices is a clobbered
+tree (unrecoverable) against a spurious conductor resolution (a minute of someone's time). A null path — an execution with nowhere to leave work — keeps the retry, and so
+does #1089's finished-then-hung guard, which sits upstream of this branch and is unchanged (a
+tree-changing worker that satisfied its contract has a mutated tree by construction; that is what
+finishing looks like). The reason text opens with `OutcomeClassifier.TimeoutSentence`, so
+`Status.WorkflowOutcome.IsTimeoutFailure` still reads a mutated timeout as a timeout. **Consequence
+for a surface:** such a room now describes `Indeterminate`, so `baton run` no longer exits
+`RunExitCode.Timeout` for it — that exit code stays for a timeout with nothing to salvage.
+
+**The per-attempt start sha is journaled, not only held in memory (#1373 follow-up).** The commit half
+of the reading above is a delta against the sha read immediately before Core is asked to run — durable
+now as `FlowEvent.ExecutionAttemptStarted`, appended right after that read and before dispatch, so a
+pump that crashes and recovers mid-attempt classifies a recorded timeout against **that attempt's own**
+start commit rather than `WorkerBinding.Process.WorktreeBaseSha` (the worktree's one-time provisioning
+base, which never moves across attempts and would otherwise misattribute an earlier attempt's own
+commits to the one being classified). Absent on a pre-existing journal line or a dispatch with no
+mutation-probe path, in which case classification falls back to `WorktreeBaseSha` exactly as before.
+
+**The retry that does run carries a continuation brief (#1373, same ruling).** The other half: an
+unmutated timeout is still retried, but `Scheduling.ContinuationBrief.ForRetryAfterTimeout` prepends
+attempt N of M, the predecessor's budget, the kill cause, and the instruction to inspect the workspace
+and finish rather than restart. Prepended to the prompt handed to the adapter
+(`Dispatch.CoreDispatchTarget.WithPromptPreamble` — **both** `PromptText` and the argument equal to it,
+since only the latter reaches the worker and the former is the archival `prompt.txt`), never to any
+spec file on disk, and carried in memory rather than journalled: it is derived wholly from facts the
+journal already holds. Scoped to a retry after a **timeout** — an ordinary failure's retry is unchanged
+— and to the pump's own dispatch path: `baton resume` mints its request elsewhere and carries the
+operator's own message instead. **Out of scope, deliberately:** extending a RUNNING lane's budget
+mid-flight (the 2026-08-31 comment on #1373); that stays open on the issue.
 
 **The exit-0 quota veto (#1622 (a)).** A satisfied exit-0 run still settles `Failed`/`ExhaustedUntil`
 — parked by `RetryEngine` exactly as an exit-1 quota failure is — when the vendor's own

@@ -68,6 +68,44 @@ public class WorkflowOutcomeAndExitCodeTests
         Assert.Equal(RunExitCode.Timeout, RunExitCodeResolver.Resolve(Result(state)));
     }
 
+    /// <summary>
+    /// #1373: the narrowing of exit 3, pinned rather than left to the prose in `spec/baton.md` §3 and
+    /// `docs/agents/invoking-baton.md`'s exit-code table. A dispatch timeout whose workspace carried
+    /// work settles Indeterminate, so it leaves the Timeout bucket for the generic Failed one — a
+    /// harness branching on exit 3 to auto-retry a lane would otherwise silently keep doing so for
+    /// exactly the rooms the ruling exists to stop it retrying.
+    /// </summary>
+    [Fact]
+    public void A_dispatch_timeout_that_settled_Indeterminate_leaves_the_Timeout_bucket_for_exit_1()
+    {
+        var timedOutAndMutated = Step(
+            "a",
+            StepStatus.Failed,
+            reason: "Execution timed out. Workspace carries 2 new commit(s) and 14 changed/untracked "
+                + "path(s) — resolve it … awaiting conductor resolution.")
+            with
+        { IndeterminateAwaitingResolution = true, IndeterminateProducer = IndeterminateProducer.ContractFailure };
+
+        var state = TerminalState([timedOutAndMutated]);
+
+        Assert.Equal(WorkflowOutcome.Indeterminate, WorkflowOutcome.Describe(state));
+        Assert.Equal(RunExitCode.Failed, RunExitCodeResolver.Resolve(Result(state)));
+
+        // The discriminating control: the SAME reason without the flag is the unmutated timeout, which
+        // still exits 3. So this pins the Indeterminate settle as the cause, not the reason text.
+        Assert.Equal(
+            RunExitCode.Timeout,
+            RunExitCodeResolver.Resolve(Result(TerminalState([timedOutAndMutated with
+            {
+                IndeterminateAwaitingResolution = false,
+                IndeterminateProducer = null,
+            }]))));
+
+        // And the step is still recognisably a timeout to every surface that tells them apart — the
+        // exit code narrowed, the classification did not disappear.
+        Assert.True(WorkflowOutcome.IsTimeoutFailure(timedOutAndMutated));
+    }
+
     [Fact]
     public void A_timeout_alongside_a_genuine_hard_failure_stays_in_the_Failed_bucket_not_Timeout()
     {
