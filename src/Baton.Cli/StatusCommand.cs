@@ -659,7 +659,11 @@ public static class StatusCommand
                 && step.RetryNotBefore is null
                 && !step.RetryForeclosed)
             {
-                return "parked (vendor quota) — reset unknown";
+                // #802: reaching this branch at all means no declared FallbackOnExhaustion rescued
+                // the park (one would have redispatched immediately instead of sitting here with a
+                // RetryNotBefore never scheduled) -- never silent: name the decision the operator owes.
+                return "parked (vendor quota) — reset unknown; "
+                    + $"no fallback declared — {RecoveryGuidance.RedispatchAdapterInstruction}, or wait for the operator to resume it";
             }
 
             if (step.RetryNotBefore is not null)
@@ -767,7 +771,15 @@ public static class StatusCommand
             }
         }
 
-        return $"parked ({classification}) — retries {localRetryTime}";
+        // #802: reaching here for a "vendor quota" classification means no declared
+        // FallbackOnExhaustion applied (one would have redispatched immediately rather than pacing
+        // to localRetryTime) — never silent: name the decision the operator owes instead of only the
+        // clock. An ordinary "retryable" backoff names nothing extra; it is the machine's own pacing,
+        // not a vendor decision.
+        return classification == "vendor quota"
+            ? $"parked ({classification}) — retries {localRetryTime}; "
+                + $"no fallback declared — {RecoveryGuidance.RedispatchAdapterInstruction}, or wait"
+            : $"parked ({classification}) — retries {localRetryTime}";
     }
 
     /// <summary>

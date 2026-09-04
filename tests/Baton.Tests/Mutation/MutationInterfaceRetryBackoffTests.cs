@@ -850,7 +850,7 @@ public class MutationInterfaceRetryBackoffTests
             var stateExhausted = StateProjector.Project(eventsExhausted, snapshotA);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligationsExhausted = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateExhausted, snapshotA, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligationsExhausted = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateExhausted, snapshotA, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var exhaustedObligation = obligationsExhausted.Single();
 
             var notBeforeProperty = exhaustedObligation.GetType().GetProperty("RetryNotBefore")!;
@@ -872,7 +872,7 @@ public class MutationInterfaceRetryBackoffTests
             var eventsRetryable = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var stateRetryable = StateProjector.Project(eventsRetryable, snapshotB);
 
-            var obligationsRetryable = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateRetryable, snapshotB, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligationsRetryable = (IEnumerable<object>)getObligationsMethod.Invoke(null, [stateRetryable, snapshotB, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var retryableObligation = obligationsRetryable.Single();
             var retryableNotBefore = (DateTimeOffset)notBeforeProperty.GetValue(retryableObligation)!;
 
@@ -918,7 +918,7 @@ public class MutationInterfaceRetryBackoffTests
             var state = StateProjector.Project(events, snapshot);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
 
             Assert.Empty(obligations);
         }
@@ -963,13 +963,13 @@ public class MutationInterfaceRetryBackoffTests
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
 
             // When settleOnVendorExhaustion = false (unattended): DOES get paced obligation
-            var obligationsUnattended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligationsUnattended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var obligation = obligationsUnattended.Single();
             var notBeforeProperty = obligation.GetType().GetProperty("RetryNotBefore")!;
             Assert.Equal(resetMoment, (DateTimeOffset)notBeforeProperty.GetValue(obligation)!);
 
             // When settleOnVendorExhaustion = true (attended): gets NO obligation (settles immediately)
-            var obligationsAttended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), true])!;
+            var obligationsAttended = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), true, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             Assert.Empty(obligationsAttended);
         }
         finally
@@ -1316,7 +1316,7 @@ public class MutationInterfaceRetryBackoffTests
             var state = StateProjector.Project(events, snapshot);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var obligation = obligations.Single();
 
             var notBefore = (DateTimeOffset)obligation.GetType().GetProperty("RetryNotBefore")!.GetValue(obligation)!;
@@ -1368,7 +1368,7 @@ public class MutationInterfaceRetryBackoffTests
             var state = StateProjector.Project(events, snapshot);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var obligation = obligations.Single();
 
             var notBefore = (DateTimeOffset)obligation.GetType().GetProperty("RetryNotBefore")!.GetValue(obligation)!;
@@ -1645,7 +1645,7 @@ public class MutationInterfaceRetryBackoffTests
             var state = StateProjector.Project(events, snapshot);
 
             var getObligationsMethod = typeof(MutationInterface).GetMethod("GetRetryObligations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false])!;
+            var obligations = (IEnumerable<object>)getObligationsMethod.Invoke(null, [state, snapshot, fakeTime, (Func<double>)(() => 0.0), false, null, new Dictionary<ExecutionId, ExecutionRequest>()])!;
             var obligation = obligations.Single();
 
             var notBefore = (DateTimeOffset)obligation.GetType().GetProperty("RetryNotBefore")!.GetValue(obligation)!;

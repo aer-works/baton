@@ -792,5 +792,59 @@ public class WorkerBindingResolverTests
         Assert.Throws<UnsatisfiableOutputContractException>(() => WorkerBindingResolver.Resolve(config, adapters));
     }
 
+    [Fact]
+    public void ResolveFallbacks_returns_only_entries_declaring_FallbackOnExhaustion()
+    {
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                FallbackOnExhaustion: new FallbackBinding("echo", "fallback-model")),
+            ["review"] = new WorkerBindingConfigEntry("echo", ArchitectContract, "Review.", TimeSpan.FromMinutes(5)),
+        };
+
+        var fallbacks = WorkerBindingResolver.ResolveFallbacks(config, adapters);
+
+        Assert.Equal(["architect"], fallbacks.Keys);
+        var binding = Assert.IsType<WorkerBinding.Process>(fallbacks["architect"]);
+        Assert.Equal("echo", binding.Adapter);
+        Assert.Equal("fallback-model", binding.Model);
+    }
+
+    [Fact]
+    public void ResolveFallbacks_drops_the_primarys_Model_when_the_fallback_declares_none()
+    {
+        // #1082's rule, applied to a declared fallback the same way an operator --adapter swap
+        // already applies it: a Model authored for the PRIMARY vendor's tier words has no correct
+        // translation onto the fallback's, so an unset fallback Model must resolve to the fallback
+        // adapter's own default rather than silently carrying the primary's Model across.
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5), Model: "primary-model",
+                FallbackOnExhaustion: new FallbackBinding("echo")),
+        };
+
+        var binding = (WorkerBinding.Process)WorkerBindingResolver.ResolveFallbacks(config, adapters)["architect"];
+
+        Assert.Null(binding.Model);
+    }
+
+    [Fact]
+    public void ResolveFallbacks_refuses_an_unregistered_fallback_adapter_the_same_way_Resolve_does()
+    {
+        var adapters = new Dictionary<string, IWorkerAdapter> { ["echo"] = new FakeEchoWorkerAdapter() };
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["architect"] = new WorkerBindingConfigEntry(
+                "echo", ArchitectContract, "Draft a plan.", TimeSpan.FromMinutes(5),
+                FallbackOnExhaustion: new FallbackBinding("claude")),
+        };
+
+        var ex = Assert.Throws<UnknownWorkerAdapterException>(() => WorkerBindingResolver.ResolveFallbacks(config, adapters));
+        Assert.Equal("claude", ex.AdapterName);
+    }
 }
 

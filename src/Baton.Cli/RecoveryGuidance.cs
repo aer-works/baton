@@ -14,4 +14,14 @@ internal static class RecoveryGuidance
 {
     public const string RunRoomDirInstruction =
         "re-run `baton run` against this room's own workflow.json and bindings.json with --room-dir pointed at it";
+
+    /// <summary>
+    /// #802: the operator verb a vendor-quota park with no declared fallback is waiting on —
+    /// <c>RedispatchCommand</c>'s already-shipped <c>--adapter</c> flag rebinds the parked step onto
+    /// a different vendor in place, without waiting for the primary's reset. Cited by
+    /// <c>StatusCommand.FormatStepStatus</c>/<c>FormatParkedStatus</c> rather than restated, per
+    /// record-once.
+    /// </summary>
+    public const string RedispatchAdapterInstruction =
+        "`baton redispatch <room-dir> --adapter <vendor>` rebinds it now";
 }
