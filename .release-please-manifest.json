@@ -1,5 +1,5 @@
 {
-  "src/Baton": "0.29.0",
-  "src/Baton.Vendors": "0.29.0",
-  "src/Baton.Cli": "0.29.0"
+  "src/Baton": "0.30.0",
+  "src/Baton.Vendors": "0.30.0",
+  "src/Baton.Cli": "0.30.0"
 }
