@@ -9,6 +9,9 @@ on:
 
 jobs:
   diff-shape:
+    # Release Please relabels its PR after merging it. The head branch may already be
+    # deleted then, so there is no diff left for this open-PR policy gate to inspect.
+    if: ${{ github.event.pull_request.state == 'open' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
