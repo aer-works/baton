@@ -1,4 +1,5 @@
 using Baton.Mutation;
+using Baton.Tests.Shared;
 using Baton.Tests.TestSupport;
 using Xunit;
 
@@ -510,7 +511,7 @@ public sealed class VerifyCommandResolverTests
         }
         finally
         {
-            File.Delete(stub);
+            FileCleanup.Delete(stub);
         }
     }
 
@@ -596,7 +597,7 @@ public sealed class VerifyCommandResolverTests
         }
         finally
         {
-            File.Delete(sleeper);
+            FileCleanup.Delete(sleeper);
         }
     }
 
