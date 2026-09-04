@@ -853,6 +853,69 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1515: <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks carry the
+    /// measurement and the reasoning. Must throw here, not reach an empty no-op channel.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_space_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash (git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as above with a tab instead of a space -- <c>\s</c> covers both, and the CLI's own
+    /// parser was not measured to distinguish them, so this must throw identically.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_tab_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash\t(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// #1515: the negative half of the measurement <c>BuildShellPatternsFromRawScope</c>'s own
+    /// remarks record -- must NOT throw, and must yield an empty channel like any other non-Bash
+    /// clause.
+    /// </summary>
+    [Fact]
+    public void A_lowercase_bash_clause_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// The canonical no-whitespace form must keep parsing normally alongside the new whitespace refusal
+    /// -- this is #1506's original comma-list-refusal test re-asserted here to pin that the #1515 fix
+    /// did not disturb it.
+    /// </summary>
+    [Fact]
+    public void The_canonical_no_whitespace_Bash_clause_still_parses()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
