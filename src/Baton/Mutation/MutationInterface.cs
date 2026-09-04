@@ -1149,15 +1149,9 @@ public static class MutationInterface
                             hookVerdictCount = countHookVerdicts(outputDirectory);
                         }
 
-                        // #1373 follow-up: the journaled FlowEvent.ExecutionAttemptStarted (this
-                        // attempt's own base, not the worktree's one-time provisioning base) is used
-                        // when present -- see that event's own remarks for why WorktreeBaseSha alone
-                        // over-counts mutation against a second-or-later attempt after a crash. Absent
-                        // for a pre-fix journal line (or a dispatch with no mutation-probe path), in
-                        // which case this falls back to binding.WorktreeBaseSha and then the reflog
-                        // heuristic exactly as before -- both fail-closed, so a recovered timeout on a
-                        // workspace that cannot be read still settles Indeterminate rather than being
-                        // retried blind.
+                        // #1373 follow-up (spec/baton.md §3): the journaled FlowEvent.ExecutionAttemptStarted
+                        // is used when present; falls back to binding.WorktreeBaseSha and then the
+                        // reflog heuristic exactly as before when absent.
                         var workspaceHeadShaAtStart =
                             latestCheckpoint.State.WorkspaceHeadShaAtStartByExecutionId.GetValueOrDefault(executionId);
                         var classification = OutcomeClassifier.Classify(
@@ -1876,12 +1870,11 @@ public static class MutationInterface
                 ? null
                 : Workspaces.WorktreeProvisioner.ResolveBaseCommit(mutationProbePath, "HEAD");
 
-            // #1373 follow-up: journaled here, still off the round's intent-append path (this method
-            // runs per-execution, not inside the loop PrepareExecutionAsync's own comment warns about)
-            // -- so a pump that crashes and recovers between this write and the outcome append below
-            // still has THIS attempt's base on disk, not just the worktree's one-time provisioning
-            // base. See FlowEvent.ExecutionAttemptStarted's own remarks. Never appended when there is
-            // no mutation-probe path -- nothing for a recovered classification to compare against.
+            // #1373 follow-up (spec/baton.md §3): journaled here, still off the round's own
+            // intent-append loop -- this method runs per-execution, not inside PrepareExecutionAsync's
+            // loop above. See FlowEvent.ExecutionAttemptStarted's own remarks for why. Never appended
+            // when there is no mutation-probe path -- nothing for a recovered classification to
+            // compare against.
             if (workspaceHeadShaAtStart is not null)
             {
                 await eventLogWriter.AppendAsync(

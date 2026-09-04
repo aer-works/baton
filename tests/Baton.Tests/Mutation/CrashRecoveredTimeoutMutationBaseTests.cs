@@ -9,13 +9,12 @@ using Baton.Tests.TestSupport;
 namespace Baton.Tests.Mutation;
 
 /// <summary>
-/// #1373 follow-up: <see cref="FlowEvent.ExecutionAttemptStarted"/> exists so a crash-recovered
-/// classification of a SECOND-OR-LATER attempt judges timeout mutation against that attempt's own
-/// start commit, not <see cref="Baton.Mutation.WorkerBinding.Process.WorktreeBaseSha"/> (the
-/// worktree's one-time provisioning base, which never moves across attempts). Every fixture here
-/// hand-authors the exact log lines a real crash mid-attempt-2 would leave behind, matching
-/// <c>MutationInterfaceCrashRecoveryTests</c>' own style, against a REAL git worktree — the mutation
-/// probe shells out to git, so only a real tree can discriminate its answer.
+/// #1373 follow-up (spec/baton.md §3's "per-attempt start sha is journaled" paragraph — not restated
+/// here): pins <see cref="FlowEvent.ExecutionAttemptStarted"/>'s effect on a SECOND-OR-LATER attempt's
+/// crash-recovered classification specifically. Every fixture here hand-authors the exact log lines a
+/// real crash mid-attempt-2 would leave behind, matching <c>MutationInterfaceCrashRecoveryTests</c>'
+/// own style, against a real git worktree (<c>TimeoutOnMutatedWorkspaceEndToEndTests</c>' own remarks
+/// explain why a real tree, not a fabricated one).
 /// </summary>
 public class CrashRecoveredTimeoutMutationBaseTests
 {
