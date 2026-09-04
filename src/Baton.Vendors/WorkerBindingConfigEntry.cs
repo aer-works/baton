@@ -152,7 +152,7 @@ namespace Baton.Vendors;
 /// value for every role dispatched through the front door.
 /// </param>
 /// <param name="FallbackOnExhaustion">
-/// #802 (S6, the design's §3.2): a declared vendor to rebind this role onto when its own dispatch
+/// #802 (S6, the design ratified on that issue): a declared vendor to rebind this role onto when its own dispatch
 /// parks on a vendor-quota <see cref="Domain.FailureClassification.ExhaustedUntil"/> outcome, rather
 /// than waiting out the vendor's reset. Null (the default) keeps today's behaviour: the step parks,
 /// and (per spec/baton.md's quota-park section) the status surfaces the wait and the operator verb
