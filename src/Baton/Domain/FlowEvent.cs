@@ -34,6 +34,10 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(ExecutionProgress), "executionProgress")]
 [JsonDerivedType(typeof(CancellationDelivered), "cancellationDelivered")]
 [JsonDerivedType(typeof(CancellationRejected), "cancellationRejected")]
+[JsonDerivedType(typeof(DeliveryPrOpened), "deliveryPrOpened")]
+[JsonDerivedType(typeof(DeliveryChecksGreen), "deliveryChecksGreen")]
+[JsonDerivedType(typeof(DeliveryChecksRed), "deliveryChecksRed")]
+[JsonDerivedType(typeof(DeliveryMerged), "deliveryMerged")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -501,4 +505,23 @@ public abstract record FlowEvent
     /// on and stays a file-and-stderr-only rejection, same as before this event existed.
     /// </summary>
     public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>#734: see spec/baton.md §2's "Delivery state facts" for the producer and the no-action rule shared by all four of these cases — not restated per-case here.</summary>
+    /// <param name="Branch">The room's own declared branch name, when the step also declared one.</param>
+    public sealed record DeliveryPrOpened(int PullRequestNumber, string? Branch = null) : FlowEvent;
+
+    /// <summary>#734: see <see cref="DeliveryPrOpened"/>'s remarks. Not terminal, unlike <see cref="DeliveryMerged"/> — a later push can flip this again.</summary>
+    public sealed record DeliveryChecksGreen(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>#734: see <see cref="DeliveryChecksGreen"/>'s remarks — the failing counterpart.</summary>
+    public sealed record DeliveryChecksRed(int PullRequestNumber) : FlowEvent;
+
+    /// <summary>
+    /// #734: see <see cref="DeliveryPrOpened"/>'s remarks. <paramref name="Merged"/> discriminates an
+    /// actual merge from closed-unmerged, so the latter reuses this kind rather than adding a fifth.
+    /// Defaults <c>false</c> deliberately — fail closed: a corrupted or truncated line that lost this
+    /// field must not replay as the one outcome ("shipped") a reader would act differently on than the
+    /// other ("abandoned").
+    /// </summary>
+    public sealed record DeliveryMerged(int PullRequestNumber, bool Merged = false) : FlowEvent;
 }

@@ -58,6 +58,13 @@ public class FlowEventLogJsonTests
         new FlowEvent.ExecutionProgress(ExecutionId),
         new FlowEvent.CancellationDelivered(ExecutionId),
         new FlowEvent.CancellationRejected(ExecutionId),
+        new FlowEvent.DeliveryPrOpened(123, "734-lane"),
+        new FlowEvent.DeliveryChecksGreen(123),
+        new FlowEvent.DeliveryChecksRed(123),
+        // Both Merged shapes: the bool has no natural "unset" wire value the way a nullable reference
+        // does, so a strip test run only against one polarity would never notice a fail-open default.
+        new FlowEvent.DeliveryMerged(123, Merged: true),
+        new FlowEvent.DeliveryMerged(123, Merged: false),
     ];
 
     /// <summary>
@@ -159,6 +166,30 @@ public class FlowEventLogJsonTests
         Assert.Equal(ExecutionId, failed.ExecutionId);
         Assert.Equal(FailureClassification.Permanent, failed.FailureClassification);
         Assert.Null(failed.Reason);
+    }
+
+    /// <summary>
+    /// #734 review: `DeliveryMerged.Merged` defaults `false` specifically so a line that lost the
+    /// field replays as the unremarkable outcome (closed-unmerged), never as a fabricated merge — the
+    /// generic strip test above only proves the line still deserializes, not which way it defaults.
+    /// This pins the direction directly, the same way `A_line_predating_an_added_optional_member_still_replays_with_the_default`
+    /// pins `ExecutionFailed.Reason`'s.
+    /// </summary>
+    [Fact]
+    public void A_DeliveryMerged_line_that_lost_the_Merged_property_replays_as_false_not_true()
+    {
+        var node = JsonNode.Parse(JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.DeliveryMerged(123, Merged: true),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options))!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.DeliveryMerged.Merged)));
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(node.ToJsonString(), FlowEventLogJson.Options);
+
+        var merged = Assert.IsType<FlowEvent.DeliveryMerged>(deserialized);
+        Assert.Equal(123, merged.PullRequestNumber);
+        Assert.False(merged.Merged);
     }
 
     [Fact]

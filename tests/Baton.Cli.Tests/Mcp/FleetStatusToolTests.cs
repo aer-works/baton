@@ -153,6 +153,60 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Null(singleRoom.Error);
     }
 
+    /// <summary>
+    /// #734: `delivery` surfaces the room's latest journaled `FlowEvent.Delivery*` fact even though
+    /// the room's own workflow is Terminal -- the poller keeps tracking the PR after the room's own
+    /// DAG finishes, so this must read `flow.jsonl` rather than trust the frozen terminal sentinel.
+    /// </summary>
+    [Fact]
+    public async Task TerminalRoom_SurfacesTheLatestDeliveryFact_FromFlowJsonlNotTheFrozenSentinel()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "delivery-room");
+        Directory.CreateDirectory(room);
+
+        var prPath = Path.Combine(room, DeliveryReferenceOutputNames.PullRequest);
+        await File.WriteAllTextAsync(prPath, "99", TestContext.Current.CancellationToken);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [prPath], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(room, BatonPaths.FlowLogFileName);
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(new FlowEvent.DeliveryPrOpened(99, "734-lane"), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.DeliveryChecksGreen(99), TestContext.Current.CancellationToken);
+        }
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.NotNull(singleRoom.Delivery);
+        Assert.Equal(99, singleRoom.Delivery!.Pr);
+        Assert.Equal("ChecksGreen", singleRoom.Delivery.State);
+    }
+
+    /// <summary>The control: a room with no declared delivery output surfaces no `delivery` field at all.</summary>
+    [Fact]
+    public async Task ARoomWithNoDeclaredDeliveryOutput_SurfacesNoDeliveryField()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "no-delivery-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], ["/tmp/plan.md"], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        Assert.Null(Assert.Single(rooms!).Delivery);
+    }
+
     [Fact]
     public async Task TerminalFastPath_PassesThroughAnIndeterminateSentinelVerbatim()
     {
