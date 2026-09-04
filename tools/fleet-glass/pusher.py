@@ -159,15 +159,10 @@ hash changes.
 
 PROJECTION FILE READ PATH (#1557 PR-B1)
 -------------------------------------------
-FLEET_GLASS_PROJECTION_SOURCE=file switches main()'s loop to `json.load` the daemon's own
-BatonPaths.FleetProjectionFile (~/.baton/fleet/projection.json, `resolve_projection_file_path`)
-instead of spawning `dotnet mcp` -- default `derive`, so nothing changes for a deployed pusher
-until an operator flips it. A stale (> PROJECTION_STALE_AFTER_S old) or absent file falls back to
-`derive` for that one cycle and adds a `staleness` object to the pushed body (glass.html's chip);
-see `read_projection_file`'s own docstring. `python pusher.py --compare-projection` runs both paths
-once and diffs them field-by-field -- see `compare_projection`'s own docstring for the exclusions.
-This PR deletes nothing from the `derive` path itself; that is #1557 PR-B2, gated on this PR's
-identity diff passing on the live machine.
+Two sources for the fleet snapshot, selected by FLEET_GLASS_PROJECTION_SOURCE (`derive` default,
+`file` = the daemon's projection file); the switch, the staleness rule, and the compare command are
+specified once in spec/baton.md §6 (the "PR-B1 … second, opt-in source" passage) -- `read_projection_file` and
+`compare_projection` carry the mechanics, not a second statement of the rule.
 
 Usage: python pusher.py [--once] [--selftest] [--compare-projection]
 Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
@@ -1717,10 +1712,8 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
     same optional-field convention as `conductor` above -- glass.html's freshness strip reads it
     absent-safe.
 
-    `staleness` (#1557 PR-B1) is `read_projection_file`'s own return value, forwarded verbatim --
-    present only on a cycle where `FLEET_GLASS_PROJECTION_SOURCE=file` found the daemon's projection
-    file stale or absent and fell back to `derive_snapshot_and_timelines`. Absent on every ordinary
-    push (including every push while running in the default `derive` mode), same optional-field
+    `staleness` (#1557 PR-B1) is `read_projection_file`'s own return value, forwarded verbatim
+    (spec/baton.md §6, the PR-B1 passage) -- absent on every ordinary push, same optional-field
     convention as `pusher` above."""
     wrapped = {"rooms": room_list,
                "underhood": underhood,
