@@ -3093,6 +3093,22 @@ process. `CommandWorkerAdapter`/`CaptureWorkerAdapter`/`NoOpWorkerAdapter` are e
 not vendor workers with a grant to cap, so the gate does not apply to them (each says so on its own
 type).
 
+**Operator ruling (2026-09-03, #1784): a project ceiling that withholds `NetworkAccess`/`WriteFiles`
+closes that category outright — STRICT, even through a shell pattern the binding's own author vouches
+as read-only.** `ShellCommandsAreReadOnly` (#1456, below) answers the grant AUTHOR's own coherence
+question ("are my named patterns internally consistent?"); it never answers the OPERATOR's project-
+ceiling question ("is this category closed?"). Rationale: nothing enforces a scoped shell pattern but
+the vendor's own `--allowedTools` matcher — and under agy's `--dangerously-skip-permissions`, nothing
+but its tool-name list (#623) — so baton cannot guarantee e.g. `gh pr view*` reaches only github.com,
+and the operator's outer bound must not lean on that assertion. A role that needs `gh` under a
+network-denied ceiling is supposed to stop working; that is the ceiling doing its job. Built:
+`PermissionGrant.CategoriesDefeatedByTheShell(bool honorReadOnlyAssertion = true)` takes a
+caller-supplied "honour the author's read-only assertion?" input, defaulting `true` (#1456's behaviour
+everywhere else — `WorkerBindingResolver`, `DispatchSpecLinter` via `NetworkReachable`); `ProjectCeilingGate.Apply`
+is the one caller that passes `false`, so a capped grant that still carries `RunShellCommands` with
+any pattern (scoped or not) reaching a category the ceiling withholds is refused as incoherent exactly
+as an unscoped shell would be — never narrowed into a false "coherent" state by the author's own vouch.
+
 **Grants fail closed — as a dispatch-time obligation, not a measured runtime property.** The rule:
 if a denial cannot be enforced for the chosen vendor, the run must not start. Read it together with
 the broken-hook paragraph below, which this rule would otherwise contradict: a hook that fails to
@@ -3405,6 +3421,9 @@ part of doing their job. So `review`'s "no network" posture is true of the categ
 false of the worker's actual reach: state it that way rather than letting the flag imply a stronger
 guarantee than it gives. `ShellCommandsAreReadOnly` is what lets this narrow, command-scoped network
 reach coexist with `NetworkAccess: false` in the coherence check — see the field's own doc comment.
+That coexistence is scoped to the grant AUTHOR's own coherence question; it does not survive against
+an OPERATOR's project ceiling denying `NetworkAccess`/`WriteFiles` — see the #1784 operator ruling
+above.
 
 **`agy` now expresses this too, by deferring to the hook rather than refusing (#1387).**
 `AgyWorkerAdapter.TryTranslatePermissionGrant` used to refuse `RunShellCommands` without

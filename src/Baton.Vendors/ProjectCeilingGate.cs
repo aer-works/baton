@@ -34,8 +34,11 @@ internal static class ProjectCeilingGate
     /// <exception cref="IncoherentPermissionGrantException">
     /// Capping the role's grant against the ceiling produces the #529 shape a granted, unscoped shell
     /// reaches every category anyway — re-checked here because a coherent role grant can become
-    /// incoherent once narrowed (<see cref="PermissionGrant.CategoriesDefeatedByTheShell"/>'s own
+    /// incoherent once narrowed (<see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool)"/>'s own
     /// remarks are the canonical statement of the rule; this is the same predicate, not a restatement).
+    /// #1784: called with <c>honorReadOnlyAssertion: false</c> — the operator's ceiling is not the
+    /// author's own coherence question, so a read-only-vouched shell pattern does not exempt a category
+    /// the ceiling withholds.
     /// </exception>
     /// <exception cref="UnsatisfiableOutputContractException">
     /// Review finding B: capping removed <see cref="PermissionGrant.WriteFiles"/> from a grant whose
@@ -81,9 +84,17 @@ internal static class ProjectCeilingGate
         }
 
         var capped = ceiling.Cap(grant);
-        if (capped.CategoriesDefeatedByTheShell is { Count: > 0 } withheld)
+
+        // #1784: honorReadOnlyAssertion: false — a project ceiling is the OPERATOR's outer bound, not
+        // the grant author's own coherence question ShellCommandsAreReadOnly answers (see
+        // PermissionGrant.CategoriesDefeatedByTheShell's own doc). Passing true here would let an
+        // author-vouched read-only shell pattern silently defeat a ceiling that withholds
+        // WriteFiles/NetworkAccess, which is exactly the #1784 gap: nothing but the vendor's own
+        // --allowedTools matcher enforces the pattern, and baton cannot verify it stays inside the
+        // withheld category.
+        if (capped.CategoriesDefeatedByTheShell(honorReadOnlyAssertion: false) is { Count: > 0 } withheld)
         {
-            throw new IncoherentPermissionGrantException(contract.WorkerName, withheld);
+            throw new IncoherentPermissionGrantException(contract.WorkerName, withheld, capped.ShellCommandPatterns);
         }
 
         // #1166 review finding M1: the same predicate WorkerBindingResolver's pre-existing check uses,
