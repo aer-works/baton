@@ -437,9 +437,9 @@ step-tied candidate list above, `CancelRequestPoller`'s settle re-check, and
 `NonProcessCancellationDetector`'s two Running/step-less arms each used to restate this "is this
 execution still arrestable" shape independently (PR #1528 review finding F10). `Baton.Projection.ArrestableExecutions`
 is now the single reader: `ResolveSingleStepLane` is the step-tied-only list `RunningExecutionResolver`
-shims over unchanged; `Find` is the settle re-check, now step-less-aware (D2's fix — a step-less
-supplementary execution no longer gets told "it already settled" while it is still pending); `All` is
-what `NonProcessCancellationDetector` filters down to its own Running-only, `NonProcess`-binding arm.
+shims over unchanged; `Find` is the settle re-check, now step-less-aware — `ArrestableExecutions.cs`'s
+own remarks state the D2 fix this buys; `All` is what `NonProcessCancellationDetector` filters down
+to its own Running-only, `NonProcess`-binding arm.
 A quota-parked target is unaffected: `All` still yields one (so `Find` still recognizes it), but
 `NonProcessCancellationDetector` still filters it back out — that arrest path stays
 `SettleParkedCancelIntentsAsync`'s alone, exactly as before the collapse.
