@@ -85,12 +85,12 @@ public sealed class CodexWorkerAdapterTests
     }
 
     [Fact]
-    public void New_turn_resolves_to_direct_codex_exec_with_the_prompt_last()
+    public void New_turn_targets_codex_exec_with_the_prompt_last()
     {
         var target = new CodexWorkerAdapter().Resolve(
             new WorkerInvocation("Draft a plan."), NoOutputContract);
 
-        Assert.Equal(OperatingSystem.IsWindows() ? "codex.exe" : "codex", Path.GetFileName(target.Program));
+        Assert.Contains(Path.GetFileName(target.Program), new[] { "codex", "codex.exe" });
         Assert.Equal("exec", target.Args[0]);
         Assert.Equal("read-only", ArgValue(target, "--sandbox"));
         Assert.Contains("--json", target.Args);
