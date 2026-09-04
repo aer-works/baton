@@ -1687,4 +1687,44 @@ public class CoreDispatcherTests
 
         Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(naive));
     }
+
+    // #1373: CoreDispatchTarget.WithPromptPreamble.
+
+    [Fact]
+    public void WithPromptPreamble_rewrites_the_spawned_argument_and_not_only_the_archived_prompt()
+    {
+        var target = new CoreDispatchTarget("claude", ["-p", "do the work", "--model", "opus"], PromptText: "do the work");
+
+        var prefixed = target.WithPromptPreamble("BRIEF: finish, do not restart.\n\n");
+
+        // Both, and the ARGUMENT above all: PromptText only reaches prompt.txt, which the dispatcher
+        // writes for display and never reads back to route. A preamble that landed there alone would
+        // be visible to a person reading the artifact and invisible to the worker it was written for.
+        Assert.Equal("BRIEF: finish, do not restart.\n\ndo the work", prefixed.Args[1]);
+        Assert.Equal(prefixed.Args[1], prefixed.PromptText);
+        // Every other argument is untouched, and the prompt stays at its own index.
+        Assert.Equal(["-p", prefixed.Args[1], "--model", "opus"], prefixed.Args);
+    }
+
+    [Fact]
+    public void WithPromptPreamble_is_a_no_op_for_an_adapter_with_no_prose_prompt()
+    {
+        // CommandWorkerAdapter's shape: a declared argv with nothing prompt-like to prepend to.
+        var target = new CoreDispatchTarget("pixi", ["run", "gates"]);
+
+        Assert.Same(target, target.WithPromptPreamble("BRIEF: finish, do not restart.\n\n"));
+    }
+
+    [Fact]
+    public void WithPromptPreamble_refuses_a_target_whose_prompt_is_not_one_of_its_arguments()
+    {
+        // The invariant this method and the #748 oversize swap both rest on. Refused loudly rather
+        // than silently dropped: a worker that never received its continuation brief is
+        // indistinguishable from one that read it and ignored it.
+        var target = new CoreDispatchTarget("claude", ["-p", "--prompt=do the work"], PromptText: "do the work");
+
+        var ex = Assert.Throws<PromptPreambleException>(
+            () => target.WithPromptPreamble("BRIEF: finish, do not restart.\n\n"));
+        Assert.Contains("no argument", ex.Message, StringComparison.Ordinal);
+    }
 }

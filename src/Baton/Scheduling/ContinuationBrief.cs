@@ -72,7 +72,9 @@ public static class ContinuationBrief
     /// </summary>
     internal static string DescribeDuration(TimeSpan duration)
     {
-        var totalMinutes = (long)Math.Round(duration.TotalMinutes);
+        // Floored, not rounded: 45s must read as "45s", and rounding it up to "1m" would overstate a
+        // budget by a third.
+        var totalMinutes = (long)duration.TotalMinutes;
         if (totalMinutes < 1)
         {
             return $"{Math.Max(1, (long)Math.Round(duration.TotalSeconds))}s";
