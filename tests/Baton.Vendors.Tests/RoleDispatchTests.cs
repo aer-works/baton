@@ -195,9 +195,12 @@ public class RoleDispatchTests
     public void An_explicit_model_override_wins_over_both_the_tier_and_the_vendor_swap()
     {
         // The model is its own axis (0017/0033): an explicit --model is used verbatim, whether or not
-        // the vendor is also swapped.
-        Assert.Equal("opus", RoleDispatch.ToBinding(Advise, "spec", "claude", modelOverride: "opus").Model);
-        Assert.Equal("gemini-x", RoleDispatch.ToBinding(Advise, "spec", modelOverride: "gemini-x").Model);
+        // the vendor is also swapped. Janitor (agy tier) keeps the first arm a REAL swap now that
+        // advise's tier is claude (#1861) -- the tier's own model is a gemini string, so "opus" here
+        // can only have come from the override.
+        Assert.Equal("agy", Janitor.Adapter);
+        Assert.Equal("opus", RoleDispatch.ToBinding(Janitor, "spec", "claude", modelOverride: "opus").Model);
+        Assert.Equal("gemini-x", RoleDispatch.ToBinding(Janitor, "spec", modelOverride: "gemini-x").Model);
     }
 
     [Fact]

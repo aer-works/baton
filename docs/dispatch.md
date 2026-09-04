@@ -251,10 +251,15 @@ Each tier pins one vendor, model and effort in
 [`src/Baton.Vendors/WorkerTiers.json`](../src/Baton.Vendors/WorkerTiers.json). As of #1861 (2026-09-04)
 `frontier` is claude opus at high effort and `standard` is claude opus at medium: in
 [`benchmarks/deepswe/2026-09-04`](../benchmarks/deepswe/2026-09-04/README.md) Opus medium scored 69%
-at 52 agent steps while Sonnet never exceeded 54% at any effort and took two to five times the steps,
-and [`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
+at 52 agent steps while Sonnet never exceeded 54% at any effort and took about twice the steps at
+matched effort (108 vs 52 at medium, 147 vs 73 at high, 268 vs 99 at max), and
+[`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
 shows steps, not output, are what drained the weekly allowance. High buys review four more points for
-about 40% more steps; xhigh and max buy nothing. One caveat the snapshot itself states: its dollar
+about 40% more steps; xhigh holds that score for 22% more steps, and max adds one point for about
+twice the cost. Moving `standard` onto claude also changes `advise`'s default shape: on agy its
+withheld write ran audited in a fresh worktree, on claude it runs enforced against the caller's own
+directory (a genuine read-only lane, see §4 of `docs/agents/invoking-baton.md`), which is the
+better fit for a second opinion that must not touch the tree. One caveat the snapshot itself states: its dollar
 column is tokens at API list price, so it carries the per-token price gap between models but not the
 subscription meter's own weighting, which the vendor does not publish. Opus medium is better on
 quality and steps for certain; cheaper on the plan only if that weighting is roughly proportional to

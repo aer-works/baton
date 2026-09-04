@@ -126,8 +126,10 @@ public class WorkerRoleCatalogTests
         Assert.Equal("opus", implement.Model);
         Assert.Equal("medium", implement.Effort);
         Assert.True(implement.Grant.RunShellCommands);
-        // #1355: network stays granted here -- RunShellCommands without NetworkAccess is refused for
-        // EVERY grant-consuming adapter (PermissionGrant.CategoriesDefeatedByTheShell), so defaulting it
+        // #1355: network stays granted here -- a CATEGORICAL RunShellCommands grant without
+        // NetworkAccess is refused for every grant-consuming adapter (PermissionGrant.
+        // CategoriesDefeatedByTheShell); the pattern-scoped, read-only shell review carries above is
+        // the documented exception (#1456), and implement's shell is categorical, so defaulting network
         // off would make every unmodified dispatch of this role throw whichever vendor the tier names.
         // See the role's own purpose field in WorkerRoles.json for the full reasoning.
         Assert.True(implement.Grant.NetworkAccess);
