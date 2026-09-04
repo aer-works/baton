@@ -66,9 +66,8 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
                 "the sleeping step to start");
 
             using var cancelProcess = StartBatonProcess("cancel", roomDirectory, "--bindings", bindingsFilePath);
-            var cancelStdout = await cancelProcess.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-            var cancelStderr = await cancelProcess.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await cancelProcess.WaitForExitAsync(TestContext.Current.CancellationToken);
+            var (cancelStdout, cancelStderr) = await BoundedProcessWait.RunToExitAsync(
+                cancelProcess, WaitTimeout, TestContext.Current.CancellationToken);
             Assert.True(
                 cancelStdout.Contains("live pump", StringComparison.OrdinalIgnoreCase),
                 $"expected the fall-through message on stdout; got stdout='{cancelStdout}' stderr='{cancelStderr}'");

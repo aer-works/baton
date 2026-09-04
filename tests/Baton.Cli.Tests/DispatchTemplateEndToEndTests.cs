@@ -456,9 +456,8 @@ public sealed class DispatchTemplateEndToEndTests : IDisposable
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start git — is it on PATH? These tests need git.");
-        var stdout = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-        var stderr = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        var (stdout, stderr) = await BoundedProcessWait.RunToExitAsync(
+            process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {stderr.Trim()}");

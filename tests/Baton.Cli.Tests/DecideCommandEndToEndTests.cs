@@ -277,11 +277,8 @@ public class DecideCommandEndToEndTests
             startInfo.ArgumentList.Add(bindingsFilePath);
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start 'baton decide'.");
-            var stderrTask = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-            var stderr = await stderrTask;
-            var stdout = await stdoutTask;
+            var (stdout, stderr) = await BoundedProcessWait.RunToExitAsync(
+                process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(1, process.ExitCode);
             Assert.Contains("held open by another process", stderr);
