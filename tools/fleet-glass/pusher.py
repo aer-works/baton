@@ -2671,6 +2671,33 @@ _COMPARE_SHAPE_ONLY_KEYS = {
     "elapsed": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
 }
 
+# #1807: fields on a Running room that legitimately move between the daemon's file sample and this
+# process's derive sample (taken ~30s-ish apart, `_DAEMON_PROJECTION_WRITE_INTERVAL_S` below) --
+# excluded from the byte-identity comparison the same way `_COMPARE_SHAPE_ONLY_KEYS` is, and
+# checked instead by `_compare_volatile_live`'s tolerance rules below. Chose per-field tolerance
+# over the issue's other option (excluding Running rooms from `live.*` entirely) because it keeps
+# checking Running rooms -- a counter that goes backwards, or a field that vanishes, is still a
+# real derivation bug and still fails the compare.
+#
+# The issue proposed treating all five as monotone non-decreasing. A live run against this
+# machine's own fleet (see the PR body) reds that on `cacheReadTokens`, which the docstring on
+# `live_telemetry_for_room`'s `"context"` field already calls out as NOT cumulative: it's "a LEVEL
+# (the caller replaces, never sums, its own running value)" taken from the LATEST usage-bearing
+# line, so it moves in either direction as new turns land -- unlike the three true running counters
+# below it. `contextTokens` comes from the same `"context"` object, so it gets the same treatment.
+_MONOTONE_LIVE_COUNTER_KEYS = ("billedTokens", "toolCalls", "turns")
+_LEVEL_LIVE_KEYS = ("contextTokens", "cacheReadTokens")
+
+# spec/baton.md §7 / src/Baton.Cli/Daemon/FleetProjectionWriter.cs `DefaultInterval`: the daemon
+# writes the projection file on this cadence. A room counts as "settled" for the ≥3-settled-rooms
+# floor below once its last activity is at least one full write interval old -- by then the file
+# could not still be catching up to a value the derive path just observed.
+_DAEMON_PROJECTION_WRITE_INTERVAL_S = 30
+
+# spec/baton.md §6 PR-B2 gate (#1807): a compare that is green because it had nothing live to check
+# is not evidence -- require at least this many settled rooms before a clean diff counts as a pass.
+_MIN_SETTLED_ROOMS_FOR_GREEN = 3
+
 
 def _canonical(obj) -> str:
     """Canonical JSON per the plan's "byte-for-byte after canonical JSON serialization (sorted
@@ -2680,14 +2707,20 @@ def _canonical(obj) -> str:
 
 
 def _normalize_room_for_compare(room: dict) -> dict:
-    """Strips the fields excluded from strict equality (plan §4/item 3) before the canonical-JSON
-    comparison: the shape-only keys above, and `live.lastActivityAt` (see `_compare_last_activity`
-    -- diffed separately, on the unquantized instant, never on the bucketed string)."""
+    """Strips the fields excluded from strict equality before the canonical-JSON comparison: the
+    shape-only keys above, `live.lastActivityAt` (see `_compare_last_activity` -- diffed
+    separately, on the unquantized instant, never on the bucketed string), and the #1807 volatile
+    live fields (`_MONOTONE_LIVE_COUNTER_KEYS`, `_LEVEL_LIVE_KEYS`, plus `stdoutTail` -- see
+    `_compare_volatile_live`, which diffs them separately under a moving-value tolerance instead of
+    byte equality)."""
     normalized = {k: v for k, v in room.items() if k not in _COMPARE_SHAPE_ONLY_KEYS}
     live = normalized.get("live")
-    if isinstance(live, dict) and "lastActivityAt" in live:
+    if isinstance(live, dict):
         live = dict(live)
-        del live["lastActivityAt"]
+        live.pop("lastActivityAt", None)
+        for key in _MONOTONE_LIVE_COUNTER_KEYS + _LEVEL_LIVE_KEYS:
+            live.pop(key, None)
+        live.pop("stdoutTail", None)
         normalized["live"] = live
     return normalized
 
@@ -2717,10 +2750,63 @@ def _compare_last_activity(path: str, derive_room: dict, file_room: dict) -> lis
     return []
 
 
+def _compare_volatile_live(path: str, derive_room: dict, file_room: dict) -> list[str]:
+    """#1807: `compare_projection` always derives (reads live, "now") AFTER it reads the projection
+    file (written up to `_DAEMON_PROJECTION_WRITE_INTERVAL_S`-ish earlier) -- see that function's
+    own body -- so for a Running room the derive-side sample is chronologically LATER.
+
+    `_MONOTONE_LIVE_COUNTER_KEYS` (true running counters) must be >= the file's value, never <.
+    `_LEVEL_LIVE_KEYS` (the latest-turn snapshot, not cumulative -- see that constant's own comment)
+    get no ordering check, only a presence and numeric-shape check: either can legitimately be
+    smaller, larger, or absent-then-present as a new turn lands. `stdoutTail` gets the SAME
+    presence/shape-only treatment as the level keys, not a content check: a live run against this
+    machine's own fleet (see the PR body) showed the derive path's tail can come out shorter than
+    the file's, because `compare_projection` hands `attach_live_telemetry` a fresh empty
+    `live_telemetry_cache` every run (main()'s own loop instead keeps that cache warm across
+    cycles) -- so the two paths' windows are not simply "later, further along the same stream" the
+    way the counters above are, and no prefix/suffix relationship between them is safe to assert. A
+    field present on one side and missing on the other, a non-numeric/non-string value, or a
+    monotone counter that moved backwards is still a real derivation difference -- none of that is
+    tolerated."""
+    diffs = []
+    d_live = derive_room.get("live")
+    f_live = file_room.get("live")
+    if not isinstance(d_live, dict) or not isinstance(f_live, dict):
+        return diffs
+
+    for key in _MONOTONE_LIVE_COUNTER_KEYS + _LEVEL_LIVE_KEYS:
+        d_has, f_has = key in d_live, key in f_live
+        if d_has != f_has:
+            diffs.append(f"{path}: field {key!r} present in {'derive' if d_has else 'file'}, "
+                         f"absent in {'file' if d_has else 'derive'}")
+            continue
+        if not d_has:
+            continue
+        d_val, f_val = d_live[key], f_live[key]
+        if isinstance(d_val, bool) or isinstance(f_val, bool) or not isinstance(d_val, (int, float)) \
+                or not isinstance(f_val, (int, float)):
+            diffs.append(f"{path}: live.{key} not numeric: derive={d_val!r} file={f_val!r}")
+        elif key in _MONOTONE_LIVE_COUNTER_KEYS and d_val < f_val:
+            diffs.append(f"{path}: live.{key} moved backwards: derive={d_val} (later) < file={f_val} (earlier)")
+
+    d_tail, f_tail = d_live.get("stdoutTail"), f_live.get("stdoutTail")
+    if (d_tail is None) != (f_tail is None):
+        diffs.append(f"{path}: field 'stdoutTail' present in "
+                     f"{'derive' if d_tail is not None else 'file'}, absent in "
+                     f"{'file' if d_tail is not None else 'derive'}")
+    elif d_tail is not None and not isinstance(d_tail, str):
+        diffs.append(f"{path}: live.stdoutTail not a string: derive={d_tail!r}")
+    elif f_tail is not None and not isinstance(f_tail, str):
+        diffs.append(f"{path}: live.stdoutTail not a string: file={f_tail!r}")
+    return diffs
+
+
 def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
     """Every field-level difference between one room's derive-path and file-path projections,
-    after the plan §4/item 3 exclusions. Empty list means identical."""
+    after the plan §4/item 3 exclusions and the #1807 volatile-live tolerance. Empty list means
+    identical."""
     diffs = _compare_last_activity(path, derive_room, file_room)
+    diffs.extend(_compare_volatile_live(path, derive_room, file_room))
 
     d_norm = _normalize_room_for_compare(derive_room)
     f_norm = _normalize_room_for_compare(file_room)
@@ -2739,6 +2825,24 @@ def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
             diffs.append(f"{path}: field {key!r} present but shape-invalid: {file_room[key]!r}")
 
     return diffs
+
+
+def _room_is_settled(file_room: dict) -> bool:
+    """#1807: a room counts toward `_MIN_SETTLED_ROOMS_FOR_GREEN` once its counters can no longer
+    legitimately be moving -- either it's in `_TERMINAL_STATES`, or its own (unquantized)
+    `live.lastActivityAt` is already older than one daemon write interval, so the file's sample
+    could not still be catching up to what the derive path just observed."""
+    if file_room.get("state") in _TERMINAL_STATES:
+        return True
+    live = file_room.get("live")
+    ts = live.get("lastActivityAt") if isinstance(live, dict) else None
+    if not isinstance(ts, str):
+        return False
+    try:
+        epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return (time.time() - epoch) > _DAEMON_PROJECTION_WRITE_INTERVAL_S
 
 
 def compare_projection(dll: str, roots: list) -> int:
@@ -2774,8 +2878,11 @@ def compare_projection(dll: str, roots: list) -> int:
     if only_in_file:
         diffs.append(f"rooms only in file path: {only_in_file}")
 
-    for path in sorted(set(by_path_derive) & set(by_path_file)):
+    common_paths = sorted(set(by_path_derive) & set(by_path_file))
+    for path in common_paths:
         diffs.extend(_diff_room(path, by_path_derive[path], by_path_file[path]))
+
+    settled_count = sum(1 for p in common_paths if _room_is_settled(by_path_file[p]))
 
     # #1557 plan item 4: an installed daemon build that predates #1786 (PR-A2) never wrote
     # `live.stdoutTail` at all -- that reds this diff on `stdoutTail` for every Running room, which
@@ -2794,7 +2901,16 @@ def compare_projection(dll: str, roots: list) -> int:
             print(f"  !! {d}", file=sys.stderr)
         return 1
 
-    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, "
+    # #1807: a clean diff on zero (or too few) settled rooms is not evidence the monotone-live
+    # tolerance actually discriminates -- it just never got exercised. "green on 0" must not pass.
+    if settled_count < _MIN_SETTLED_ROOMS_FOR_GREEN:
+        print(f"COMPARE: FAIL -- only {settled_count} settled room(s) compared (need >= "
+              f"{_MIN_SETTLED_ROOMS_FOR_GREEN}); a clean diff on too few settled rooms can't "
+              f"certify the compare -- rerun once more rooms have finished or gone quiet.",
+              file=sys.stderr)
+        return 1
+
+    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, {settled_count} settled, "
           f"{len(only_in_derive) + len(only_in_file)} room-set diff(s))")
     return 0
 
@@ -5197,6 +5313,50 @@ def _selftest() -> int:
     shape_invalid_file = {"processAlive": "not-a-real-status"}
     check("compare identity diff: shape-only fields (never diffed against derive) are still shape-checked",
           any("processAlive" in d for d in _diff_room("C:\\rooms\\room-a", {}, shape_invalid_file)))
+
+    # -- #1807: volatile-live tolerance arms. `compare_projection` always derives AFTER reading the
+    # file, so "derive" below plays the later sample and "file" the earlier one. --
+    monotone_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running", "role": "worker",
+                        "live": {"toolCalls": 5, "turns": 2, "billedTokens": 1000, "cacheReadTokens": 50,
+                                 "contextTokens": 200, "stdoutTail": "line2\nline3\nline4\n",
+                                 "lastActivityAt": "2026-09-03T12:00:05+00:00"}}
+    monotone_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running", "role": "worker",
+                      "live": {"toolCalls": 3, "turns": 1, "billedTokens": 800, "cacheReadTokens": 40,
+                               "contextTokens": 150, "stdoutTail": "line2\nline3\n",
+                               "lastActivityAt": "2026-09-03T12:00:00+00:00"}}
+    check("#1807 volatile-live tolerance: a Running room whose live counters moved forward diffs clean",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, monotone_file) == [])
+
+    backwards_file = {**monotone_file, "live": {**monotone_file["live"], "toolCalls": 9}}
+    backwards_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, backwards_file)
+    check("#1807 volatile-live tolerance: a true counter that moved BACKWARDS is still a real difference",
+          any("toolCalls" in d and "backwards" in d for d in backwards_diff))
+
+    # Measured on a real live run (PR body): cacheReadTokens/contextTokens are a LEVEL from the
+    # latest turn, not a running counter -- they can legitimately go DOWN and must not fail here.
+    level_dropped_file = {**monotone_file,
+                           "live": {**monotone_file["live"], "cacheReadTokens": 999999, "contextTokens": 50000}}
+    check("#1807 volatile-live tolerance: cacheReadTokens/contextTokens dropping is NOT a real difference",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, level_dropped_file) == [])
+
+    role_diff_file = {**monotone_file, "role": "conductor"}
+    role_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, role_diff_file)
+    check("#1807 volatile-live tolerance: a room whose role differs still fails (the tolerance doesn't swallow it)",
+          any("role" in d for d in role_diff))
+
+    check("#1807 settled-rooms floor: a terminal room counts as settled",
+          _room_is_settled({"state": "Succeeded"}) is True)
+    check("#1807 settled-rooms floor: a Running room active within the last write interval does not",
+          _room_is_settled({"state": "Running",
+                             "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}) is False)
+    check("#1807 settled-rooms floor: a Running room quiet longer than one write interval does",
+          _room_is_settled({"state": "Running", "live": {"lastActivityAt": datetime.fromtimestamp(
+              time.time() - _DAEMON_PROJECTION_WRITE_INTERVAL_S - 1, tz=timezone.utc).isoformat()}}) is True)
+    fewer_than_floor = [{"state": "Running",
+                          "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}] * 2
+    check(f"#1807 settled-rooms floor: {_MIN_SETTLED_ROOMS_FOR_GREEN} is the actual floor "
+          "(a compare with fewer settled rooms than this must not pass, i.e. 'green on 0')",
+          sum(1 for r in fewer_than_floor if _room_is_settled(r)) < _MIN_SETTLED_ROOMS_FOR_GREEN)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

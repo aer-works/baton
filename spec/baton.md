@@ -2607,8 +2607,9 @@ itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env, default `derive` — a depl
 is unchanged until an operator flips it) switches `main()`'s loop to `json.load`
 `BatonPaths.FleetProjectionFile` instead of spawning `dotnet mcp` and running its own
 `attach_live_telemetry`/`attach_pruned_info`; `derive` keeps doing exactly what it always has. This
-PR deletes nothing from the `derive` path — that is PR-B2, gated on this PR's own identity diff
-having passed on the live machine. Because no scheduled task runs `baton daemon` today, the fallback
+PR deletes nothing from the `derive` path — that is PR-B2, gated on `compare-projection` reading
+green on ≥ 3 settled rooms plus every static field on every room (#1807; `compare_projection`'s own
+`_MIN_SETTLED_ROOMS_FOR_GREEN` in `pusher.py`, so "green on 0" can't pass). Because no scheduled task runs `baton daemon` today, the fallback
 below is load-bearing from day one, not a defensive edge case: a file older than 3 coalescing
 windows (900s) or absent/unreadable/malformed falls back to `derive` for that one cycle and logs one
 line; on that fallback cycle only, the pushed body carries one more optional top-level field,
@@ -2622,6 +2623,25 @@ diff printed on mismatch — `derived_at` (differs by construction), `rooms[].li
 `processAlive`/`stdout_last_write_ago_sec`/`elapsed` (the `derive` path never emitted these at all)
 are excluded from strict equality for the reasons named inline at each check; everything else must
 match exactly.
+
+**#1807: `rooms[].live` on a Running room needed a second exclusion tier, not more strict-equality
+exceptions.** A live compare run on this machine's own overnight fleet (34+ Running rooms) reads RED
+on `billedTokens`/`cacheReadTokens`/`contextTokens`/`toolCalls`/`turns`/`stdoutTail` on every one of
+them: the daemon writes the projection file on a ~30s cadence (`FleetProjectionWriter.DefaultInterval`)
+and the derive path samples seconds later, so two legitimately-different values of a field that moves
+while the room runs. Chose the issue's monotone-tolerance design over quiescing (excluding Running
+rooms from `live.*` entirely) because it keeps checking Running rooms — a field that goes backwards
+or vanishes is still a bug. Split further than the issue proposed once measured against real data:
+`billedTokens`/`toolCalls`/`turns` are true running counters (derive, sampled later, must be ≥ file);
+`contextTokens`/`cacheReadTokens` are a LEVEL from the latest turn (`live_telemetry_for_room`'s own
+doc), not cumulative, and moved DOWN by 8× on a real room in that run, so they get presence/shape
+checking only, no ordering; `stdoutTail` gets the same presence/shape-only treatment, because
+`compare_projection` hands `attach_live_telemetry` a fresh empty cache every run while `main()`'s own
+loop keeps its cache warm across cycles, so the two paths' tail windows are not simply "further along
+the same stream" and no prefix relationship between them is safe to assert. A clean diff still is not
+enough on its own to gate PR-B2 if it happened to run against zero or few settled rooms — the
+`_MIN_SETTLED_ROOMS_FOR_GREEN` floor above exists so "green because nothing live was actually
+checked" can't pass. See `_compare_volatile_live`/`_room_is_settled` in `pusher.py` for the mechanics.
 
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
