@@ -512,6 +512,12 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     }
 
     /// <summary>
+    /// Shared with the #532 resolve-time liveness probe below, so both readers name the identical
+    /// path rather than two independent interpolations of the same directory.
+    /// </summary>
+    private static string HookAssemblyPath => Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+
+    /// <summary>
     /// The `--settings` content #543 ships: one `PreToolUse` hook, matching every tool
     /// (<c>"matcher": "*"</c>), spawned in exec form (`args` set) so Claude Code invokes it directly
     /// with no shell -- no quoting concerns, matching this adapter's own "direct shell-less" design
@@ -537,12 +543,6 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// turns any future deployment shape this reasoning missed into a loud failure at dispatch time
     /// rather than a silent one at hook-invocation time.
     /// </remarks>
-    /// <summary>
-    /// Shared with the #532 resolve-time liveness probe below, so both readers name the identical
-    /// path rather than two independent interpolations of the same directory.
-    /// </summary>
-    private static string HookAssemblyPath => Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
-
     private static string BuildSettingsJson()
     {
         var hookAssemblyPath = HookAssemblyPath;
