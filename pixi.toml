@@ -106,19 +106,9 @@ test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build --max-
 # subdirectory) changed the exact pattern. #1474 folded the last non-.NET code (aer-core's Rust)
 # into a managed port, so this coverage report is now the whole engine, not a partial one.
 #
-# KNOWN GAP (#1833): the prior coverage.runsettings excluded source-generated code by attribute
-# (GeneratedCodeAttribute/CompilerGeneratedAttribute/ExcludeFromCodeCoverageAttribute) via VSTest's
-# data-collector Configuration. MTP's own extension takes the same exclusion list through
-# `--coverage-settings <file>` (Microsoft's dotnet-coverage settings XML, `<Configuration>
-# <CodeCoverage><Attributes><Exclude>...`), but that flag was measured failing command-line
-# validation (exit 5, "invalid command-line arguments") against Microsoft.Testing.Extensions.
-# CodeCoverage 18.11.0 on this SDK (10.0.204) regardless of absolute/relative path or `=` syntax --
-# unresolved in the time this migration had. `--coverage`/`--coverage-output-format cobertura`
-# alone (no settings file) work and are what ships here; the report over-counts source-generated
-# lines until a follow-up either fixes the flag or finds its replacement. Not gated (this task runs
-# in nothing CI or gates.py reads), so shipping the migration without full fidelity here does not
-# regress anything red.
-coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --coverage --coverage-output-format cobertura --results-directory artifacts/coverage --minimum-expected-tests 1 && dotnet reportgenerator -reports:artifacts/coverage/*.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Baton.*\"" }
+# `coverage.settings.xml` restores the source-generated-code exclusions; spec/baton.md records the
+# measured evidence and the earlier command-line-validation discrepancy (#1846).
+coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --coverage --coverage-settings coverage.settings.xml --coverage-output-format cobertura --results-directory artifacts/coverage --minimum-expected-tests 1 && dotnet reportgenerator -reports:artifacts/coverage/*.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Baton.*\"" }
 
 fmt = "python tools/buildlock.py dotnet format"
 fmt-check = { cmd = "python tools/buildlock.py dotnet format --verify-no-changes" }
