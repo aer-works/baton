@@ -148,8 +148,7 @@ public sealed class VerifyRunnerTests
     [Fact]
     public async Task A_GATES_BLOCKED_summary_line_yields_BuildLockBusy_and_the_blocked_members()
     {
-        // #1796: the exact shape tools/gates/gates.py's summarise() emits when every non-passing
-        // member was blocked on tools/buildlock.py's lock, not genuinely broken.
+        // #1796: gates.py's summarise() shape for an all-blocked run.
         var outcome = await VerifyRunner.RunProcessAsync(
             "cmd", ["/c", "echo GATES: BLOCKED 1 of 25 -- lint & exit 3"], workingDirectory: null, CancellationToken.None);
 
@@ -181,8 +180,7 @@ public sealed class VerifyRunnerTests
     [Fact]
     public async Task A_BLOCKED_member_s_own_buildlock_line_yields_the_NotRunReason_text()
     {
-        // #1796: NotRunReason is parsed out of tools/buildlock.py's own BLOCKED line inside the
-        // blocked member's own tail -- the exact shape that member prints to stdout/stderr.
+        // #1796: what that member actually prints to stdout, verbatim.
         var command = string.Join(" & ", new[]
         {
             "echo buildlock: BLOCKED after 1800s waiting for the build lock held by PID 1234 (dotnet build) since 2026-09-04 01:00:00 -- raise BATON_BUILDLOCK_TIMEOUT_S or find out why the holder is stuck",

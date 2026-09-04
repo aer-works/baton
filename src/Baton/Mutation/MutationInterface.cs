@@ -2034,13 +2034,10 @@ public static class MutationInterface
                     }
                     else if (verifyOutcome.Kind == VerifyFailedKind.BuildLockBusy)
                     {
-                        // #1796: gates.py's only non-passing member(s) were blocked on
-                        // tools/buildlock.py's lock -- contention, not a broken gate. VerifyStarted
-                        // above already fired, so this is the BuildLockBusy: true shape (see its own
-                        // doc) -- it settles Indeterminate via StateProjector's VerifyNotRun arm, the
-                        // same terminal-event shape VerifyFailed uses below, but is journaled as
-                        // VerifyNotRun so the room's record reads "nothing verified this run" rather
-                        // than "the gates broke".
+                        // #1796: see FlowEvent.VerifyNotRun.BuildLockBusy's own doc for the condition
+                        // this reports and why it settles differently from the VerifyFailed branch
+                        // below. VerifyStarted already fired above, distinguishing this from the
+                        // pre-flight not-run shape appended earlier in this method.
                         await eventLogWriter.AppendAsync(
                             new FlowEvent.VerifyNotRun(
                                 prepared.Request.ExecutionId,

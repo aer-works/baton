@@ -51,11 +51,9 @@ public sealed record VerifyOutcome(
 public static class VerifyRunner
 {
     private const string FailMarker = "GATES: FAIL";
-    // #1796: gates.py's own BLOCKED_MARK — a run whose only non-passing member(s) were blocked on
-    // tools/buildlock.py's lock, never a genuine gate defect. Checked AFTER FailMarker in
-    // ParseVerdict: a mixed run (a real failure alongside a blocked member) still prints
-    // "GATES: FAIL ..." naming only the real failures, so FailMarker wins and BlockedMarker is never
-    // reached for that run — mirroring gates.py's own summarise() precedence.
+    // #1796: gates.py's own BLOCKED_MARK (see FlowEvent.VerifyNotRun.BuildLockBusy for what this
+    // reports). Checked AFTER FailMarker in ParseVerdict, mirroring gates.py's own summarise()
+    // precedence: a real failure alongside this always wins the headline.
     private const string BlockedMarker = "GATES: BLOCKED";
     private const string FailingMembersSeparator = " -- ";
 

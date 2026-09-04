@@ -1249,8 +1249,8 @@ started at all" case. `StateProjector`'s `VerifyNotRun` arm treats `BuildLockBus
 branch: it settles the room `Indeterminate` (`IndeterminateProducer.BuildLockBusy`, admitting `baton
 resolve --close --reason <text>` the same way `VerifyFailed`/`Arrested` do — see the producer table
 above and "Consumer obligations" below) rather than the diagnostic-only, still-`Succeeded` reading the
-pre-flight shape gets — a build-lock timeout answers neither "the code passed" nor "the code failed",
-and a room may not silently report the former. `fleet_status`/`baton status --json` surface it exactly
+pre-flight shape gets — see `FlowEvent.VerifyNotRun.BuildLockBusy`'s own doc for why a lock-contention
+timeout may not be silently read as a pass. `fleet_status`/`baton status --json` surface it exactly
 as any other `Indeterminate` reason (`firstFailureReason`, `indeterminateProducerKind`), not through the
 `verify: "not-run"` field the pre-flight shape uses — that field stays reserved for a step still read
 as ordinarily `Succeeded`.
