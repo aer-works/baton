@@ -391,6 +391,10 @@ public static class VerifyCommandResolver
         string output;
         try
         {
+            // Combined stream, unchanged from before #1797: pixi's real listing itself prints to
+            // STDERR (`Tasks that can run on this machine:` and the comma-separated names), with only
+            // a bare column header on stdout -- stdoutOnly here would silently blind every positive
+            // read, the opposite of what this probe exists for.
             (exitCode, output) = await VerifyRunner.CaptureAsync(pixiProgram, ["task", "list"], workingDirectory, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -401,13 +405,15 @@ public static class VerifyCommandResolver
         // ExecutionCancelled, not VerifyFailed/Indeterminate) is what actually settles it from there.
         catch (BatonException ex) when (ex.ErrorCode == BatonErrorCode.Cancelled || cancellationToken.IsCancellationRequested)
         {
+            LogProbeDeferral("cancelled mid-flight");
             return (true, null);
         }
         catch (OperationCanceledException)
         {
+            LogProbeDeferral("cancelled mid-flight");
             return (true, null);
         }
-        catch (BatonException)
+        catch (BatonException ex)
         {
             // pixi itself refused to spawn -- not installed, or some OTHER engine-environment problem
             // unrelated to whether this particular workspace declares the task. #1702's own defect is
@@ -417,6 +423,7 @@ public static class VerifyCommandResolver
             // catch), never soften into a silent not-run/Succeeded pass. Reporting runnable here just
             // defers the verdict to that real attempt, the same "let the real run decide" shape the
             // cancellation arms above already use.
+            LogProbeDeferral($"could not spawn: {ex.Message}");
             return (true, null);
         }
 
@@ -427,13 +434,181 @@ public static class VerifyCommandResolver
             // as "task absent" (spec/baton.md §3 enumerates the causes). Deferring to the real run
             // fails closed; calling it absence skipped a gate that plainly existed. The not-run
             // outcome is reachable ONLY from the positive read below.
+            LogProbeDeferral($"exited {exitCode}");
             return (true, null);
         }
 
         var knownTasks = output.Split([' ', '\t', '\r', '\n', ','], StringSplitOptions.RemoveEmptyEntries);
+
+        // #1836: pixi 0.68.1 (this repo's dev machine) prints a fixed header before naming any task;
+        // pixi 0.79.0 (CI's setup-pixi version) does not, so a header-text match discriminates a real
+        // listing on one pixi version and nothing on the other. The evidence that survives a version
+        // bump instead lives in the WORKSPACE: the probed workspace's own manifest names its real
+        // tasks, and a genuine listing must echo at least one of them regardless of pixi's prose. A
+        // manifest with no declared tasks, or one this can't read, is not positive evidence either way
+        // and defers the same direction the old header-miss arm did.
+        var declaredTasks = ReadDeclaredPixiTasks(workingDirectory);
+        if (declaredTasks.Count == 0 || !declaredTasks.Any(declared => knownTasks.Contains(declared, StringComparer.Ordinal)))
+        {
+            LogProbeDeferral("exited 0 without a recognized task listing");
+            return (true, null);
+        }
+
         return knownTasks.Any(known => string.Equals(known, task, StringComparison.Ordinal))
             ? (true, null)
             : (false, $"task absent: {task}");
     }
 
+    /// <summary>
+    /// #1836: names pixi declares runnable in the probed workspace, read directly from its own manifest
+    /// rather than assumed from pixi's stdout prose -- the discriminator a real task listing needs must
+    /// not depend on one pixi version's header text. Same ancestor walk as <see cref="HasPixiManifest"/>
+    /// so both agree on which manifest governs; an empty result (no manifest found, or one that could
+    /// not be read) is deliberately indistinguishable from "manifest declares zero tasks" -- both are
+    /// "no positive evidence", the caller's own fail-closed direction.
+    /// </summary>
+    private static HashSet<string> ReadDeclaredPixiTasks(string? workingDirectory)
+    {
+        var none = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return none;
+        }
+
+        DirectoryInfo? dir;
+        try
+        {
+            dir = new DirectoryInfo(Path.GetFullPath(workingDirectory));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return none;
+        }
+
+        for (; dir is not null; dir = dir.Parent)
+        {
+            var pixiToml = Path.Combine(dir.FullName, "pixi.toml");
+            if (File.Exists(pixiToml))
+            {
+                return ReadTasksFromToml(pixiToml, "tasks");
+            }
+
+            var pyproject = Path.Combine(dir.FullName, "pyproject.toml");
+            if (!File.Exists(pyproject))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (File.ReadAllText(pyproject).Contains("[tool.pixi", StringComparison.Ordinal))
+                {
+                    return ReadTasksFromToml(pyproject, "tool.pixi.tasks");
+                }
+            }
+            catch (IOException)
+            {
+                return none;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return none;
+            }
+        }
+
+        return none;
+    }
+
+    /// <summary>
+    /// Minimal TOML table-key reader, deliberately not a general parser -- one section is all this
+    /// needs. Reads keys declared directly under <c>[section]</c>, plus the name segment of any
+    /// <c>[section.name]</c> sub-table (pixi's per-task inline-table shorthand), which together are
+    /// exactly the set <c>pixi task list</c> itself would enumerate.
+    /// </summary>
+    private static HashSet<string> ReadTasksFromToml(string path, string section)
+    {
+        var tasks = new HashSet<string>(StringComparer.Ordinal);
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (IOException)
+        {
+            return tasks;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return tasks;
+        }
+
+        var inSection = false;
+        var sectionPrefix = $"{section}.";
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
+                continue;
+            }
+
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                var header = line[1..^1].Trim();
+                if (string.Equals(header, section, StringComparison.Ordinal))
+                {
+                    inSection = true;
+                    continue;
+                }
+
+                if (header.StartsWith(sectionPrefix, StringComparison.Ordinal))
+                {
+                    var name = header[sectionPrefix.Length..].Trim();
+                    if (name.Length > 0)
+                    {
+                        tasks.Add(name);
+                    }
+                }
+
+                inSection = false;
+                continue;
+            }
+
+            if (!inSection)
+            {
+                continue;
+            }
+
+            var eq = line.IndexOf('=');
+            if (eq <= 0)
+            {
+                continue;
+            }
+
+            var key = line[..eq].Trim().Trim('"', '\'');
+            if (key.Length > 0)
+            {
+                tasks.Add(key);
+            }
+        }
+
+        return tasks;
+    }
+
+    /// <summary>
+    /// #1797: one diagnostic line naming which arm deferred the pre-flight verdict to the real run --
+    /// every arm above already reported <c>(true, null)</c> silently, which left an operator staring at
+    /// a `VerifyFailed`/`Indeterminate` room with no record of why the cheaper pre-flight signal never
+    /// fired. Best-effort: a broken stderr pipe must not itself affect the verdict this accompanies.
+    /// </summary>
+    private static void LogProbeDeferral(string outcome)
+    {
+        try
+        {
+            Console.Error.WriteLine($"verify pre-flight probe could not answer ({outcome}) -- deferring to the real run.");
+        }
+        catch (IOException)
+        {
+        }
+    }
 }

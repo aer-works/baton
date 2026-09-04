@@ -1,4 +1,6 @@
+using System.Linq;
 using Baton.Mutation;
+using Baton.Tests.Shared;
 using Baton.Tests.TestSupport;
 using Xunit;
 
@@ -489,6 +491,133 @@ public sealed class VerifyCommandResolverTests
     }
 
     /// <summary>
+    /// #1797, red-first: a stub that exits 0 without ever echoing one of the workspace's own declared
+    /// task names. Rationale for why this must defer rather than read as absence lives on
+    /// <see cref="VerifyCommandResolver"/>'s <c>CheckPixiTaskAsync</c> comment — not restated here.
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_exits_zero_with_no_listing()
+    {
+        var stub = CreateEmptyListingBatchFile();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(stub);
+        }
+    }
+
+    /// <summary>Exits 0 like a genuine `pixi task list` run, but never actually lists a task — the degraded-answer shape #1797 hardens against.</summary>
+    private static string CreateEmptyListingBatchFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-empty-listing-{Guid.NewGuid():N}.cmd");
+        File.WriteAllText(path, "@echo off\r\necho warning: could not load environment 1>&2\r\nexit /b 0\r\n");
+        return path;
+    }
+
+    // ---- #1836: the discriminator must not depend on which pixi version wrote the listing ----
+
+    /// <summary>
+    /// pixi 0.68.1's real shape, captured verbatim from `pixi task list` in this repo's own checkout
+    /// (this machine's installed pixi) -- the header text the pre-#1836 check keyed on.
+    /// </summary>
+    private const string Pixi0681ListingOfBuildAndTest =
+        "Tasks that can run on this machine:\r\n" +
+        "-----------------------------------\r\n" +
+        "build, test, gates-quiet\r\n" +
+        "Task  Description\r\n";
+
+    /// <summary>
+    /// pixi 0.79.0's shape (the version CI's setup-pixi installed for #1836) -- no fixed prose header at
+    /// all, per PR prefix-dev/pixi#6367 ("Correct `task list` runnability and show every task", changelog
+    /// 0.76.1) which replaced it with a per-environment summary plus a `Task\tDescription` table. Cited
+    /// from that PR's own description rather than a locally installed 0.79.0, since this machine only
+    /// carries 0.68.1; every token this test depends on (the task names, comma/tab separation) is common
+    /// to both the PR description and the general shape pixi's docs describe.
+    /// </summary>
+    private const string Pixi0790ListingOfBuildAndTest =
+        "Tasks per environment:\r\n" +
+        "-----------------------\r\n" +
+        "default (by design): build, test, gates-quiet\r\n" +
+        "Task\tDescription\r\n" +
+        "build\t\r\n" +
+        "test\t\r\n" +
+        "gates-quiet\t\r\n";
+
+    [Theory]
+    [InlineData(nameof(Pixi0681ListingOfBuildAndTest))]
+    [InlineData(nameof(Pixi0790ListingOfBuildAndTest))]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_task_is_present_under_either_pixi_shape(string fixtureName)
+    {
+        var listing = fixtureName == nameof(Pixi0681ListingOfBuildAndTest) ? Pixi0681ListingOfBuildAndTest : Pixi0790ListingOfBuildAndTest;
+        var stub = CreateFixedListingBatchFile(listing);
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "build");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(stub);
+        }
+    }
+
+    /// <summary>
+    /// #1836's own repro: the CI failure was a real listing (positive evidence — it echoes tasks the
+    /// workspace's own manifest declares) that simply doesn't name the probed task, under BOTH pixi
+    /// shapes. Before this fix, only the 0.68.1 shape's header was recognized as "real"; the 0.79.0 shape
+    /// fell through to "runnable" (deferred) and the absence was never reported.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(Pixi0681ListingOfBuildAndTest))]
+    [InlineData(nameof(Pixi0790ListingOfBuildAndTest))]
+    public async Task CheckRunnableAsync_role_default_reports_not_runnable_when_the_task_is_absent_under_either_pixi_shape(string fixtureName)
+    {
+        var listing = fixtureName == nameof(Pixi0681ListingOfBuildAndTest) ? Pixi0681ListingOfBuildAndTest : Pixi0790ListingOfBuildAndTest;
+        var stub = CreateFixedListingBatchFile(listing);
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "this-task-definitely-does-not-exist");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.False(runnable);
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(stub);
+        }
+    }
+
+    /// <summary>A stub `pixi task list` that prints a fixed, pre-baked listing regardless of pixi version installed on the test machine.</summary>
+    private static string CreateFixedListingBatchFile(string listing)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-fixed-listing-{Guid.NewGuid():N}.cmd");
+        var lines = listing.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        var script = "@echo off\r\n" + string.Join("\r\n", lines.Select(line => $"echo {line}")) + "\r\nexit /b 0\r\n";
+        File.WriteAllText(path, script);
+        return path;
+    }
+
+    /// <summary>
     /// #1708 H3, red-first (control arm): an unresolvable first token is NOT a not-run verdict any more.
     /// It runs through <c>cmd.exe /d /c</c> and its exit code becomes a real <c>VerifyFailed</c> — the
     /// polarity here is inverted from what this same input asserted before the fix.
@@ -531,6 +660,47 @@ public sealed class VerifyCommandResolverTests
             resolved!.Program, resolved.Args, workingDirectory: null, TestContext.Current.CancellationToken);
 
         Assert.Equal(expectedPassed, outcome.Passed);
+    }
+
+    /// <summary>
+    /// #1797: a regression guard, not a repro — this arm was already green on arrival (the cancellation
+    /// catch in <see cref="VerifyCommandResolver.CheckRunnableAsync"/> already existed before #1797's
+    /// investigation). Kept because no prior test exercised a probe cancelled mid-flight specifically
+    /// (only a non-zero exit and a can't-spawn); a stub `pixi` that sleeps well past a short deadline
+    /// stands in for a probe stuck behind CPU/lock contention, since <see cref="VerifyCommandResolver.CheckRunnableAsync"/>
+    /// takes no timeout of its own (spec/baton.md §3 — MutationInterface's dispatch-scoped token is the
+    /// only bound).
+    /// </summary>
+    [Fact]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_is_cancelled_mid_flight()
+    {
+        var sleeper = CreateSleeperBatchFile();
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "gates-quiet");
+
+            // wait-ok: forces cancellation mid-sleep against the 30s sleeper below, not a wait for external state.
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), cts.Token, pixiProgram: sleeper);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(sleeper);
+        }
+    }
+
+    /// <summary>A `.cmd` that outlives any short test deadline — <c>ping</c>'s wait is not cancellable by closing stdin, so it is reliably still running when the token fires.</summary>
+    private static string CreateSleeperBatchFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-sleeper-{Guid.NewGuid():N}.cmd");
+        File.WriteAllText(path, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n");
+        return path;
     }
 
     [Fact]

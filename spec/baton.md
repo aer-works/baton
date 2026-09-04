@@ -1303,11 +1303,19 @@ below, after this pre-flight probe's own two producers):
   workspace whose manifest sits at the repo root, and calling that "not a pixi project" would skip a
   gate that plainly exists. Every uncertain answer (an unreadable manifest, an unresolvable path) is
   read as "it is a pixi project", which defers to the probe and then to the real run.
-- **A SUCCESSFUL `pixi task list` whose output positively does not contain the role's task.** Reason:
-  `"task absent: gates-quiet"` — #1702's own measured shape.
+- **A SUCCESSFUL `pixi task list` whose combined output (`pixi` prints its listing, header or not, and
+  every task name to STDERR, not stdout) positively names at least one other task while omitting the
+  role's.** Reason: `"task absent: gates-quiet"` — #1702's own measured shape. "Positively names" means
+  the output echoes at least one task the workspace's OWN manifest declares (`pixi.toml` `[tasks]` or
+  `pyproject.toml` `[tool.pixi.tasks]`, read directly) — evidence that survives a pixi version bump,
+  where pixi's header prose does not (#1797/#1836: 0.68 prints a header, 0.79 does not). Exit 0 whose
+  output names no declared task (a degraded or short-circuited run under contention, indistinguishable
+  from a genuine listing by exit code alone), or a manifest that declares no tasks or cannot be read, is
+  not this producer — it falls into the "probe failed" paragraph below instead and defers to the real run.
 
 A probe that fails — non-zero exit from a stale lockfile, a failed solve, an unparseable
-manifest, a concurrent lock, or `pixi` refusing to spawn at all — is an engine-environment problem and
+manifest, a concurrent lock, `pixi` refusing to spawn at all, or an exit-0 run whose output names none
+of the tasks the workspace's manifest declares (#1797) — is an engine-environment problem and
 is never read as absence; it reports runnable and lets the real run decide, which fails closed. **The
 ordering between the two is what keeps those compatible**: the manifest check runs first, so a
 non-pixi workspace on a host with no `pixi` at all is answered by the filesystem, while a workspace
