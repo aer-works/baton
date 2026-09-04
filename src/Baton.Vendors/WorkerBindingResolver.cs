@@ -154,7 +154,8 @@ public static class WorkerBindingResolver
         return new WorkerBinding.Process(
             entry.Contract, target, entry.Timeout, adapter, entry.GrantAuditMode, entry.Adapter, entry.Model, adapter,
             entry.VerifyPixiTask, entry.VerifyCommandOverride, entry.TokenBudget, entry.MaxToolSteps,
-            entry.BilledRateLimit, entry.IsWorktree, entry.WorktreeBaseSha, entry.ChangesTree);
+            entry.BilledRateLimit, entry.IsWorktree, entry.WorktreeBaseSha, entry.ChangesTree,
+            entry.DeliversBranch, entry.ExpectPr);
     }
 
 

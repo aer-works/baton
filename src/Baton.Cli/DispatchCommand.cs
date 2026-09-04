@@ -475,6 +475,15 @@ public static class DispatchCommand
                 "remove the --verify flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.ExpectPr is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — each phase carries its own role's delivery "
+                + "expectations, so --expect-pr does not apply to one of them. Pass --expect-pr only "
+                + "when dispatching a role.",
+                "remove the --expect-pr flag, or dispatch a single role instead of a template.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -519,7 +528,7 @@ public static class DispatchCommand
             timeoutOverride: options.Timeout, attachments: options.Attachments, roomDirectoryPath: options.RoomDirectoryPath,
             tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps,
             billedRateLimitOverride: options.BilledRateLimit,
-            verifyCommandOverride: options.VerifyCommand);
+            verifyCommandOverride: options.VerifyCommand, expectPrOverride: options.ExpectPr);
     }
 
     /// <summary>

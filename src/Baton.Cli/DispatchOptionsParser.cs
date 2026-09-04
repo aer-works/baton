@@ -15,7 +15,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true|false>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -70,6 +70,7 @@ public static class DispatchOptionsParser
         int? maxToolSteps = null;
         long? billedRateLimit = null;
         string? verifyCommand = null;
+        bool? expectPr = null;
         string? label = null;
         string? workstream = null;
         string? repoPath = null;
@@ -146,6 +147,9 @@ public static class DispatchOptionsParser
                     break;
                 case "--verify":
                     verifyCommand = RequireValue(args, ref i, arg);
+                    break;
+                case "--expect-pr":
+                    expectPr = ParseExpectPr(RequireValue(args, ref i, arg));
                     break;
                 case "--label":
                     label = SanitizeLabel(RequireValue(args, ref i, arg));
@@ -243,7 +247,26 @@ public static class DispatchOptionsParser
             billedRateLimit,
             verifyCommand,
             specText,
-            specFromStdin);
+            specFromStdin,
+            expectPr);
+    }
+
+    /// <summary>
+    /// Parses <c>--expect-pr</c>'s value (#1788): a literal <c>true</c>/<c>false</c>, case-insensitive.
+    /// Unlike most escape hatches here this is not a free-form value — the delivery check's PR half is a
+    /// binary switch, and a typo'd value (e.g. a stray <c>1</c>) failing loudly beats it silently
+    /// resolving to whichever of true/false <see cref="bool.TryParse(string?, out bool)"/> happens not to throw for.
+    /// </summary>
+    private static bool ParseExpectPr(string rawValue)
+    {
+        if (!bool.TryParse(rawValue, out var expectPr))
+        {
+            throw new CliArgumentException(
+                $"'--expect-pr {rawValue}' is not 'true' or 'false'. {Usage}",
+                "pass --expect-pr true or --expect-pr false.");
+        }
+
+        return expectPr;
     }
 
     /// <summary>

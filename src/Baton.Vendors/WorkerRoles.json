@@ -34,6 +34,7 @@
     "token_budget": 1200000,
     "max_tool_steps": 610,
     "billed_rate_limit": null,
+    "delivers_branch": true,
     "purpose": "A bounded change with the approach already decided. Exercises the write path and agy's skip-permissions translation, which is the half of AER that review-only dispatches never touch. Its 40 minutes is NOT the #588 path -- every template's timeout exercises that equally -- so do not reach for the skip-permissions grant expecting it to buy that. #1355 kept network_access true here: PermissionGrant.CategoriesDefeatedByTheShell/WorkerBindingResolver refuse RunShellCommands without NetworkAccess outright for EVERY grant-consuming adapter, claude included, not agy alone (--adapter claude is not an escape hatch) -- and agy's own AgyWorkerAdapter.TryTranslatePermissionGrant refuses the same combination a second time at the vendor-translation layer, since --dangerously-skip-permissions grants both or neither. Defaulting network off here would make every unmodified dispatch of this role throw. See #1387 for the follow-up this leaves open.",
     "outputs": [
       {

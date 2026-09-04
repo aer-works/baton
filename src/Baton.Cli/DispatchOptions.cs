@@ -96,6 +96,13 @@ namespace Baton.Cli;
 /// role's <c>verify_pixi_task</c> default. Role dispatch only, rejected for a workflow template the same
 /// way <paramref name="TokenBudget"/> is. Null defers to the workspace/role resolution.
 /// </param>
+/// <param name="ExpectPr">
+/// The <c>--expect-pr</c> escape hatch (#1788) — whether the engine's post-exit delivery check
+/// (spec/baton.md §3) requires an open PR for the pushed branch, in addition to the branch itself being
+/// pushed. Role dispatch only, rejected for a workflow template the same way <paramref name="TokenBudget"/>
+/// is. Null keeps the role's own default (true for a role with <c>Baton.Vendors.WorkerRole.DeliversBranch</c>
+/// set, meaningless — never checked — for one without it).
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -117,4 +124,5 @@ public sealed record DispatchOptions(
     long? BilledRateLimit = null,
     string? VerifyCommand = null,
     string? SpecText = null,
-    bool SpecFromStdin = false);
+    bool SpecFromStdin = false,
+    bool? ExpectPr = null);

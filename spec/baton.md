@@ -276,7 +276,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true\|false>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
@@ -1090,6 +1090,60 @@ pre-flight probe cancelled by the operator's own cancellation token is never rea
 it falls through as if runnable, so the real (already-cancelled) attempt below resolves the SAME
 cancellation the ordinary verify-window handling above already covers, rather than a second, divergent
 cancellation path.
+
+**Post-exit delivery check (#1788).** For a role whose catalog entry sets `WorkerRole.DeliversBranch`
+(today, only `implement`) — a role whose brief convention ends in a push — `MutationInterface` runs one
+more read-only assertion after the worker exits 0 AND the ordinary engine-run verify above has already
+passed or did not run (never instead of it, and never before it): (1) the workspace's `HEAD` is
+reachable from `origin/<branch>` (`git ls-remote --exit-code --heads origin <branch>`, then `git fetch
+origin +refs/heads/<branch>:refs/remotes/origin/<branch>` and `git merge-base --is-ancestor HEAD
+origin/<branch>`), and (2) when a PR is expected (`--expect-pr`, defaulting to
+`role.DeliversBranch`, overridable per dispatch — `Baton.Vendors.RoleDispatch.ToBinding` resolves the
+effective bool there rather than leaving it null, so a plain-`bool` default trap on
+`WorkerBindingConfigEntry.ExpectPr` can never silently disable the check for a role the catalog does
+mark), an open PR exists for that branch (`gh pr list --head <branch> --json number`). Two lanes shipped
+`implement: Succeeded` reports describing a push and a PR while their branch sat only local — the
+motivating measurement.
+
+A failure appends `FlowEvent.VerifyFailed` with `VerifyFailedKind.DeliveryFailed` and `FailingMembers`
+naming exactly which of the two is missing — `branch-not-pushed`, `pr-not-open`, or both — settling
+`Indeterminate` via the same `IndeterminateProducer.VerifyFailed` path an ordinary gate failure uses, so
+`baton resolve`'s admission rules and `verifyTail` (the `Tail` field, carrying a short human-readable
+line per failing member) apply unchanged. `--heads` scopes the `ls-remote` query to branch refs only —
+measured against real git, a same-named TAG on origin would otherwise make the query exit 0 and defer to
+a fetch that then fails to resolve `refs/heads/<branch>`, downgrading a real "never pushed" into a
+misleading `NotRun`. The `git fetch` step's explicit refspec form makes the `origin/<branch>` ref the
+`merge-base` read below compares against independent of this workspace's own `remote.origin.fetch`
+configuration — git DOES opportunistically update that ref on a plain `git fetch origin <branch>` when a
+standard fetch refspec is already configured (measured; an earlier draft of this paragraph claimed
+otherwise), but this check has no way to assume every workspace it runs against carries one, and the
+explicit form costs nothing to also cover the case where it doesn't.
+
+**`NotRun` is reserved for positive evidence the check itself could not run** — `git`/`gh` missing from
+PATH, or a spawn that ran but could not reach the remote (network, auth, or a blocked credential prompt —
+the two network-touching spawns override `GIT_TERMINAL_PROMPT`/`credential.interactive`/`GCM_INTERACTIVE`
+so a host needing a credential refresh reports `NotRun` rather than hanging the engine's pump on a prompt
+nothing can answer) — mirroring `VerifyCommandResolver.CheckRunnableAsync`'s own "never an inference from
+something failing" rule exactly. A branch that plainly never existed on origin at all (`git ls-remote
+--exit-code --heads` exiting `2`) is the OPPOSITE of unmeasurable — it is the loudest form of this issue's
+own defect — so it settles `branch-not-pushed`, never `NotRun`. A detached `HEAD` (the literal string
+`HEAD` from `git rev-parse --abbrev-ref HEAD` — a workspace state that can arise however the workspace
+was prepared, not tied to any one provisioning code path) is read the same deliberate way: a worker that
+exits 0 without ever checking out a branch has delivered nothing pushable, which is a real failure, not
+merely unmeasurable. Both push and PR checks are independent once a branch name resolves — a `git`/network
+hiccup on one never suppresses a real failure already found on the other, and a real failure on either
+always wins over any `NotRun` from the other side of the same call, the same "a failure is stronger
+evidence than an inconclusive read" precedence `VerifyRunner`'s own not-run/failed distinction already
+rests on. An operator cancellation landing inside this check's own window settles `ExecutionCancelled`,
+mirroring the ordinary verify window's identical carve-out — never a `VerifyFailed`/`VerifyNotRun`
+misreporting an execution the operator asked to stop.
+
+**Known gap, stated rather than closed here.** This check asks only "is the workspace's CURRENT `HEAD`
+pushed, with an open PR" — never "did THIS execution move `HEAD` or open that PR". A redispatch into an
+already-pushed, already-PR'd workspace that changes nothing still settles `Succeeded`. Distinguishing that
+would mean comparing against a pre-dispatch SHA, or gating on `OutcomeClassification.WorkspaceChanged`
+(already computed for `ChangesTree` roles) — a materially different assertion than the two the issue
+named, left for a follow-up rather than folded in here.
 
 **`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
 Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its

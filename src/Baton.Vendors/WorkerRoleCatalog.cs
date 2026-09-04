@@ -53,6 +53,16 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// <c>tools/room-rate-sweep/sweep.py</c> is what re-runs it. <c>--billed-rate-limit</c> supplies one per
 /// dispatch (<see cref="RoleDispatch.ToBinding"/>'s own parameter), the only way one is ever set today.
 /// </param>
+/// <param name="DeliversBranch">
+/// #1788 (contract: <c>spec/baton.md</c> §3): whether this role's brief convention ends in a push — the
+/// role a post-exit delivery check (<c>Mutation.MutationInterface</c>) runs for after the worker exits 0
+/// and the ordinary verify command (if any) passes/does not run. False for every read-shaped role
+/// (<c>review</c>, <c>advise</c>, <c>fact-check</c>, <c>patch</c>, <c>orchestrate</c>) and for
+/// <c>janitor</c> — janitor's brief is "make named checkers green", never "open a PR", so the PR half of
+/// the check does not apply to it even though it commits (<c>WorkerRoleCatalogTests</c>' lockstep test
+/// pins the direction this DOES assert: every role with this true also has <see cref="PermissionGrant.WriteFiles"/>).
+/// Only <c>implement</c> sets this true today.
+/// </param>
 public sealed record WorkerRole(
     string Id,
     string Tier,
@@ -67,7 +77,8 @@ public sealed record WorkerRole(
     string? VerifyPixiTask = null,
     TokenBudgetSpec? TokenBudget = null,
     int? MaxToolSteps = null,
-    long? BilledRateLimit = null);
+    long? BilledRateLimit = null,
+    bool DeliversBranch = false);
 
 /// <summary>
 /// One file a role's dispatch produces in <c>BATON_OUTPUT_DIR</c> (#897) — the structured, per-role
@@ -210,7 +221,8 @@ public static class WorkerRoleCatalog
                 VerifyPixiTask: raw.VerifyPixiTask,
                 TokenBudget: ParseTokenBudget(raw.Id, raw.TokenBudget),
                 MaxToolSteps: raw.MaxToolSteps,
-                BilledRateLimit: raw.BilledRateLimit));
+                BilledRateLimit: raw.BilledRateLimit,
+                DeliversBranch: raw.DeliversBranch));
         }
 
         return roles;
@@ -372,7 +384,10 @@ public static class WorkerRoleCatalog
         // #1691: optional for the same reason, and here NO role declares one -- the key is readable
         // from the catalog so an operator can pin a rate limit durably in their own worker-roles.json
         // override, but spec/baton.md §3's calibration found no defensible shipped default.
-        long? BilledRateLimit = null);
+        long? BilledRateLimit = null,
+        // #1788: optional like the flags above -- omitting it is exactly "this role's brief does not
+        // end in a push", the WorkerRole default.
+        bool DeliversBranch = false);
 
     private sealed record RawOutput(
         [property: JsonRequired] string Name,

@@ -477,6 +477,47 @@ public class DispatchOptionsParserTests
         Assert.Contains("--verify <cmd>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
 
+    // #1788: --expect-pr mirrors --verify's own escape-hatch shape (a single explicit value, not a
+    // bare flag), except its domain is a literal true/false rather than free text.
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("True", true)]
+    [InlineData("FALSE", false)]
+    public void The_expect_pr_option_parses_a_literal_bool_case_insensitively(string rawValue, bool expected)
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--expect-pr", rawValue]);
+
+        Assert.Equal(expected, options.ExpectPr);
+    }
+
+    [Fact]
+    public void Omitting_expect_pr_leaves_it_null()
+    {
+        var options = DispatchOptionsParser.Parse(["implement", "--spec", "t.md"]);
+
+        Assert.Null(options.ExpectPr);
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("yes")]
+    [InlineData("")]
+    public void A_non_boolean_expect_pr_value_throws(string rawValue)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["implement", "--spec", "t.md", "--expect-pr", rawValue]));
+
+        Assert.Contains("--expect-pr", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_expect_pr()
+    {
+        Assert.Contains("--expect-pr <true|false>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// #1518: a scout question's inline source — parsed the same way every other free-text flag value
     /// is, no sanitization (unlike <c>--label</c>) because this string becomes the task prompt itself,

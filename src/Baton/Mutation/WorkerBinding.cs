@@ -63,6 +63,19 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// carried the same hop as <see cref="IsWorktree"/> — see that field's own remarks for when it is
     /// null, and <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s for what it's compared against.
     /// </param>
+    /// <param name="DeliversBranch">
+    /// #1788: <c>Baton.Vendors.WorkerRole.DeliversBranch</c>, carried the same hop -- whether
+    /// <c>MutationInterface</c> runs <c>DeliveryVerifier.CheckAsync</c> after this execution's worker
+    /// exits 0 and its ordinary verify (if any) passes/does not run. False for every entry not
+    /// constructed through <c>Baton.Vendors.RoleDispatch.ToBinding</c>, the same safe default the
+    /// <c>ChangesTree</c> parameter below uses.
+    /// </param>
+    /// <param name="ExpectPr">
+    /// #1788: whether the delivery check's PR half runs — <c>--expect-pr</c>'s resolved value
+    /// (<c>Baton.Vendors.RoleDispatch.ToBinding</c>'s <c>expectPrOverride ?? role.DeliversBranch</c>),
+    /// already resolved to a definite bool by the time it reaches here. Meaningless when
+    /// <see cref="DeliversBranch"/> is false — nothing reads it in that case.
+    /// </param>
     public sealed record Process(
         WorkerContract Contract,
         CoreDispatchTarget Target,
@@ -86,7 +99,9 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
         // see that field's own remarks for why it is computed once, upstream, from the catalog role's
         // own grant rather than re-derived here. Outcomes.OutcomeClassifier reads this to decide
         // whether to compute/attach workspaceChanged/hollow onto a Succeeded verdict at all.
-        bool ChangesTree = false)
+        bool ChangesTree = false,
+        bool DeliversBranch = false,
+        bool ExpectPr = false)
         : WorkerBinding(Contract, GrantAuditMode);
 
     /// <summary>

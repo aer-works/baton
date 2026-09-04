@@ -114,6 +114,20 @@ namespace Baton.Vendors;
 /// since <c>workspaceChanged</c>/<c>hollow</c> are an additive signal, not a gate: false simply omits
 /// the two settle-time fields rather than fabricating one for a role catalog this entry never named.
 /// </param>
+/// <param name="DeliversBranch">
+/// #1788: <see cref="WorkerRole.DeliversBranch"/>, carried onto the resolved
+/// <c>Baton.Mutation.WorkerBinding.Process</c> unchanged -- whether the engine's post-exit delivery
+/// check (<c>Baton.Mutation.DeliveryVerifier</c>) runs at all. False for every entry not constructed
+/// through <see cref="RoleDispatch.ToBinding"/>, the same safe default <paramref name="ChangesTree"/> uses.
+/// </param>
+/// <param name="ExpectPr">
+/// #1788: the delivery check's PR-half switch, ALREADY RESOLVED by <see cref="RoleDispatch.ToBinding"/>
+/// as <c>expectPrOverride ?? role.DeliversBranch</c> -- so this field, unlike most others on this
+/// record, never needs its own nullable "not specified" state; a plain <see langword="false"/> here
+/// means "do not check for a PR", which is also the correct reading for any entry not constructed
+/// through <see cref="RoleDispatch.ToBinding"/> (the <paramref name="DeliversBranch"/> default already
+/// disables the whole check in that case).
+/// </param>
 public sealed record WorkerBindingConfigEntry(
     string Adapter,
     WorkerContract Contract,
@@ -140,7 +154,9 @@ public sealed record WorkerBindingConfigEntry(
     string? Workstream = null,
     string? WorktreeBaseSha = null,
     string? ToolSha = null,
-    bool ChangesTree = false);
+    bool ChangesTree = false,
+    bool DeliversBranch = false,
+    bool ExpectPr = false);
 
 
 /// <summary>
