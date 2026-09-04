@@ -853,6 +853,69 @@ public class ClaudeWorkerAdapterTests
     }
 
     /// <summary>
+    /// #1515: <c>ClaudeWorkerAdapter.BuildShellPatternsFromRawScope</c>'s own remarks carry the
+    /// measurement and the reasoning. Must throw here, not reach an empty no-op channel.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_space_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash (git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// Same shape as above with a tab instead of a space -- <c>\s</c> covers both, and the CLI's own
+    /// parser was not measured to distinguish them, so this must throw identically.
+    /// </summary>
+    [Fact]
+    public void A_Bash_clause_with_a_tab_before_the_paren_makes_Resolve_throw()
+    {
+        var exception = Assert.Throws<PermissionGrantUnsupportedException>(() =>
+            new ClaudeWorkerAdapter().Resolve(
+                new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash\t(git diff*)"),
+                ArchitectContract));
+
+        Assert.Equal("claude", exception.AdapterName);
+    }
+
+    /// <summary>
+    /// #1515: the negative half of the measurement <c>BuildShellPatternsFromRawScope</c>'s own
+    /// remarks record -- must NOT throw, and must yield an empty channel like any other non-Bash
+    /// clause.
+    /// </summary>
+    [Fact]
+    public void A_lowercase_bash_clause_still_yields_an_empty_shell_pattern_channel()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains((ClaudeWorkerAdapter.ShellPatternsVariable, "claude:"), target.Environment);
+    }
+
+    /// <summary>
+    /// The canonical no-whitespace form must keep parsing normally alongside the new whitespace refusal
+    /// -- this is #1506's original comma-list-refusal test re-asserted here to pin that the #1515 fix
+    /// did not disturb it.
+    /// </summary>
+    [Fact]
+    public void The_canonical_no_whitespace_Bash_clause_still_parses()
+    {
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionScope: "Write,Bash(git diff*)"),
+            ArchitectContract);
+
+        Assert.NotNull(target.Environment);
+        Assert.Contains(
+            (ClaudeWorkerAdapter.ShellPatternsVariable, "claude:git diff*"), target.Environment);
+    }
+
+    /// <summary>
     /// #543, from review: an inherited `CLAUDE_CODE_SIMPLE=1` disables hooks the same way `--bare`
     /// does (see the doc comment above `SimpleModeVariable`'s declaration), and `BatonTask` inherits
     /// the full parent environment by default -- so this override has to actually be on the argv
@@ -1563,6 +1626,148 @@ public class ClaudeWorkerAdapterTests
 
         Assert.Equal("architect", ex.WorkerName);
         Assert.Contains(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784: STRICT reading, operator ruling 2026-09-03. A ceiling that withholds NetworkAccess closes
+    /// the category outright — even through a shell pattern the grant's own author vouches as read-only
+    /// (<see cref="PermissionGrant.ShellCommandsAreReadOnly"/>). Today (pre-fix) this grant passes the
+    /// gate, because <see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/>'s read-only
+    /// exemption is honored against the ceiling too; that is the bug #1784 files and the polarity
+    /// partner below (no ceiling) proves the author's assertion is not itself wrong, only misapplied
+    /// against an operator's outer bound.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_that_withholds_network_access_refuses_an_author_vouched_read_only_shell_pattern()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.NetworkAccess), ex.WithheldCategories);
+        Assert.DoesNotContain(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784 polarity partner: the same grant with no restrictive ceiling recorded (an unrestricted
+    /// ceiling caps nothing) stays coherent — <see cref="PermissionGrant.ShellCommandsAreReadOnly"/>
+    /// still answers the AUTHOR's own coherence question correctly on its own; only an operator ceiling
+    /// changes the answer.
+    /// </summary>
+    [Fact]
+    public void The_same_author_vouched_read_only_shell_pattern_stays_coherent_with_no_restrictive_ceiling()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-network-none-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(project, ProjectCeiling.Unrestricted, ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var target = new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract);
+
+        Assert.NotNull(target);
+    }
+
+    /// <summary>#1784: same shape, WriteFiles closed by the ceiling instead of NetworkAccess.</summary>
+    [Fact]
+    public void A_ceiling_that_withholds_write_files_refuses_an_author_vouched_read_only_shell_pattern()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-readonly-write-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var roleGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: true,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: roleGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Contains(nameof(PermissionGrant.WriteFiles), ex.WithheldCategories);
+        Assert.DoesNotContain(nameof(PermissionGrant.NetworkAccess), ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// #1784 second-reader finding 1's exact repro, shaped after the built-in `review` role
+    /// (WorkerRoles.json: WriteFiles and NetworkAccess both unset, a scoped shell asserted read-only
+    /// via <see cref="PermissionGrant.ShellCommandsAreReadOnly"/>). A ceiling closing only WriteFiles
+    /// correctly refuses that one category; before the fix it named NetworkAccess too, purely because
+    /// this shape leaves it unset on the grant regardless of what the ceiling permits.
+    /// </summary>
+    [Fact]
+    public void A_review_shaped_role_is_refused_for_write_files_only_when_the_ceiling_closes_it()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-review-shape-open-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: false, RunShellCommands: true, NetworkAccess: true),
+            ProjectCeilingStore.DefaultPath);
+        var reviewShapedGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: false,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: reviewShapedGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal([nameof(PermissionGrant.WriteFiles)], ex.WithheldCategories);
+    }
+
+    /// <summary>
+    /// Mirror of the case above with the closed and open categories swapped: refused for NetworkAccess
+    /// only, not WriteFiles, even though the grant leaves WriteFiles unset too.
+    /// </summary>
+    [Fact]
+    public void A_review_shaped_role_is_refused_for_network_access_only_when_the_ceiling_closes_it()
+    {
+        var project = Path.Combine(Path.GetTempPath(), $"baton-ceiling-review-shape-closed-network-{Guid.NewGuid():N}");
+        ProjectCeilingStore.Set(
+            project,
+            new ProjectCeiling(ReadFiles: true, WriteFiles: true, RunShellCommands: true, NetworkAccess: false),
+            ProjectCeilingStore.DefaultPath);
+        var reviewShapedGrant = new PermissionGrant(
+            ReadFiles: true,
+            WriteFiles: false,
+            RunShellCommands: true,
+            ShellCommandPatterns: ["gh pr view*"],
+            NetworkAccess: false,
+            ShellCommandsAreReadOnly: true);
+
+        var ex = Assert.Throws<IncoherentPermissionGrantException>(() => new ClaudeWorkerAdapter().Resolve(
+            new WorkerInvocation("Draft a plan.", PermissionGrant: reviewShapedGrant, WorkingDirectory: project),
+            ArchitectContract));
+
+        Assert.Equal("architect", ex.WorkerName);
+        Assert.Equal([nameof(PermissionGrant.NetworkAccess)], ex.WithheldCategories);
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider

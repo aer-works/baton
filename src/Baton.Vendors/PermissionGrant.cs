@@ -41,7 +41,7 @@ namespace Baton.Vendors;
 /// Asserts that every pattern in <see cref="ShellCommandPatterns"/> is read-only: none of them can
 /// write a file, mutate git/gh state, or reach network beyond what the specific named command
 /// inherently needs (e.g. <c>gh pr view</c> reaching github.com). This is a claim made by the grant's
-/// author, not a fact <see cref="CategoriesDefeatedByTheShell"/> derives by parsing the patterns — a
+/// author, not a fact <see cref="CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/> derives by parsing the patterns — a
 /// pattern list that actually can write or mutate, with this set true, is the author's mistake, not
 /// something this type catches. Exists so a role author can compose a genuinely read-only, narrowly
 /// scoped shell (spec/baton.md §9, #1456) without widening <see cref="WriteFiles"/>/
@@ -114,57 +114,68 @@ public sealed record PermissionGrant(
     /// all but one of them, so every surface calls this and none re-derives the conditions.
     /// </para>
     /// </remarks>
-    public IReadOnlyList<string> CategoriesDefeatedByTheShell
+    /// <param name="honorReadOnlyAssertion">
+    /// Whether <see cref="ShellCommandsAreReadOnly"/> may exempt <see cref="WriteFiles"/>/
+    /// <see cref="NetworkAccess"/> at all. Defaults to <see langword="true"/>, preserving #1456's
+    /// behaviour for every caller that does not pass this explicitly.
+    /// </param>
+    /// <param name="strictCategories">
+    /// #1784: names (via <c>nameof</c>) among <see cref="WriteFiles"/>/<see cref="NetworkAccess"/> for
+    /// which the exemption is withheld regardless of <paramref name="honorReadOnlyAssertion"/>.
+    /// <see cref="ProjectCeilingGate"/> is the one populating caller; spec/baton.md §9 is canonical for
+    /// what it populates and why. <see langword="null"/> (every other caller) strictens nothing.
+    /// </param>
+    public IReadOnlyList<string> CategoriesDefeatedByTheShell(
+        bool honorReadOnlyAssertion = true, IReadOnlySet<string>? strictCategories = null)
     {
-        get
+        if (!RunShellCommands)
         {
-            if (!RunShellCommands)
-            {
-                return [];
-            }
-
-            List<string> withheld = [];
-            if (!ReadFiles)
-            {
-                withheld.Add(nameof(ReadFiles));
-            }
-
-            // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — against
-            // an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
-            // meaningless, so it is honored only alongside a populated pattern list (#1456
-            // second-reader finding 1: without this guard, RunShellCommands + the bare flag
-            // certified an unscoped shell as coherent and claude translated it to bare Bash).
-            var readOnlyPatternedShell = ShellCommandsAreReadOnly && ShellCommandPatterns is { Count: > 0 };
-
-            // A read-only-asserted shell still performs reads (that is the whole reason it is useful),
-            // so ReadFiles is never exempted — only WriteFiles/NetworkAccess, the two categories the
-            // assertion actually claims the patterns cannot reach.
-            if (!WriteFiles && !readOnlyPatternedShell)
-            {
-                withheld.Add(nameof(WriteFiles));
-            }
-
-            if (!NetworkAccess && !readOnlyPatternedShell)
-            {
-                withheld.Add(nameof(NetworkAccess));
-            }
-
-            return withheld;
+            return [];
         }
+
+        List<string> withheld = [];
+        if (!ReadFiles)
+        {
+            withheld.Add(nameof(ReadFiles));
+        }
+
+        // The read-only assertion is a claim about a SPECIFIC, NAMED set of patterns — against
+        // an unscoped shell (null/empty ShellCommandPatterns means "any command") it is
+        // meaningless, so it is honored only alongside a populated pattern list (#1456
+        // second-reader finding 1: without this guard, RunShellCommands + the bare flag
+        // certified an unscoped shell as coherent and claude translated it to bare Bash).
+        var readOnlyPatternedShell =
+            honorReadOnlyAssertion && ShellCommandsAreReadOnly && ShellCommandPatterns is { Count: > 0 };
+
+        // A read-only-asserted shell still performs reads (that is the whole reason it is useful),
+        // so ReadFiles is never exempted — only WriteFiles/NetworkAccess, the two categories the
+        // assertion actually claims the patterns cannot reach. #1784: strictCategories overrides this
+        // exemption per name; see that parameter's own doc for what a caller puts in the set and why.
+        if (!WriteFiles && !(readOnlyPatternedShell && !(strictCategories?.Contains(nameof(WriteFiles)) ?? false)))
+        {
+            withheld.Add(nameof(WriteFiles));
+        }
+
+        if (!NetworkAccess && !(readOnlyPatternedShell && !(strictCategories?.Contains(nameof(NetworkAccess)) ?? false)))
+        {
+            withheld.Add(nameof(NetworkAccess));
+        }
+
+        return withheld;
     }
 
     /// <summary>
     /// True when this grant can reach the network — categorically via <see cref="NetworkAccess"/>, or
-    /// through a granted shell that <see cref="CategoriesDefeatedByTheShell"/> does not list
+    /// through a granted shell that <see cref="CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/> does not list
     /// <see cref="NetworkAccess"/> as withheld from (the <see cref="ShellCommandsAreReadOnly"/> exemption
     /// above, or an unscoped shell, both reach it the same way a shell reaches every other ungranted
     /// category). Single source for the reachability question, derived from
-    /// <see cref="CategoriesDefeatedByTheShell"/> rather than re-deriving its conditions — a surface
+    /// <see cref="CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/> rather than re-deriving its conditions — a surface
     /// that instead re-checks <see cref="RunShellCommands"/>/<see cref="ShellCommandsAreReadOnly"/>/
     /// <see cref="ShellCommandPatterns"/> by hand drifts the moment that property's own condition changes
     /// (#1387's open follow-up), which is exactly what this property exists to prevent (#1500
     /// second-reader MED-1).
     /// </summary>
     public bool NetworkReachable =>
-        NetworkAccess || (RunShellCommands && !CategoriesDefeatedByTheShell.Contains(nameof(NetworkAccess)));
+        NetworkAccess || (RunShellCommands && !CategoriesDefeatedByTheShell().Contains(nameof(NetworkAccess)));
 }

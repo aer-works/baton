@@ -705,6 +705,20 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
     /// not explicitly allowed, so an allow-only channel closes the #1461 chaining escape without
     /// needing a deny list of its own.
     /// </para>
+    /// <para>
+    /// <b>Whitespace before the opening paren is a grant, not text (#1515, #1514).</b> Measured against
+    /// claude 2.1.258: <c>Bash (pattern)</c> -- whitespace between <c>Bash</c> and <c>(</c> -- IS
+    /// honored by the CLI's own <c>--allowedTools</c> parser as a shell grant, so a clause of that
+    /// shape reaching claude's own flag while this method reads it as ordinary non-<c>Bash</c> text
+    /// (its <c>StartsWith("Bash(")</c> check fails on the whitespace) reopens the exact #1459 layer
+    /// drift this method exists to close. Refused with <see cref="PermissionGrantUnsupportedException"/>
+    /// rather than silently dropped. Lowercase <c>bash(</c> was measured the other way -- NOT honored
+    /// as a grant on the vendor side -- so it is left alone, still dropped as text; only whitespace
+    /// before the paren, case preserved, is refused. #1514's own measurement (a companion issue, not
+    /// this one) confirmed the unrelated question above -- that <c>Bash(a, b)</c> is one literal
+    /// pattern to the CLI, not two -- so the "no comma-list inside one clause" refusal above already
+    /// matches the CLI and needed no change.
+    /// </para>
     /// </remarks>
     private static string BuildShellPatternsFromRawScope(string resolvedScope)
     {
@@ -768,6 +782,24 @@ public sealed class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGrantTransl
             // grant and then fails to parse falls into a throw below.
             if (!clause.StartsWith("Bash(", StringComparison.Ordinal))
             {
+                // #1515: measured against claude 2.1.258 that `Bash (pattern)` -- whitespace between
+                // `Bash` and the opening paren -- IS honored by the CLI's own --allowedTools parser as
+                // a shell grant, while this method's StartsWith("Bash(") check reads it as ordinary
+                // non-Bash text and drops it. That is the exact #1459 layer drift: claude auto-approves
+                // a shell the hook channel never scoped. Lowercase `bash(` was measured NOT to be a
+                // grant on the vendor side, so it stays dropped as text -- only whitespace before the
+                // paren, case preserved, is refused here.
+                if (Regex.IsMatch(clause, @"^Bash\s+\(", RegexOptions.CultureInvariant))
+                {
+                    throw new PermissionGrantUnsupportedException(
+                        "claude",
+                        $"the raw PermissionScope clause '{clause}' has whitespace between Bash and " +
+                        "its opening paren -- claude's own --allowedTools parser still honors this as " +
+                        "a shell grant (measured #1515), so refusing rather than silently dropping it " +
+                        "as non-Bash text, which would reopen the #1459 bypass this method exists to " +
+                        "close -- write it as the canonical Bash(pattern) form instead");
+                }
+
                 continue;
             }
 

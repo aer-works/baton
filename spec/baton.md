@@ -2543,6 +2543,27 @@ new, daemon-owned file rather than a share of the pusher's own copy), not restat
 `pusher.py`'s own stdout-tail rendering block (`_read_tail_text` through `stdout_tail_for_room`) dead
 code once PR-B reads this file instead of deriving its own snapshot — PR-B removes it.
 
+**PR-B1 (#1557) gives `pusher.py` a second, opt-in source for the SAME body it has always derived
+itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env, default `derive` — a deployed pusher's behavior
+is unchanged until an operator flips it) switches `main()`'s loop to `json.load`
+`BatonPaths.FleetProjectionFile` instead of spawning `dotnet mcp` and running its own
+`attach_live_telemetry`/`attach_pruned_info`; `derive` keeps doing exactly what it always has. This
+PR deletes nothing from the `derive` path — that is PR-B2, gated on this PR's own identity diff
+having passed on the live machine. Because no scheduled task runs `baton daemon` today, the fallback
+below is load-bearing from day one, not a defensive edge case: a file older than 3 coalescing
+windows (900s) or absent/unreadable/malformed falls back to `derive` for that one cycle and logs one
+line; on that fallback cycle only, the pushed body carries one more optional top-level field,
+`staleness: {daemon_derived_at, age_s, stale}` (absent on every ordinary push, same convention as
+`pusher.writeBudgetExhaustedUntil`), and `glass.html` renders it as one more absent-safe banner,
+checked at the same priority rung as the write-budget one, never a new banner mechanism.
+`python pusher.py --compare-projection` runs BOTH sources once against the live rooms and diffs them
+field-by-field after canonical (sorted-keys) JSON serialization, exiting 0 identical / 1 with the
+diff printed on mismatch — `derived_at` (differs by construction), `rooms[].live.lastActivityAt`
+(the two sources bucket the same underlying mtime at different instants), and
+`processAlive`/`stdout_last_write_ago_sec`/`elapsed` (the `derive` path never emitted these at all)
+are excluded from strict equality for the reasons named inline at each check; everything else must
+match exactly.
+
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
 rooms) / Running / Done (Failed + Succeeded, dismissible) — with a detail pane that opens on
@@ -3153,6 +3174,27 @@ process. `CommandWorkerAdapter`/`CaptureWorkerAdapter`/`NoOpWorkerAdapter` are e
 not vendor workers with a grant to cap, so the gate does not apply to them (each says so on its own
 type).
 
+**Operator ruling (2026-09-03, #1784): a project ceiling that withholds `NetworkAccess`/`WriteFiles`
+closes that category outright — STRICT, even through a shell pattern the binding's own author vouches
+as read-only.** `ShellCommandsAreReadOnly` (#1456, below) answers the grant AUTHOR's own coherence
+question ("are my named patterns internally consistent?"); it never answers the OPERATOR's project-
+ceiling question ("is this category closed?"). Rationale: nothing enforces a scoped shell pattern but
+the vendor's own `--allowedTools` matcher — and under agy's `--dangerously-skip-permissions`, nothing
+but its tool-name list (#623) — so baton cannot guarantee e.g. `gh pr view*` reaches only github.com,
+and the operator's outer bound must not lean on that assertion. A role that needs `gh` under a
+network-denied ceiling is supposed to stop working; that is the ceiling doing its job. Built:
+`PermissionGrant.CategoriesDefeatedByTheShell(bool honorReadOnlyAssertion = true, IReadOnlySet<string>?
+strictCategories = null)` takes a caller-supplied "honour the author's read-only assertion?" input,
+defaulting `true` (#1456's behaviour everywhere else — `WorkerBindingResolver`, `DispatchSpecLinter`
+via `NetworkReachable`), plus a per-category override: `strictCategories` names the subset of
+`WriteFiles`/`NetworkAccess` for which the exemption is withheld regardless of that default.
+`ProjectCeilingGate.Apply` is the one caller that populates it — with the categories the CEILING itself
+sets `false`, not the post-cap grant — so a category the ceiling actually closes is refused exactly as
+an unscoped shell would be, while a category the ceiling leaves open stays exempt even when the role's
+own grant already declares it `false` (the #1456 canonical shape, e.g. the built-in `review` role:
+`WriteFiles:false` + `NetworkAccess:false` + `ShellCommandsAreReadOnly`) — the ceiling's cap is a
+boolean AND of both sources, so the capped value alone cannot tell which one closed it.
+
 **Grants fail closed — as a dispatch-time obligation, not a measured runtime property.** The rule:
 if a denial cannot be enforced for the chosen vendor, the run must not start. Read it together with
 the broken-hook paragraph below, which this rule would otherwise contradict: a hook that fails to
@@ -3465,6 +3507,9 @@ part of doing their job. So `review`'s "no network" posture is true of the categ
 false of the worker's actual reach: state it that way rather than letting the flag imply a stronger
 guarantee than it gives. `ShellCommandsAreReadOnly` is what lets this narrow, command-scoped network
 reach coexist with `NetworkAccess: false` in the coherence check — see the field's own doc comment.
+That coexistence is scoped to the grant AUTHOR's own coherence question; it does not survive against
+an OPERATOR's project ceiling denying `NetworkAccess`/`WriteFiles` — see the #1784 operator ruling
+above.
 
 **`agy` now expresses this too, by deferring to the hook rather than refusing (#1387).**
 `AgyWorkerAdapter.TryTranslatePermissionGrant` used to refuse `RunShellCommands` without

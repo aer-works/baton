@@ -2007,6 +2007,26 @@ Measured 2026-09-03 21:27 ET, Claude Code 2.1.258, `claude -p --model haiku --ou
 
 Fact 3 is the opposite of `ClaudeWorkerAdapter`'s prior project-first `GroupBy(...).First()` dedup ordering for skills, which named the project copy on a collision — the roster printed the wrong file. Fixed in #1575 by scanning the config-root skills directory ahead of the project one (commands keep their prior project-first ordering; unmeasured either way, left unchanged). Sentinel: `claude.skills-follow-config-dir-flat-and-shadow-project` (`tools/vendor-verify/verify.py`).
 
+### `--allowedTools Bash(...)` clause parsing: comma-lists, case, and whitespace before the paren (#1515, #1514, CLI 2.1.258, 2026-09-03)
+
+Measured `claude -p --model haiku --setting-sources ""`, probe command `git tag probe-tag` in a
+scratch git repo, truth read two ways (`permission_denials` in the JSON result and whether the tag
+landed on disk). Two probe runs each, same result both times.
+
+| fact | measured | sentinel |
+|---|---|---|
+| `Bash(a, b)` is read as ONE literal pattern containing a comma, not two patterns | `Bash(git diff*, git tag*)` denies `git tag probe-tag` | `claude.allowedtools-comma-list-is-one-literal` |
+| lowercase `bash(pattern)` is NOT a grant | `bash(git tag*)` denies | `claude.allowedtools-space-before-paren-is-a-grant` (negative control) |
+| `Bash (pattern)` — whitespace before the opening paren — IS a grant | `Bash (git tag*)` allows | `claude.allowedtools-space-before-paren-is-a-grant` |
+| a read-only `git status`/`git diff`-style command runs with no grant under `-p` at all | every arm allowed it, granted or not — never usable as a permission-probe command | none (a rig-design finding, not a design AER rests on) |
+
+Consequence: `ClaudeWorkerAdapter.BuildShellPatternsFromRawScope`'s existing refusal of a comma-list
+inside one raw-scope `Bash(...)` clause (#1506) already matches the CLI's own parser and needed no
+change. Its `StartsWith("Bash(")` check, though, read `Bash (pattern)` as ordinary non-`Bash` text and
+silently dropped it — the exact #1459 layer drift the method exists to close, since the CLI honours
+that shape as a shell grant the hook channel never scoped. Fixed to REFUSE (throw) on `Bash\s+\(`
+rather than drop it; lowercase `bash(` stays dropped as text, matching the negative-control row above.
+
 ### Still not settled — recorded as untested, not refuted
 
 - **`defer`'s single-tool-call limit.** Three attempts failed to make the model batch tool calls

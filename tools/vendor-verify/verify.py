@@ -3818,6 +3818,112 @@ def _models_claude_alias_floor():
     return PASS, f"all three aliases still accepted: {list(CLAUDE_MODEL_ALIASES)}"
 
 
+# ==================================================================== claude
+# #1515 (+ #1514): `ClaudeWorkerAdapter.BuildShellPatternsFromRawScope` parses a raw PermissionScope
+# string into `--allowedTools Bash(pattern)` clauses independently of claude's own `--allowedTools`
+# parser, on two assumptions about how the CLI reads a `Bash(...)` clause. Both were unmeasured until
+# the 2026-09-03 comments on these two issues; these two sentinels pin those measurements so a future
+# CLI version silently reversing either one is caught rather than trusted forever on a 2026-09-03
+# snapshot. Truth is read TWO ways on every arm -- `permission_denials` in the JSON result AND
+# whether `probe-tag` actually landed on disk -- because the comments that measured this explain why
+# the model's own word (a denial it merely narrates) is not enough on its own.
+
+def _claude_allowedtools_probe(wd, allowed_tools):
+    """One arm: a fresh temp git repo, claude instructed to run `git tag probe-tag` via Bash, with
+    `allowed_tools` as the (single) --allowedTools value, or no --allowedTools flag at all when None.
+    `--setting-sources ""` excludes the operator's own settings, matching the comments' rig exactly.
+
+    Returns (denied, tag_on_disk). `denied` reads `permission_denials` out of the JSON result;
+    `tag_on_disk` asks git directly rather than trusting the model's report of what it did.
+    """
+    cmd = ["claude", "-p",
+           "Run this exact command using the Bash tool, once, and do nothing else: git tag probe-tag",
+           "--output-format", "json", "--setting-sources", "", "--add-dir", wd]
+    if allowed_tools is not None:
+        cmd += ["--allowedTools", allowed_tools]
+    rc, out, err = run(cmd, cwd=wd)
+    try:
+        denials = (json.loads(out) or {}).get("permission_denials") or []
+    except ValueError:
+        denials = []
+    _, tag_out, _ = run(["git", "-C", wd, "tag", "-l", "probe-tag"])
+    return bool(denials), "probe-tag" in (tag_out or "")
+
+
+def _claude_allowedtools_repo(prefix):
+    wd = tempfile.mkdtemp(prefix=prefix)
+    run(["git", "init"], cwd=wd)
+    return wd
+
+
+@check("claude.allowedtools-comma-list-is-one-literal", "claude",
+       "--allowedTools 'Bash(git diff*, git tag*)' is read as ONE literal pattern containing a "
+       "comma, not two separate patterns -- so #1506's refusal of a comma-list inside one raw-scope "
+       "Bash(...) clause matches the CLI and stays; nothing to re-add", sentinel=True)
+def _claude_allowedtools_comma_list():
+    """#1514. Control arm proves the harness can grant `git tag*` at all; the tested arm swaps in a
+    comma-list clause naming the SAME pattern among others and must still deny, on both readings of
+    truth -- else the comma-list would be silently splitting into multiple grants somewhere in the
+    CLI's own parser, which `BuildShellPatternsFromRawScope`'s refusal would then be wrong to mirror.
+    """
+    wd_ctrl = _claude_allowedtools_repo("v-atcl-ctrl-")
+    try:
+        ctrl_denied, ctrl_tagged = _claude_allowedtools_probe(wd_ctrl, "Bash(git tag*)")
+    finally:
+        shutil.rmtree(wd_ctrl, ignore_errors=True)
+    if ctrl_denied or not ctrl_tagged:
+        return INCONCLUSIVE, (f"control 'Bash(git tag*)' did not grant cleanly -- denied={ctrl_denied} "
+                              f"tagged={ctrl_tagged} -- so the comma-list arm below settles nothing")
+
+    wd = _claude_allowedtools_repo("v-atcl-")
+    try:
+        denied, tagged = _claude_allowedtools_probe(wd, "Bash(git diff*, git tag*)")
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+    detail = f"control: denied={ctrl_denied} tagged={ctrl_tagged} | comma-list: denied={denied} tagged={tagged}"
+    if denied and not tagged:
+        return PASS, f"comma-list clause denies as one literal pattern -- {detail}"
+    return FAIL, f"comma-list clause was honoured as a grant -- reversal of the #1514 measurement -- {detail}"
+
+
+@check("claude.allowedtools-space-before-paren-is-a-grant", "claude",
+       "--allowedTools 'Bash (pattern)' (whitespace before the opening paren) IS honoured by the CLI "
+       "as a shell grant -- the layer drift #1459/#1515 exist to close, since "
+       "BuildShellPatternsFromRawScope drops that shape as non-Bash text", sentinel=True)
+def _claude_allowedtools_space_before_paren():
+    """#1515. Three arms: the measured positive (space before the paren -- allows), and two negative
+    controls in the SAME check -- lowercase `bash(` (measured NOT a grant) and no grant at all. Both
+    negatives must deny for the positive arm's allow to mean the space is the variable, not something
+    else about the rig.
+    """
+    wd_pos = _claude_allowedtools_repo("v-atsp-pos-")
+    try:
+        pos_denied, pos_tagged = _claude_allowedtools_probe(wd_pos, "Bash (git tag*)")
+    finally:
+        shutil.rmtree(wd_pos, ignore_errors=True)
+
+    wd_lower = _claude_allowedtools_repo("v-atsp-low-")
+    try:
+        lower_denied, lower_tagged = _claude_allowedtools_probe(wd_lower, "bash(git tag*)")
+    finally:
+        shutil.rmtree(wd_lower, ignore_errors=True)
+
+    wd_none = _claude_allowedtools_repo("v-atsp-none-")
+    try:
+        none_denied, none_tagged = _claude_allowedtools_probe(wd_none, None)
+    finally:
+        shutil.rmtree(wd_none, ignore_errors=True)
+
+    detail = (f"'Bash (git tag*)': denied={pos_denied} tagged={pos_tagged} | "
+              f"'bash(git tag*)': denied={lower_denied} tagged={lower_tagged} | "
+              f"no grant: denied={none_denied} tagged={none_tagged}")
+    if lower_denied and not lower_tagged and none_denied and not none_tagged and not pos_denied and pos_tagged:
+        return PASS, f"space-before-paren is a grant; lowercase and no-grant both still deny -- {detail}"
+    if not (lower_denied and not lower_tagged) or not (none_denied and not none_tagged):
+        return INCONCLUSIVE, f"a negative control did not deny cleanly, so the positive arm settles nothing -- {detail}"
+    return FAIL, f"space-before-paren no longer grants -- reversal of the #1515 measurement -- {detail}"
+
+
 def project_slug_root():
     """Claude records a transcript per working directory under the config root.
 
@@ -3853,7 +3959,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--only", help="a group (gate | fanout | cost | lifecycle | agy | effort | models) or a check-name prefix")
+    ap.add_argument("--only", help="a group (gate | fanout | cost | lifecycle | agy | effort | models | claude) or a check-name prefix")
     ap.add_argument("--sentinels", action="store_true",
                     help="run ONLY the checks whose result a design already depends on, so a "
                          "vendor change there would break AER silently. This is the set worth "

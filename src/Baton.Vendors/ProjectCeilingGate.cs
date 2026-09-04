@@ -34,8 +34,11 @@ internal static class ProjectCeilingGate
     /// <exception cref="IncoherentPermissionGrantException">
     /// Capping the role's grant against the ceiling produces the #529 shape a granted, unscoped shell
     /// reaches every category anyway — re-checked here because a coherent role grant can become
-    /// incoherent once narrowed (<see cref="PermissionGrant.CategoriesDefeatedByTheShell"/>'s own
-    /// remarks are the canonical statement of the rule; this is the same predicate, not a restatement).
+    /// incoherent once narrowed (<see cref="PermissionGrant.CategoriesDefeatedByTheShell(bool, IReadOnlySet{string})"/>'s
+    /// own remarks are the canonical statement of the rule; this is the same predicate, not a
+    /// restatement). #1784: called with the ceiling's own closed categories as
+    /// <c>strictCategories</c> — spec/baton.md §9's operator ruling is canonical for why, not
+    /// restated here.
     /// </exception>
     /// <exception cref="UnsatisfiableOutputContractException">
     /// Review finding B: capping removed <see cref="PermissionGrant.WriteFiles"/> from a grant whose
@@ -81,9 +84,24 @@ internal static class ProjectCeilingGate
         }
 
         var capped = ceiling.Cap(grant);
-        if (capped.CategoriesDefeatedByTheShell is { Count: > 0 } withheld)
+
+        // #1784: strictCategories comes from the ceiling's own booleans, not from `capped` — see
+        // CategoriesDefeatedByTheShell's own doc for why the capped value alone cannot be used here.
+        // spec/baton.md §9's operator ruling is canonical for the rest; not restated here.
+        HashSet<string> strictCategories = [];
+        if (!ceiling.WriteFiles)
         {
-            throw new IncoherentPermissionGrantException(contract.WorkerName, withheld);
+            strictCategories.Add(nameof(PermissionGrant.WriteFiles));
+        }
+
+        if (!ceiling.NetworkAccess)
+        {
+            strictCategories.Add(nameof(PermissionGrant.NetworkAccess));
+        }
+
+        if (capped.CategoriesDefeatedByTheShell(strictCategories: strictCategories) is { Count: > 0 } withheld)
+        {
+            throw new IncoherentPermissionGrantException(contract.WorkerName, withheld, capped.ShellCommandPatterns);
         }
 
         // #1166 review finding M1: the same predicate WorkerBindingResolver's pre-existing check uses,
