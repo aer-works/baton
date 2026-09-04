@@ -2216,11 +2216,11 @@ public static class MutationInterface
     /// <param name="ContinuationBrief">
     /// #1373: non-null exactly when this dispatch is a retry of an attempt the dispatch timeout killed
     /// — <see cref="Scheduling.ContinuationBrief.ForRetryAfterTimeout"/>'s text, applied to the target's
-    /// prompt in <see cref="DispatchAndRecordOutcomeAsync"/> rather than written into any spec file on
-    /// disk. Carried in memory rather than on <see cref="ExecutionRequest"/>: it is derived wholly from
-    /// facts the journal already holds (the step's attempt count, its recorded failure reason, the
-    /// binding's timeout), so journaling it would be a second copy of a projection, and the prompt the
-    /// worker actually ran with is durably captured either way as this execution's <c>prompt.txt</c>.
+    /// prompt in <see cref="DispatchAndRecordOutcomeAsync"/>. In memory rather than on
+    /// <see cref="ExecutionRequest"/>: every input to it (attempt count, recorded failure reason,
+    /// binding timeout) is already journalled, so a field here would be a second copy of a projection
+    /// — and the prompt the worker actually ran with is durably captured either way, as this
+    /// execution's own <c>prompt.txt</c>.
     /// </param>
     private sealed record PreparedExecution(
         ExecutionRequest Request,

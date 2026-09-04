@@ -2,23 +2,21 @@ namespace Baton.Workspaces;
 
 /// <summary>
 /// #1373: what a workspace looked like at the moment its execution was killed by the dispatch
-/// timeout — the reading <see cref="Outcomes.OutcomeClassifier"/> branches on to decide whether that
-/// timeout may be retried blind (spec/baton.md §3, "A timeout on a mutated workspace").
+/// timeout — the reading <see cref="Outcomes.OutcomeClassifier"/> branches on. The ruling, the probe
+/// path, and the safe default all live in spec/baton.md §3's #1373 paragraph, not here.
 /// <para>
-/// The FOURTH entry point over the same git reads
+/// A FOURTH entry point over the same git reads
 /// (<see cref="WorktreeProvisioner.IsWorkspaceUntouched"/>,
 /// <see cref="WorktreeProvisioner.TryReadWorkspaceChanged"/>,
 /// <see cref="WorktreeProvisioner.DescribeWorkspaceEvidence"/>), and deliberately so — #1720 review F2
-/// records why one shared entry point cannot serve consumers whose safe defaults differ. This one's
-/// safe default is <b>mutated</b>: an unreadable workspace is one whose work cannot be ruled out, and
-/// clobbering a nearly-finished tree is the failure #1373 exists to close. It differs from all three
-/// siblings in a second way too — it carries the <i>counts</i>, because its consumer's reason text has
-/// to tell a conductor how much is at stake, not merely that something is.
+/// records why one shared entry point cannot serve consumers whose safe defaults differ. It differs
+/// from all three siblings in a second way too: it carries the <i>counts</i>, because its consumer's
+/// reason text has to tell a conductor how much is at stake, not merely that something is.
 /// </para>
 /// </summary>
 /// <param name="Measured">
 /// False when git could not answer at all (not a checkout, git failed, git missing). Everything below
-/// is then meaningless and <see cref="Mutated"/> reads true regardless — see the class remarks.
+/// is then meaningless and <see cref="Mutated"/> reads true regardless.
 /// </param>
 /// <param name="ChangedPathCount">
 /// Uncommitted and untracked paths, counted from <c>git status --porcelain --untracked-files=normal</c>
@@ -47,8 +45,8 @@ public sealed record WorkspaceMutationReading(
         new(true, changedPathCount, newCommitCount, newCommitCount > 0);
 
     /// <summary>
-    /// Whether this workspace holds work a from-scratch retry would restart on top of. True whenever
-    /// the reading failed — see the class remarks for why that direction, not the other.
+    /// Whether this workspace holds work no blind retry may run over. True whenever the reading
+    /// failed — spec/baton.md §3 (#1373) states why that direction and not the other.
     /// </summary>
     public bool Mutated => !Measured || ChangedPathCount > 0 || HasNewCommits;
 

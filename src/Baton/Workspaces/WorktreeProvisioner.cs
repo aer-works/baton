@@ -423,10 +423,9 @@ public static class WorktreeProvisioner
     }
 
     /// <summary>
-    /// #1373: reads <paramref name="workspacePath"/> for work a from-scratch retry would restart on top
-    /// of — see <see cref="WorkspaceMutationReading"/> for what the result means, why its safe default
-    /// is "mutated", and why this is a fourth entry point rather than a fifth caller of
-    /// <see cref="IsWorkspaceUntouched"/>.
+    /// #1373: reads <paramref name="workspacePath"/> for surviving work — see
+    /// <see cref="WorkspaceMutationReading"/> for what the result means and why this is a fourth entry
+    /// point rather than a fifth caller of <see cref="IsWorkspaceUntouched"/>.
     /// <para>
     /// Returns <see langword="null"/> — distinct from <see cref="WorkspaceMutationReading.Unmeasurable"/>
     /// — when there is no workspace to read at all: no path, or a path that does not exist. "This

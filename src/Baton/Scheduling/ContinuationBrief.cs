@@ -5,13 +5,12 @@ namespace Baton.Scheduling;
 
 /// <summary>
 /// #1373: the preamble a retry-after-timeout carries into the vendor's prompt, so attempt N+1 knows
-/// attempt N existed at all (spec/baton.md §3, "A timeout on a mutated workspace").
+/// attempt N existed at all. The ruling is spec/baton.md §3's second #1373 paragraph.
 /// <para>
-/// The engine already reuses the failed attempt's <c>WorkerBinding</c> — and therefore its workspace —
-/// across attempts within a step, so a retried worker is standing in the previous attempt's tree.
-/// Before this, nothing told it so: the only route to that fact was <c>git log</c>/<c>git status</c>
-/// archaeology it had no reason to perform, so it restarted. This is the whole of the fix for the
-/// unmutated case; a mutated workspace does not reach a retry at all.
+/// A retried worker is standing in its predecessor's tree, and before this nothing told it so: the
+/// only route to that fact was <c>git log</c>/<c>git status</c> archaeology it had no reason to
+/// perform, so it restarted. This is the whole of the fix for the unmutated case; a mutated workspace
+/// does not reach a retry at all.
 /// </para>
 /// <para>
 /// One template, one place. Architecture Rule 1 is untouched: this text is composed from structured

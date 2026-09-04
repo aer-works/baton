@@ -232,12 +232,9 @@ public static class OutcomeClassifier
                 return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
             }
 
-            // #1373 (spec/baton.md §3, "A timeout on a mutated workspace"): the timeout kill survives as
-            // today's retryable Failed ONLY while the workspace has nothing to lose. A worker killed
-            // mid-lane leaves its commits and its uncommitted edits behind -- the workspace is the same
-            // one across attempts within a step -- so attempt N+1 starting from zero re-does or clobbers
-            // them. Measured 2026-09-01: four lanes timed out, all four were auto-retried onto a
-            // workspace attempt 1 had already mutated, and a person cancelled all four by hand.
+            // #1373: a timeout kill keeps today's retryable Failed only while the workspace has nothing
+            // to lose. The ruling, the measurement behind it, and why the probe fails closed are stated
+            // once, in spec/baton.md §3's #1373 paragraph.
             //
             // The probe path is the isolated worktree when there is one and the tree-changing role's own
             // working directory otherwise -- NOT binding.Target.WorkingDirectory unconditionally, which

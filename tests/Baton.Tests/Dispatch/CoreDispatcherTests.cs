@@ -1718,9 +1718,8 @@ public class CoreDispatcherTests
     [Fact]
     public void WithPromptPreamble_refuses_a_target_whose_prompt_is_not_one_of_its_arguments()
     {
-        // The invariant this method and the #748 oversize swap both rest on. Refused loudly rather
-        // than silently dropped: a worker that never received its continuation brief is
-        // indistinguishable from one that read it and ignored it.
+        // The invariant this method and the #748 oversize swap both rest on — see
+        // WithPromptPreamble's own doc for why a break in it throws instead of degrading quietly.
         var target = new CoreDispatchTarget("claude", ["-p", "--prompt=do the work"], PromptText: "do the work");
 
         var ex = Assert.Throws<PromptPreambleException>(

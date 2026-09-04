@@ -13,10 +13,9 @@ namespace Baton.Tests.EndToEnd;
 /// left work behind settles Indeterminate and is never retried, and one that left nothing behind is
 /// retried with a continuation brief in the argument its worker is actually spawned with.
 /// <para>
-/// The three arms are the shapes measured live on 2026-09-01 (four lanes, 60-minute timeout, all four
-/// auto-retried onto a workspace attempt 1 had already mutated): a finished commit (#1580/#1584),
-/// uncommitted edits (#1619 with 18, #1183 with 2), and the genuinely-cold case retrying was always
-/// right for.
+/// The three arms are the shapes the 2026-09-01 measurement recorded (spec/baton.md §3, #1373): a
+/// finished commit (#1580/#1584), uncommitted edits (#1619 with 18, #1183 with 2), and the
+/// genuinely-cold case retrying was always right for.
 /// </para>
 /// <para>
 /// Real git, fake dispatcher, and both halves deliberate. The probe shells out to git, so only a real
