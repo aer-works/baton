@@ -85,12 +85,9 @@ public static class ArtifactPruner
             prunedAny |= PruneDirectory(execDir, targetDir);
         }
 
-        // #496 point 4: named artifacts' version history sits inside the same retention boundary as
-        // execution directories, under the same terminal+not-kept+lock gate this method already
-        // established above -- see RoomArtifacts.PruneVersionHistory's own remarks for why this prunes
-        // down to the current version rather than moving anything aside. Runs even when there were no
-        // execution_* directories to prune, since a room's named artifacts are independent of whether
-        // it ran a workflow step.
+        // #496 (spec/baton.md §2): reuses the terminal+not-kept+lock gate above for named-artifact
+        // version history too. Unconditional even when executionDirs was empty -- a room's named
+        // artifacts do not depend on it having run a workflow step.
         prunedAny |= RoomArtifacts.PruneVersionHistory(artifactsRootPath);
 
         return prunedAny;

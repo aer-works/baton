@@ -76,12 +76,11 @@ internal static class RoleSpecMaterializer
     /// <paramref name="attachments"/> is null or empty. Called after the room directory exists —
     /// <see cref="Materialize"/> above only needs the destination path as a string, for the prompt text.
     /// <para>
-    /// #496 (decision 0021) does not route this through <c>RoomArtifacts.Write</c>: an attachment is
-    /// harness-supplied input copied in before any execution exists, not something "one worker
-    /// produced" (0021 point 1) with an <c>ExecutionBindingResolver</c>-derivable attribution to
-    /// record. <see cref="ValidateAttachments"/> already refuses a same-dispatch basename collision
-    /// loudly; a same-basename <c>--attach</c> across two separate dispatches to the same room
-    /// overwriting a prior attachment is a real, narrower gap this issue's scope does not cover.
+    /// Deliberately not routed through <c>Baton.Artifacts.RoomArtifacts.Write</c> (#496, spec/baton.md
+    /// §2's exemption list): an attachment predates every execution in the room, so it carries no
+    /// producer to record. <see cref="ValidateAttachments"/> refuses a same-call basename clash;
+    /// a clash across two separate dispatches into the same room still silently replaces the file,
+    /// a narrower gap outside this issue's scope.
     /// </para>
     /// </summary>
     public static void CopyAttachmentsIntoRoom(IReadOnlyList<string>? attachments, string roomDirectoryPath)

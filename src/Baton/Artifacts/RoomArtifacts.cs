@@ -44,28 +44,22 @@ public enum ArtifactWriteOutcome
 public sealed record ArtifactWriteResult(ArtifactWriteOutcome Outcome, int Version, string CurrentPath);
 
 /// <summary>
-/// #496 (decision 0021, trimmed to engine scope by the 2026-09-01 triage — no diff-and-choose UI,
-/// spec/baton.md §1 forecloses that surface): the versioned, attributed model for a named artifact living
-/// directly under a room's <c>artifacts/</c> — never for a file inside an execution's own
-/// <c>artifacts/execution_&lt;id&gt;/</c> scratch directory, which decision 0021 point 2 already
-/// calls plumbing that is never surfaced anywhere and this primitive does not touch.
+/// #496: the write/read primitive behind a named artifact's version history — one primitive for
+/// anything sitting directly under a room's <c>artifacts/</c>, never for a file inside an
+/// execution's own scratch <c>artifacts/execution_&lt;id&gt;/</c>. The design rationale (decision
+/// 0021, why its scope stops here, why a dot-directory, why JSONL, and the exact population of
+/// writers routed through this) is spec/baton.md §2's canonical record — this comment states only
+/// what the code does.
 /// <para>
-/// <b>Layout.</b> <c>artifacts/&lt;name&gt;</c> stays the CURRENT version, so every existing reader
-/// keeps working unchanged. Versions live beside it under <c>artifacts/.versions/&lt;name&gt;/&lt;n&gt;</c>
-/// (the version's own bytes) with a sidecar <c>artifacts/.versions/&lt;name&gt;/index.jsonl</c> — one
-/// <see cref="ArtifactVersionEntry"/> line per version. A dot-directory rather than a sibling: #1351's
-/// filter convention already exists to keep engine mechanism out of every directory listing that
-/// presents a room's file list, and a version history is exactly that kind of mechanism, not a
-/// document a worker or harness should see enumerated. JSONL rather than one metadata file per
-/// version: append-only, the same crash-safety shape <c>flow.jsonl</c> already relies on.
+/// <c>artifacts/&lt;name&gt;</c> holds the current bytes. Each older version sits at
+/// <c>artifacts/.versions/&lt;name&gt;/&lt;n&gt;</c>, named by one <see cref="ArtifactVersionEntry"/>
+/// line in the sidecar <c>artifacts/.versions/&lt;name&gt;/index.jsonl</c>.
 /// </para>
 /// <para>
-/// <b>The index is authoritative, the version file is not.</b> <see cref="Write"/> writes the version
-/// file, then appends the index line, then replaces <c>artifacts/&lt;name&gt;</c> — in that order. A
-/// crash between the first two steps leaves an orphan version file the index never names; every
-/// reader here (<see cref="Versions"/>, <see cref="Read"/>) treats a version absent from the index as
-/// never having happened, even though a stray file sits on disk, and the next <see cref="Write"/>
-/// simply reuses that version number and overwrites the orphan.
+/// Write order matters for recovery: the numbered file lands first, its index line second, the
+/// current file last. Dying between the first two leaves a numbered file nothing names — both
+/// <see cref="Versions"/> and <see cref="Read"/> consult the index alone, so an un-indexed file
+/// simply is not a version, and the number is free for the next call to reuse.
 /// </para>
 /// </summary>
 public static class RoomArtifacts
@@ -173,13 +167,10 @@ public static class RoomArtifacts
     }
 
     /// <summary>
-    /// #496 point 4: prunes every named artifact's version HISTORY under <paramref name="artifactsRootPath"/>
-    /// down to just its current version — the older version files and index lines behind it, never the
-    /// content itself, since <c>artifacts/&lt;name&gt;</c> already holds the current version's bytes in
-    /// full. <see cref="ArtifactPruner"/> calls this under the same terminal+not-kept+lock gate it
-    /// already applies to <c>execution_*</c> directories: a room's version history is exactly as
-    /// unbounded over a long room's lifetime as its execution directories are (issue #496's own closing
-    /// line), so it sits inside the same retention boundary.
+    /// #496 point 4 (spec/baton.md §2): discards every superseded version file and index line under
+    /// <paramref name="artifactsRootPath"/>, keeping only each name's newest entry. Never touches
+    /// <c>artifacts/&lt;name&gt;</c> itself. <see cref="ArtifactPruner"/> is the sole caller, from
+    /// inside the terminal+not-kept+lock gate it already established for <c>execution_*</c>.
     /// </summary>
     public static bool PruneVersionHistory(string artifactsRootPath)
     {
