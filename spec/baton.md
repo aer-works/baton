@@ -4053,6 +4053,13 @@ projects' durations now sum rather than overlap (measured this box: ~2m parallel
 serialized for the test leg alone) -- accepted, since the acceptance bound is on the whole `gates`
 run's wall time, most of which is `fmt-check`/`lint`, not this leg.
 
+**Amended #1833.** `-m:1` stopped serializing anything once `dotnet test` moved onto Microsoft.Testing.Platform
+(root `global.json`, required by the xunit v3 4.0.0 bump #1833 took to close #984): MEASURED being forwarded to
+each test module as an unrecognised argument, so every module reported "Zero tests ran" (exit 5) instead of
+running serialized. MTP's own equivalent, `--max-parallel-test-modules 1`, was MEASURED to reproduce the same
+one-project-at-a-time shape this entry describes (durations summed, not overlapped) — `pixi.toml`'s `test-no-build`
+carries it now; the measurement and the trade-off accepted above are otherwise unchanged.
+
 **`buildlock` already covered `dotnet test`/`test-no-build`.** `tools/buildlock.py` (#1402) wraps
 every MSBuild-owning pixi task; `test`, `test-no-build`, `test-flow`, and `test-other` were all
 already invoked through it before this issue, so at most one MSBuild tree exists machine-wide
@@ -4099,6 +4106,33 @@ Both failures are lifted by the `operator-merge` PR label, applied by the operat
 ### C-16 — Every CI job carries `timeout-minutes` (#1743)
 
 A stalled runner (not a code failure) held release PR #1652's `windows-shard-other` job `in_progress` for two hours against GitHub's six-hour default. Every job in `.github/workflows/ci.yml`, `diff-shape.yml`, and `pr-body-lint.yml` now sets `timeout-minutes` to roughly twice its observed maximum duration, rounded up (`flake-watch.yml`'s job already carried one, sized on its own reasoning); the ceilings themselves live in those workflow files, not restated here.
+
+### C-17 — `dotnet test` runs on Microsoft.Testing.Platform; every leg asserts a nonzero test count (#1833, closes #984)
+
+`dotnet test` moved off VSTest onto Microsoft.Testing.Platform (MTP) behind a root `global.json`
+(`"test": {"runner": "Microsoft.Testing.Platform"}`), taking `xunit.v3` and `xunit.runner.
+visualstudio` to `4.0.0` across all six test projects in the same change. This closes #984 at its
+root cause rather than mitigating it: the "Test process did not return valid JSON" flake was
+xunit v3 3.2.2's own in-process console runner printing a foreground-thread shutdown warning onto
+the same stdout stream its `GetAssemblyInfo` IPC handshake parses as JSON (upstream
+xunit/xunit#3576), fixed only in 4.0.0 — the runner that printed it no longer exists in this tree.
+
+**The zero-test-leg rule.** `tools/buildlock.py`'s docstring names a zero-test leg (a filter or a
+broken build silently running nothing, reported as green) as a known silent-failure mode. Every
+`dotnet test` invocation in `pixi.toml`'s test tasks now carries `--minimum-expected-tests 1`, MTP's
+own floor: a leg that runs zero tests exits 9 (a hard failure) instead of 0. This replaced a
+different problem MTP introduced by being *stricter* than VSTest, not looser: a `--filter`-based
+solution-wide run where one assembly in the set matches zero tests now exits 8 for the **whole**
+invocation even when every other assembly ran cleanly — MEASURED breaking the pre-#1833
+`test-flow`/`test-other` shards, which relied on exactly the opposite (VSTest-era) tolerance. The
+fix was not a switch to suppress that: `--minimum-expected-tests` does not supersede a per-module
+exit 8 inside a multi-module run (MEASURED), and xUnit v3 does not accept `--filter`'s VSTest syntax
+under MTP at all (needs `--filter-namespace` et al. instead, still per-module-zero-exposed the same
+way). `test-flow`/`test-other` invoke their member projects directly by `--project` instead — no
+filter, so no assembly can ever be a zero-match; `pixi.toml` owns the exact project lists.
+
+Both are `pixi.toml`'s member facts, not restated further here; `-m:1`'s replacement is C-13's own
+amendment, not this entry's.
 
 ---
 

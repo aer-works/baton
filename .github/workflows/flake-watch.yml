@@ -104,9 +104,17 @@ jobs:
               name=$(basename "$project" .csproj)
               # Never `set -e` here: a failing pass is DATA, and the whole measurement is thrown away
               # if the first red aborts the loop before the other passes disagree with it.
-              dotnet test "$project" --no-build \
-                --logger "trx;LogFileName=pass.trx" \
+              #
+              # #1833: `--logger "trx;..."` was VSTest's own logger syntax, gone now that `dotnet
+              # test` runs on Microsoft.Testing.Platform (root `global.json`) -- MTP's equivalent is
+              # `--report-trx` (needs the `Microsoft.Testing.Extensions.TrxReport` package, now
+              # referenced by all five in-solution test projects), MEASURED to still write the same
+              # VisualStudio/TeamTest TRX schema `tools/flake-watch/summarize.py` already parses
+              # (`testName`/`outcome` attributes unchanged).
+              dotnet test --project "$project" --no-build \
+                --report-trx --report-trx-filename pass.trx \
                 --results-directory "$pass_dir/$name" \
+                --minimum-expected-tests 1 \
                 || echo "$name had failures in pass $i (recorded, not fatal)"
             done
             echo "::endgroup::"

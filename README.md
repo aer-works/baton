@@ -74,6 +74,10 @@ Each vendor CLI remains subject to its own provider's terms, between the operato
 - **[pixi](https://pixi.sh)** — task runner.
 - **.NET 10 SDK** — install separately (not managed by pixi):
   - Windows: `winget install Microsoft.DotNet.SDK.10`
+- Root `global.json` pins `dotnet test` to Microsoft.Testing.Platform (not VSTest) on this SDK — no
+  contributor action needed, but it means a bare `dotnet test` (outside `pixi run test`) now takes
+  MTP's own flags, not VSTest's (`--filter` no longer works for xUnit; see xunit's [MTP
+  docs](https://xunit.net/docs/getting-started/v3/microsoft-testing-platform)).
 
 ## Quickstart
 ```bash

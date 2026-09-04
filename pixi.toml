@@ -58,26 +58,67 @@ build = { cmd = "python tools/buildlock.py dotnet build" }
 # 66s test), so about +19s or 29% per run. Paid on every iteration deliberately: `pixi run gates`
 # already forced a rebuild via `lint`, so the protection existed where the risk was lowest and was
 # absent from the inner loop, where a session runs this dozens of times.
-test = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build" }
+# #1833: `dotnet test` runs on Microsoft.Testing.Platform (MTP) now (root `global.json`), not
+# VSTest -- xunit.v3 4.0.0 requires it on the .NET 10 SDK. Why the bump closes #984 at its source:
+# spec/baton.md §11 C-17. `--minimum-expected-tests 1` on every leg below is the zero-test-leg guard
+# `tools/buildlock.py`'s docstring names as a known silent-failure mode: MTP already refuses a
+# filtered assembly that matches zero tests (exit 8) UNLESS the whole invocation is unfiltered, in
+# which case a leg that somehow ran no tests at all would otherwise exit 0 -- this flag turns that
+# into exit 9, a hard failure, at the cost of nothing when the leg is healthy. Bare `dotnet test`
+# (no `--solution`) resolves the one `.slnx` in the cwd the same way VSTest's did.
+test = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --minimum-expected-tests 1" }
 # Sharded test tasks for CI (#1363) — see .github/workflows/ci.yml
-test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName~Baton.Tests\"" }
-test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --no-build --filter \"FullyQualifiedName!~Baton.Tests\"" }
+#
+# #1833: no longer `--filter` (VSTest syntax `dotnet test` no longer parses under MTP for xUnit --
+# it needs xunit's own `--filter-namespace` et al., MEASURED to still exit 8 per zero-matched
+# assembly even inside an aggregate `--minimum-expected-tests`-guarded solution run, which is
+# exactly the "zero-match assembly fails the leg" breakage #984's findings comment named). Each
+# shard instead invokes its member projects directly by `--project` -- there is no filter for a
+# zero-match assembly to hit, because every project actually named here has tests of its own.
+# `Baton.Tests` is the flow suite; the other four in-solution test projects (everything except
+# `Baton.Tests`) are `test-other`'s split, unchanged from the pre-#1833 grouping. `Baton.Cli.
+# SmokeTests` stays out of both, same as always (outside `Baton.slnx`, live-only).
+test-flow = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --project tests/Baton.Tests/Baton.Tests.csproj --no-build --minimum-expected-tests 1" }
+test-other = { cmd = "python tools/buildlock.py dotnet build --no-incremental && python tools/buildlock.py dotnet test --project tests/Baton.Vendors.Tests/Baton.Vendors.Tests.csproj --no-build --minimum-expected-tests 1 && python tools/buildlock.py dotnet test --project tests/Baton.Architecture.Tests/Baton.Architecture.Tests.csproj --no-build --minimum-expected-tests 1 && python tools/buildlock.py dotnet test --project tests/Baton.Cli.Tests/Baton.Cli.Tests.csproj --no-build --minimum-expected-tests 1 && python tools/buildlock.py dotnet test --project tests/Baton.VendorProbe.Tests/Baton.VendorProbe.Tests.csproj --no-build --minimum-expected-tests 1" }
 # The gates-only test leg (#986): `gates` sequences this after `lint`, whose forced
 # `--no-incremental` build is the same protection `test`'s own build step buys (the "partial
 # cover" note under `lint` below) -- so building again inside the same run was pure duplication.
 # Standalone use is EXPOSED to the #688 stale-assembly trap `test` exists to close: outside a
 # gates run, use `pixi run test`.
 #
-# `-m:1` (#1671): serializes the five xUnit test projects' testhost processes; in-assembly
-# parallelism is untouched. Why `-m:1` and not a VSTest runsettings `MaxCpuCount`, and what was
-# measured to tell them apart: spec/baton.md §11 C-13.
-test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build -m:1" }
-# Coverage report (#199): collects per-test-project Cobertura via coverlet, merges into an HTML
-# report + text summary at artifacts/coverage/report/ (open index.html, or read Summary.txt).
-# Results are wiped first so stale collections never skew the merge. Excludes source-generated
-# code by attribute (coverage.runsettings). #1474 folded the last non-.NET code (aer-core's Rust)
+# #1833: `-m:1` (an MSBuild switch, #1671) no longer serializes anything under MTP -- MEASURED
+# forwarding it to each test module as an unrecognised argument, which made every module report
+# "Zero tests ran" (exit 5, invalid command line) rather than actually running serialized. MTP's own
+# equivalent is `--max-parallel-test-modules 1`, MEASURED to serialize the five xUnit test projects'
+# testhost processes exactly as `-m:1` did (run durations summed rather than overlapped, same shape
+# spec/baton.md §11 C-13 measured for the VSTest-era knob); in-assembly parallelism is still
+# untouched. `--minimum-expected-tests 1` joins it for the same zero-test-leg guard `test` above
+# carries.
+test-no-build = { cmd = "python tools/buildlock.py dotnet test --no-build --max-parallel-test-modules 1 --minimum-expected-tests 1" }
+# Coverage report (#199): collects per-test-project Cobertura via Microsoft.Testing.Extensions.
+# CodeCoverage (MTP's own coverage extension, #1833 -- coverlet.collector was a VSTest data
+# collector with no MTP equivalent; Microsoft's extension was picked over the coverlet.MTP
+# alternative because it needed no second package swap beyond what the xunit v3 4.0 bump already
+# required), merges into an HTML report + text summary at artifacts/coverage/report/ (open
+# index.html, or read Summary.txt). Results are wiped first so stale collections never skew the
+# merge. reportgenerator's own input glob is unchanged in shape (still *.cobertura.xml under
+# artifacts/coverage) -- only MTP's flat `<guid>.cobertura.xml` naming (no per-project
+# subdirectory) changed the exact pattern. #1474 folded the last non-.NET code (aer-core's Rust)
 # into a managed port, so this coverage report is now the whole engine, not a partial one.
-coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --collect:\"XPlat Code Coverage\" --settings coverage.runsettings --results-directory artifacts/coverage && dotnet reportgenerator -reports:artifacts/coverage/**/coverage.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Baton.*\"" }
+#
+# KNOWN GAP (#1833): the prior coverage.runsettings excluded source-generated code by attribute
+# (GeneratedCodeAttribute/CompilerGeneratedAttribute/ExcludeFromCodeCoverageAttribute) via VSTest's
+# data-collector Configuration. MTP's own extension takes the same exclusion list through
+# `--coverage-settings <file>` (Microsoft's dotnet-coverage settings XML, `<Configuration>
+# <CodeCoverage><Attributes><Exclude>...`), but that flag was measured failing command-line
+# validation (exit 5, "invalid command-line arguments") against Microsoft.Testing.Extensions.
+# CodeCoverage 18.11.0 on this SDK (10.0.204) regardless of absolute/relative path or `=` syntax --
+# unresolved in the time this migration had. `--coverage`/`--coverage-output-format cobertura`
+# alone (no settings file) work and are what ships here; the report over-counts source-generated
+# lines until a follow-up either fixes the flag or finds its replacement. Not gated (this task runs
+# in nothing CI or gates.py reads), so shipping the migration without full fidelity here does not
+# regress anything red.
+coverage = { cmd = "rm -rf artifacts/coverage && dotnet tool restore && python tools/buildlock.py dotnet test --coverage --coverage-output-format cobertura --results-directory artifacts/coverage --minimum-expected-tests 1 && dotnet reportgenerator -reports:artifacts/coverage/*.cobertura.xml -targetdir:artifacts/coverage/report \"-reporttypes:Html;TextSummary\" \"-assemblyfilters:+Baton.*\"" }
 
 fmt = "python tools/buildlock.py dotnet format"
 fmt-check = { cmd = "python tools/buildlock.py dotnet format --verify-no-changes" }

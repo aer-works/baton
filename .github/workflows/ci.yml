@@ -31,7 +31,7 @@ jobs:
               - 'tests/**'
               - 'Baton.slnx'
               - 'Directory.Build.props'
-              - 'coverage.runsettings'
+              - 'global.json'
               - 'pixi.toml'
               - 'pixi.lock'
               - '**/packages.lock.json'
