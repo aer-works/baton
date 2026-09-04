@@ -137,10 +137,20 @@ public static class InteractiveSessionMaterializer
 
     /// <summary>
     /// Redispatch lineage (#1441) read back off the same marker <see cref="ReadRoomKindAsync"/>
-    /// reads its kind from -- <c>null</c>/<c>null</c> for an ordinary <c>baton dispatch</c> room,
-    /// which has no parent.
+    /// reads its kind from -- <c>null</c>/<c>null</c>/<c>null</c> for an ordinary <c>baton dispatch</c>
+    /// room, which has no parent.
     /// </summary>
-    public sealed record RoomLineage(string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null)
+    /// <param name="ContinuedSessionId">
+    /// The prior room's own vendor session id this room's worker resumed (issue #1381,
+    /// <c>baton dispatch &lt;role&gt; --continue &lt;room&gt;</c>) -- non-null exactly when
+    /// <see cref="ParentRoomDirectoryPath"/>/<see cref="ParentExecutionId"/> name the veteran room a
+    /// <c>--continue</c> dispatch rehired, rather than the room <c>baton redispatch</c> reran. The two
+    /// verbs share the same two parent fields (both mean "the antecedent room/execution this one
+    /// derives from") but only <c>--continue</c> ever sets this third one, so a reader (<c>fleet_status</c>)
+    /// can tell "continued from" apart from "redispatched from" by its presence alone.
+    /// </param>
+    public sealed record RoomLineage(
+        string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null, string? ContinuedSessionId = null)
     {
         public static readonly RoomLineage None = new();
     }
@@ -192,7 +202,11 @@ public static class InteractiveSessionMaterializer
                                  && parentExecEl.ValueKind == JsonValueKind.String
             ? parentExecEl.GetString()
             : null;
-        return new RoomLineage(parentRoomDirectoryPath, parentExecutionId);
+        var continuedSessionId = doc.RootElement.TryGetProperty("ContinuedSessionId", out var sessionEl)
+                                  && sessionEl.ValueKind == JsonValueKind.String
+            ? sessionEl.GetString()
+            : null;
+        return new RoomLineage(parentRoomDirectoryPath, parentExecutionId, continuedSessionId);
     }
 
     /// <summary>
@@ -250,10 +264,16 @@ public static class InteractiveSessionMaterializer
     /// redispatched from. Null for an ordinary <c>baton dispatch</c>, which has no parent.
     /// </param>
     /// <param name="parentExecutionId">The parent room's own execution id, when cheaply known (#1441). Null otherwise.</param>
+    /// <param name="continuedSessionId">
+    /// #1381: the veteran's own vendor session id, set only by <c>baton dispatch --continue</c> --
+    /// see <see cref="RoomLineage.ContinuedSessionId"/>'s own doc for why this is the one field that
+    /// tells the two lineage-writing verbs apart. Null for an ordinary dispatch and for a redispatch.
+    /// </param>
     public static async Task WriteWorkflowRoomMarkerAsync(
         string roomDirectoryPath,
         string? parentRoomDirectoryPath = null,
         string? parentExecutionId = null,
+        string? continuedSessionId = null,
         CancellationToken cancellationToken = default)
     {
         var markerPath = Path.Combine(roomDirectoryPath, ".baton", BatonPaths.RoomMetadataFileName);
@@ -264,7 +284,7 @@ public static class InteractiveSessionMaterializer
         }
 
         var json = JsonSerializer.Serialize(
-            new WorkflowRoomMarker(RoomKind.Workflow, parentRoomDirectoryPath, parentExecutionId),
+            new WorkflowRoomMarker(RoomKind.Workflow, parentRoomDirectoryPath, parentExecutionId, continuedSessionId),
             new JsonSerializerOptions { WriteIndented = true });
 
         await RetryOnSharingViolationAsync(
@@ -272,7 +292,8 @@ public static class InteractiveSessionMaterializer
             cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record WorkflowRoomMarker(RoomKind Kind, string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null);
+    private sealed record WorkflowRoomMarker(
+        RoomKind Kind, string? ParentRoomDirectoryPath = null, string? ParentExecutionId = null, string? ContinuedSessionId = null);
 
     /// <summary>
     /// Retries <paramref name="action"/> through the transient states of a concurrently

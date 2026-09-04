@@ -320,6 +320,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Workstream: ExtractRoomWorkstream(terminalBindings),
                 ParentRoomPath: terminalLineage.ParentRoomDirectoryPath,
                 ParentExecutionId: terminalLineage.ParentExecutionId,
+                ContinuedSessionId: terminalLineage.ContinuedSessionId,
                 TerminalAt: sentinel.TerminalAt,
                 Delivery: await TryResolveDeliveryAsync(roomDir, sentinel.Outputs, cancellationToken).ConfigureAwait(false));
         }
@@ -449,6 +450,7 @@ public sealed class FleetStatusTool : IMcpTool
                 Workstream: ExtractRoomWorkstream(bindings),
                 ParentRoomPath: lineage.ParentRoomDirectoryPath,
                 ParentExecutionId: lineage.ParentExecutionId,
+                ContinuedSessionId: lineage.ContinuedSessionId,
                 // #1157: view.TerminalAt is null on every non-terminal room by construction
                 // (WorkflowStatusProjector.Project gates it on WorkflowStatus.Terminal), so this needs
                 // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
@@ -714,6 +716,12 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("parentExecutionId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ParentExecutionId = null,
+    // #1381: non-null exactly when ParentRoomPath/ParentExecutionId name a room `baton dispatch
+    // --continue` rehired, rather than one `baton redispatch` reran -- see RoomLineage.ContinuedSessionId's
+    // own doc. Lets the glass render "continued from <room>" instead of "redispatched from <room>".
+    [property: JsonPropertyName("continuedSessionId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ContinuedSessionId = null,
     // #1157: the room-level WorkflowStatusView.TerminalAt, copied the same way Rejected/ResolvedBy
     // above are -- never re-derived here. A terminal room reports when its run ENDED; before this
     // field the fleet reported no terminal instant at all and a consumer wanting one had to stat a

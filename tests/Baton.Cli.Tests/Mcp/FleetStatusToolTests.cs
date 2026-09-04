@@ -1957,6 +1957,40 @@ public sealed class FleetStatusToolTests : IDisposable
         var singleRoom = Assert.Single(rooms!);
         Assert.Null(singleRoom.ParentRoomPath);
         Assert.Null(singleRoom.ParentExecutionId);
+        Assert.DoesNotContain("\"continuedSessionId\"", result.Text);
+        Assert.Null(singleRoom.ContinuedSessionId);
+    }
+
+    /// <summary>
+    /// #1381, spec/baton.md §6 schema: `continuedSessionId` is the one field that tells a `--continue`
+    /// dispatch's lineage apart from an ordinary `baton redispatch`'s, on the identical
+    /// `parentRoomPath`/`parentExecutionId` read path <see cref="TerminalFastPath_WithLineageMarker_ReportsParentRoomPathAndExecutionId"/>
+    /// already pins for redispatch (which never sets this field — see that test's own marker call).
+    /// </summary>
+    [Fact]
+    public async Task TerminalFastPath_WithContinuationMarker_ReportsContinuedSessionId()
+    {
+        var defaultRoomsDir = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName);
+        var room = Path.Combine(defaultRoomsDir, "continued-terminal-room");
+        Directory.CreateDirectory(room);
+
+        var sentinel = new WorkflowStatusView("Succeeded", [], [], null, null);
+        await TerminalSentinelWriter.WriteAsync(room, sentinel, TestContext.Current.CancellationToken);
+
+        var parentRoomPath = Path.Combine(defaultRoomsDir, "veteran-room");
+        await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+            room, parentRoomDirectoryPath: parentRoomPath, parentExecutionId: "exec-parent-1",
+            continuedSessionId: "sess-abc-123", cancellationToken: TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsError);
+        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var singleRoom = Assert.Single(rooms!);
+        Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
+        Assert.Equal("exec-parent-1", singleRoom.ParentExecutionId);
+        Assert.Equal("sess-abc-123", singleRoom.ContinuedSessionId);
     }
 
     /// <summary>

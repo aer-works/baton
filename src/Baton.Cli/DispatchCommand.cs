@@ -101,6 +101,24 @@ public static class DispatchCommand
                 pair => pair.Key, pair => pair.Value with { ToolSha = toolSha }, StringComparer.Ordinal);
         }
 
+        // #1381: --continue rehires the veteran that ran in a prior terminal room — resolved after the
+        // binding has already picked its own adapter (so a mismatch refusal compares the ACTUAL
+        // resolved adapter, not just a possibly-null options.Adapter), but before Directory.CreateDirectory
+        // below, so a refusal here still lands as a clean pre-ledger ValidationRefused (Program's typed
+        // boundary) with no half-provisioned room left behind — the same placement rationale the
+        // drain-marker/version-drift checks above already follow. MaterializeTemplateAsync already
+        // refused a template dispatch above, so bindings here is always the single-entry dictionary a
+        // role dispatch produces.
+        ContinuationProvenance? continuation = null;
+        if (options.ContinueFromRoomDirectoryPath is not null)
+        {
+            var (continuedWorkerName, continuedEntry) = bindings.Single();
+            WorkerBindingConfigEntry resumedEntry;
+            (resumedEntry, continuation) = await ResolveContinuationAsync(
+                options.ContinueFromRoomDirectoryPath, continuedEntry, cancellationToken).ConfigureAwait(false);
+            bindings = new Dictionary<string, WorkerBindingConfigEntry> { [continuedWorkerName] = resumedEntry };
+        }
+
         // R1 (#1354/#1380): disclose the consequence up front, before the run starts, whenever
         // RoleDispatch.ToBinding declared a fresh worktree for an audited role — the worker then never
         // sees uncommitted or staged changes in `workspace`, only what HEAD already had (finding 5).
@@ -121,6 +139,20 @@ public static class DispatchCommand
         }
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
+
+        // #1381: cross-room provenance -- the same room-marker lineage fields #1441's redispatch
+        // already writes to, extended with the one new fact (ContinuedSessionId) that tells "continued
+        // from" apart from "redispatched from" (record-once: no second marker file). A no-op when
+        // --continue was never passed.
+        if (continuation is not null)
+        {
+            await InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync(
+                options.RoomDirectoryPath,
+                parentRoomDirectoryPath: continuation.ParentRoomDirectoryPath,
+                parentExecutionId: continuation.ParentExecutionId,
+                continuedSessionId: continuation.SessionId,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
         // #1619: the navigational half of the ruling -- a no-op when --workstream was never passed.
         WorkstreamJunctionLinker.CreateIfRequested(options.Workstream, options.RoomDirectoryPath);
@@ -484,6 +516,18 @@ public static class DispatchCommand
                 "remove the --expect-pr flag, or dispatch a single role instead of a template.");
         }
 
+        if (options.ContinueFromRoomDirectoryPath is not null)
+        {
+            // #1381: --continue rehires ONE veteran worker's vendor session — a composed template has
+            // no single worker to rehire (its phases are separate bindings, possibly separate adapters),
+            // so this is refused the same way every other role-only escape hatch above is.
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — it has no single worker's vendor session to "
+                + "rehire, so --continue does not apply to one of them. Pass --continue only when "
+                + "dispatching a role.",
+                "remove the --continue flag, or dispatch a single role instead of a template.");
+        }
+
         var template = WorkflowTemplateCatalog.For(options.Name);
         // #1083: hand every phase the workspace too, so a role run as a template phase can read the repo
         // exactly as a directly-dispatched role now can.
@@ -641,6 +685,136 @@ public static class DispatchCommand
                 $"'--output {customName}' collides with role '{role.Id}''s own declared output of the same name.",
                 retryInvocation);
         }
+    }
+
+    /// <summary>
+    /// #1381: the veteran room/execution/session <c>--continue</c> actually rehired, threaded through
+    /// to <see cref="InteractiveSessionMaterializer.WriteWorkflowRoomMarkerAsync"/> so the fact lands in
+    /// the NEW room's own marker rather than a second file (record-once).
+    /// </summary>
+    private sealed record ContinuationProvenance(string ParentRoomDirectoryPath, string? ParentExecutionId, string SessionId);
+
+    /// <summary>
+    /// <c>--continue &lt;room-dir&gt;</c> (#1381): resolves the terminal room a follow-on brief should
+    /// rehire — the vendor session id lives on that room's own single-worker <c>bindings.json</c> entry
+    /// (<see cref="WorkerBindingConfigEntry.SessionId"/>, the exact field <see cref="ResumeCommand"/>
+    /// already reads for the same-room <c>baton resume</c> case, M24/#1359) — do not add a second
+    /// record. A cold room (never itself dispatched with <c>--continue</c>, and never hand-edited the
+    /// way <c>baton resume</c>'s own precedent allows) has no SessionId recorded and refuses here, which
+    /// is the honest terminal case, not a gap this method fills.
+    /// <para>
+    /// Q4's "fail the dispatch loudly" ruling covers what is checkable before the vendor spawns: adapter
+    /// mismatch and a missing SessionId, both refused below as <see cref="CliArgumentException"/> (Program's
+    /// typed boundary turns this into a <c>ValidationRefused</c> exit before anything is dispatched — no
+    /// half-provisioned room). The vendor silently minting a fresh session under the resumed id instead of
+    /// truly resuming is NOT detectable here — that would need the #546 existence-check-not-lock
+    /// measurement to distinguish resume-refused from silently-started-fresh, which is a separate,
+    /// unshipped pin (docs/vendor-doc-audit.md; sentinel <c>durability.session-id-guard-is-not-a-lock</c>
+    /// confirms only that <c>--session-id</c> reuse is existence-guarded, not that <c>--resume</c> proves
+    /// its own success). Stated here rather than silently claimed.
+    /// </para>
+    /// </summary>
+    /// <param name="continueFromRoomDirectoryPath">The prior room directory the operator named with <c>--continue</c>.</param>
+    /// <param name="entry">
+    /// This dispatch's own already-materialized binding — read for the adapter it actually resolved to
+    /// (never <c>options.Adapter</c> directly, which is null on the common tier-default path) and
+    /// returned with <see cref="WorkerBindingConfigEntry.SessionId"/>/<see cref="WorkerBindingConfigEntry.ResumeSession"/>
+    /// overridden to continue the veteran's session.
+    /// </param>
+    /// <exception cref="CliArgumentException">
+    /// The named room does not exist, its bindings.json is unreadable or dispatched more than one
+    /// worker, its adapter (or this dispatch's own resolved adapter) is not <c>claude</c> (Q1 scope —
+    /// agy rehire is gated on its own headless-resume measurement, not yet run), or it has no
+    /// <see cref="WorkerBindingConfigEntry.SessionId"/> recorded.
+    /// </exception>
+    private static async Task<(WorkerBindingConfigEntry Entry, ContinuationProvenance Provenance)> ResolveContinuationAsync(
+        string continueFromRoomDirectoryPath, WorkerBindingConfigEntry entry, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(continueFromRoomDirectoryPath))
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' names a room that does not exist.",
+                "pass the terminal room directory of the worker to rehire, e.g. --continue <room-dir>, "
+                + "or drop --continue to dispatch cold.");
+        }
+
+        var parentBindingsPath = BatonPaths.RoomBindingsFile(continueFromRoomDirectoryPath);
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> parentBindings;
+        try
+        {
+            parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(parentBindingsPath, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or JsonException)
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' names a room with no readable "
+                + $"'{BatonPaths.RoomBindingsFileName}' ({ex.Message}) — only a room 'baton dispatch' "
+                + "actually dispatched has a worker to rehire.",
+                "pass a room 'baton dispatch' created, or drop --continue to dispatch cold.");
+        }
+
+        if (parentBindings.Count != 1)
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' dispatched {parentBindings.Count} workers — "
+                + "rehiring a veteran only supports a single-role dispatch (baton dispatch <role> --spec "
+                + "...), not a composed template.");
+        }
+
+        var (parentWorkerName, parentEntry) = parentBindings.Single();
+
+        // Q1 scope (2026-09-01 design ratification, #1381): claude first — ClaudeWorkerAdapter is the
+        // only adapter whose --resume path is wired today. agy rehire is gated on its own headless
+        // conversation-id-resume measurement, not yet run; checking BOTH the veteran's recorded adapter
+        // and this dispatch's own resolved one closes an adapter-swap escape (--adapter agy against a
+        // claude veteran, or the reverse) that checking either alone would miss.
+        if (!string.Equals(parentEntry.Adapter, "claude", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(entry.Adapter, "claude", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' cannot rehire worker '{parentWorkerName}' — "
+                + $"its vendor session lives on adapter '{parentEntry.Adapter}', and this dispatch resolved "
+                + $"to adapter '{entry.Adapter}'. Rehiring a veteran is supported for the claude adapter "
+                + "only today (#1381 Q1 scope) — agy rehire is gated on its own resume measurement.",
+                "drop --continue to dispatch cold on this adapter, or dispatch the same role with "
+                + "--adapter claude to match the veteran.");
+        }
+
+        if (parentEntry.SessionId is null)
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' cannot rehire worker '{parentWorkerName}' — "
+                + $"its '{BatonPaths.RoomBindingsFileName}' has no SessionId recorded, so there is no "
+                + "vendor session to resume. A room only carries one when it was itself dispatched with "
+                + "--continue, or an operator recorded one by hand (baton resume's own precedent).",
+                "drop --continue to dispatch this brief cold, or --continue a room that was itself a "
+                + "--continue dispatch.");
+        }
+
+        // Refuse a still-running veteran outright: --resume's own vendor-measured guarantee is an
+        // existence check, not a lock (docs/vendor-doc-audit.md; sentinel
+        // durability.session-id-guard-is-not-a-lock) — two processes resuming the SAME session id
+        // concurrently both win the race and both run, which for a worker that might still be mid-turn
+        // is exactly the silent-corruption shape Q4's "fail loudly" ruling exists to prevent, not a
+        // vendor refusal there would be nothing loud to catch.
+        var parentTerminal = await TerminalSentinelWriter.TryReadAsync(continueFromRoomDirectoryPath, cancellationToken)
+            .ConfigureAwait(false);
+        if (parentTerminal is null)
+        {
+            throw new CliArgumentException(
+                $"'--continue {continueFromRoomDirectoryPath}' has not reached a terminal state — rehiring "
+                + "a veteran that might still be mid-turn would resume its vendor session concurrently, "
+                + "which the vendor's own session-id guard does not protect against (an existence check, "
+                + "not a lock).",
+                $"wait for '{continueFromRoomDirectoryPath}' to finish (check `baton status "
+                + $"{continueFromRoomDirectoryPath}`), then --continue it.");
+        }
+
+        var parentExecutionId = parentTerminal.Steps.FirstOrDefault()?.Execution;
+        var resumedEntry = entry with { SessionId = parentEntry.SessionId, ResumeSession = true };
+        var provenance = new ContinuationProvenance(continueFromRoomDirectoryPath, parentExecutionId, parentEntry.SessionId);
+        return (resumedEntry, provenance);
     }
 
     /// <summary>
