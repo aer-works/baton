@@ -1957,4 +1957,111 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(classification);
         Assert.Null(retryNotBefore);
     }
+
+    // ---- #532: resolve-time hook liveness probe ----
+
+    /// <summary>Deterministic test double -- see <see cref="IClaudeHookLivenessProbe"/>'s own remarks.</summary>
+    private sealed class FakeClaudeHookLivenessProbe : IClaudeHookLivenessProbe
+    {
+        private readonly ClaudeHookLivenessResult _result;
+        public int CallCount { get; private set; }
+
+        public FakeClaudeHookLivenessProbe(ClaudeHookLivenessResult result) => _result = result;
+
+        public ClaudeHookLivenessResult Probe(string hookAssemblyPath, TimeSpan timeout)
+        {
+            CallCount++;
+            return _result;
+        }
+    }
+
+    [Fact]
+    public void A_missing_hook_refuses_dispatch_when_the_probe_reports_dead()
+    {
+        var probe = new FakeClaudeHookLivenessProbe(
+            new ClaudeHookLivenessResult(false, "'C:/does/not/exist/Baton.Cli.dll' does not exist"));
+        var adapter = new ClaudeWorkerAdapter(probe);
+
+        var ex = Assert.Throws<ClaudeHookUnverifiedException>(
+            () => adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract));
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Contains("does not exist", ex.Message);
+        Assert.Contains("PreToolUse hook", ex.Message);
+        Assert.Contains(ex.HookAssemblyPath, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("timed out")]
+    [InlineData("the hook exited 0 instead of the deny code (2)")]
+    [InlineData("the hook process could not be run: access denied")]
+    public void A_tampered_or_unresponsive_hook_refuses_dispatch(string detail)
+    {
+        var probe = new FakeClaudeHookLivenessProbe(new ClaudeHookLivenessResult(false, detail));
+        var adapter = new ClaudeWorkerAdapter(probe);
+
+        var ex = Assert.Throws<ClaudeHookUnverifiedException>(
+            () => adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract));
+
+        Assert.Contains(detail, ex.Message);
+    }
+
+    [Fact]
+    public void A_live_probe_lets_dispatch_proceed_normally()
+    {
+        var probe = new FakeClaudeHookLivenessProbe(new ClaudeHookLivenessResult(true, "deny"));
+        var adapter = new ClaudeWorkerAdapter(probe);
+
+        var target = adapter.Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        Assert.Equal(1, probe.CallCount);
+        Assert.Equal("claude", target.Program);
+    }
+
+    [Fact]
+    public void ProcessClaudeHookLivenessProbe_reports_dead_for_a_nonexistent_hook_path_without_spawning_a_process()
+    {
+        // No subprocess is spawned here at all -- File.Exists short-circuits first.
+        var probe = new ProcessClaudeHookLivenessProbe();
+
+        var result = probe.Probe(@"C:\definitely\does\not\exist\Baton.Cli.dll", TimeSpan.FromSeconds(1));
+
+        Assert.False(result.IsLive);
+        Assert.Contains("does not exist", result.Detail);
+    }
+
+    [Fact]
+    public void ProcessClaudeHookLivenessProbe_reports_live_against_the_real_built_binary()
+    {
+        // The single load-bearing claim of the whole probe -- "with BATON_HOOK_DENIED_TOOLS set to a
+        // withheld Write, dotnet <the real shipped dll> hook-check exits with the deny code" --
+        // executed for real. The cache is reset first and the spawn counter asserted after, so this
+        // test cannot be served from an entry some earlier test warmed for the same assembly path.
+        ProcessClaudeHookLivenessProbe.ResetCacheForTesting();
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var probe = new ProcessClaudeHookLivenessProbe();
+
+        var result = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsLive, $"expected the real hook to answer deny; got: {result.Detail}");
+        Assert.Equal(1, ProcessClaudeHookLivenessProbe.SpawnCountForTesting);
+    }
+
+    [Fact]
+    public void A_second_resolve_of_the_same_live_path_reuses_the_first_probe_instead_of_spawning_again()
+    {
+        ProcessClaudeHookLivenessProbe.ResetCacheForTesting();
+        var assemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var probe = new ProcessClaudeHookLivenessProbe();
+
+        var first = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+        Assert.True(first.IsLive, $"expected the real hook to answer deny; got: {first.Detail}");
+        var afterFirst = ProcessClaudeHookLivenessProbe.SpawnCountForTesting;
+        Assert.Equal(1, afterFirst);
+
+        var second = probe.Probe(assemblyPath, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(first, second);
+        Assert.Equal(afterFirst, ProcessClaudeHookLivenessProbe.SpawnCountForTesting);
+    }
 }

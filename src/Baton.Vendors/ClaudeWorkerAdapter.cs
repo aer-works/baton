@@ -39,6 +39,15 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
 
     private const string DefaultPermissionScope = "Write";
 
+    private const int HookTimeoutSeconds = 30;
+
+    private readonly IClaudeHookLivenessProbe _hookLivenessProbe;
+
+    public ClaudeWorkerAdapter(IClaudeHookLivenessProbe? hookLivenessProbe = null)
+    {
+        _hookLivenessProbe = hookLivenessProbe ?? new ProcessClaudeHookLivenessProbe();
+    }
+
     public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)
     {
         ArgumentNullException.ThrowIfNull(grant);
@@ -144,6 +153,23 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         // canonical content on every resolve rather than written once, and #667 for why an unchanged
         // file is not rewritten to get there.
         var (settingsPath, mcpConfigPath) = EnsureLaunchConfigFiles();
+
+        // #532: since #649 the PreToolUse hook is the SOLE bound on where a write-family tool call
+        // lands -- Edit/Write/NotebookEdit are always pre-approved on --allowedTools and never
+        // withheld on --disallowedTools (BuildDisallowedTools), so nothing else stops a write once
+        // BuildSettingsJson's File.Exists guard has already passed. That guard only proves the hook
+        // assembly is present, not that it can actually run -- a truncated build, a wrong .NET
+        // runtime on this host, or an edit made between vendor-verify's build-time check and this
+        // spawn all pass File.Exists and fail exactly the way gate.broken-hook-fails-open measures.
+        // This probe runs the hook for real, the same way agy's #1680 resolve-time probe does, and
+        // refuses fail-closed rather than warning and continuing.
+        var hookAssemblyPath = HookAssemblyPath;
+        var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
+        if (!probeResult.IsLive)
+        {
+            throw new ClaudeHookUnverifiedException(hookAssemblyPath, probeResult.Detail);
+        }
+
         args.Add("--settings");
         args.Add(settingsPath);
         args.Add("--mcp-config");
@@ -517,9 +543,15 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// turns any future deployment shape this reasoning missed into a loud failure at dispatch time
     /// rather than a silent one at hook-invocation time.
     /// </remarks>
+    /// <summary>
+    /// Shared with the #532 resolve-time liveness probe below, so both readers name the identical
+    /// path rather than two independent interpolations of the same directory.
+    /// </summary>
+    private static string HookAssemblyPath => Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+
     private static string BuildSettingsJson()
     {
-        var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var hookAssemblyPath = HookAssemblyPath;
         if (!File.Exists(hookAssemblyPath))
         {
             throw new InvalidOperationException(
