@@ -157,7 +157,19 @@ false-positive match does not self-heal when the offending pattern is later narr
 such an item, delete its (room, artifact) entry from push_state_file, or touch the artifact so its
 hash changes.
 
-Usage: python pusher.py [--once] [--selftest]
+PROJECTION FILE READ PATH (#1557 PR-B1)
+-------------------------------------------
+FLEET_GLASS_PROJECTION_SOURCE=file switches main()'s loop to `json.load` the daemon's own
+BatonPaths.FleetProjectionFile (~/.baton/fleet/projection.json, `resolve_projection_file_path`)
+instead of spawning `dotnet mcp` -- default `derive`, so nothing changes for a deployed pusher
+until an operator flips it. A stale (> PROJECTION_STALE_AFTER_S old) or absent file falls back to
+`derive` for that one cycle and adds a `staleness` object to the pushed body (glass.html's chip);
+see `read_projection_file`'s own docstring. `python pusher.py --compare-projection` runs both paths
+once and diffs them field-by-field -- see `compare_projection`'s own docstring for the exclusions.
+This PR deletes nothing from the `derive` path itself; that is #1557 PR-B2, gated on this PR's
+identity diff passing on the live machine.
+
+Usage: python pusher.py [--once] [--selftest] [--compare-projection]
 Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
 """
 
@@ -189,6 +201,65 @@ DEFAULT_BUDGET_STATE_FILE = HERE / "write-budget.local.json"  # F4 (2026-09-02 r
                                                                 # separate from push-state.local.json:
                                                                 # spec/baton.md §6.
 DEFAULT_LOCK_FILE = HERE / "pusher.lock"
+
+# #1557 PR-B1: FLEET_GLASS_PROJECTION_SOURCE=file switches main()'s loop to read the daemon's own
+# BatonPaths.FleetProjectionFile instead of deriving via `dotnet mcp` -- default "derive" so nothing
+# changes for a deployed pusher until an operator flips it (plan §4/item 1). Any other value is
+# treated as "derive" (fail toward the always-worked path, not a crash on a typo).
+FLEET_GLASS_PROJECTION_SOURCE_ENV = "FLEET_GLASS_PROJECTION_SOURCE"
+
+# #1557 plan §5 (load-bearing: no scheduled task runs `baton daemon` today, so this fallback is the
+# steady-state path, not an edge case): the file is treated as stale -- and the cycle falls back to
+# `derive_snapshot_and_timelines` -- once it is older than 3 of the pusher's own coalescing windows
+# (900s), or when it is absent/unreadable/malformed.
+PROJECTION_STALE_AFTER_S = 900
+
+
+def resolve_projection_file_path() -> Path:
+    """Mirrors `BatonPaths.FleetProjectionFile` (src/Baton/Status/BatonPaths.cs) -- BATON_HOME when
+    set to a non-blank value, else `~/.baton`, then `fleet/projection.json`. This is the ONE place
+    that rule is duplicated in Python (#1557 PR-B1); every other reference goes through this
+    function rather than re-deriving the path."""
+    home_override = os.environ.get("BATON_HOME", "")
+    root = Path(home_override) if home_override.strip() else Path.home() / ".baton"
+    return root / "fleet" / "projection.json"
+
+
+def read_projection_file(path: Path, now_ts: float, max_age_s: float = PROJECTION_STALE_AFTER_S):
+    """Returns `(data, staleness)`. `data` is the parsed projection object (`{"derived_at": ...,
+    "rooms": [...]}`) when the file is present, well-formed, and fresh -- `None` otherwise, in which
+    case the caller falls back to `derive_snapshot_and_timelines` for this cycle (#1557 plan §5).
+    `staleness` is `None` when `data` is fresh (nothing to report -- glass.html's chip stays absent,
+    same optional-field convention as `pusher.writeBudgetExhaustedUntil`), else
+    `{daemon_derived_at, age_s, stale: True}` for the pushed body -- `daemon_derived_at`/`age_s` are
+    `None` when the file is absent/unreadable/malformed rather than merely old."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    daemon_derived_at = parsed.get("derived_at") if isinstance(parsed, dict) else None
+    if not isinstance(daemon_derived_at, str):
+        return None, {"daemon_derived_at": None, "age_s": None, "stale": True}
+
+    try:
+        derived_dt = datetime.fromisoformat(daemon_derived_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": None, "stale": True}
+
+    age_s = max(0.0, now_ts - derived_dt.timestamp())
+    if age_s > max_age_s:
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": round(age_s, 1), "stale": True}
+
+    if not isinstance(parsed.get("rooms"), list):
+        return None, {"daemon_derived_at": daemon_derived_at, "age_s": round(age_s, 1), "stale": True}
+
+    return parsed, None
 
 
 def log(msg: str) -> None:
@@ -1627,7 +1698,8 @@ SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 
 def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
                    terminal_total: int = 0, terminal_archive: list | None = None,
-                   conductor: dict | None = None, pusher: dict | None = None) -> dict:
+                   conductor: dict | None = None, pusher: dict | None = None,
+                   staleness: dict | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
     path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
 
@@ -1643,7 +1715,13 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
     `{"writeBudgetExhaustedUntil": iso}` on the one final snapshot sent when the daily KV write
     budget runs out (spec/baton.md §6, "Fleet Glass write budget"). Absent on every ordinary push,
     same optional-field convention as `conductor` above -- glass.html's freshness strip reads it
-    absent-safe."""
+    absent-safe.
+
+    `staleness` (#1557 PR-B1) is `read_projection_file`'s own return value, forwarded verbatim --
+    present only on a cycle where `FLEET_GLASS_PROJECTION_SOURCE=file` found the daemon's projection
+    file stale or absent and fell back to `derive_snapshot_and_timelines`. Absent on every ordinary
+    push (including every push while running in the default `derive` mode), same optional-field
+    convention as `pusher` above."""
     wrapped = {"rooms": room_list,
                "underhood": underhood,
                "timelines": timelines,
@@ -1654,6 +1732,8 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
         wrapped["conductor"] = conductor
     if pusher is not None:
         wrapped["pusher"] = pusher
+    if staleness is not None:
+        wrapped["staleness"] = staleness
     return wrapped
 
 
@@ -2584,12 +2664,161 @@ def mark_pushed(state: dict, items: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
+# Identity diff (#1557 PR-B1): runs BOTH the `derive` path and the `file` path once against the
+# SAME live rooms and diffs them field-by-field, so the switch above can be flipped on trust rather
+# than hope. `python pusher.py --compare-projection`.
+# ---------------------------------------------------------------------------------------------
+
+# Presence/shape-only fields (plan §4/item 3): the derive path never emitted these at all before
+# #1557, so there is nothing on that side to diff against -- excluded from the byte-identity
+# comparison below, checked for shape instead.
+_COMPARE_SHAPE_ONLY_KEYS = {
+    "processAlive": lambda v: isinstance(v, str) and v in ("alive", "dead", "unknown"),
+    "stdout_last_write_ago_sec": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+    "elapsed": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+}
+
+
+def _canonical(obj) -> str:
+    """Canonical JSON per the plan's "byte-for-byte after canonical JSON serialization (sorted
+    keys, same separators)" -- the ONE serialization both sides of every comparison below go
+    through, so a diff can never be an artifact of key order or whitespace."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_room_for_compare(room: dict) -> dict:
+    """Strips the fields excluded from strict equality (plan §4/item 3) before the canonical-JSON
+    comparison: the shape-only keys above, and `live.lastActivityAt` (see `_compare_last_activity`
+    -- diffed separately, on the unquantized instant, never on the bucketed string)."""
+    normalized = {k: v for k, v in room.items() if k not in _COMPARE_SHAPE_ONLY_KEYS}
+    live = normalized.get("live")
+    if isinstance(live, dict) and "lastActivityAt" in live:
+        live = dict(live)
+        del live["lastActivityAt"]
+        normalized["live"] = live
+    return normalized
+
+
+def _compare_last_activity(path: str, derive_room: dict, file_room: dict) -> list[str]:
+    """`rooms[].live.lastActivityAt` is excluded from strict equality (plan §4/item 3): both paths
+    bucket the SAME underlying `.stdout.log` mtime (`LAST_ACTIVITY_BUCKET_SECONDS`=90s) but sample
+    it at different instants -- the file can be up to `PROJECTION_STALE_AFTER_S` old, the derive
+    path reads it live -- so they can legitimately land in different buckets while both are
+    correct. Sanity-bounded instead: the two instants cannot honestly diverge by more than the
+    file's own staleness ceiling plus one bucket."""
+    d_live = derive_room.get("live")
+    f_live = file_room.get("live")
+    d_ts = d_live.get("lastActivityAt") if isinstance(d_live, dict) else None
+    f_ts = f_live.get("lastActivityAt") if isinstance(f_live, dict) else None
+    if d_ts is None or f_ts is None:
+        return []
+    try:
+        d_epoch = datetime.fromisoformat(d_ts.replace("Z", "+00:00")).timestamp()
+        f_epoch = datetime.fromisoformat(f_ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return [f"{path}: live.lastActivityAt not parseable: derive={d_ts!r} file={f_ts!r}"]
+    bound = PROJECTION_STALE_AFTER_S + LAST_ACTIVITY_BUCKET_SECONDS
+    if abs(d_epoch - f_epoch) > bound:
+        return [f"{path}: live.lastActivityAt diverges beyond the staleness bound ({bound}s): "
+                f"derive={d_ts} file={f_ts}"]
+    return []
+
+
+def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
+    """Every field-level difference between one room's derive-path and file-path projections,
+    after the plan §4/item 3 exclusions. Empty list means identical."""
+    diffs = _compare_last_activity(path, derive_room, file_room)
+
+    d_norm = _normalize_room_for_compare(derive_room)
+    f_norm = _normalize_room_for_compare(file_room)
+    if _canonical(d_norm) != _canonical(f_norm):
+        for key in sorted(set(d_norm) | set(f_norm)):
+            if key not in f_norm:
+                diffs.append(f"{path}: field {key!r} present in derive, absent in file")
+            elif key not in d_norm:
+                diffs.append(f"{path}: field {key!r} present in file, absent in derive")
+            elif _canonical(d_norm[key]) != _canonical(f_norm[key]):
+                diffs.append(f"{path}: field {key!r} differs: "
+                             f"derive={_canonical(d_norm[key])} file={_canonical(f_norm[key])}")
+
+    for key, shape_ok in _COMPARE_SHAPE_ONLY_KEYS.items():
+        if key in file_room and not shape_ok(file_room[key]):
+            diffs.append(f"{path}: field {key!r} present but shape-invalid: {file_room[key]!r}")
+
+    return diffs
+
+
+def compare_projection(dll: str, roots: list) -> int:
+    """Runs the `derive` path (spawn `dotnet mcp`, then `attach_live_telemetry`/
+    `attach_pruned_info` -- main()'s own pre-#1557 pipeline) and the `file` path (read
+    `BatonPaths.FleetProjectionFile`) ONCE each against the same live rooms, then diffs every room
+    both sides agree exists. Exit 0 on identical, 1 with the diff printed on mismatch."""
+    text, _timelines = derive_snapshot_and_timelines(dll, roots)
+    derive_parsed = json.loads(text)
+    derive_room_list = derive_parsed if isinstance(derive_parsed, list) else (derive_parsed.get("rooms") or [])
+    patterns = load_secret_patterns(DEFAULT_SECRET_PATTERNS_FILE)
+    attach_live_telemetry(derive_room_list, {}, patterns)
+    attach_pruned_info(derive_room_list, {})
+
+    projection_path = resolve_projection_file_path()
+    file_data, staleness = read_projection_file(projection_path, time.time(), max_age_s=float("inf"))
+    if file_data is None:
+        print(f"COMPARE: projection file unreadable/absent/malformed at {projection_path} -- "
+              f"{staleness}", file=sys.stderr)
+        return 1
+    file_room_list = file_data.get("rooms") or []
+
+    by_path_derive = {r["path"]: r for r in derive_room_list
+                       if isinstance(r, dict) and isinstance(r.get("path"), str)}
+    by_path_file = {r["path"]: r for r in file_room_list
+                     if isinstance(r, dict) and isinstance(r.get("path"), str)}
+
+    diffs = []
+    only_in_derive = sorted(set(by_path_derive) - set(by_path_file))
+    only_in_file = sorted(set(by_path_file) - set(by_path_derive))
+    if only_in_derive:
+        diffs.append(f"rooms only in derive path: {only_in_derive}")
+    if only_in_file:
+        diffs.append(f"rooms only in file path: {only_in_file}")
+
+    for path in sorted(set(by_path_derive) & set(by_path_file)):
+        diffs.extend(_diff_room(path, by_path_derive[path], by_path_file[path]))
+
+    # #1557 plan item 4: an installed daemon build that predates #1786 (PR-A2) never wrote
+    # `live.stdoutTail` at all -- that reds this diff on `stdoutTail` for every Running room, which
+    # is a version gap, not a bug. Called out separately; the diff below still reports it (and
+    # every other field) rather than swallowing it.
+    stdout_tail_gap = any("'stdoutTail'" in d and "present in derive, absent in file" in d for d in diffs)
+    if stdout_tail_gap:
+        print("NOTE: rooms[].live.stdoutTail is present in the derive path but absent from the "
+              "file for at least one Running room -- this looks like 'installed daemon predates "
+              "#1786 (PR-A2)', not a genuine bug. Re-run after redeploying the daemon build.",
+              file=sys.stderr)
+
+    if diffs:
+        print("COMPARE: MISMATCH", file=sys.stderr)
+        for d in diffs:
+            print(f"  !! {d}", file=sys.stderr)
+        return 1
+
+    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, "
+          f"{len(only_in_derive) + len(only_in_file)} room-set diff(s))")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------------------------
 
 def main() -> None:
     cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
     once = "--once" in sys.argv
+    # #1557 PR-B1: unrecognized values fail toward "derive" (the always-worked path) rather than
+    # raising on a typo'd env var.
+    projection_source = os.environ.get(FLEET_GLASS_PROJECTION_SOURCE_ENV, "derive")
+    if projection_source not in ("file", "derive"):
+        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}={projection_source!r} not recognized -- using 'derive'")
+        projection_source = "derive"
     interval = cfg.get("interval_seconds", 25)
     min_push_interval_s = cfg.get("min_push_interval_s", DEFAULT_MIN_PUSH_INTERVAL_S)
     lock_path = Path(cfg["lock_file"]).expanduser() if cfg.get("lock_file") else DEFAULT_LOCK_FILE
@@ -2636,9 +2865,30 @@ def main() -> None:
     try:
         while True:
             try:
-                body, timelines = derive_snapshot_and_timelines(
-                    cfg["dll"], cfg.get("roots", []), terminal_timeline_cache)
-                last_derived_at = datetime.now(timezone.utc).isoformat()
+                # #1557 PR-B1: `file` mode reads the daemon's own projection file instead of
+                # spawning `dotnet mcp` -- `used_file_this_cycle` is False whenever the file was
+                # stale/absent (or the switch is off), in which case this cycle falls back to the
+                # original derive path exactly as before. `staleness` rides into `wrapped` below
+                # ONLY on a fallback cycle -- plan §5's absent-safe convention, mirroring
+                # `pusher.writeBudgetExhaustedUntil`.
+                staleness = None
+                used_file_this_cycle = False
+                if projection_source == "file":
+                    projection_data, staleness = read_projection_file(
+                        resolve_projection_file_path(), time.time())
+                    if projection_data is not None:
+                        body = json.dumps(projection_data.get("rooms", []))
+                        timelines = {}
+                        last_derived_at = projection_data.get("derived_at")
+                        used_file_this_cycle = True
+                    else:
+                        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}=file: projection file stale or "
+                            f"absent (daemon_derived_at={staleness.get('daemon_derived_at')}, "
+                            f"age_s={staleness.get('age_s')}) -- falling back to derive this cycle")
+                if not used_file_this_cycle:
+                    body, timelines = derive_snapshot_and_timelines(
+                        cfg["dll"], cfg.get("roots", []), terminal_timeline_cache)
+                    last_derived_at = datetime.now(timezone.utc).isoformat()
                 body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
                 rooms = json.loads(body)
                 raw_room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
@@ -2660,20 +2910,26 @@ def main() -> None:
                         "path": c_path,
                         "artifacts_path": str(Path(c_path) / "artifacts" / "conductor"),
                     }
-                # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
-                # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays no
-                # part in the staleness decision at all.
-                live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
-                # #1710: same fail-closed patterns load the deliverables path below uses -- a missing/
-                # unreadable patterns file withholds every stdout-tail line rather than skipping the
-                # gate (load_secret_patterns' own None sentinel).
-                stdout_tail_patterns = load_secret_patterns(patterns_path)
-                attach_live_telemetry(room_list, live_telemetry_cache, stdout_tail_patterns)
-                # #1155: same post-drop_stale_rooms placement as attach_live_telemetry above, for
-                # the same reason -- prunedAt is a real mtime, so it never enters the staleness scan.
-                # #1756 review F2: prune the cache first, same ordering as live_telemetry_cache above.
-                pruned_info_cache = prune_pruned_info_cache(pruned_info_cache, room_list)
-                attach_pruned_info(room_list, pruned_info_cache)
+                if not used_file_this_cycle:
+                    # #1613 item 1: live telemetry for Running rooms, computed AFTER stale-filtering
+                    # (never touches drop_stale_rooms' own newest_timestamp scan above) so it plays
+                    # no part in the staleness decision at all.
+                    live_telemetry_cache = prune_live_telemetry_cache(live_telemetry_cache, room_list)
+                    # #1710: same fail-closed patterns load the deliverables path below uses -- a
+                    # missing/unreadable patterns file withholds every stdout-tail line rather than
+                    # skipping the gate (load_secret_patterns' own None sentinel).
+                    stdout_tail_patterns = load_secret_patterns(patterns_path)
+                    attach_live_telemetry(room_list, live_telemetry_cache, stdout_tail_patterns)
+                    # #1155: same post-drop_stale_rooms placement as attach_live_telemetry above, for
+                    # the same reason -- prunedAt is a real mtime, so it never enters the staleness
+                    # scan. #1756 review F2: prune the cache first, same ordering as
+                    # live_telemetry_cache above.
+                    pruned_info_cache = prune_pruned_info_cache(pruned_info_cache, room_list)
+                    attach_pruned_info(room_list, pruned_info_cache)
+                # else: #1557 PR-B1 -- the projection file already carries `live`/`pruned` per room
+                # (FleetProjectionWriter, #1786/#1789), computed once by the daemon; recomputing them
+                # here would be the exact per-cycle duplicate work this switch exists to remove. The
+                # in-memory caches above simply idle while `file` mode is in effect.
                 # Timelines were fetched pre-stale-filter, keyed by path; only carry forward the ones
                 # for rooms that survived drop_stale_rooms above, so a hidden room's timeline is hidden
                 # with it rather than riding along as orphaned payload.
@@ -2696,7 +2952,8 @@ def main() -> None:
                     stale_hidden_count,
                     terminal_total=terminal_total,
                     terminal_archive=terminal_archive,
-                    conductor=conductor_info)
+                    conductor=conductor_info,
+                    staleness=staleness)
                 # record-once-ok: #1690 spec/baton.md
                 # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
                 # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
@@ -2716,7 +2973,8 @@ def main() -> None:
                             {p: t for p, t in timelines.items() if p in hot_paths},
                             stale_hidden_count, terminal_total=terminal_total,
                             terminal_archive=terminal_archive, conductor=conductor_info,
-                            pusher={"writeBudgetExhaustedUntil": exhausted_until})
+                            pusher={"writeBudgetExhaustedUntil": exhausted_until},
+                            staleness=staleness)
                         post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
                         # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
                         # response after a committed KV put is indistinguishable, from the client, from
@@ -4897,6 +5155,56 @@ def _selftest() -> int:
             check(f"shared gate [{gate_case['name']}]: billedIsFloor matches the engine",
                   counts.get("billedIsFloor", False) == gate_case["expectedBilledIsFloor"])
 
+    # -- #1557 PR-B1: FLEET_GLASS_PROJECTION_SOURCE=file's read path + the compare's own exclusion
+    # logic. A synthetic projection file (never a real daemon/dotnet spawn -- see
+    # `compare_projection`'s own live-machine run for that half) exercises
+    # `read_projection_file`'s fresh/stale/absent arms; synthetic rooms exercise `_diff_room`'s
+    # identical-vs-planted-difference arms. --
+    with tempfile.TemporaryDirectory() as proj_tmp:
+        proj_tmp = Path(proj_tmp)
+        now = time.time()
+        fresh_projection = proj_tmp / "fresh-projection.json"
+        fresh_projection.write_text(json.dumps({
+            "derived_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "rooms": [{"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Succeeded"}],
+        }), encoding="utf-8")
+        data, staleness = read_projection_file(fresh_projection, now)
+        check("read_projection_file: a fresh file returns data with no staleness object",
+              data is not None and staleness is None and data["rooms"][0]["name"] == "room-a")
+
+        stale_derived_at = datetime.fromtimestamp(
+            now - PROJECTION_STALE_AFTER_S - 1, tz=timezone.utc).isoformat()
+        stale_projection = proj_tmp / "stale-projection.json"
+        stale_projection.write_text(json.dumps({"derived_at": stale_derived_at, "rooms": []}), encoding="utf-8")
+        data, staleness = read_projection_file(stale_projection, now)
+        check("read_projection_file: a file older than PROJECTION_STALE_AFTER_S falls back to derive (data is None)",
+              data is None)
+        check("read_projection_file: the stale fallback's staleness carries the daemon's own derived_at",
+              staleness is not None and staleness["stale"] is True
+              and staleness["daemon_derived_at"] == stale_derived_at)
+
+        data, staleness = read_projection_file(proj_tmp / "does-not-exist.json", now)
+        check("read_projection_file: an absent file falls back to derive with daemon_derived_at=None",
+              data is None and staleness is not None and staleness["stale"] is True
+              and staleness["daemon_derived_at"] is None)
+
+    identical_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                         "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:00:00+00:00"}}
+    identical_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                       "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
+    check("compare identity diff: identical rooms diff clean (lastActivityAt's own bucket excluded)",
+          _diff_room("C:\\rooms\\room-a", identical_derive, identical_file) == [])
+
+    planted_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
+                     "live": {"toolCalls": 4, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
+    planted_diff = _diff_room("C:\\rooms\\room-a", identical_derive, planted_file)
+    check("compare identity diff: a planted field difference is reported (exit 1 -- main() maps this to sys.exit)",
+          any("toolCalls" in d for d in planted_diff))
+
+    shape_invalid_file = {"processAlive": "not-a-real-status"}
+    check("compare identity diff: shape-only fields (never diffed against derive) are still shape-checked",
+          any("processAlive" in d for d in _diff_room("C:\\rooms\\room-a", {}, shape_invalid_file)))
+
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
         for f in failures:
@@ -4909,4 +5217,7 @@ def _selftest() -> int:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    if "--compare-projection" in sys.argv:
+        _cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
+        sys.exit(compare_projection(_cfg["dll"], _cfg.get("roots", [])))
     main()

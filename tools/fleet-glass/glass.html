@@ -40,6 +40,12 @@
   `pusher.writeBudgetExhaustedUntil` (#1690, absent-safe the same way) is the one final snapshot the
   pusher sends when its daily KV write-budget ledger runs out, and takes priority over every other
   banner below -- spec/baton.md §6, "Fleet Glass write budget".
+
+  `staleness` (#1557 PR-B1, same absent-safe convention) rides in only on a cycle where the pusher
+  is running with `FLEET_GLASS_PROJECTION_SOURCE=file` and found the daemon's own projection file
+  stale or absent, falling back to its own derivation for that cycle -- checked right after the
+  write-budget banner above (both are the pusher explaining a self-diagnosed source problem, not a
+  KV/heartbeat symptom).
 -->
 <title>Fleet Glass</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1866,8 +1872,20 @@ window.addEventListener("hashchange", applyRoute);
         // a dead pusher or a stuck derivation once pushed_at/derived_at start aging past it.
         const budgetExhaustedUntil = snap.pusher && typeof snap.pusher.writeBudgetExhaustedUntil === "string"
           ? snap.pusher.writeBudgetExhaustedUntil : null;
+        // #1557 PR-B1: absent-safe the same way as writeBudgetExhaustedUntil above -- a pusher not
+        // yet running FLEET_GLASS_PROJECTION_SOURCE=file, or one whose read of the daemon's
+        // projection file found it fresh, never sends `staleness` at all. Present only on a cycle
+        // that fell back to `derive_snapshot_and_timelines` because the file was stale or absent
+        // (spec/baton.md §6). Checked right after the write-budget banner, same priority rung: both
+        // are the pusher explaining a self-diagnosed source problem, not a downstream KV/heartbeat
+        // symptom the banners below would otherwise misdiagnose.
+        const staleness = snap.staleness && typeof snap.staleness === "object" ? snap.staleness : null;
         if(budgetExhaustedUntil){
           banner(`<b>Write budget exhausted for today.</b> The pusher hit its daily KV write cap and stopped snapshot pushes until ${esc(budgetExhaustedUntil)} — deliverables may still be landing. Data below is from the last push before the stop.`);
+        } else if(staleness && staleness.stale){
+          const daemonDerivedAt = typeof staleness.daemon_derived_at === "string" ? staleness.daemon_derived_at : null;
+          const ageText = typeof staleness.age_s === "number" ? `${Math.round(staleness.age_s)}s old` : "absent";
+          banner(`<b>Fleet projection file is stale.</b> The daemon's projection file (${daemonDerivedAt ? `last written ${esc(ageText)}` : "never written, or unreadable"}) fell back to the pusher's own derivation this cycle — data below is live, but check that \`baton daemon\` is running.`);
         } else if(hbMs == null){
           banner("<b>No heartbeat recorded yet.</b> heartbeat_at is unset — redeploy worker.js and the pusher for #1486, or the mailbox hasn't received one yet.");
         } else if(!isFinite(hbMs) || hbMs > HEARTBEAT_DEAD_MS){
