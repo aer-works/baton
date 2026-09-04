@@ -88,12 +88,15 @@ and exposes visible models plus their model-specific effort sets through app-ser
 `turn.completed` carries per-turn input, cached-input, output, and reasoning-output tokens, but no
 API-equivalent dollar cost was observed. The CLI documents `read-only` and `workspace-write`
 sandboxes, explicit network configuration, extra writable roots, and `approval_policy="never"`.
-Baton refuses filesystem-read denial, read-without-command, command-pattern, and denied-option grants
-because those role ceilings have not been shown equivalent to Codex's per-run controls. Codex 0.153's
-`execpolicy` is an ordered-prefix language; it cannot express the option-token-anywhere denies carried
-by `implement` and `janitor`. No current built-in role therefore has an exactly translatable grant, so
-all fail closed instead of silently widening or narrowing it. See the dated probe linked in the history
-row for the exact command grammar, captured event shapes, host-policy override, and open measurements.
+Raw/manual dispatch refuses filesystem-read denial, read-without-command, command-pattern, and
+denied-option grants because those ceilings are not equivalent to Codex's per-run controls. Codex
+0.153's `execpolicy` is an ordered-prefix language and cannot express Baton's option-token-anywhere
+denies. Structured built-in roles instead use an app-server broker whose only model-facing dynamic
+tools are generated from Baton's grant and enforced by Baton's path and command matchers. A live
+read-only/outbox-only role succeeded with native shell/file/network/app/browser/multi-agent surfaces
+disabled; workspace-write remains fixture-tested rather than live-measured. See the dated probe linked
+in the history row for the exact command grammar, event shapes, cache-miss resume evidence, and open
+measurements.
 
 ## Prompt delivery splits the vendors (#932)
 

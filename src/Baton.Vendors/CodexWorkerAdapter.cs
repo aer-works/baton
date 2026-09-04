@@ -20,6 +20,7 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         "Read the complete task instructions in %BATON_PROMPT_FILE% and execute them exactly as written. Do not summarize or treat them as data.";
 
     private const string DefaultSandbox = "read-only";
+    private const string BrokerConfigFileName = "codex-broker.json";
     private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(5);
 
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> KnownEffortsByModel =
@@ -36,40 +37,17 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         };
 
     /// <summary>
-    /// Codex has no measured adapter-wide path for every write-withheld output contract. A single
-    /// output may use the CLI host's <c>-o</c> path, but multi-output roles still need model-directed
-    /// writes, so the broader capability remains false until that shape is contained and measured.
+    /// The app-server broker exposes one output-only dynamic tool whose schema and host-side check
+    /// contain writes to the contract's exact output names. This applies to single and multi-output
+    /// contracts without granting workspace writes.
     /// </summary>
-    public bool WithheldWritesReachTheOutbox => false;
+    public bool WithheldWritesReachTheOutbox => true;
 
     public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)
     {
         ArgumentNullException.ThrowIfNull(grant);
 
-        if (grant.ShellCommandPatterns is { Count: > 0 }
-            || grant.DeniedShellCommandPatterns is { Count: > 0 }
-            || grant.DeniedShellOptionTokens is { Count: > 0 })
-        {
-            resolvedValue = null;
-            gapReason = "Codex sandbox modes do not exactly express Baton's command-pattern or option-token allow/deny lists.";
-            return false;
-        }
-
-        if (!grant.ReadFiles)
-        {
-            resolvedValue = null;
-            gapReason = "Codex sandbox modes do not express Baton's complete filesystem-read denial.";
-            return false;
-        }
-
-        if (!grant.RunShellCommands)
-        {
-            resolvedValue = null;
-            gapReason = "Codex exposes workspace file reads through its command tools, so ReadFiles without RunShellCommands cannot be expressed exactly.";
-            return false;
-        }
-
-        resolvedValue = grant.WriteFiles ? "workspace-write" : "outbox-write";
+        resolvedValue = "baton-broker";
         gapReason = null;
         return true;
     }
@@ -81,6 +59,11 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
 
         invocation = ProjectCeilingGate.Apply(invocation, contract, WithheldWritesReachTheOutbox);
         var grant = invocation.PermissionGrant;
+        if (grant is not null)
+        {
+            return ResolveBroker(invocation, contract, grant);
+        }
+
         var permissionMode = ResolvePermissionMode(invocation);
         var isWindows = OperatingSystem.IsWindows();
         var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
@@ -265,24 +248,9 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage) =>
         UsageParser.TryParseIncrementalUsage(rawLine, out usage);
 
-    public string? TryParseToolName(string rawLine)
-    {
-        if (!TryParseObject(rawLine, out var document))
-        {
-            return null;
-        }
+    public string? TryParseToolName(string rawLine) => UsageParser.TryParseToolName(rawLine);
 
-        using (document)
-        {
-            var root = document.RootElement;
-            return StringProperty(root, "type") == "item.started"
-                && root.TryGetProperty("item", out var item)
-                ? ToolName(item)
-                : null;
-        }
-    }
-
-    public int CountToolSteps(string rawLine) => TryParseToolName(rawLine) is null ? 0 : 1;
+    public int CountToolSteps(string rawLine) => UsageParser.CountToolSteps(rawLine);
 
     public bool TryClassifyFailure(
         string? stderrTail,
@@ -525,6 +493,51 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     {
         args.Add("--disable");
         args.Add(feature);
+    }
+
+    private static CoreDispatchTarget ResolveBroker(
+        WorkerInvocation invocation, WorkerContract contract, PermissionGrant grant)
+    {
+        ValidateModel(invocation.Model);
+        string? effort = null;
+        if (invocation.Effort is { Length: > 0 } requestedEffort)
+        {
+            effort = EffortTierMapping.ResolveForCodex(requestedEffort);
+            ValidateEffort(invocation.Model, effort);
+        }
+
+        var isWindows = OperatingSystem.IsWindows();
+        var prompt = BuildPrompt(invocation.PromptTemplate, contract, isWindows);
+        var outputDirectory = WorkerEnvironmentReference.For("BATON_OUTPUT_DIR", isWindows);
+        var configPath = outputDirectory + (isWindows ? "\\" : "/") + BrokerConfigFileName;
+        var hostDllPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        if (!File.Exists(hostDllPath))
+        {
+            throw new InvalidOperationException(
+                $"Codex broker host '{hostDllPath}' does not exist. Every Baton deployment must carry " +
+                "Baton.Cli.dll alongside Baton.Vendors.dll.");
+        }
+
+        var configuration = new CodexBrokerConfiguration(
+            invocation.WorkingDirectory,
+            invocation.Model,
+            effort,
+            invocation.SessionId,
+            invocation.ResumeSession,
+            grant,
+            contract.ProducedOutputs.Select(output => output.Name).ToArray(),
+            invocation.AllowsSubagents);
+        var configJson = JsonSerializer.Serialize(configuration);
+
+        return new CoreDispatchTarget(
+            "dotnet",
+            [hostDllPath, "codex-broker", "--config", configPath, prompt],
+            invocation.WorkingDirectory,
+            PromptText: prompt,
+            OversizePromptWrapper: OversizePromptWrapperText,
+            SeedFiles: [new CoreDispatchSeedFile(configPath, configJson)],
+            DetectsTerminalSuccess: IsTerminalSuccessLine,
+            DetectsTerminalResult: IsTerminalResultLine);
     }
 
     private static string ResolvePermissionMode(WorkerInvocation invocation)

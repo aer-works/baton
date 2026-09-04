@@ -897,13 +897,14 @@ mid-flight (the 2026-08-31 comment on #1373); that stays open on the issue.
 **`baton dispatch <role> --continue <room-dir>` rehires a veteran into a NEW room for a follow-on
 brief (#1381, 2026-09-01 design ratification), the general manual counterpart to #1373's automatic
 retry-with-continuation above — same underlying mechanism (`WorkerInvocation.SessionId`/
-`ResumeSession`, claude's `--resume`, M24), different trigger.** The named room's own single-worker
+`ResumeSession`, claude's `--resume` or Codex's `thread/resume`, M24), different trigger.** The named room's own single-worker
 `bindings.json` entry is the one record of a vendor session id (`WorkerBindingConfigEntry.SessionId`
 — the same field `baton resume`'s same-room continuation already reads, #1359 F6); `--continue`
 carries it forward onto the new room's binding (`SessionId` + `ResumeSession: true`) rather than
-minting a second record. **Q1 scope: claude only** — agy rehire is gated on its own headless
-conversation-id-resume measurement, not yet run; refused (both the veteran's recorded adapter and
-this dispatch's own resolved one must be `claude`) rather than silently falling back to a cold start.
+minting a second record. **Supported adapters are claude and codex, same-adapter only** — Codex's
+per-turn resume was measured by the 2026-09-04 probe; agy rehire is gated on its own headless
+conversation-id-resume measurement, not yet run. An unsupported adapter or adapter change is refused
+rather than silently falling back to a cold start.
 **Fails the dispatch loudly** (Q4) on every check performable before the vendor spawns: the named room
 missing, its bindings.json unreadable or naming more than one worker, an adapter mismatch, no
 `SessionId` recorded (an adapter that cannot recover an id, or a worker stream that reported none), or the veteran room
@@ -921,13 +922,13 @@ client-side `--session-id` at bind time would bake it into that frozen argv — 
 `--session-id` reuse is existence-guarded (sequential reuse refused, same sentinel as above), so a
 retry after a timeout would fail outright rather than merely restart cold, a live regression on the
 default dispatch path for the sake of a `--continue` chain's own root. `--continue` sidesteps this
-entirely by only ever ferrying a session id FORWARD from an explicit prior dispatch, using `--resume`
-(not existence-guarded the identical way) — so a chain's second, third, … link works exactly like the
-first, and the ordinary no-`--continue` path is untouched. While a Claude execution's stdout flows,
-Baton parses its `stream-json` init event through the adapter and records the reported id on the
+entirely by only ever ferrying a session id FORWARD from an explicit prior dispatch, using the
+adapter's resume operation (not existence-guarded the identical way) — so a chain's second, third, … link works exactly like the
+first, and the ordinary no-`--continue` path is untouched. While a supported execution's stdout flows,
+Baton parses Claude's `stream-json` init event or Codex's `thread.started` event through the adapter and records the reported id on the
 room's own binding after the run settles (#1841); it records nothing when no id was reported. A retry
 keeps the resolved argv unchanged and the newest attempt's reported id wins, so any terminal
-Claude room with a reported id can seed a later `--continue` chain.
+Claude or Codex room with a reported id can seed a later `--continue` chain.
 <br><br>
 Provenance is journaled on the NEW room's own `.baton/room.json` marker — the identical
 `ParentRoomDirectoryPath`/`ParentExecutionId` fields #1441's redispatch lineage already writes (both

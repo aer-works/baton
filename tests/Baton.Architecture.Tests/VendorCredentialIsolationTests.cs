@@ -51,6 +51,8 @@ public class VendorCredentialIsolationTests
         "antigravity-oauth-token",
         ".credentials.json",
         "oauth_creds.json",
+        // OpenAI Codex
+        "auth.json",
     ];
 
     // OS credential-store entry points. Reaching a vendor's keyring entry is the single act that
@@ -122,6 +124,7 @@ public class VendorCredentialIsolationTests
         Assert.True(sources.Count > 50, $"Expected the whole of src/ to be scanned, saw {sources.Count} files.");
         Assert.Contains(sources, file => file.Path.EndsWith("ClaudeWorkerAdapter.cs", StringComparison.Ordinal));
         Assert.Contains(sources, file => file.Path.EndsWith("AgyWorkerAdapter.cs", StringComparison.Ordinal));
+        Assert.Contains(sources, file => file.Path.EndsWith("CodexWorkerAdapter.cs", StringComparison.Ordinal));
 
         // BATON_HOME is a real quoted literal in BatonPaths.cs. If the reader is returning empty strings
         // rather than file contents, this fails while the credential scans above would not.

@@ -7,6 +7,9 @@ The final reusable-probe refresh confirmed ChatGPT authentication, spent two del
 Luna/low subscription turns (initial and resume), and queried model/rate-limit app-server methods. API
 credentials were scrubbed before launch and no API-key-billed request was permitted.
 
+A later Baton role-mediation acceptance used Luna/low again. It is recorded separately below because
+it exercised Baton's app-server broker and grant-generated dynamic tools rather than bare `codex exec`.
+
 ## Evidence boundary
 
 The evidence has three distinct sources:
@@ -28,6 +31,25 @@ are absent.
 subscription was therefore the authority used by `codex exec`; Baton does not need, receive, or store a
 vendor credential. `--ignore-user-config` skipped user configuration during the probes without removing
 that authentication.
+
+Structured-grant dispatches use a persistent, otherwise-empty Codex home under
+`~/.baton/codex-home`. Baton deliberately does **not** copy the operator's `~/.codex/auth.json` there.
+The operator establishes subscription authentication once, using Codex's own login process:
+
+```powershell
+$batonRoot = if ([string]::IsNullOrWhiteSpace($env:BATON_HOME)) {
+  Join-Path $env:USERPROFILE ".baton"
+} else {
+  $env:BATON_HOME
+}
+$env:CODEX_HOME = Join-Path $batonRoot "codex-home"
+codex login --device-auth
+```
+
+Codex then owns and refreshes the credential in that root. This preserves Architecture Rule 4 while
+preventing the broker from inheriting the operator's config, `AGENTS.md`, skills, plugins, or MCP
+servers. Raw/manual Codex scopes continue to use `codex exec --ignore-user-config` and the operator's
+normal first-party CLI authentication.
 
 This host has two installations. In the operator's PowerShell, `Get-Command codex` resolves the npm
 `codex.ps1` shim for CLI `0.153.2`; later on PATH, the desktop app exposes a native `codex.exe` for
@@ -103,6 +125,21 @@ avoid counting cached input twice, its accounting projection should separate unc
 `max(input_tokens - cached_input_tokens, 0)` and cache reads as `cached_input_tokens`; this is Baton's
 interpretation of the fields, not a claim about subscription debiting.
 
+The later broker acceptance found an operationally important cache boundary while preserving those
+per-turn semantics:
+
+| Brokered Baton turn | Input | Cached input | Uncached input | Output | Dynamic tool steps |
+|---|---:|---:|---:|---:|---:|
+| Initial read-only role | 23,875 | 23,296 | 579 | 11 | 3 |
+| Same thread resumed by a new broker process | 26,379 | 0 | 26,379 | 11 | 1 |
+
+Both turns emitted the same persisted thread id and each emitted exactly one `turn.completed` usage
+object. The second value is therefore not the first and second turns added together. It is a current
+turn whose context was fully uncached after the app-server process boundary. The requested output was
+written before Baton's deliberately low 10,000-token acceptance ceiling arrested the resumed
+execution. This distinguishes a real expensive replay from accounting double-counting and means a
+continuation budget cannot assume the preceding process's prompt cache will survive.
+
 ## Model and effort discovery
 
 The app-server protocol is newline-delimited JSON-RPC without a `jsonrpc` member. A client first sends
@@ -147,6 +184,28 @@ This is evidence of a **managed-host override on this desktop host**, not eviden
 requested the flag. Its smoke test must verify an actual file mutation in the intended writable root,
 and a denial must remain visible in the structured result.
 
+## Baton role mediation through app-server
+
+The structured role path no longer relies on Codex's native filesystem, shell, network, browser, app,
+or multi-agent tools. Baton starts app-server in the isolated Codex home and declares only dynamic
+tools derived from the role's `PermissionGrant`: bounded text reads/search/listing, declared-output
+writes, permitted workspace writes, and commands accepted by Baton's canonical command matcher and
+standing option-token deny. Paths are rooted and traversal/reparse escapes are rejected.
+
+App-server's Code Mode host must remain enabled on CLI 0.153.x: a live control with it disabled reached
+the model but logged `code-mode host is disabled` twice and produced no declared output. With Code Mode
+enabled, its nested tool inventory contained only Baton's grant-generated dynamic tools. Native shell,
+unified execution, apps, browser/computer use, image generation, and both multi-agent feature families
+remained disabled. On the successful read-only run Codex invoked only `baton_list_files`,
+`baton_read_text`, and `baton_write_output`; no workspace-write tool was declared or called. It wrote
+the exact `findings.md` contract and the turn settled successfully.
+
+The first protocol attempt also exposed a transport defect before any model turn: a UTF-8 byte-order
+mark on app-server stdin caused `expected value at line 1 column 1`. The broker now uses UTF-8 without
+a BOM, pinned by a protocol test. A sanitized success stream and the cache-miss resume stream are
+fixtures so usage and tool-step monitoring replay the same event shapes without another subscription
+turn.
+
 ## Terminal and error handling
 
 For `codex exec`, `turn.completed` is the observed successful terminal event. `turn.failed` and `error`
@@ -165,14 +224,12 @@ The included error fixture is schema-derived rather than a live quota-wall captu
 - The reusable probe observed three app-server rate-limit windows with used percentages and reset
   instants. It did not establish human-facing names or how each window maps to ChatGPT product limits,
   so they must not be relabelled or presented as an inferred token allowance.
-- `workspace-write`, extra writable roots, network enablement, and an outbox-only write arrangement have
-  not succeeded under this host's managed policy. Their documented switches are not proof that a Baton
-  grant was enforced.
-- Codex exposes workspace reads through command execution on the measured surface. Baton cannot
-  currently express either complete filesystem-read denial or a read-files-without-command grant.
-  Codex 0.153's `execpolicy` supports ordered command prefixes, not Baton's option-token-anywhere
-  deny semantics, so the denies carried by `implement` and `janitor` are also inexact. Consequently
-  every current built-in role fails closed; there is no claimed compatibility set yet.
+- App-server dynamic tools have enforced a read-only/outbox-only Baton grant on this host. A live
+  workspace-write role, extra writable roots, network access, and subprocess cancellation during an
+  active tool call remain unmeasured.
+- Raw `codex exec` still cannot exactly express Baton's read-without-command or option-token-anywhere
+  ceilings. Structured built-in roles therefore use Baton's app-server broker; raw/manual scopes fail
+  closed whenever their grant cannot be translated exactly.
 - The effect of every feature disable switch on spawned tools and subagents has not been exhaustively
   measured. Effort labels are therefore validated only as model-supported reasoning settings; delegation
   remains controlled independently by the multi-agent feature switches.
@@ -192,3 +249,5 @@ The included error fixture is schema-derived rather than a live quota-wall captu
 - `codex-exec-error.jsonl` — documented top-level error event, represented synthetically.
 - `codex-app-server-model-list.jsonl` — sanitized model/effort discovery response.
 - `codex-app-server-errors.jsonl` — schema-derived structured limit notifications.
+- `codex-app-server-broker-readonly-success.jsonl` — live-shaped grant-tool success with exact per-turn usage.
+- `codex-app-server-broker-resume-cache-miss.jsonl` — same thread resumed across a broker process with zero cached input.

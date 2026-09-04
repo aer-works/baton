@@ -48,9 +48,10 @@ public class WorkerAdapterRegistryTests
 
     /// <summary>
     /// Everything about a dispatch a grant could reach. Both channels are compared because a grant
-    /// can arrive on either: Claude's denials ride <c>--disallowedTools</c> in
+    /// can arrive on any of them: Claude's denials ride <c>--disallowedTools</c> in
     /// <see cref="CoreDispatchTarget.Args"/>, agy's denied-tool list rides
-    /// <see cref="CoreDispatchTarget.Environment"/>.
+    /// <see cref="CoreDispatchTarget.Environment"/>, and Codex's broker grant rides a seeded
+    /// launch-config file.
     /// <para>
     /// Measured, because the obvious claim is wrong: today the <see cref="CoreDispatchTarget.Args"/>
     /// arm alone discriminates for <em>both</em> adapters, since agy's permission mode also lands
@@ -64,6 +65,7 @@ public class WorkerAdapterRegistryTests
         target.Program,
         .. target.Args,
         .. (target.Environment ?? []).Select(pair => $"{pair.Name}={pair.Value}"),
+        .. (target.SeedFiles ?? []).Select(file => $"{file.PathTemplate}={file.Content}"),
     ];
 
     private static bool DispatchDependsOnTheGrant(IWorkerAdapter adapter)

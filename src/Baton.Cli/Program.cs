@@ -71,6 +71,14 @@ if (args.Length >= 1 && args[0] == "agy-hook-check")
         agyDeniedShellOptionTokens, agyVerdictLedgerPath);
 }
 
+// #1853: hidden bidirectional app-server broker. Like hook-check above, this is a vendor subprocess
+// endpoint, not an operator workflow verb; CodexWorkerAdapter invokes it with a seeded, non-secret
+// launch config after CoreDispatcher has resolved the execution's environment placeholders.
+if (args.Length >= 1 && args[0] == "codex-broker")
+{
+    return await CodexBrokerCommand.RunAsync(args[1..]).ConfigureAwait(false);
+}
+
 // #1458: folded from the standalone Baton.Mcp.Host executable -- a stdio MCP server (vendor CLIs
 // spawn it per turn via --mcp-config) and a client-facing verb alike, so it is intercepted here
 // rather than joining the CommandResult/FlowStateReporter shape every mutating command below shares.

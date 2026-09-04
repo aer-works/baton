@@ -47,7 +47,6 @@ namespace Baton.Vendors.Tests;
 public sealed class TemplateDispatchabilityTests : IDisposable
 {
     private static readonly string[] RealAdapters = ["claude", "agy"];
-    private static readonly HashSet<string> CodexSupportedRoles = [];
 
     private readonly string _sourceRepo =
         Path.Combine(Path.GetTempPath(), "baton-tdt-repo-" + Guid.NewGuid().ToString("N"));
@@ -112,23 +111,9 @@ public sealed class TemplateDispatchabilityTests : IDisposable
     }
 
     [Fact]
-    public void Codex_catalog_support_is_explicit_and_every_other_role_fails_closed()
+    public void Every_catalog_role_dispatches_through_the_codex_policy_broker()
     {
         var roles = WorkerRoleCatalog.All;
-        // Codex 0.153's policy language is prefix-only. It cannot enforce the option-token denies
-        // carried by implement/janitor, while the remaining roles require either a shell allowlist
-        // or a read-without-shell grant. Until a measured enforcement path exists, no shipped role
-        // may silently receive a wider or narrower grant through this adapter.
-        Assert.Equal(CodexSupportedRoles.Order(), roles.Where(role =>
-            role.Grant.ReadFiles
-            && role.Grant.WriteFiles
-            && role.Grant.RunShellCommands
-            && role.Grant.NetworkAccess
-            && (role.Grant.ShellCommandPatterns is null || role.Grant.ShellCommandPatterns.Count == 0)
-            && (role.Grant.DeniedShellCommandPatterns is null || role.Grant.DeniedShellCommandPatterns.Count == 0)
-            && (role.Grant.DeniedShellOptionTokens is null || role.Grant.DeniedShellOptionTokens.Count == 0))
-            .Select(role => role.Id)
-            .Order());
 
         foreach (var role in roles)
         {
@@ -139,16 +124,10 @@ public sealed class TemplateDispatchabilityTests : IDisposable
             var config = new Dictionary<string, WorkerBindingConfigEntry> { [workerName] = binding };
             var (provisioned, _) = WorktreeWorkspaces.Provision(config, _room);
 
-            if (CodexSupportedRoles.Contains(role.Id))
-            {
-                var resolved = WorkerBindingResolver.Resolve(provisioned, WorkerAdapterRegistry.Default);
-                Assert.IsType<WorkerBinding.Process>(resolved[workerName]);
-            }
-            else
-            {
-                Assert.Throws<PermissionGrantUnsupportedException>(
-                    () => WorkerBindingResolver.Resolve(provisioned, WorkerAdapterRegistry.Default));
-            }
+            var resolved = WorkerBindingResolver.Resolve(provisioned, WorkerAdapterRegistry.Default);
+            var process = Assert.IsType<WorkerBinding.Process>(resolved[workerName]);
+            Assert.Equal("dotnet", process.Target.Program);
+            Assert.Equal("codex-broker", process.Target.Args[1]);
         }
     }
 
