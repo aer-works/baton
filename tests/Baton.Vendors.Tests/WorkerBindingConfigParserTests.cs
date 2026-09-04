@@ -37,6 +37,17 @@ public class WorkerBindingConfigParserTests
     }
 
     [Fact]
+    public void A_bindings_file_omitting_AllowsSubagents_reads_false()
+    {
+        // #1811 review: the baton run/resume/decide path -- a hand-authored bindings.json that never
+        // mentions the field must not be able to spawn a subagent.
+        var config = WorkerBindingConfigParser.Parse(ValidJson);
+
+        var entry = Assert.Single(config).Value;
+        Assert.False(entry.AllowsSubagents);
+    }
+
+    [Fact]
     public void Model_and_permission_scope_are_optional()
     {
         const string json = """

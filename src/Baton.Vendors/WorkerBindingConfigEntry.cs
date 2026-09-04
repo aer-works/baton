@@ -143,11 +143,12 @@ namespace Baton.Vendors;
 /// <param name="AllowsSubagents">
 /// #1802: <see cref="WorkerRole.AllowsSubagents"/> (see that member's own doc for what this gates and
 /// why), carried onto the resolved <see cref="WorkerInvocation"/> unchanged. Defaults to
-/// <see langword="true"/> here, UNLIKE <paramref name="ChangesTree"/>/<paramref name="DeliversBranch"/>
-/// above: those two are additive signals a false default merely omits, while this one drives an actual
-/// enforcement flag on the spawn argv, so defaulting it to withhold would newly restrict every
-/// hand-authored <c>bindings.json</c> entry that predates #1802 and never opted into the restriction.
-/// <see cref="RoleDispatch.ToBinding"/> is the one caller that overrides this from the catalog role's own
+/// <see langword="false"/> here (#1811 review), the same default-closed shape as
+/// <paramref name="ChangesTree"/>/<paramref name="DeliversBranch"/>/<paramref name="ExpectPr"/> above --
+/// unlike those, this one drives an actual enforcement flag on the spawn argv rather than an additive
+/// signal, which is exactly why a hand-authored <c>bindings.json</c> (the <c>baton run</c>/<c>resume</c>/
+/// <c>decide</c> path) that omits it must fail closed rather than silently permit spawning. <see
+/// cref="RoleDispatch.ToBinding"/> is the one caller that overrides this from the catalog role's own
 /// value for every role dispatched through the front door.
 /// </param>
 public sealed record WorkerBindingConfigEntry(
@@ -180,7 +181,9 @@ public sealed record WorkerBindingConfigEntry(
     bool ChangesTree = false,
     bool DeliversBranch = false,
     bool ExpectPr = false,
-    bool AllowsSubagents = true);
+    // #1802 review: default-closed like ChangesTree/DeliversBranch/ExpectPr above -- a hand-authored
+    // bindings.json (baton run/resume/decide) that omits this must not be able to spawn.
+    bool AllowsSubagents = false);
 
 
 /// <summary>

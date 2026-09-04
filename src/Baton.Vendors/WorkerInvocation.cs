@@ -123,7 +123,10 @@ namespace Baton.Vendors;
 /// <see cref="ClaudeWorkerAdapter"/> append <c>Agent</c>/<c>Task</c> to <c>--disallowedTools</c> and
 /// <see cref="AgyWorkerAdapter"/> add its subagent tool names to the denied-tools list, alongside
 /// (never instead of) whatever each already withholds from <paramref name="PermissionGrant"/>. Default
-/// <see langword="true"/> keeps today's exact argv for any invocation that predates #1802.
+/// <see langword="false"/> (#1811 review) -- an invocation built without naming this explicitly must
+/// not be able to spawn a subagent; only <see cref="WorkerBindingResolver.Resolve"/>, forwarding a
+/// <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> that itself defaults closed, or a caller
+/// that opts in explicitly, produces <see langword="true"/>.
 /// </param>
 public sealed record WorkerInvocation(
     string PromptTemplate,
@@ -140,5 +143,6 @@ public sealed record WorkerInvocation(
     TimeSpan? Timeout = null,
     bool EnableMemoryProposalTool = false,
     string? WorktreeSourceRepository = null,
-    bool AllowsSubagents = true);
+    // #1802 review: default-closed; only RoleDispatch.ToBinding (from the catalog) ever sets true.
+    bool AllowsSubagents = false);
 

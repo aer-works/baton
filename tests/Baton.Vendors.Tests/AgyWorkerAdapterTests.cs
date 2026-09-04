@@ -1123,10 +1123,26 @@ public class AgyWorkerAdapterTests
         // make absent distinguishable from empty -- agy-hook-check collapses both to allow, see
         // #600 -- so this asserts only what it can: the variable is set, and set to empty.
         var target = new AgyWorkerAdapter().Resolve(
-            new WorkerInvocation("Draft a plan."), ArchitectContract);
+            new WorkerInvocation("Draft a plan.", AllowsSubagents: true), ArchitectContract);
 
         // #600: the tag is what makes this an empty list AER actively sent, rather than an absence.
         Assert.Equal("agy:", EnvValue(target, AgyWorkerAdapter.DeniedToolsVariable));
+    }
+
+    [Fact]
+    public void A_WorkerInvocation_built_with_defaults_denies_the_subagent_trio_and_manage_task()
+    {
+        // #1811 review: AllowsSubagents must default closed on WorkerInvocation itself, not merely
+        // on WorkerBindingConfigEntry -- a caller constructing one directly (bypassing the resolver)
+        // must not be able to spawn a subagent without naming the opt-in explicitly.
+        var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
+
+        var denied = EnvValue(target, AgyWorkerAdapter.DeniedToolsVariable).Split(':', 2)[1].Split(',');
+
+        Assert.Contains("define_subagent", denied);
+        Assert.Contains("invoke_subagent", denied);
+        Assert.Contains("manage_subagents", denied);
+        Assert.Contains("manage_task", denied);
     }
 
     [Fact]
