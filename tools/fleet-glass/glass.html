@@ -130,6 +130,12 @@ h2{font-family:'Sora',sans-serif; font-size:.85rem; margin:1.4rem 0 .5rem; color
 .c-idle{background:var(--chip-idle); color:var(--idle);}
 .banner{border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:0 10px 10px 0; background:var(--card); padding:.7rem .9rem; margin:1rem 0; font-size:.85rem; color:var(--ink-soft);}
 .banner b{color:var(--ink);}
+/* #1391: advisory per-vendor usage runway, read-only, no dispatch gating implied by the styling. */
+.vendorusage{display:flex; flex-wrap:wrap; gap:.6rem; margin:.6rem 0;}
+.vendorusage-block{border:1px solid var(--line); border-radius:8px; background:var(--card); padding:.5rem .7rem; font-size:.78rem; color:var(--ink-soft);}
+.vendorusage-head{font-weight:600; color:var(--ink); margin-bottom:.25rem;}
+.vendorusage-row{white-space:nowrap;}
+.vendorusage-caveat{margin-top:.3rem; font-size:.7rem; opacity:.75;}
 details{margin:.6rem 0;}
 summary{cursor:pointer; font:600 .8rem 'Public Sans'; color:var(--ink-soft);}
 .mono{font-family:var(--mono); font-size:.9em;}
@@ -253,6 +259,7 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
     <button class="tabbtn" id="tab-btn-inbox" data-tab="inbox">Deliverables</button>
   </div>
   <div id="banner"></div>
+  <div id="vendorusage"></div>
   <div class="tabpanel" id="tab-fleet">
     <div class="stalenote" id="stalenote"></div>
     <div class="dismissnote" id="dismissnote"></div>
@@ -1330,6 +1337,35 @@ function freshLabel(iso, prefix){
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
 
+// #1391: advisory per-vendor usage runway -- one row per window per vendor, percent/reset/caveat,
+// "unknown" whenever the harvester couldn't parse a field. Nothing here gates dispatch (#1848 owns
+// that); this is read-only display of `snap.vendors`, absent-safe like `conductor`/`staleness` above.
+function vendorUsageRowHtml(vendor, w){
+  const pct = typeof w.percentUsed === "number" ? `${w.percentUsed}% used` : "unknown";
+  const resets = w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString()}` : "reset unknown";
+  return `<div class="vendorusage-row"><span class="vendorusage-adapter">${esc(vendor)}</span> `
+    + `<span class="vendorusage-window">${esc(w.name)}</span> `
+    + `<span class="vendorusage-pct">${esc(pct)}</span> `
+    + `<span class="vendorusage-reset">${esc(resets)}</span></div>`;
+}
+function vendorUsageHtml(vendors){
+  if(!Array.isArray(vendors) || vendors.length === 0){ $("vendorusage").innerHTML = ""; return; }
+  const blocks = vendors.map(v => {
+    const windows = Array.isArray(v.windows) ? v.windows : [];
+    const rows = windows.length
+      ? windows.map(w => vendorUsageRowHtml(v.adapter, w)).join("")
+      : `<div class="vendorusage-row">${esc(v.adapter)} unknown</div>`;
+    const caveat = typeof v.caveat === "string" && v.caveat
+      ? `<div class="vendorusage-caveat">${esc(v.caveat)}</div>` : "";
+    const liveLanes = typeof v.liveLanes === "number" ? v.liveLanes : 0;
+    const harvestedAgo = v.harvestedAt ? (age(v.harvestedAt) || "just now") : "unknown";
+    return `<div class="vendorusage-block"><div class="vendorusage-head">${esc(v.adapter)} — `
+      + `${liveLanes} live lane${liveLanes === 1 ? "" : "s"}, harvested ${esc(harvestedAgo)} ago</div>`
+      + rows + caveat + `</div>`;
+  }).join("");
+  $("vendorusage").innerHTML = `<div class="vendorusage">${blocks}</div>`;
+}
+
 // #1656: on-demand paging over the terminal archive (see terminalArchiveExtra's own comment at its
 // declaration). One-shot fetch on click -- `refetchInterval: 0` means this watchTool call does not
 // join the periodic 30s poll the main fleet_status subscription already runs; it settles once and
@@ -1976,6 +2012,8 @@ window.addEventListener("hashchange", applyRoute);
           banner("");
         }
         render(snap.rooms, snap.pushed_at, snap.underhood, snap.heartbeat_at, accumulatedTimelines, snap.stale_hidden_count, dismissedRooms, snap.conductor, snap.derived_at);
+        // #1391: independent of the board render above -- vendors[] is fleet-wide, not per-room.
+        vendorUsageHtml(snap.vendors);
       } else if(snap && snap.rooms === null){
         $("content").innerHTML = "";
         $("dismissnote").innerHTML = "";

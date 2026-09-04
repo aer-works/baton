@@ -2380,9 +2380,13 @@ Input:
   "include_terminal"?: boolean    // default true
 }
 ```
-Output: a JSON array of
+Output (#1391: wraps the previously-bare room array in an object, per the `vendors[]` schema below —
+`FleetStatusResponse`'s own doc comment (`Baton.Cli.Mcp`) records which pusher.py functions already
+anticipated this shape):
 ```
 {
+  "rooms": [ /* one entry per room, same order DiscoverRoomsAsync produces */
+    {
   "name": string,
   "path": string,
   "project"?: string,             // §8 registry: the project root this room was dispatched for
@@ -2410,9 +2414,28 @@ Output: a JSON array of
   "continuedSessionId"?: string, // #1381: non-null exactly when parentRoomPath/parentExecutionId name a room `--continue` rehired rather than `baton redispatch` reran -- see §3's dispatch entry
   "terminalAt"?: string,        // #1157: the room-level WorkflowStatusView.TerminalAt, copied like `rejected`/`resolvedBy`. Present only for a terminal room whose journal (or sentinel) carries the instant -- §3's "The terminal instant" has the absence rules, including why a pre-#1157 terminal.json omits it rather than falling back to that file's mtime
   "delivery"?: { "pr": number, "state": string } // #734: the room's latest recorded delivery fact (§2, §7) -- "state" is one of Opened/ChecksGreen/ChecksRed/Merged/Closed. Absent until the poller has recorded a first fact, including for a room whose outputs resolved no PR number at all (no delivery reference, or a branch-only one). Read from `flow.jsonl` directly, even on the terminal-sentinel fast path -- delivery facts keep appending after a room's own workflow goes Terminal
+    }
+  ],
+  "vendors"?: [ /* #1391: advisory per-vendor usage runway -- absent entirely (never an empty array)
+                   until at least one vendor has ever been harvested */
+    {
+      "adapter": string,             // "claude" | "agy" -- Codex is explicitly out of scope (#1391's own "Decisions already made")
+      "harvestedAt": string,         // ISO-8601 UTC instant of the harvest this entry reflects
+      "caveat"?: string,             // the vendor's own machine-local disclaimer, verbatim -- absent when the harvest carried none (agy: never documented, so always absent)
+      "windows": [
+        {
+          "name": string,            // vendor's own wording, e.g. "session", "week (Fable)", "Gemini Models · Weekly Limit Remaining"
+          "percentUsed"?: number,    // ALWAYS percent USED (agy's own "percent remaining" is converted before this field is populated) -- absent, never a guessed number, when unparsed
+          "resetsAt"?: string,       // ISO-8601 UTC instant -- absent when the vendor's own line carried no reset clause, or claude's non-ISO "Jul 25, 12:09am (America/New_York)" format failed to resolve; "rawLine" still carries the vendor's own text either way
+          "rawLine": string          // the vendor's own line, verbatim, for a reader that wants to show what parsing dropped
+        }
+      ],
+      "liveLanes": number            // count of currently-Running rooms bound to this adapter, computed fresh at read time -- not part of the harvested snapshot itself
+    }
+  ]
 }
 ```
-(`FleetStatusTool.cs`). Optional fields are omitted, never emitted `null`
+(`FleetStatusTool.cs`, `Baton.Cli.Mcp.VendorUsageProjectionReader`). Optional fields are omitted, never emitted `null`
 (`JsonIgnoreCondition.WhenWritingNull` throughout `FleetRoomStatusView`/`FleetStepStatusView`);
 `rejected` follows the same omit-when-uninformative convention via
 `JsonIgnoreCondition.WhenWritingDefault`, so it is absent rather than emitted `false`. This is a
@@ -2423,6 +2446,19 @@ identical values across all three shapes (§3). `state` is the one field that is
 paragraph above, a display word `terminal.json`/`status --json` never emit — a caller reading `state`
 identically across all three shapes must special-case this one divergence, the same way it already
 special-cases `linkedFrom`/`timestamp`.
+
+**`vendors[]` (#1391, reporting slice — #1848 owns dispatch-time enforcement on top of it, #1849 owns
+the durable accounting substrate both can read).** Harvested from each vendor CLI's own headless
+`/usage` report by one `IVendorUsageSource` implementation per adapter (`Baton.Vendors` —
+`ClaudeUsageSlashCommandSource`/`AgyUsageSlashCommandSource`; each type's own doc comment has the exact
+invocation and why it bypasses the adapter's gated worker dispatch). `Baton.Cli.Daemon.
+VendorUsageHarvester`/`VendorUsageHarvestScheduler` (beside `FleetProjectionWriter`) own the harvest
+cadence and the operator-approved rules behind it (its own doc comment states them; issue #1391's
+"Decisions already made" is the ruling). `BatonPaths.VendorUsageSnapshotFile`/
+`VendorUsageProjectionReader.ReadAll` own the persisted-snapshot round trip both `FleetStatusTool` and
+`FleetProjectionWriter` read through, pairing each snapshot with a `liveLanes` count computed fresh
+from that call's own room scan — `vendors[]` is never itself a live vendor spawn. **Advisory only**:
+nothing in this slice reads `vendors[]` to hold, warn, or reject a dispatch.
 
 **`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1584 and #1613 item 3)** are read from the
 room's own `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`,
@@ -2554,7 +2590,12 @@ headless reset instants for the session and weekly windows (decision 0026,
 interactive 5-hour-window limit message has ever been captured, live, carrying a reset field, so a
 `credits_required` park still surfaces the `"ExhaustedUntil"` `failureKind` with `exhaustedUntil`
 absent and the chip showing no time — #1115 still forbids fabricating an instant nobody has actually
-observed, live or bundle-derived.
+observed, live or bundle-derived. **Runway is advisory (#1391).** The `exhaustedUntil` fields above are
+a *post-hoc* record of a wall this step already hit; the fleet projection's `vendors[]` block (this
+section's own schema, below) is the *before-the-wall* signal — the same headless `/usage`/`/cost`
+report, harvested by the daemon on a slow cadence and shown fleet-wide rather than per-step. Neither
+gates dispatch in this slice (#1848 owns dispatch-time enforcement on top of it); both read from the
+vendor CLI's own report, never an operator-declared ceiling.
 
 **Declared vendor-exhaustion fallback (#802, shipped).** A `WorkerBindingConfigEntry` may declare
 `FallbackOnExhaustion: {Adapter, Model?, Effort?}` — that field's own doc comment has the scope

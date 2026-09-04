@@ -54,6 +54,12 @@ enable it, copy `tools/fleet-glass/pusher.config.example.json` to `pusher.config
 Event type → ntfy priority (`NTFY_EVENT_TIERS`, spec/baton.md §6): `lane_failed` → urgent,
 `zombie_detected` / `pusher_anomaly` → high, `lane_succeeded_with_warnings` → default.
 
+Fleet Glass (`tools/fleet-glass/glass.html`) and `fleet_status` also show each authenticated vendor's
+own headless `/usage` report — session/weekly percent used, reset instant, and the vendor's own
+machine-local caveat — as **advisory runway**, harvested by the daemon on a slow, lane-gated cadence
+(`spec/baton.md` §6, "`vendors[]`", issue #1391). Nothing in this reporting slice gates dispatch on
+it.
+
 ## Vendor authentication
 
 Baton does not authenticate to any model provider. It spawns the vendor's own first-party CLI

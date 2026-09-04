@@ -117,6 +117,7 @@ public sealed class FleetProjectionWriter : BackgroundService
         var discovered = await FleetStatusTool.DiscoverRoomsAsync([], cancellationToken).ConfigureAwait(false);
         var roomsArray = new JsonArray();
         var liveKeysThisTick = new HashSet<string>(StringComparer.Ordinal);
+        var liveLanesByVendor = new Dictionary<string, int>(StringComparer.Ordinal);
 
         // pusher.py's main() loop reloads its secret-gate denylist every cycle (not once at startup),
         // so an operator's edit to the patterns file takes effect on the NEXT tick rather than needing
@@ -167,6 +168,15 @@ public sealed class FleetProjectionWriter : BackgroundService
                 await AttachLiveFieldsAsync(node, view, secretPatterns, liveKeysThisTick, cancellationToken).ConfigureAwait(false);
             }
 
+            // #1391: same "Running room's own adapter" tally VendorUsageProjectionReader.CountLiveLanesByVendor
+            // computes from FleetStatusTool's own results -- inlined here since this loop already holds
+            // `view` (ProcessRoomAsync has already applied #1513's Stalled display override to
+            // view.State by this point, so this reads identically to that helper).
+            if (view.State == "Running" && view.Adapter is { } adapter)
+            {
+                liveLanesByVendor[adapter] = liveLanesByVendor.GetValueOrDefault(adapter) + 1;
+            }
+
             roomsArray.Add(node);
         }
 
@@ -178,6 +188,14 @@ public sealed class FleetProjectionWriter : BackgroundService
             ["derived_at"] = DateTimeOffset.UtcNow.ToString("O"),
             ["rooms"] = roomsArray,
         };
+
+        // #1391: same vendors[] block fleet_status returns, using the liveLanesByVendor tally this
+        // tick's own room loop already built above -- no second room scan.
+        var vendors = VendorUsageProjectionReader.ReadAll(liveLanesByVendor);
+        if (vendors is not null)
+        {
+            root["vendors"] = JsonSerializer.SerializeToNode(vendors, FleetStatusTool.SerializerOptions);
+        }
 
         return root.ToJsonString(FleetStatusTool.SerializerOptions);
     }

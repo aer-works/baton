@@ -122,7 +122,7 @@ public sealed class ConductorRoomExclusionTests : IDisposable
         var result = await tool.CallAsync(JsonDocument.Parse("{}").RootElement, TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var conductor = Assert.Single(rooms!);
         Assert.Equal("conductor", conductor.Name);
