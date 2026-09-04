@@ -308,9 +308,16 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
         // Present-but-non-empty patterns file (secretpatterns.example.txt's own first line) -- proves
         // the daemon actually loads BatonPaths.SecretPatternsFile and gates with it, without depending
-        // on the operator's own gitignored denylist.
+        // on the operator's own gitignored denylist. #1816: placed at the pusher's own fleet-glass
+        // convention, not directly under the root -- that is the whole point of this test. The path is
+        // spelled out here rather than read back from BatonPaths.SecretPatternsFile so the test pins
+        // the LOCATION: written through the property, it would pass against any path the property
+        // happened to return, including the pre-#1816 flat one (#1820 review).
+        var denylistPath = Path.Combine(BatonPaths.Root, "fleet-glass", "secretpatterns.local.txt");
+        Assert.Equal(denylistPath, BatonPaths.SecretPatternsFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(denylistPath)!);
         await File.WriteAllTextAsync(
-            BatonPaths.SecretPatternsFile, "sk-[A-Za-z0-9]{20,}\n", TestContext.Current.CancellationToken);
+            denylistPath, "sk-[A-Za-z0-9]{20,}\n", TestContext.Current.CancellationToken);
 
         var projectionWriter = new FleetProjectionWriter();
         var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
@@ -328,7 +335,8 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
     /// <summary>Fail-closed polarity arm: no <see cref="BatonPaths.SecretPatternsFile"/> under this
     /// test's isolated <c>BATON_HOME</c> at all -- every line withheld, matching pusher.py's own
-    /// missing-denylist ruling (spec/baton.md §6), not merely a per-pattern miss.</summary>
+    /// missing-denylist ruling (spec/baton.md §6), not merely a per-pattern miss. #1816: also asserts
+    /// the one-line withhold-everything log the writer now emits instead of failing silently.</summary>
     [Fact]
     public async Task RunningRoom_WithAliveEngine_WithholdsStdoutTail_WhenPatternsFileMissing()
     {
@@ -344,13 +352,19 @@ public sealed class FleetProjectionWriterTests : IDisposable
         Assert.False(File.Exists(BatonPaths.SecretPatternsFile));
 
         var projectionWriter = new FleetProjectionWriter();
-        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+        var diagnostics = new StringWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken, diagnostics);
 
         var root = JsonNode.Parse(json)!.AsObject();
         var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
         var live = roomNode["live"]!.AsObject();
 
         Assert.Equal("[withheld]", live["stdoutTail"]!.GetValue<string>());
+
+        var logLine = Assert.Single(diagnostics.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        Assert.Contains(BatonPaths.SecretPatternsFile, logLine, StringComparison.Ordinal);
+        Assert.Contains("WITHHOLDING EVERY stdoutTail line", logLine, StringComparison.Ordinal);
     }
 
     /// <summary>Builds a room with one "architect" step Running under a real captured `.stdout.log`,

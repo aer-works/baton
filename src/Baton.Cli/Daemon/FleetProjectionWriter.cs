@@ -57,6 +57,7 @@ public sealed class FleetProjectionWriter : BackgroundService
 
     private readonly Dictionary<string, ExecutionLiveState> _liveCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PrunedCacheEntry> _prunedCache = new(StringComparer.Ordinal);
+    private bool _loggedMissingSecretPatterns;
 
     public static TimeSpan GetInterval()
     {
@@ -106,8 +107,13 @@ public sealed class FleetProjectionWriter : BackgroundService
         WriteAtomic(BatonPaths.FleetProjectionFile, json);
     }
 
-    internal async Task<string> BuildProjectionJsonAsync(CancellationToken cancellationToken)
+    /// <param name="diagnostics">Sink for the one-per-process missing-denylist log line (#1816) —
+    /// defaults to <see cref="Console.Error"/>; a test supplies its own <see cref="TextWriter"/> rather
+    /// than mutating the process-global <see cref="Console.Error"/>, which xunit's parallel test
+    /// collections would otherwise race on.</param>
+    internal async Task<string> BuildProjectionJsonAsync(CancellationToken cancellationToken, TextWriter? diagnostics = null)
     {
+        diagnostics ??= Console.Error;
         var discovered = await FleetStatusTool.DiscoverRoomsAsync([], cancellationToken).ConfigureAwait(false);
         var roomsArray = new JsonArray();
         var liveKeysThisTick = new HashSet<string>(StringComparer.Ordinal);
@@ -116,6 +122,16 @@ public sealed class FleetProjectionWriter : BackgroundService
         // so an operator's edit to the patterns file takes effect on the NEXT tick rather than needing
         // a daemon restart -- matched here rather than caching across ticks.
         var secretPatterns = StdoutTailRenderer.LoadSecretPatterns(BatonPaths.SecretPatternsFile);
+        if (secretPatterns is null && !_loggedMissingSecretPatterns)
+        {
+            // #1816: LoadSecretPatterns' fail-closed null withholds every stdoutTail line -- that stays
+            // fail-closed, but silently was how the daemon and the pusher drifted onto two different
+            // paths in the first place. Logged once per process (not every ~30s tick) since a missing
+            // denylist is an operator setup gap, not a per-tick event worth repeating.
+            _loggedMissingSecretPatterns = true;
+            diagnostics.WriteLine(
+                $"FleetProjectionWriter: secret-gate denylist not found at {BatonPaths.SecretPatternsFile} -- WITHHOLDING EVERY stdoutTail line (fail closed)");
+        }
 
         foreach (var room in discovered)
         {

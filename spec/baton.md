@@ -2635,8 +2635,8 @@ in PR-A, deferred to PR-A2.
 
 **PR-A2 (#1557) adds `live.stdoutTail` to this file**, gated identically to the mailbox-payload field
 above. `Baton.Cli.Daemon.StdoutTailRenderer`'s own doc comment is the port record (which `pusher.py`
-functions it mirrors, and why its secret-gate denylist path — `BatonPaths.SecretPatternsFile` — is a
-new, daemon-owned file rather than a share of the pusher's own copy), not restated here. This makes
+functions it mirrors), not restated here; `BatonPaths.SecretPatternsFile`'s own doc comment names where
+its secret-gate denylist path resolves and why (#1816). This makes
 `pusher.py`'s own stdout-tail rendering block (`_read_tail_text` through `stdout_tail_for_room`) dead
 code once PR-B reads this file instead of deriving its own snapshot — PR-B removes it.
 
