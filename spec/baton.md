@@ -2556,6 +2556,13 @@ interactive 5-hour-window limit message has ever been captured, live, carrying a
 absent and the chip showing no time — #1115 still forbids fabricating an instant nobody has actually
 observed, live or bundle-derived.
 
+**Live capture closed one more gap (#1857).** The weekly-limit wall does not arrive on the synthetic
+`assistant`-line envelope above at all — it lands on the terminal stream-json `result` event, with no
+`error`/`quotaLimits` fields, only `is_error: true`, `api_error_status: 429`, and the human reset text
+in the plain string `result` field (`resets Sep 7, 6am (America/New_York)`, a date-prefixed suffix
+distinct from the bare-clock-time one above and resolved against the named IANA zone); the parser
+now recognizes this shape too and still classifies `ExhaustedUntil` with a real reset instant.
+
 **Declared vendor-exhaustion fallback (#802, shipped).** A `WorkerBindingConfigEntry` may declare
 `FallbackOnExhaustion: {Adapter, Model?, Effort?}` — that field's own doc comment has the scope
 ruling and the resolution/ceiling guarantee, not restated here. When a step's latest attempt

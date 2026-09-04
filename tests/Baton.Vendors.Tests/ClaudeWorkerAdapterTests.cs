@@ -2039,6 +2039,81 @@ public class ClaudeWorkerAdapterTests
         Assert.Null(retryNotBefore);
     }
 
+    // #1857: captured 2026-09-04 09:25 ET (13:25Z), claude 2.1.258 -- the weekly-limit wall's
+    // terminal `result` event, not the synthetic `assistant`-line envelope the fixtures above cover.
+    private static string[] WeeklyLimitResultFixtureLines() =>
+        File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "claude-weekly-limit-result.captured.jsonl"));
+
+    [Fact]
+    public void WeeklyLimit_ResultEventWith429_ClassifiesExhaustedUntilWithNamedZoneInstant()
+    {
+        var line = WeeklyLimitResultFixtureLines()[0];
+        var testTime = new TestTimeProvider(new DateTimeOffset(2026, 9, 4, 13, 25, 0, TimeSpan.Zero));
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        // 2026-09-07T06:00 America/New_York is EDT (UTC-4) in September -> 10:00Z.
+        Assert.Equal(new DateTimeOffset(2026, 9, 7, 10, 0, 0, TimeSpan.Zero), retryNotBefore);
+
+        Assert.True(ClaudeWorkerAdapter.TryClassifyQuotaExhaustion(
+            line, testTime, out _, out _, out var placement));
+        Assert.Equal("result", placement);
+    }
+
+    [Fact]
+    public void WeeklyLimit_ResultEventErrorWithout429_StaysAPlainFailure()
+    {
+        // Polarity control: `is_error: true` alone must not be enough -- only `api_error_status: 429`
+        // makes this a rate-limit envelope, so a differently-shaped error result stays unclassified.
+        var line = WeeklyLimitResultFixtureLines()[1];
+        var testTime = new TestTimeProvider(new DateTimeOffset(2026, 9, 4, 13, 25, 0, TimeSpan.Zero));
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.False(classified);
+        Assert.Null(classification);
+        Assert.Null(retryNotBefore);
+    }
+
+    [Fact]
+    public void WeeklyLimit_BareClockTimeSuffix_StillParsesUnchanged()
+    {
+        // #1810's fixture (bare "resets 3am", no date/zone) still parses via the shared text-suffix
+        // path after the #1857 refactor pulled per-block parsing into TryParseResetSuffixFromText.
+        var line = RateLimitFixtureLines()[3];
+        var now = new DateTimeOffset(2026, 9, 4, 1, 0, 0, TimeSpan.Zero);
+        var testTime = new TestTimeProvider(now, TimeZoneInfo.Utc);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.Equal(new DateTimeOffset(2026, 9, 4, 3, 0, 0, TimeSpan.Zero), retryNotBefore);
+    }
+
+    [Fact]
+    public void WeeklyLimit_UnknownZoneId_FallsBackToLocalZoneInsteadOfNull()
+    {
+        var line = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":429," +
+            "\"result\":\"You've hit your weekly limit · resets Sep 7, 6am (Nowhere/Fake)\"}";
+        var localZone = TimeZoneInfo.CreateCustomTimeZone("fixed-utc-plus-2", TimeSpan.FromHours(2), "fixed-utc-plus-2", "fixed-utc-plus-2");
+        var testTime = new TestTimeProvider(new DateTimeOffset(2026, 9, 4, 13, 25, 0, TimeSpan.Zero), localZone);
+
+        var adapter = new ClaudeWorkerAdapter();
+        var classified = adapter.TryClassifyFailure(line, testTime, out var classification, out var retryNotBefore);
+
+        Assert.True(classified);
+        Assert.Equal(FailureClassification.ExhaustedUntil, classification);
+        Assert.NotNull(retryNotBefore);
+        // Fell back to the fixed +02:00 local zone: 2026-09-07T06:00+02:00 -> 04:00Z.
+        Assert.Equal(new DateTimeOffset(2026, 9, 7, 4, 0, 0, TimeSpan.Zero), retryNotBefore);
+    }
+
     // ---- #532: resolve-time hook liveness probe ----
 
     /// <summary>Deterministic test double -- see <see cref="IClaudeHookLivenessProbe"/>'s own remarks.</summary>
