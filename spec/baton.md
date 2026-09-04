@@ -1280,11 +1280,11 @@ fan-out tool: `ClaudeWorkerAdapter` appends `Agent,Task` to `--disallowedTools` 
 `manage_task`/`invoke_subagent`/`define_subagent`/`manage_subagents` trio to its denied-tools list —
 independent of, and in addition to, whatever each already withholds from the role's own
 `PermissionGrant` (that trio was already withheld on agy whenever writes or shell were withheld, #1387;
-this is a second, independent trigger, since `implement`'s grant keeps both true). `advise` sets
-`allows_subagents: true` because weighing options via fan-out is that role's whole point; on agy that
-role's own grant already withholds writes, so its subagent trio stays denied there regardless — this
-flag only ever narrows a vendor's reach, never widens beyond what the grant's own categories already
-permit.
+this is a second, independent trigger, since `implement`'s grant keeps both true). `advise` is the one
+shipped role that sets `allows_subagents: true` (`WorkerRole.AllowsSubagents`'s own doc has why); on agy
+that role's own grant already withholds writes, so its subagent trio stays denied there regardless —
+this flag only ever narrows a vendor's reach, never widens beyond what the grant's own categories
+already permit.
 
 **`--output` delivery is unconditional on the worker's own write, never on verify's verdict (#1702).**
 Before this fix, `DispatchCommand.CopyPrimaryOutputToOverride` only copied a produced output when its
