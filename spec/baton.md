@@ -65,6 +65,36 @@ A room holds, at minimum: `room.json` (the room-kind marker — `BatonPaths.Room
 room that has been dispatched at least once — `fleet_status` treats its absence as "no bound
 snapshot" and reports it as an error entry rather than a state (`src/Baton.Cli/Mcp/FleetStatusTool.cs`).
 
+**A named artifact under `artifacts/` is versioned and attributed, never silently overwritten
+(#496, decision 0021 — trimmed to engine scope by the 2026-09-01 triage: no diff-and-choose UI,
+§1 forecloses that surface).** `artifacts/<name>` stays the CURRENT version, so every pre-#496
+reader keeps working unchanged. `RoomArtifacts.Write` (`src/Baton/Artifacts/RoomArtifacts.cs`) is
+the one primitive that writes a named artifact: absent → version 1; present and byte-identical →
+nothing new; present and different → version `n+1`, written to a sidecar
+`artifacts/.versions/<name>/<n>` with one `artifacts/.versions/<name>/index.jsonl` line
+(`n`, `producedAt`, `producedBy` — `executionId`/`role`/`adapter`/`model`, supplied by the caller;
+`baton deliver` writes role `conductor` with no execution — `sha256`, `bytes`) appended *before*
+`artifacts/<name>` is atomically replaced (temp file + move). A dot-directory, per #1351's filter
+convention: version history is engine mechanism, not a document a worker or harness should see
+enumerated. JSONL, for the same append-only crash-safety shape `flow.jsonl` already relies on. The
+index is authoritative over the version files themselves — a version file can land on disk before
+the index line that commits it, and every reader (`Versions`, `Read`) treats a version absent from
+the index as never having happened, orphan file or not. Only two writers land outside an
+execution's own `artifacts/execution_<id>/` scratch directory (decision 0021 point 2's "plumbing,
+never surfaced"), so only those route through this primitive: `baton deliver` (`DeliverCommand.cs`)
+— a re-delivery of the same `source_path` now versions rather than replacing the prior bytes.
+`RoleSpecMaterializer.CopyAttachmentsIntoRoom`'s `--attach` copy does not: it is harness-supplied
+input copied in before any execution exists, not something a worker produced (0021 point 1), so it
+has no `ExecutionBindingResolver`-derivable attribution to record — see that method's own remarks.
+Everything else that writes under `artifacts/` — `.stdout.log`/`.stderr.log` and their rollovers
+(#1351), the `.captured-response.md` engine capture (`OutputMaterializer`), a `baton resolve`-written
+declared output, and the `yield`/`memory-edit-proposal` MCP tools' per-execution capture files —
+lives inside one execution's own scratch directory, addressed uniquely per execution, so no name is
+ever reused across writes and there is nothing for this primitive to version. `RoomRetentionSweep`
+/`ArtifactPruner` (`PruneTaskArtifactsAsync`) prune a terminal, non-kept room's `.versions/` the same
+pass it prunes `execution_*` directories, down to the current version only — the current file
+already holds that version's bytes in full, so nothing is lost, only the history behind it.
+
 **There are two independent event logs, not one, and this spec states both honestly.**
 `flow.jsonl` is the workflow ledger — steps, executions, decisions — and everything in §3–§9 below
 reads and writes only this one. A **second** ledger, `room.jsonl`, exists in the same engine

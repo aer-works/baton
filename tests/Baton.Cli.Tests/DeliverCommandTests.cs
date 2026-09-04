@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Baton.Artifacts;
 using Baton.Status;
 using Baton.Vendors;
 
@@ -156,6 +157,46 @@ public sealed class DeliverCommandTests : IDisposable
         var entry = JsonSerializer.Deserialize<ConductorManifestEntry>(manifestLines[0]);
         Assert.Equal("Version 2", entry!.Title);
         Assert.Equal(result2.Sha256, entry.Sha256);
+    }
+
+    [Fact]
+    public async Task Deliver_RedeliveryOfSameSource_AppendsVersionRatherThanOverwriting()
+    {
+        // #496: DeliverCommand now routes its file write through RoomArtifacts.Write, so a
+        // re-delivery must append a version -- the prior bytes stay readable at version 1 -- rather
+        // than the raw File.Copy(overwrite: true) this replaced.
+        var sourceFile = Path.Combine(_tempHome, "versioned-plan.md");
+        await File.WriteAllTextAsync(sourceFile, "# Version 1\nInitial content", TestContext.Current.CancellationToken);
+
+        var conductorRoom = Path.Combine(BatonPaths.Rooms, "conductor");
+        var options1 = new DeliverOptions(sourceFile, null, conductorRoom);
+        using var sw1 = new StringWriter();
+        var result1 = await DeliverCommand.ExecuteAsync(options1, sw1, TestContext.Current.CancellationToken);
+
+        await File.WriteAllTextAsync(sourceFile, "# Version 2\nUpdated content", TestContext.Current.CancellationToken);
+
+        var options2 = new DeliverOptions(sourceFile, null, conductorRoom);
+        using var sw2 = new StringWriter();
+        var result2 = await DeliverCommand.ExecuteAsync(options2, sw2, TestContext.Current.CancellationToken);
+
+        var artifactName = Path.Combine("conductor", Path.GetFileName(result2.DestinationPath));
+        var versions = RoomArtifacts.Versions(conductorRoom, artifactName);
+
+        Assert.Equal(2, versions.Count);
+        Assert.Equal("conductor", versions[0].ProducedBy.Role);
+        Assert.Null(versions[0].ProducedBy.ExecutionId);
+
+        var v1Bytes = RoomArtifacts.Read(conductorRoom, artifactName, 1);
+        Assert.NotNull(v1Bytes);
+        Assert.Contains("Version 1", Encoding.UTF8.GetString(v1Bytes!));
+
+        var v2Bytes = RoomArtifacts.Read(conductorRoom, artifactName, 2);
+        Assert.NotNull(v2Bytes);
+        Assert.Contains("Version 2", Encoding.UTF8.GetString(v2Bytes!));
+
+        // The current path (what every pre-#496 reader keeps using) is still the latest content.
+        Assert.Equal(result1.DestinationPath, result2.DestinationPath);
+        Assert.Contains("Version 2", await File.ReadAllTextAsync(result2.DestinationPath, TestContext.Current.CancellationToken));
     }
 
     [Fact]

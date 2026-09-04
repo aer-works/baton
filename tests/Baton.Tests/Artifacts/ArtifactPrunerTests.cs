@@ -86,6 +86,53 @@ public class ArtifactPrunerTests
     }
 
     [Fact]
+    public async Task PruneAsync_prunes_artifact_version_history_to_current_version_only()
+    {
+        // #496 point 4: a terminal, non-kept room's named-artifact version history sits inside the
+        // same retention boundary ArtifactPruner already applies to execution_* directories.
+        var roomDir = Path.Combine(Path.GetTempPath(), $"prune-versions-test-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(roomDir);
+            var snapshotPath = Path.Combine(roomDir, "snapshot.json");
+            var logPath = Path.Combine(roomDir, "flow.jsonl");
+
+            await SnapshotBinder.PersistAsync(SingleStepSnapshot(), snapshotPath, TestContext.Current.CancellationToken);
+
+            var execId = new ExecutionId("exec-201");
+            await WriteLogEventsAsync(
+                logPath,
+                new FlowEvent.ExecutionRequestAccepted(TestRequest(execId)),
+                new FlowEvent.ExecutionSucceeded(execId));
+
+            var artifactsRoot = Path.Combine(roomDir, ArtifactManager.ArtifactsDirectoryName);
+            var attribution = new ArtifactAttribution(execId.Value, "worker", "claude", "sonnet");
+            RoomArtifacts.Write(roomDir, "plan.md", "v1"u8.ToArray(), attribution);
+            RoomArtifacts.Write(roomDir, "plan.md", "v2"u8.ToArray(), attribution);
+
+            Assert.Equal(2, RoomArtifacts.Versions(roomDir, "plan.md").Count);
+
+            var result = await ArtifactPruner.PruneAsync(roomDir, TestContext.Current.CancellationToken);
+
+            Assert.True(result);
+            var versionsAfterPrune = RoomArtifacts.Versions(roomDir, "plan.md");
+            Assert.Single(versionsAfterPrune);
+            Assert.Equal(2, versionsAfterPrune[0].Version);
+
+            // The current file is untouched -- it already holds the surviving version's bytes.
+            Assert.Equal("v2", await File.ReadAllTextAsync(Path.Combine(artifactsRoot, "plan.md"), TestContext.Current.CancellationToken));
+
+            // Version 1's own file and index line are gone; asking for it by number reads as null.
+            Assert.Null(RoomArtifacts.Read(roomDir, "plan.md", 1));
+            Assert.NotNull(RoomArtifacts.Read(roomDir, "plan.md", 2));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDir);
+        }
+    }
+
+    [Fact]
     public async Task PruneAsync_untouches_running_or_paused_runs()
     {
         var roomDir = Path.Combine(Path.GetTempPath(), $"prune-running-{Guid.NewGuid():N}");

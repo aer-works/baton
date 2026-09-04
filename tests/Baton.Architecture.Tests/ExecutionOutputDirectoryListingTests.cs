@@ -60,6 +60,10 @@ public class ExecutionOutputDirectoryListingTests
         // unfiltered on purpose -- see that call site's own comment in FleetProjectionWriter.cs for why.
         ["Baton.Cli/Daemon/FleetProjectionWriter.cs"] =
             "GetFileSystemEntries lists the pruned room root, not an execution output directory; the nested EnumerateFiles walks a pruned execution's own former output directory but deliberately does not filter ExecutionStreamLogger.IsStreamLogFileName -- see #1557 comment above",
+        // #496: lists artifacts/.versions/ (a named artifact's own version-history sidecar, one
+        // index.jsonl per name), never an execution's own output directory.
+        ["Baton/Artifacts/RoomArtifacts.cs"] =
+            "GetFiles lists artifacts/.versions/ for index.jsonl files (named-artifact version history), not an execution output directory",
     };
 
     [Fact]

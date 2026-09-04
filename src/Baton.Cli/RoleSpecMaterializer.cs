@@ -75,6 +75,13 @@ internal static class RoleSpecMaterializer
     /// Copies <c>--attach</c> files into the room's attachments directory (#1500). A no-op when
     /// <paramref name="attachments"/> is null or empty. Called after the room directory exists —
     /// <see cref="Materialize"/> above only needs the destination path as a string, for the prompt text.
+    /// <para>
+    /// Deliberately not routed through <c>Baton.Artifacts.RoomArtifacts.Write</c> (#496, spec/baton.md
+    /// §2's exemption list): an attachment predates every execution in the room, so it carries no
+    /// producer to record. <see cref="ValidateAttachments"/> refuses a same-call basename clash;
+    /// a clash across two separate dispatches into the same room still silently replaces the file,
+    /// a narrower gap outside this issue's scope.
+    /// </para>
     /// </summary>
     public static void CopyAttachmentsIntoRoom(IReadOnlyList<string>? attachments, string roomDirectoryPath)
     {

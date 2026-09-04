@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Baton.Artifacts;
 using Baton.Status;
 using Baton.Vendors;
 
@@ -79,14 +80,23 @@ public static class DeliverCommand
         // per basename — two sources named 'notes.md' under different projects would otherwise
         // collide on one on-disk file and cross-contaminate each other's manifest entry. Hashed off
         // the source path itself (not its content) so re-delivering the same source with changed
-        // bytes keeps overwriting the same artifact_file rather than orphaning the old one.
+        // bytes keeps landing on the same artifact_file rather than orphaning the old one.
         var sourcePathHashHex = Convert.ToHexStringLower(SHA256.HashData(Utf8NoBom.GetBytes(sourceFullPath)));
         var artifactFile = $"{sourcePathHashHex[..8]}-{basename}";
-        var destFilePath = Path.Combine(conductorArtifactsDir, artifactFile);
-        File.Copy(sourceFullPath, destFilePath, overwrite: true);
 
         var fileBytes = await File.ReadAllBytesAsync(sourceFullPath, cancellationToken).ConfigureAwait(false);
         var sha256Hex = Convert.ToHexStringLower(SHA256.HashData(fileBytes));
+
+        // #496: routed through RoomArtifacts.Write rather than a raw File.Copy(overwrite: true) — a
+        // re-delivery of the same source_path (the conductor re-delivering its own updated document)
+        // now appends a version instead of silently discarding the prior bytes. No ExecutionId: a
+        // conductor delivery is not tied to a flow execution.
+        var writeResult = RoomArtifacts.Write(
+            roomDir,
+            Path.Combine("conductor", artifactFile),
+            fileBytes,
+            new ArtifactAttribution(ExecutionId: null, Role: "conductor", Adapter: null, Model: null));
+        var destFilePath = writeResult.CurrentPath;
 
         string title;
         if (!string.IsNullOrWhiteSpace(options.Title))
