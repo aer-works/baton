@@ -9,6 +9,7 @@ using Baton.Templates;
 
 namespace Baton.Cli.Tests;
 
+[Collection(ConsoleOutCaptureCollection.Name)]
 public class CancelCommandEndToEndTests
 {
     private static readonly IReadOnlyDictionary<string, IWorkerAdapter> Adapters =

@@ -12,7 +12,9 @@ namespace Baton.Tests.Projection;
 /// writes to <see cref="Console.Error"/> directly still races a member's capture (#1778) — so the
 /// collection opts out of xUnit's parallel pool entirely, the same way <c>SerializedEnvironmentCollection</c>
 /// and the other process-global-state collections do: nothing else in the assembly runs while a member
-/// test runs.
+/// test runs. <c>Baton.Architecture.Tests.ConsoleSwapTests</c> (#1783) is the build-time guard that a
+/// class added later can't swap <see cref="Console.Error"/>/<see cref="Console.Out"/> without
+/// enrolling in this or another <c>DisableParallelization</c> collection.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public class ConsoleErrorCaptureCollection
