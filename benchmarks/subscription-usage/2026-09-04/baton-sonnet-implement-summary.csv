@@ -1,0 +1,2 @@
+window_start,window_end,rooms,successful_rooms,below_250k_rooms,above_250k_rooms,above_600k_rooms,reached_1_2m_ceiling,total_billed_tokens,failed_or_cancelled_billed_tokens
+2026-08-31,2026-09-04,140,107,109,31,6,0,26020000,5050000

@@ -1,0 +1,5 @@
+window_start,window_end,model,launch_path,sessions,median_assistant_responses,median_output_tokens,median_cache_read_tokens
+2026-08-31,2026-09-04,sonnet,baton,464,103,63200,9600000
+2026-08-31,2026-09-04,sonnet,native_subagent,32,52,15000,3400000
+2026-08-31,2026-09-04,opus,baton,101,88,111200,10200000
+2026-08-31,2026-09-04,opus,native_subagent,51,66,22900,5600000
