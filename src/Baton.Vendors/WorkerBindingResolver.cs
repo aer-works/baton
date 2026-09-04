@@ -98,13 +98,12 @@ public static class WorkerBindingResolver
     }
 
     /// <summary>
-    /// #802: resolves ONLY the entries that declare <see cref="WorkerBindingConfigEntry.FallbackOnExhaustion"/>,
-    /// each swapped onto its fallback's Adapter/Model/Effort and resolved through the exact same
-    /// <see cref="ResolveEntry"/> path <see cref="Resolve"/> uses for the primary binding — same
-    /// adapter registry lookup, same permission/ceiling refusals, so a fallback can never widen what a
-    /// role is permitted to do. A worker role with no declared fallback is simply absent from the
-    /// returned dictionary, which is what <c>Mutation.MutationInterface</c> reads as "no rescue for
-    /// this role's park."
+    /// #802: resolves ONLY the entries that declare <see cref="WorkerBindingConfigEntry.FallbackOnExhaustion"/>
+    /// (that member's own doc has the scope/permission guarantee this satisfies), each swapped onto
+    /// its fallback's Adapter/Model/Effort and resolved through the exact same <see cref="ResolveEntry"/>
+    /// path <see cref="Resolve"/> uses for the primary binding. A worker role with no declared fallback
+    /// is simply absent from the returned dictionary, which is what <c>Mutation.MutationInterface</c>
+    /// reads as "no rescue for this role's park."
     /// </summary>
     public static IReadOnlyDictionary<string, WorkerBinding> ResolveFallbacks(
         IReadOnlyDictionary<string, WorkerBindingConfigEntry> config,
