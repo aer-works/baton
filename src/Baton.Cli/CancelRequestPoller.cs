@@ -100,9 +100,11 @@ public static class CancelRequestPoller
     /// A resolved parked target still lands on the <c>isParked</c> branch below exactly like an
     /// explicit one always has — this method never needed to change for the resolver to widen, only
     /// the resolver itself did. A delivered request or a genuinely settled
-    /// one is consumed; an undelivered still-running target is retried up to 5 ticks before being rejected
-    /// (#1530); malformed content or an unresolvable <c>latest</c> is rejected immediately (fail closed,
-    /// no guessing, reason in body) rather than retried forever or left to crash the pump.
+    /// one is consumed; an undelivered still-arrestable target (running, quota-parked, or — #1556 PR 1 —
+    /// a still-pending step-less execution, via <see cref="Projection.ArrestableExecutions.Find"/>) is
+    /// retried up to 5 ticks before being rejected (#1530); malformed content or an unresolvable
+    /// <c>latest</c> is rejected immediately (fail closed, no guessing, reason in body) rather than
+    /// retried forever or left to crash the pump.
     /// </summary>
     internal static async Task TickAsync(
         string roomDirectoryPath,
@@ -162,12 +164,14 @@ public static class CancelRequestPoller
             return;
         }
 
-        // Delivered was false: re-check projection to differentiate settled from still-running/parked.
+        // Delivered was false: re-check projection to differentiate settled from still-arrestable
+        // (running, quota-parked, or — #1556 PR 1's D2 fix — a still-pending step-less execution,
+        // which ArrestableExecutions.Find sees and the old Steps-only lookup below did not).
         var settleCheckReader = new FlowEventLogReader(logPath);
         var settleCheckEvents = await settleCheckReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         var settleCheckState = StateProjector.Project(settleCheckEvents, snapshot);
         var targetStep = settleCheckState.Steps.FirstOrDefault(s => s.LatestExecutionId == targetExecutionId);
-        var stillRunning = targetStep?.Status == StepStatus.Running;
+        var stillArrestable = ArrestableExecutions.Find(settleCheckState, snapshot, targetExecutionId) is not null;
 
         // #1563 (S0 of the quota design, #802 "three independent locks" finding): a step-tied target sitting on a future
         // RetryNotBefore has no live process to register with — the worker already exited — but it
@@ -181,7 +185,7 @@ public static class CancelRequestPoller
             inFlightExecutions.MarkParkedCancelIntent(targetExecutionId);
         }
 
-        if (!stillRunning && !isParked)
+        if (!stillArrestable)
         {
             RetryCounters.TryRemove(retryKey, out _);
             ParkedNoticePrinted.TryRemove(retryKey, out _);
