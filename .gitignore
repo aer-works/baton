@@ -81,6 +81,7 @@ tools/fleet-glass/secrets.local.json
 tools/fleet-glass/pusher.config.json
 tools/fleet-glass/secretpatterns.local.txt
 tools/fleet-glass/push-state.local.json
+tools/fleet-glass/ntfy-state.local.json
 tools/fleet-glass/pusher.log
 tools/fleet-glass/login.log
 tools/fleet-glass/.wrangler/

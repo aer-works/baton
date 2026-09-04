@@ -2987,6 +2987,28 @@ reads as the worker refusing writes, not a stuck derivation -- the two ages trac
 exactly what a shared write failure looks like, whereas a genuinely stuck derivation leaves
 `heartbeat_at` fresh (only the derivation write is failing) while `derived_at` alone ages.
 
+**ntfy pushes: severity tiers, quiet hours, dedup (#1558, ratified #1502 items 31/32/33 as one
+bundle — shipped together, since #31 alone trains an operator to ignore their phone within a
+week).** Independent of the Cloudflare mailbox above — a separate outbound POST to an ntfy topic
+(`tools/fleet-glass/pusher.py`'s "NTFY PUSH" section, `ntfy_topic`/`ntfy_quiet_hours` in
+`pusher.config.json`, an optional `ntfy_token` in `secrets.local.json`), no write-budget ledger, no
+secret gate (the pushed title/message is a short, content-free-by-construction line naming the
+event, never stdout/prompt text). Four event types map to three ntfy priorities —
+`ntfy_priority_for_event`/`NTFY_EVENT_TIERS` is the one table, never restated: lane failed →
+urgent, zombie/stalled detected → high, a pusher-level anomaly (an uncaught exception in the
+snapshot/heartbeat/deliver loop) → high, lane succeeded-with-warnings → default. Quiet hours
+(`in_quiet_hours`) suppress every tier below urgent inside an operator-local window (default
+`America/New_York`, config-driven, injectable clock for tests) — urgent always sends regardless.
+Dedup (`ntfy_dedup_decision`) gives a standing condition (a lane still Failed, a room still
+Stalled) the first-occurrence/fold/magnitude-increase shape #1558's brief specified (citing basis
+#922's anomaly dedup as the reference shape): the first occurrence alerts, an unchanged repeat
+folds, and a magnitude increase (a failed lane's retry count climbing) re-alerts; a room leaving
+its notifiable state clears its dedup entry so a later recurrence reads as fresh rather than
+folding forever. `pusher.py` itself carried no prior anomaly-dedup code to reuse at the time this
+landed (checked: no `anomaly`/standing-condition-dedup function existed anywhere in the file) — this
+is a fresh implementation of that shape, not a reuse of one. A missing/blank `ntfy_topic` disables
+the feature silently (one startup log line, never a crash).
+
 ---
 
 ## §7 The daemon, narrowed

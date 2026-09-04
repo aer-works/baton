@@ -59,8 +59,22 @@ pusher.config.example.json and copy it):
       "rooms_root": "~/.baton/rooms",                         # optional; defaults there
       "secret_patterns_file": "secretpatterns.local.txt",    # optional; defaults next to this script
       "push_state_file": "push-state.local.json",            # optional; defaults next to this script
-      "underhood_dirs": []
+      "underhood_dirs": [],
+      "ntfy_topic": "<ntfy.sh topic, or a self-hosted one>",  # optional; a missing/blank topic
+                                                               # disables ntfy pushes silently (one
+                                                               # startup log line) -- see the "NTFY
+                                                               # PUSH" section in this file for the
+                                                               # tier table, quiet hours and dedup
+      "ntfy_server": "https://ntfy.sh",                       # optional; self-hosted instances override
+      "ntfy_quiet_hours": {                                   # optional; omit for no quiet hours
+        "start": "22:00", "end": "07:00", "timezone": "America/New_York"
+      },
+      "ntfy_state_file": "ntfy-state.local.json"              # optional; defaults next to this script
     }
+`ntfy_token` (a self-hosted ntfy instance's auth token), if needed, lives in secrets.local.json next
+to this script -- {"ntfy_token": "..."} -- see secrets.local.example.json. ntfy.sh's own hosted
+service needs no token for a private-by-obscurity topic name.
+
 push_url (and deliver_url/heartbeat_url, if set) embed the push token -- the config file is a local
 secret; never print or commit it.
 
@@ -2657,6 +2671,297 @@ def mark_pushed(state: dict, items: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
+# NTFY PUSH -- severity tiers, quiet hours, dedup (#1558, ratified #1502 items 31/32/33: the three
+# ship together or not at all). Independent of the Cloudflare mailbox above -- ntfy.sh (or a
+# self-hosted instance) is a separate outbound POST, no write-budget ledger, no secret gate (the
+# title/message this module builds is a short, content-free-by-construction line naming the event,
+# never stdout/prompt text).
+#
+# Config (pusher.config.json, beside the existing keys):
+#     "ntfy_topic": "<topic>",                # required to enable; a missing/blank topic disables
+#                                              # the feature silently (one startup log line only)
+#     "ntfy_server": "https://ntfy.sh",       # optional; self-hosted instances override this
+#     "ntfy_quiet_hours": {                   # optional; omit for no quiet hours at all
+#       "start": "22:00", "end": "07:00",     # operator-local ET, HH:MM 24h, wraps past midnight
+#       "timezone": "America/New_York"
+#     }
+# `ntfy_token` (a self-hosted instance's auth token), if needed, lives in secrets.local.json next
+# to this script -- {"ntfy_token": "..."} -- per the existing secrets.local.json pattern (gitignored;
+# never the ntfy topic itself, which is not a secret in the same sense a push token is, but stays out
+# of pusher.config.json's *.example.* sibling regardless).
+#
+# TIERS -> NTFY PRIORITY. One table; every caller of `ntfy_priority_for_event` reads this, nothing
+# restates it (spec/baton.md §6 cites this table rather than repeating it).
+# ---------------------------------------------------------------------------------------------
+
+NTFY_DEFAULT_SERVER = "https://ntfy.sh"
+NTFY_DEFAULT_STATE_FILE = HERE / "ntfy-state.local.json"
+
+#: event type -> (ntfy priority string, human tier name). ntfy's own priority vocabulary is
+#: min/low/default/high/urgent -- this project only ever emits three of the five (spec/baton.md §6).
+NTFY_EVENT_TIERS: dict[str, str] = {
+    "lane_failed": "urgent",
+    "lane_succeeded_with_warnings": "default",
+    "zombie_detected": "high",
+    "stalled_detected": "high",
+    "pusher_anomaly": "high",
+}
+
+
+def ntfy_priority_for_event(event_type: str) -> str:
+    """The ntfy `Priority` header value for an event type. Unknown event types fail toward "default"
+    rather than raising or silently going urgent -- a typo'd event type should never train the
+    operator to ignore urgent pushes, nor should it interrupt a dinner over nothing named here."""
+    return NTFY_EVENT_TIERS.get(event_type, "default")
+
+
+def _parse_hhmm(value: str) -> tuple[int, int]:
+    hh, mm = value.split(":")
+    return int(hh), int(mm)
+
+
+#: US Eastern DST fallback, used ONLY when the stdlib `zoneinfo` lookup itself fails -- measured on
+#: this project's own dev box (Windows, Python 3.12, no `tzdata` package installed): CPython's
+#: `zoneinfo` ships no bundled tz database on Windows and raises `ZoneInfoNotFoundError` (a `KeyError`
+#: subclass) for EVERY key, including "America/New_York", until the `tzdata` PyPI package is
+#: installed. Rather than make quiet hours silently never fire on an un-provisioned Windows operator
+#: box -- the exact platform this project's CI targets -- this computes the standard US DST rule
+#: (2nd Sunday of March 02:00 local -> 1st Sunday of November 02:00 local, UTC-5/UTC-4) directly, for
+#: "America/New_York" and its common aliases only. Any OTHER configured timezone with no `tzdata`
+#: available still fails toward "never quiet" (the `except` below), same as before this fallback
+#: existed -- this is a targeted fix for the one zone the config's own default and this issue name,
+#: not a general US-timezone engine.
+_US_EASTERN_ALIASES = frozenset({"America/New_York", "US/Eastern"})
+
+
+def _us_eastern_offset_fallback(now_utc: datetime) -> timedelta:
+    year = now_utc.year
+    march1 = datetime(year, 3, 1, tzinfo=timezone.utc)
+    second_sunday_march = march1 + timedelta(days=(6 - march1.weekday()) % 7 + 7)
+    dst_start = second_sunday_march.replace(hour=7)  # 02:00 EST = 07:00 UTC
+    nov1 = datetime(year, 11, 1, tzinfo=timezone.utc)
+    first_sunday_nov = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
+    dst_end = first_sunday_nov.replace(hour=6)  # 02:00 EDT = 06:00 UTC
+    is_dst = dst_start <= now_utc < dst_end
+    return timedelta(hours=-4) if is_dst else timedelta(hours=-5)
+
+
+def in_quiet_hours(cfg: dict, now: datetime) -> bool:
+    """True when `now` (any tz-aware datetime; converted to the configured zone) falls inside the
+    configured quiet-hours window. No `ntfy_quiet_hours` in config -> never quiet (fail toward
+    delivering, not toward silence). Handles a window that wraps past midnight (e.g. 22:00-07:00).
+    `now` is the injection point for tests -- never `datetime.now()` called from inside here."""
+    qh = cfg.get("ntfy_quiet_hours")
+    if not qh:
+        return False
+    tz_name = qh.get("timezone", "America/New_York")
+    try:
+        from zoneinfo import ZoneInfo
+        local = now.astimezone(ZoneInfo(tz_name))
+        start_h, start_m = _parse_hhmm(qh["start"])
+        end_h, end_m = _parse_hhmm(qh["end"])
+    except KeyError as ex:
+        # ZoneInfoNotFoundError is itself a KeyError subclass (missing tzdata, or a bad name); a
+        # bare `qh["start"]`/`qh["end"]` KeyError takes the same fail-toward-"never quiet" exit.
+        if tz_name in _US_EASTERN_ALIASES and "start" in qh and "end" in qh:
+            local = (now.astimezone(timezone.utc) + _us_eastern_offset_fallback(now.astimezone(timezone.utc)))
+            start_h, start_m = _parse_hhmm(qh["start"])
+            end_h, end_m = _parse_hhmm(qh["end"])
+        else:
+            log(f"ntfy: quiet hours timezone {tz_name!r} unresolvable ({ex}) -- treating as never quiet")
+            return False
+    except (ValueError, OSError):
+        return False
+    start_minutes = start_h * 60 + start_m
+    end_minutes = end_h * 60 + end_m
+    now_minutes = local.hour * 60 + local.minute
+    if start_minutes == end_minutes:
+        return False  # a zero-width window is not a window
+    if start_minutes < end_minutes:
+        return start_minutes <= now_minutes < end_minutes
+    # wraps past midnight, e.g. 22:00-07:00
+    return now_minutes >= start_minutes or now_minutes < end_minutes
+
+
+#: dedup decisions `ntfy_dedup_decision` can return.
+NTFY_DEDUP_ALERT = "alert"          # first occurrence of this key
+NTFY_DEDUP_FOLD = "fold"            # standing condition, no magnitude increase -- suppressed
+NTFY_DEDUP_REALERT = "re-alert"     # standing condition whose magnitude increased
+
+
+def ntfy_dedup_decision(state: dict, key: str, magnitude: int, now_ts: float) -> str:
+    """Same shape as basis #922's anomaly dedup (first occurrence alerts, repeats fold, a magnitude
+    increase re-alerts) -- pusher.py carried no such code at the time this was written (checked:
+    no `anomaly`/`dedup`-standing-condition function exists anywhere in this file), so this is a
+    fresh implementation of that shape rather than a reuse of a prior one. Mutates `state` in place
+    (caller persists via save_push_state, same discipline as every other *_and_record helper in this
+    module); pure return value is only the decision string."""
+    entry = state.get(key)
+    if entry is None:
+        state[key] = {"first_seen": now_ts, "last_seen": now_ts, "magnitude": magnitude, "alert_count": 1}
+        return NTFY_DEDUP_ALERT
+    entry["last_seen"] = now_ts
+    if magnitude > entry.get("magnitude", 0):
+        entry["magnitude"] = magnitude
+        entry["alert_count"] = entry.get("alert_count", 0) + 1
+        return NTFY_DEDUP_REALERT
+    return NTFY_DEDUP_FOLD
+
+
+def ntfy_clear_dedup(state: dict, key: str) -> None:
+    """Drops a resolved standing condition's dedup entry so its NEXT occurrence reads as a fresh
+    first occurrence rather than folding forever against a condition that no longer holds."""
+    state.pop(key, None)
+
+
+def load_ntfy_secrets(here: Path = HERE) -> dict:
+    """secrets.local.json next to this script -- gitignored, machine-local, per the pattern this
+    tool's other secrets (the mailbox push token) already follow. Missing file -> {} (no token; a
+    self-hosted ntfy server that requires auth will reject the push and the pusher logs that same as
+    any other send failure -- never a crash on a missing secrets file)."""
+    path = here / "secrets.local.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def send_ntfy(sender, server: str, topic: str, token: str | None, title: str, message: str,
+              priority: str) -> None:
+    """One small function, injectable `sender` -- `sender(url, headers, body_bytes)`. Never called
+    with a real network sender from a test; selftests pass a fake that records calls."""
+    headers = {"Title": title, "Priority": priority}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    sender(f"{server.rstrip('/')}/{topic}", headers, message.encode("utf-8"))
+
+
+def _urllib_ntfy_sender(url: str, headers: dict, body: bytes) -> None:
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        resp.read()
+
+
+def maybe_push_ntfy_event(cfg: dict, secrets: dict, state: dict, event_type: str, key: str,
+                           magnitude: int, title: str, message: str, now: datetime,
+                           sender=None) -> str:
+    """The one entry point main() calls. Returns what happened, purely for logging:
+    "disabled" (no ntfy_topic configured), "suppressed-quiet-hours", "folded", or "sent". Never
+    raises on a send failure -- caller wraps the actual send in the same try/except-and-log posture
+    every other producer in this module uses; this function itself only decides whether to try."""
+    topic = cfg.get("ntfy_topic")
+    if not topic:
+        return "disabled"
+    tier = ntfy_priority_for_event(event_type)
+    if tier != "urgent" and in_quiet_hours(cfg, now):
+        return "suppressed-quiet-hours"
+    decision = ntfy_dedup_decision(state, key, magnitude, now.timestamp())
+    if decision == NTFY_DEDUP_FOLD:
+        return "folded"
+    send_ntfy(sender or _urllib_ntfy_sender, cfg.get("ntfy_server", NTFY_DEFAULT_SERVER), topic,
+               secrets.get("ntfy_token"), title, message, tier)
+    return "sent"
+
+
+#: the room-condition event types this pusher can detect purely from `fleet_status`'s own row
+#: fields -- no new engine surface needed. Every key here is one of NTFY_EVENT_TIERS' keys.
+_NTFY_ROOM_EVENT_KEYS = ("lane_failed", "lane_succeeded_with_warnings", "zombie_detected")
+
+
+def ntfy_room_classification(room: dict) -> tuple[str, int] | None:
+    """Classifies a single `fleet_status` room row into (event_type, magnitude), or None when the
+    room is in no notifiable condition. Magnitude is what `ntfy_dedup_decision` compares to decide
+    fold vs. re-alert -- for a failed lane that's the retry count (a failure that has now failed
+    THREE times is worth re-alerting on even though the room never left "Failed"); for a zombie it's
+    a constant 1 (there is no natural magnitude to a single stalled room beyond its own existence).
+    "Succeeded with warnings" has no dedicated taxonomy field yet (spec/baton.md §6, #1390's hollow-
+    success badge is separate, still gated) -- the best available signal today is a room that
+    reached Succeeded only after at least one retry, or that still carries a non-empty `error`
+    string despite a Succeeded state."""
+    if not isinstance(room, dict):
+        return None
+    state = room.get("state")
+    try_count = room.get("try") or 1
+    if state == "Failed":
+        return "lane_failed", int(try_count)
+    if state == "Stalled":
+        return "zombie_detected", 1
+    if state == "Succeeded" and (room.get("error") or int(try_count) > 1):
+        return "lane_succeeded_with_warnings", int(try_count)
+    return None
+
+
+def _ntfy_room_title_message(event_type: str, room: dict) -> tuple[str, str]:
+    name = room.get("name") or room.get("path") or "(unknown room)"
+    if event_type == "lane_failed":
+        err = room.get("error") or "no error text"
+        return f"Lane failed: {name}", err[:200]
+    if event_type == "zombie_detected":
+        return f"Lane stalled: {name}", "engine reads dead; room may need a redispatch"
+    if event_type == "lane_succeeded_with_warnings":
+        try_count = room.get("try") or 1
+        detail = room.get("error") or f"succeeded after {try_count} attempt(s)"
+        return f"Lane succeeded with warnings: {name}", detail[:200]
+    return f"Fleet event: {name}", event_type
+
+
+def push_ntfy_room_events(cfg: dict, secrets: dict, ntfy_state: dict, room_list: list,
+                           now: datetime, sender=None) -> None:
+    """Called once per main() cycle over the CURRENT room list. A room with no notifiable condition
+    this cycle has its dedup entries cleared, so a LATER re-occurrence (a lane that recovers, then
+    fails again) reads as a fresh first occurrence rather than folding forever against a condition
+    that already resolved. Never raises -- a single room's send failure is logged and does not stop
+    the rest of the fleet from being considered."""
+    for room in (room_list or []):
+        if not isinstance(room, dict):
+            continue
+        path = room.get("path") or room.get("name")
+        if not path:
+            continue
+        classification = ntfy_room_classification(room)
+        keys = [f"{event_type}:{path}" for event_type in _NTFY_ROOM_EVENT_KEYS]
+        if classification is None:
+            for k in keys:
+                ntfy_clear_dedup(ntfy_state, k)
+            continue
+        event_type, magnitude = classification
+        active_key = f"{event_type}:{path}"
+        for k in keys:
+            if k != active_key:
+                ntfy_clear_dedup(ntfy_state, k)
+        title, message = _ntfy_room_title_message(event_type, room)
+        try:
+            outcome = maybe_push_ntfy_event(cfg, secrets, ntfy_state, event_type, active_key,
+                                             magnitude, title, message, now, sender=sender)
+            if outcome == "sent":
+                log(f"ntfy: {event_type} for {room.get('name', path)}")
+        except Exception as ex:  # noqa: BLE001 — one room's ntfy failure must not skip the rest
+            log(f"ERROR (ntfy room event) {type(ex).__name__}: {ex}")
+
+
+def push_ntfy_pusher_anomaly(cfg: dict, secrets: dict, ntfy_state_path: Path, block_name: str,
+                              ex: Exception, now: datetime, sender=None) -> None:
+    """Called from main()'s own except blocks (snapshot/heartbeat/deliver) -- a pusher-level
+    anomaly, tier `high`. Keyed by block_name alone (not the exception text, which can vary run to
+    run for the same underlying fault) so a repeating failure folds instead of paging every cycle.
+    Owns its own load/save round-trip against `ntfy_state_path` (unlike `push_ntfy_room_events`,
+    which shares an already-loaded state dict with its caller) -- each call site is a distinct
+    except block that cannot assume any other block ran first this cycle, so a self-contained
+    load-mutate-save is the only safe posture. Never raises."""
+    try:
+        state = load_push_state(ntfy_state_path)
+        outcome = maybe_push_ntfy_event(
+            cfg, secrets, state, "pusher_anomaly", f"pusher_anomaly:{block_name}", 1,
+            f"Fleet Glass pusher anomaly ({block_name})", f"{type(ex).__name__}: {ex}"[:200],
+            now, sender=sender)
+        save_push_state(ntfy_state_path, state)
+        if outcome == "sent":
+            log(f"ntfy: pusher_anomaly ({block_name})")
+    except Exception as ntfy_ex:  # noqa: BLE001 — the ntfy path itself must never break the loop
+        log(f"ERROR (ntfy pusher anomaly) {type(ntfy_ex).__name__}: {ntfy_ex}")
+
+
+# ---------------------------------------------------------------------------------------------
 # Identity diff (#1557 PR-B1): runs BOTH the `derive` path and the `file` path once against the
 # SAME live rooms and diffs them field-by-field, so the switch above can be flipped on trust rather
 # than hope. `python pusher.py --compare-projection`.
@@ -3016,6 +3321,13 @@ def main() -> None:
     # F4 (2026-09-02 review): the write-budget ledger's own file, separate from state_path -- see
     # DEFAULT_BUDGET_STATE_FILE's own comment for why.
     budget_path = Path(cfg["write_budget_file"]).expanduser() if cfg.get("write_budget_file") else DEFAULT_BUDGET_STATE_FILE
+    # #1558: the ntfy dedup ledger's own file, beside push-state.local.json (never inside it -- a
+    # room's ntfy dedup entry has nothing to do with the mailbox's content-hash dedup, and mixing
+    # the two would make either one harder to reason about in isolation).
+    ntfy_state_path = Path(cfg["ntfy_state_file"]).expanduser() if cfg.get("ntfy_state_file") else NTFY_DEFAULT_STATE_FILE
+    ntfy_secrets = load_ntfy_secrets(HERE)
+    if not cfg.get("ntfy_topic"):
+        log("ntfy: no ntfy_topic configured -- push disabled")
     deliver_url = derive_deliver_url(cfg)
     heartbeat_url = derive_heartbeat_url(cfg)
     skip_log_every = max(1, round(600 / interval)) if interval > 0 else 1
@@ -3052,6 +3364,10 @@ def main() -> None:
 
     try:
         while True:
+            # #1558: default so the ntfy room-events block below (its own top-level try/except) has
+            # something to iterate even on a cycle whose snapshot try/except raised before assigning
+            # this -- an empty list means "detect nothing this cycle", never a crash.
+            room_list: list = []
             try:
                 # #1557 PR-B1: `file` mode reads the daemon's own projection file instead of
                 # spawning `dotnet mcp` -- `used_file_this_cycle` is False whenever the file was
@@ -3264,6 +3580,8 @@ def main() -> None:
                     save_push_state(budget_path, log_ledger_state)
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (snapshot) {type(ex).__name__}: {ex}")
+                push_ntfy_pusher_anomaly(cfg, ntfy_secrets, ntfy_state_path, "snapshot", ex,
+                                          datetime.now(timezone.utc))
 
             # Own try/except, runs AFTER the snapshot has already been sent above -- a slow or failing
             # heartbeat POST must never block or delay the snapshot path (#1486). Also carries the
@@ -3314,6 +3632,8 @@ def main() -> None:
                     f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (heartbeat) {type(ex).__name__}: {ex}")
+                push_ntfy_pusher_anomaly(cfg, ntfy_secrets, ntfy_state_path, "heartbeat", ex,
+                                          datetime.now(timezone.utc))
 
             try:
                 if deliver_url is None:
@@ -3367,6 +3687,19 @@ def main() -> None:
                     f"no writes until {ex.resets_at}")
             except Exception as ex:  # noqa: BLE001 — loop must survive anything
                 log(f"ERROR (deliver) {type(ex).__name__}: {ex}")
+                push_ntfy_pusher_anomaly(cfg, ntfy_secrets, ntfy_state_path, "deliver", ex,
+                                          datetime.now(timezone.utc))
+
+            # #1558: ntfy room-condition events -- own top-level try/except so a failure here never
+            # touches the mailbox producers above. Runs every cycle over whatever `room_list` the
+            # snapshot block above produced (possibly [] if that block raised early); dedup state is
+            # round-tripped through disk the same way every other producer's state is.
+            try:
+                ntfy_state = load_push_state(ntfy_state_path)
+                push_ntfy_room_events(cfg, ntfy_secrets, ntfy_state, room_list, datetime.now(timezone.utc))
+                save_push_state(ntfy_state_path, ntfy_state)
+            except Exception as ex:  # noqa: BLE001 — loop must survive anything
+                log(f"ERROR (ntfy room events) {type(ex).__name__}: {ex}")
 
             if once:
                 break
@@ -5498,6 +5831,164 @@ def _selftest() -> int:
     check(f"#1807 settled-rooms floor: {_MIN_SETTLED_ROOMS_FOR_GREEN} is the actual floor "
           "(a compare with fewer settled rooms than this must not pass, i.e. 'green on 0')",
           sum(1 for r in fewer_than_floor if _room_is_settled(r)) < _MIN_SETTLED_ROOMS_FOR_GREEN)
+
+    # -- #1558: ntfy severity tiers --
+    check("tier table: lane_failed is urgent", ntfy_priority_for_event("lane_failed") == "urgent")
+    check("tier table: lane_succeeded_with_warnings is default",
+          ntfy_priority_for_event("lane_succeeded_with_warnings") == "default")
+    check("tier table: zombie_detected is high", ntfy_priority_for_event("zombie_detected") == "high")
+    check("tier table: stalled_detected is high", ntfy_priority_for_event("stalled_detected") == "high")
+    check("tier table: pusher_anomaly is high", ntfy_priority_for_event("pusher_anomaly") == "high")
+    check("tier table: an unrecognized event type fails toward default, never urgent",
+          ntfy_priority_for_event("something_made_up") == "default")
+
+    # -- #1558: quiet hours, both sides of a wrapping window, plus a non-wrapping one. Built as UTC
+    # instants offset by the known EST (UTC-5) January offset rather than via ZoneInfo directly, so
+    # this selftest passes with or without the `tzdata` package -- and on a box lacking it (this dev
+    # box measured: Windows, Python 3.12, no `tzdata` installed) it exercises the SAME
+    # `_us_eastern_offset_fallback` path `in_quiet_hours` itself falls back to, rather than a
+    # different one than production hits here. --
+    def _et(month, day, hour, minute):
+        return datetime(2026, month, day, hour, minute, tzinfo=timezone.utc) + timedelta(hours=5)
+
+    wrapping_cfg = {"ntfy_quiet_hours": {"start": "22:00", "end": "07:00", "timezone": "America/New_York"}}
+    inside_late = _et(1, 5, 23, 30)
+    inside_early = _et(1, 5, 3, 0)
+    outside = _et(1, 5, 12, 0)
+    boundary_start = _et(1, 5, 22, 0)
+    boundary_end = _et(1, 5, 7, 0)
+    check("quiet hours (wrapping 22:00-07:00): 23:30 ET is inside", in_quiet_hours(wrapping_cfg, inside_late))
+    check("quiet hours (wrapping 22:00-07:00): 03:00 ET is inside", in_quiet_hours(wrapping_cfg, inside_early))
+    check("quiet hours (wrapping 22:00-07:00): 12:00 ET is outside", not in_quiet_hours(wrapping_cfg, outside))
+    check("quiet hours: the start boundary itself is inside (inclusive)",
+          in_quiet_hours(wrapping_cfg, boundary_start))
+    check("quiet hours: the end boundary itself is outside (exclusive)",
+          not in_quiet_hours(wrapping_cfg, boundary_end))
+    non_wrapping_cfg = {"ntfy_quiet_hours": {"start": "13:00", "end": "15:00", "timezone": "America/New_York"}}
+    check("quiet hours (non-wrapping 13:00-15:00): 14:00 ET is inside",
+          in_quiet_hours(non_wrapping_cfg, _et(1, 5, 14, 0)))
+    check("quiet hours (non-wrapping 13:00-15:00): 16:00 ET is outside",
+          not in_quiet_hours(non_wrapping_cfg, _et(1, 5, 16, 0)))
+    check("quiet hours: no ntfy_quiet_hours configured at all -> never quiet",
+          not in_quiet_hours({}, inside_late))
+    # a UTC instant that lands inside the window once converted to ET -- proves the conversion runs,
+    # not just a same-timezone comparison.
+    utc_instant_inside_et_window = datetime(2026, 1, 6, 4, 30, tzinfo=timezone.utc)  # 23:30 ET
+    check("quiet hours: a UTC `now` is converted to the configured timezone before comparing",
+          in_quiet_hours(wrapping_cfg, utc_instant_inside_et_window))
+
+    # -- #1558: dedup -- first occurrence alerts, a repeat folds, a magnitude increase re-alerts,
+    # and clearing lets a later occurrence read as fresh again --
+    dedup_state: dict = {}
+    check("dedup: first occurrence alerts",
+          ntfy_dedup_decision(dedup_state, "k1", 1, 1000.0) == NTFY_DEDUP_ALERT)
+    check("dedup: same magnitude repeat folds",
+          ntfy_dedup_decision(dedup_state, "k1", 1, 1025.0) == NTFY_DEDUP_FOLD)
+    check("dedup: a magnitude increase re-alerts",
+          ntfy_dedup_decision(dedup_state, "k1", 3, 1050.0) == NTFY_DEDUP_REALERT)
+    check("dedup: back down to the same (now higher-water) magnitude folds again",
+          ntfy_dedup_decision(dedup_state, "k1", 3, 1075.0) == NTFY_DEDUP_FOLD)
+    ntfy_clear_dedup(dedup_state, "k1")
+    check("dedup: clearing a resolved condition drops its entry",
+          "k1" not in dedup_state)
+    check("dedup: a fresh occurrence after clearing alerts again, not folds",
+          ntfy_dedup_decision(dedup_state, "k1", 1, 1100.0) == NTFY_DEDUP_ALERT)
+
+    # -- #1558: transport is one small function behind an injectable sender; a selftest never makes
+    # a live ntfy request -- `fake_sender` below is the only sender any check here ever uses --
+    sent_calls: list = []
+
+    def fake_sender(url: str, headers: dict, body: bytes) -> None:
+        sent_calls.append((url, dict(headers), body))
+
+    send_ntfy(fake_sender, "https://ntfy.sh", "my-topic", None, "Title", "Body", "urgent")
+    check("send_ntfy: hits <server>/<topic>", sent_calls[-1][0] == "https://ntfy.sh/my-topic")
+    check("send_ntfy: sets the Priority header from the tier passed in",
+          sent_calls[-1][1]["Priority"] == "urgent")
+    check("send_ntfy: no token -> no Authorization header", "Authorization" not in sent_calls[-1][1])
+    sent_calls.clear()
+    send_ntfy(fake_sender, "https://ntfy.sh", "my-topic", "tok123", "Title", "Body", "high")
+    check("send_ntfy: a token adds a Bearer Authorization header",
+          sent_calls[-1][1].get("Authorization") == "Bearer tok123")
+
+    # -- #1558: maybe_push_ntfy_event -- disabled, quiet-hours suppression (urgent always sends),
+    # and dedup fold, end to end --
+    sent_calls.clear()
+    no_topic_state: dict = {}
+    outcome = maybe_push_ntfy_event({}, {}, no_topic_state, "lane_failed", "k", 1, "t", "m",
+                                     outside, sender=fake_sender)
+    check("maybe_push_ntfy_event: no ntfy_topic configured -> disabled, no send",
+          outcome == "disabled" and not sent_calls)
+
+    quiet_cfg = {"ntfy_topic": "my-topic", **wrapping_cfg}
+    default_tier_state: dict = {}
+    outcome = maybe_push_ntfy_event(quiet_cfg, {}, default_tier_state, "lane_succeeded_with_warnings",
+                                     "k", 1, "t", "m", inside_late, sender=fake_sender)
+    check("maybe_push_ntfy_event: a default-tier event during quiet hours is suppressed",
+          outcome == "suppressed-quiet-hours" and not sent_calls)
+
+    urgent_state: dict = {}
+    outcome = maybe_push_ntfy_event(quiet_cfg, {}, urgent_state, "lane_failed", "k", 1, "t", "m",
+                                     inside_late, sender=fake_sender)
+    check("maybe_push_ntfy_event: urgent always sends, even during quiet hours",
+          outcome == "sent" and len(sent_calls) == 1)
+    sent_calls.clear()
+    outcome = maybe_push_ntfy_event(quiet_cfg, {}, urgent_state, "lane_failed", "k", 1, "t", "m",
+                                     inside_late, sender=fake_sender)
+    check("maybe_push_ntfy_event: an unchanged repeat folds and does not send again",
+          outcome == "folded" and not sent_calls)
+    outcome = maybe_push_ntfy_event(quiet_cfg, {}, urgent_state, "lane_failed", "k", 3, "t", "m",
+                                     inside_late, sender=fake_sender)
+    check("maybe_push_ntfy_event: a magnitude increase re-alerts and sends again",
+          outcome == "sent" and len(sent_calls) == 1)
+
+    # -- #1558: per-room classification and the main()-facing push_ntfy_room_events sweep --
+    check("ntfy_room_classification: a Failed room classifies as lane_failed with try as magnitude",
+          ntfy_room_classification({"state": "Failed", "try": 2}) == ("lane_failed", 2))
+    check("ntfy_room_classification: a Stalled room classifies as zombie_detected",
+          ntfy_room_classification({"state": "Stalled"}) == ("zombie_detected", 1))
+    check("ntfy_room_classification: a plain Succeeded room (no retries, no error) is not notifiable",
+          ntfy_room_classification({"state": "Succeeded", "try": 1}) is None)
+    check("ntfy_room_classification: Succeeded after a retry classifies as succeeded-with-warnings",
+          ntfy_room_classification({"state": "Succeeded", "try": 2}) == ("lane_succeeded_with_warnings", 2))
+    check("ntfy_room_classification: a Running room is not notifiable",
+          ntfy_room_classification({"state": "Running"}) is None)
+
+    sent_calls.clear()
+    room_events_cfg = {"ntfy_topic": "my-topic"}
+    room_events_state: dict = {}
+    failing_room = {"path": "/rooms/x", "name": "room-x", "state": "Failed", "try": 1, "error": "boom"}
+    push_ntfy_room_events(room_events_cfg, {}, room_events_state, [failing_room], outside, sender=fake_sender)
+    check("push_ntfy_room_events: a newly-failed room alerts once", len(sent_calls) == 1)
+    sent_calls.clear()
+    push_ntfy_room_events(room_events_cfg, {}, room_events_state, [failing_room], outside, sender=fake_sender)
+    check("push_ntfy_room_events: the same still-failed room folds on the next cycle", not sent_calls)
+    failing_room_retried = {**failing_room, "try": 4}
+    push_ntfy_room_events(room_events_cfg, {}, room_events_state, [failing_room_retried], outside, sender=fake_sender)
+    check("push_ntfy_room_events: a higher try count on the same failed room re-alerts",
+          len(sent_calls) == 1)
+    sent_calls.clear()
+    recovered_room = {"path": "/rooms/x", "name": "room-x", "state": "Running"}
+    push_ntfy_room_events(room_events_cfg, {}, room_events_state, [recovered_room], outside, sender=fake_sender)
+    check("push_ntfy_room_events: a recovered room sends nothing and clears its dedup entries",
+          not sent_calls and "lane_failed:/rooms/x" not in room_events_state)
+    push_ntfy_room_events(room_events_cfg, {}, room_events_state, [failing_room], outside, sender=fake_sender)
+    check("push_ntfy_room_events: the SAME room failing again after recovering alerts fresh, not folded",
+          len(sent_calls) == 1)
+
+    # -- #1558: pusher-level anomaly, keyed by block name so a repeating fault folds --
+    with tempfile.TemporaryDirectory() as anomaly_tmp:
+        anomaly_state_path = Path(anomaly_tmp) / "ntfy-state.json"
+        anomaly_cfg = {"ntfy_topic": "my-topic"}
+        sent_calls.clear()
+        push_ntfy_pusher_anomaly(anomaly_cfg, {}, anomaly_state_path, "deliver",
+                                  RuntimeError("boom"), outside, sender=fake_sender)
+        check("push_ntfy_pusher_anomaly: a first-time anomaly sends", len(sent_calls) == 1)
+        sent_calls.clear()
+        push_ntfy_pusher_anomaly(anomaly_cfg, {}, anomaly_state_path, "deliver",
+                                  RuntimeError("boom again, different text"), outside, sender=fake_sender)
+        check("push_ntfy_pusher_anomaly: a repeat in the SAME block folds regardless of exception text",
+              not sent_calls)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)
