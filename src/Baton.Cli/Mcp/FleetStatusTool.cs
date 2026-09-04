@@ -722,10 +722,7 @@ public sealed record FleetRoomStatusView(
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? TerminalAt = null,
-    // #734: the delivery poller's own latest recorded fact for this room (spec/baton.md §7) -- never
-    // a live `gh` read here, only what Baton.Cli.Daemon.DeliveryPoller has already journaled. Absent
-    // until the poller has recorded a first fact, including for a room whose declared outputs never
-    // resolved a delivery reference at all (the common case).
+    // #734: spec/baton.md §6 schema states this field's shape and its absence rule -- see there.
     [property: JsonPropertyName("delivery")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DeliveryStatusView? Delivery = null);

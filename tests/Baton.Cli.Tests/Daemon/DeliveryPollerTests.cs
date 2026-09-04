@@ -99,11 +99,7 @@ public sealed class DeliveryPollerTests : IDisposable
 
     private const string ClosedUnmergedJson = """{"state":"CLOSED","statusCheckRollup":[]}""";
 
-    /// <summary>
-    /// #734 review finding: `statusCheckRollup` is a union of CheckRun (status/conclusion) and the
-    /// legacy commit-status shape (state/context) -- a CI provider posting the latter must never read
-    /// as complete-and-green before it actually reported.
-    /// </summary>
+    /// <summary>#734 review finding: fixtures for the second `statusCheckRollup` shape `DeliveryPoller.ParsePrView`'s own remarks name.</summary>
     private const string LegacyStatusContextPendingJson = """
         {"state":"OPEN","statusCheckRollup":[
             {"state":"PENDING","context":"ci/jenkins"}
