@@ -108,9 +108,9 @@ public class NonProcessCancellationDetectorTests
 
     // #1556 PR 1: ArrestableExecutions.All (the collapsed predicate this detector now filters) also
     // yields a quota-parked step (#1607 — Failed with a scheduled RetryNotBefore), unlike this
-    // detector's own pre-collapse Running-only loop. That park path stays
-    // MutationInterface.SettleParkedCancelIntentsAsync's, not this detector's — this pins the filter
-    // that keeps it that way.
+    // detector's own pre-collapse Running-only loop. That park path stays the ledger-read
+    // parked-cancel block's (MutationInterface, IsParkedRetryTarget-guarded), not this detector's —
+    // this pins the filter that keeps it that way.
     [Fact]
     public void A_quota_parked_non_process_step_with_an_unfulfilled_cancellation_request_is_left_for_the_parked_settle_path()
     {

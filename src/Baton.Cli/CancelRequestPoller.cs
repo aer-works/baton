@@ -16,15 +16,22 @@ namespace Baton.Cli;
 /// alongside its own <see cref="MutationInterface.StartWorkflowAsync"/> call — the registry it is
 /// given must be the same instance that call bound to the run's <c>IEventLogWriter</c>.
 /// <para>
-/// #1563 (S0 of the quota design, #802): a target that has no live process to deliver to AND is not
-/// genuinely settled — a step Failed with a scheduled <see cref="Domain.StepState.RetryNotBefore"/>,
-/// the shape a vendor-quota park leaves behind — is marked via
-/// <see cref="InFlightExecutionRegistry.MarkParkedCancelIntent"/> instead of being told it is too
-/// late. That mark records nothing by itself; the pump validates and appends the durable events once
-/// it wakes, exactly as <c>RequestCancellationAsync</c> does for a live process — and it wakes on
-/// TWO separate waits, not one: the idle-deferral wait (nothing else in flight) and the busy wait
-/// (a sibling step's dispatch still is), both wired to the same latch (<c>MutationInterface</c>'s own
-/// remarks on each site have the detail).
+/// #1556 (generalized from #1563's narrower quota-parked-only case, S0 of the quota design, #802): a
+/// target that has no live process to deliver to AND is not genuinely settled — a step Failed with a
+/// scheduled <see cref="Domain.StepState.RetryNotBefore"/> (a vendor-quota park), a still-Running
+/// non-process step, or a still-pending step-less execution — is marked via
+/// <see cref="InFlightExecutionRegistry.MarkArrestIntent"/> instead of being told it is too late (or,
+/// pre-#1556, silently left to the bounded retry with no mark at all for the non-parked shapes). That
+/// mark records nothing by itself; the pump validates and appends the durable events once it wakes,
+/// exactly as <c>RequestCancellationAsync</c> does for a live process — and it wakes on TWO separate
+/// waits, not one: the idle-deferral wait (nothing else in flight) and the busy wait (a sibling
+/// step's dispatch still is), both wired to the same latch (<c>MutationInterface</c>'s own remarks on
+/// each site have the detail). This poller has no <c>workerBindings</c> in scope, so it cannot itself
+/// tell a genuinely non-process target from a Process one that simply has not registered yet — that
+/// fail-closed gate is <c>MutationInterface.SettleArrestIntentsAsync</c>'s alone, which is exactly
+/// why marking here is unconditional (whenever <see cref="ArrestableExecutions.Find"/> still admits
+/// the target) while the pump's own bounded 5-tick ceiling below stays the honest backstop for a
+/// still-Process target that never resolves.
 /// </para>
 /// </summary>
 public static class CancelRequestPoller
@@ -102,9 +109,11 @@ public static class CancelRequestPoller
     /// the resolver itself did. A delivered request or a genuinely settled
     /// one is consumed; an undelivered still-arrestable target (running, quota-parked, or — #1556 PR 1 —
     /// a still-pending step-less execution, via <see cref="Projection.ArrestableExecutions.Find"/>) is
-    /// retried up to 5 ticks before being rejected (#1530); malformed content or an unresolvable
-    /// <c>latest</c> is rejected immediately (fail closed, no guessing, reason in body) rather than
-    /// retried forever or left to crash the pump.
+    /// marked on <paramref name="inFlightExecutions"/> (#1556 PR 2) and retried up to 5 ticks before
+    /// being rejected with an outcome that says arrest was requested, not that the target was
+    /// unreachable — the parked shape alone retries unbounded, per its own remarks below; malformed
+    /// content or an unresolvable <c>latest</c> is rejected immediately (fail closed, no guessing,
+    /// reason in body) rather than retried forever or left to crash the pump.
     /// </summary>
     internal static async Task TickAsync(
         string roomDirectoryPath,
@@ -173,16 +182,24 @@ public static class CancelRequestPoller
         var targetStep = settleCheckState.Steps.FirstOrDefault(s => s.LatestExecutionId == targetExecutionId);
         var stillArrestable = ArrestableExecutions.Find(settleCheckState, snapshot, targetExecutionId) is not null;
 
-        // #1563 (S0 of the quota design, #802 "three independent locks" finding): a step-tied target sitting on a future
-        // RetryNotBefore has no live process to register with — the worker already exited — but it
-        // is not "already settled" either. The pump is parked in its idle-deferral wait, possibly
-        // for as long as a vendor quota reset (MutationInterface's deferralCandidates). Mark the
-        // intent on the SAME registry that wait watches instead of reporting the false "too late"
-        // verdict below. Idempotent: safe to re-mark on every tick until the pump drains it.
+        // #1556 (generalized from #1563's narrower quota-parked-only mark, "three independent locks"
+        // finding #802): ANY still-arrestable target with no live process to register with — a step
+        // sitting on a future RetryNotBefore (the worker already exited), a Running non-process step,
+        // or a still-pending step-less execution — is marked on the SAME registry the pump's two
+        // waits watch, instead of reporting the false "too late" verdict below or (pre-#1556, for the
+        // non-parked shapes) silently falling through to the bounded retry with no mark at all. This
+        // poller cannot itself tell non-process from a Process step that has not registered yet (no
+        // workerBindings in scope) — that fail-closed proof is MutationInterface.SettleArrestIntentsAsync's,
+        // so marking here is unconditional and the pump is the one that may still record nothing.
+        // Idempotent: safe to re-mark on every tick until the pump drains it.
         var isParked = targetStep is { Status: StepStatus.Failed, RetryNotBefore: not null };
-        if (isParked)
+        if (stillArrestable)
         {
-            inFlightExecutions.MarkParkedCancelIntent(targetExecutionId);
+            inFlightExecutions.MarkArrestIntent(
+                targetExecutionId,
+                isParked
+                    ? "quota-parked (no live process to signal)"
+                    : "no live process registered for this target");
         }
 
         if (!stillArrestable)
@@ -194,9 +211,14 @@ public static class CancelRequestPoller
             // request, not despite it — reporting "too late" for that case is the exact false claim
             // #802's "three independent locks" finding identified (F7, #1605 review: that finding is
             // derived from the code path, not a reproduced run — #802's own audit comment self-tags
-            // it ASSUMED, high confidence, code-derived — for the step-less case this method does
-            // not yet cover).
-            var arrestedByThisRequest = targetStep?.Status == StepStatus.Cancelled;
+            // it ASSUMED, high confidence, code-derived). Read off the terminal EVENT rather than the
+            // projected step: a step-less target (#1556 PR 1's D2 case) has no Steps row to read
+            // Cancelled off at all, so the Steps-only check was always false for it — silently wrong
+            // once this poller started marking step-less targets, since the seam can now actually be
+            // the thing that cancelled it a moment before this re-check.
+            var arrestedByThisRequest = settleCheckEvents
+                .OfType<FlowEvent.ExecutionCancelled>()
+                .Any(e => e.ExecutionId == targetExecutionId);
             try
             {
                 Console.Error.WriteLine(arrestedByThisRequest
@@ -213,9 +235,10 @@ public static class CancelRequestPoller
             return;
         }
 
-        // #1563: a parked mark is a delivery GUARANTEE, not a hope — SettleParkedCancelIntentsAsync
-        // (MutationInterface) will drain it and append the terminal events on the pump's very next
-        // round. Folding this into the bounded-retry counter below would let a slow round (several
+        // #1563: a parked mark is a delivery GUARANTEE, not a hope — MutationInterface's
+        // SettleArrestIntentsAsync will drain it and this loop's own derived obligations will
+        // finalize it (the ledger-read parked-cancel block, IsParkedRetryTarget-guarded) within the
+        // pump's next couple of rounds. Folding this into the bounded-retry counter below would let a slow round (several
         // other steps mid-dispatch, event-log I/O contention) hit the 5-tick ceiling before the pump
         // gets there, rejecting a request that was already going to succeed with the false claim
         // "not reachable" and deleting the pending file out from under the settle that follows
@@ -242,7 +265,11 @@ public static class CancelRequestPoller
             return;
         }
 
-        // Target STILL projects Running: count a bounded retry.
+        // Target STILL projects Running and is not parked: count a bounded retry. The mark above has
+        // already been (re-)placed on this exact tick, so the honest ceiling here is only for the
+        // genuinely unreachable case — a live Process dispatch that never registers within it (a dead
+        // or wedged pump) — not for the ordinary non-process/step-less case, which the pump settles
+        // within roughly one round of the mark landing.
         var retries = RetryCounters.AddOrUpdate(retryKey, 1, (_, current) => current + 1);
         if (retries >= 5)
         {
@@ -250,7 +277,8 @@ public static class CancelRequestPoller
             CancelRequestFile.Reject(
                 requestPath,
                 content.Target,
-                "target still running but not reachable through the in-flight registry (likely non-process work, #1530) — use Ctrl+C on the pump or wait for it to settle");
+                "arrest requested (#1556) but not yet confirmed settled after 5 polls — the pump may still deliver it on "
+                    + "its own; if the target is a live process that never registers, use Ctrl+C on the pump or wait for it to settle");
 
             // #1549: a concrete targetExecutionId is resolved on this branch (unlike the malformed-content
             // or ambiguous-'latest' rejections above, which reject before any execution-scoped id exists
