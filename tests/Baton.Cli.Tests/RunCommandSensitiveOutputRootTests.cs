@@ -2,6 +2,7 @@ using System.Text.Json;
 using Baton.Vendors;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Tests.Shared;
 using Xunit;
 
 namespace Baton.Cli.Tests;
@@ -52,7 +53,7 @@ public class RunCommandSensitiveOutputRootTests
         {
             if (Directory.Exists(testRoot))
             {
-                Directory.Delete(testRoot, recursive: true);
+                DirectoryCleanup.DeleteRecursively(testRoot);
             }
         }
     }
@@ -84,7 +85,7 @@ public class RunCommandSensitiveOutputRootTests
         {
             if (Directory.Exists(testRoot))
             {
-                Directory.Delete(testRoot, recursive: true);
+                DirectoryCleanup.DeleteRecursively(testRoot);
             }
         }
     }
