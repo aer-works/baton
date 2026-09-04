@@ -83,9 +83,9 @@ the index as never having happened, orphan file or not. Only three writers land 
 execution's own `artifacts/execution_<id>/` scratch directory (decision 0021 point 2's "plumbing,
 never surfaced"), so only those route through this primitive: `baton deliver` (`DeliverCommand.cs`)
 — a re-delivery of the same `source_path` now versions rather than replacing the prior bytes — and
-the `promote-artifact` MCP tool (`PromoteArtifactTool.cs`, #595), a worker-side counterpart: a worker
-copies a file out of its own execution scratch directory into `artifacts/` by name, through this
-same primitive, with `producedBy` carrying the calling execution's id (derived from its
+the `promote-artifact` MCP tool (`PromoteArtifactTool.cs`, #595), a worker-side counterpart: named
+bytes a worker points at, anywhere under its own execution's scratch tree, land in `artifacts/`
+the same versioned way, with `producedBy` carrying the calling execution's id (derived from its
 `BATON_OUTPUT_DIR`, the same structural trust `MemoryProposalEscalation`'s remarks give an
 `execution_*` directory name) and `role`/`adapter`/`model` left null — nothing in the MCP host
 today knows a calling worker's role or vendor to record there. Composed onto the same host and

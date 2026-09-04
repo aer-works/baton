@@ -10,9 +10,8 @@ namespace Baton.Cli.Mcp;
 /// attributed, index-locked. Never a second writer: this tool builds the bytes and the attribution,
 /// then hands both to <see cref="RoomArtifacts.Write"/> unchanged.
 /// <para>
-/// Composed into <see cref="McpServerHost"/> by <c>McpCommand</c>, gated by the same
-/// <c>--memory-proposal-tool</c> opt-in <see cref="MemoryProposalTool"/> already uses — see
-/// <c>McpCommand.cs</c> for why this reuses that switch instead of adding a second one.
+/// Composed into <see cref="McpServerHost"/> by <c>McpCommand</c> — see that file's own remarks for
+/// which flag turns this tool on and why.
 /// </para>
 /// </summary>
 public sealed class PromoteArtifactTool(string roomDirectoryPath, ArtifactAttribution attribution) : IMcpTool
