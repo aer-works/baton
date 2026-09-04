@@ -309,10 +309,15 @@ public sealed class FleetProjectionWriterTests : IDisposable
         // Present-but-non-empty patterns file (secretpatterns.example.txt's own first line) -- proves
         // the daemon actually loads BatonPaths.SecretPatternsFile and gates with it, without depending
         // on the operator's own gitignored denylist. #1816: placed at the pusher's own fleet-glass
-        // convention, not directly under the root -- that is the whole point of this test.
-        Directory.CreateDirectory(Path.GetDirectoryName(BatonPaths.SecretPatternsFile)!);
+        // convention, not directly under the root -- that is the whole point of this test. The path is
+        // spelled out here rather than read back from BatonPaths.SecretPatternsFile so the test pins
+        // the LOCATION: written through the property, it would pass against any path the property
+        // happened to return, including the pre-#1816 flat one (#1820 review).
+        var denylistPath = Path.Combine(BatonPaths.Root, "fleet-glass", "secretpatterns.local.txt");
+        Assert.Equal(denylistPath, BatonPaths.SecretPatternsFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(denylistPath)!);
         await File.WriteAllTextAsync(
-            BatonPaths.SecretPatternsFile, "sk-[A-Za-z0-9]{20,}\n", TestContext.Current.CancellationToken);
+            denylistPath, "sk-[A-Za-z0-9]{20,}\n", TestContext.Current.CancellationToken);
 
         var projectionWriter = new FleetProjectionWriter();
         var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
