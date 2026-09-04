@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using System.Text.RegularExpressions;
 using Baton.Core;
 
@@ -30,35 +29,39 @@ public sealed class ClaudeUsageSlashCommandSource : IVendorUsageSource
 
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(45);
 
+    private static readonly string[] DefaultArgs = ["-p", "/usage", "--output-format", "text"];
+
+    private readonly string _program;
+    private readonly string[] _args;
+
+    public ClaudeUsageSlashCommandSource()
+        : this("claude", DefaultArgs)
+    {
+    }
+
+    /// <summary>
+    /// Test-only seam (Baton.Vendors.Tests, via <c>InternalsVisibleTo</c>): substitutes the program
+    /// and arguments so a test can drive a REAL process to a chosen exit code and stdout, rather than
+    /// faking away the exit-code read that #1869's review found missing.
+    /// </summary>
+    internal ClaudeUsageSlashCommandSource(string program, IReadOnlyList<string> args)
+    {
+        _program = program;
+        _args = [.. args];
+    }
+
     public async Task<VendorUsageSnapshot?> ReadAsync(CancellationToken cancellationToken)
     {
-        string stdout;
-        try
-        {
-            using var task = new BatonTask("claude", "-p", "/usage", "--output-format", "text")
-                .WithCaptureOutput(true)
-                .WithTimeout(CommandTimeout);
+        using var task = new BatonTask(_program, _args)
+            .WithCaptureOutput(true)
+            .WithTimeout(CommandTimeout);
 
-            var output = new StringBuilder();
-            task.EventRaised += (_, e) =>
-            {
-                if (e.Kind == BatonTaskEventKind.StdoutChunk && e.Data is { } data)
-                {
-                    output.Append(Encoding.UTF8.GetString(data));
-                }
-            };
+        // Spawn failure, timeout, cancellation, a non-zero exit, or empty stdout all land here as
+        // null -- no snapshot, never a fabricated one (VendorUsageCommandRun's own doc comment).
+        var stdout = await VendorUsageCommandRun.CaptureStdoutOrNullAsync(task, Vendor, cancellationToken)
+            .ConfigureAwait(false);
 
-            await task.RunAsync(cancellationToken).ConfigureAwait(false);
-            stdout = output.ToString();
-        }
-        catch (BatonException)
-        {
-            // The CLI could not be spawned, timed out, or was cancelled -- no snapshot, never a
-            // fabricated one (this type's own doc comment on ReadAsync).
-            return null;
-        }
-
-        return Parse(stdout, DateTimeOffset.UtcNow);
+        return stdout is null ? null : Parse(stdout, DateTimeOffset.UtcNow);
     }
 
     /// <summary>

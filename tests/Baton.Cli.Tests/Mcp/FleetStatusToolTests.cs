@@ -2299,7 +2299,9 @@ public sealed class FleetStatusToolTests : IDisposable
             "agy",
             new DateTimeOffset(2026, 8, 28, 20, 0, 0, TimeSpan.Zero),
             Caveat: null,
-            [new VendorUsageWindow("Gemini Models · Weekly Limit Remaining", 28, new DateTimeOffset(2026, 8, 29, 19, 34, 12, TimeSpan.Zero), "Gemini Models\tWeekly Limit Remaining\t72%\t2026-08-29T19:34:12Z")]);
+            // Name carries the sense of the number (#1869 review) -- agy's own "Remaining" survives
+            // only in rawLine, which the projection passes through verbatim.
+            [new VendorUsageWindow("Gemini Models · Weekly Limit", 28, new DateTimeOffset(2026, 8, 29, 19, 34, 12, TimeSpan.Zero), "Gemini Models\tWeekly Limit Remaining\t72%\t2026-08-29T19:34:12Z")]);
         var snapshotPath = BatonPaths.VendorUsageSnapshotFile("agy");
         Directory.CreateDirectory(Path.GetDirectoryName(snapshotPath)!);
         await File.WriteAllTextAsync(snapshotPath, JsonSerializer.Serialize(snapshot), TestContext.Current.CancellationToken);

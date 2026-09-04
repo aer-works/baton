@@ -2424,7 +2424,7 @@ anticipated this shape):
       "caveat"?: string,             // the vendor's own machine-local disclaimer, verbatim -- absent when the harvest carried none (agy: never documented, so always absent)
       "windows": [
         {
-          "name": string,            // vendor's own wording, e.g. "session", "week (Fable)", "Gemini Models · Weekly Limit Remaining"
+          "name": string,            // vendor's own wording, e.g. "session", "week (Fable)", "Gemini Models · Weekly Limit" -- agy's own "Remaining" is stripped so the label cannot contradict the percent-USED number rendered beside it (#1869 review); "rawLine" keeps the vendor's wording verbatim
           "percentUsed"?: number,    // ALWAYS percent USED (agy's own "percent remaining" is converted before this field is populated) -- absent, never a guessed number, when unparsed
           "resetsAt"?: string,       // ISO-8601 UTC instant -- absent when the vendor's own line carried no reset clause, or claude's non-ISO "Jul 25, 12:09am (America/New_York)" format failed to resolve; "rawLine" still carries the vendor's own text either way
           "rawLine": string          // the vendor's own line, verbatim, for a reader that wants to show what parsing dropped

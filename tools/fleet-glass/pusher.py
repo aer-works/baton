@@ -3583,9 +3583,11 @@ def main() -> None:
                         resolve_projection_file_path(), time.time())
                     if projection_data is not None:
                         # #1391: keep `vendors` alongside `rooms` rather than re-serializing just the
-                        # room list -- the shape drop_stale_rooms/downstream already expect a
-                        # {"rooms": [...], "vendors"?: [...]} object for (the derive path has always
-                        # produced this shape verbatim; this branch used to throw vendors away here).
+                        # room list. Both paths emit {"rooms": [...], "vendors"?: [...]} as of #1391
+                        # (PR #1869) -- before it the derive path produced a bare room array and this
+                        # branch threw `vendors` away. The migration itself is recorded on
+                        # FleetStatusResponse's own doc comment in
+                        # src/Baton.Cli/Mcp/VendorUsageProjectionReader.cs, not restated here.
                         body = json.dumps({
                             "rooms": projection_data.get("rooms", []),
                             **({"vendors": projection_data["vendors"]} if "vendors" in projection_data else {}),

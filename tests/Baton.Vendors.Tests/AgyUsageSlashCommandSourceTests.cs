@@ -23,13 +23,13 @@ public sealed class AgyUsageSlashCommandSourceTests
         Assert.Equal("agy", snapshot.Vendor);
         Assert.Equal(2, snapshot.Windows.Count);
 
-        var weekly = Assert.Single(snapshot.Windows, w => w.Name == "Gemini Models · Weekly Limit Remaining");
+        var weekly = Assert.Single(snapshot.Windows, w => w.Name == "Gemini Models · Weekly Limit");
         // 72% REMAINING -> 28% USED (Parse's own doc comment has the direction/why). Asserting the
         // converted value, not the raw 72, is the point.
         Assert.Equal(28, weekly.PercentUsed);
         Assert.Equal(new DateTimeOffset(2026, 8, 29, 19, 34, 12, TimeSpan.Zero), weekly.ResetsAt);
 
-        var fiveHour = Assert.Single(snapshot.Windows, w => w.Name == "Gemini Models · Five Hour Limit Remaining");
+        var fiveHour = Assert.Single(snapshot.Windows, w => w.Name == "Gemini Models · Five Hour Limit");
         Assert.Equal(58, fiveHour.PercentUsed); // 42% remaining -> 58% used
         Assert.Equal(new DateTimeOffset(2026, 8, 28, 16, 36, 17, TimeSpan.Zero), fiveHour.ResetsAt);
 
@@ -52,6 +52,41 @@ public sealed class AgyUsageSlashCommandSourceTests
     }
 
     [Fact]
+    public void Parse_WindowNameCarriesTheSenseOfTheNumber_NeverSaysRemainingBesideAPercentUsed()
+    {
+        // #1869 review, HIGH: PercentUsed is percent USED, so a name still ending in agy's own word
+        // "Remaining" renders in Fleet Glass as "Weekly Limit Remaining  95% used" -- an operator
+        // reads 95% LEFT when 5% is left. Both directions are asserted: the label must have dropped
+        // the word, AND the raw vendor line must still carry it, since an assertion on absence alone
+        // would also pass if RawLine had been scrubbed or emptied.
+        var snapshot = AgyUsageSlashCommandSource.Parse(
+            DocCapture20260828 + "Claude and GPT models\tWeekly Limit Remaining\t5%\t2026-08-29T00:00:00Z\n",
+            HarvestedAt);
+
+        Assert.Equal(3, snapshot.Windows.Count);
+        foreach (var window in snapshot.Windows)
+        {
+            Assert.NotNull(window.PercentUsed);
+            Assert.DoesNotContain("Remaining", window.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Remaining", window.RawLine, StringComparison.Ordinal);
+        }
+
+        // The rest of the vendor's own wording survives -- only the contradicting token is dropped.
+        Assert.Contains(snapshot.Windows, w => w.Name == "Claude and GPT models · Weekly Limit");
+    }
+
+    [Fact]
+    public void Parse_WindowTextIsNothingButTheStrippedWord_FallsBackToTheFamilyAlone()
+    {
+        // Degenerate arm for StripRemaining: stripping must not leave a dangling "family · ".
+        var snapshot = AgyUsageSlashCommandSource.Parse(
+            "Gemini Models\tRemaining\t72%\t2026-08-29T19:34:12Z\n", HarvestedAt);
+
+        var window = Assert.Single(snapshot.Windows);
+        Assert.Equal("Gemini Models", window.Name);
+    }
+
+    [Fact]
     public void Parse_DegradedEmptyOutput_AllWindowsUnknown()
     {
         var snapshot = AgyUsageSlashCommandSource.Parse(string.Empty, HarvestedAt);
@@ -70,6 +105,45 @@ public sealed class AgyUsageSlashCommandSourceTests
         var snapshot = AgyUsageSlashCommandSource.Parse(partial, HarvestedAt);
 
         var window = Assert.Single(snapshot.Windows);
-        Assert.Equal("Gemini Models · Weekly Limit Remaining", window.Name);
+        Assert.Equal("Gemini Models · Weekly Limit", window.Name);
+    }
+
+    [Fact]
+    public async Task ReadAsync_CommandExitsNonZeroWithJunkOnStdout_ReturnsNullNotAnEmptySnapshot()
+    {
+        // #1869 review, MEDIUM: before this fix nothing subscribed to the Exited event, so an errored
+        // vendor CLI parsed to a zero-window snapshot that the harvester then wrote OVER the last
+        // good one. A real child process is spawned (not a stubbed runner) precisely because the
+        // defect was in the event wiring, which a stub cannot exercise.
+        var source = new AgyUsageSlashCommandSource(
+            UsageSourceShell.Program, UsageSourceShell.JunkThenExit(exitCode: 1));
+
+        Assert.Null(await source.ReadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReadAsync_CommandExitsZeroWithTheDocFixture_ParsesItsWindows()
+    {
+        // Polarity arm for the test above (its claude counterpart's comment has why that shape
+        // discriminates). The fixture goes through a file rather than an echo because agy's rows are
+        // TAB-separated and a shell's own argument splitting would eat them.
+        var fixturePath = Path.Combine(Path.GetTempPath(), $"baton-agy-usage-fixture-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(fixturePath, DocCapture20260828, TestContext.Current.CancellationToken);
+        try
+        {
+            var source = new AgyUsageSlashCommandSource(
+                UsageSourceShell.Program, UsageSourceShell.PrintFile(fixturePath));
+
+            var snapshot = await source.ReadAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotNull(snapshot);
+            Assert.Equal("agy", snapshot!.Vendor);
+            Assert.Equal(2, snapshot.Windows.Count);
+            Assert.Contains(snapshot.Windows, w => w.Name == "Gemini Models · Weekly Limit" && w.PercentUsed == 28);
+        }
+        finally
+        {
+            FileCleanup.Delete(fixturePath);
+        }
     }
 }

@@ -30,16 +30,28 @@ public sealed class VendorUsageHarvester : BackgroundService
 
     private readonly IReadOnlyList<IVendorUsageSource> _sources;
     private readonly VendorUsageHarvestScheduler _scheduler;
+    private readonly Func<CancellationToken, Task<Dictionary<string, int>>> _countLiveLanes;
 
     public VendorUsageHarvester()
         : this([new ClaudeUsageSlashCommandSource(), new AgyUsageSlashCommandSource()])
     {
     }
 
-    internal VendorUsageHarvester(IReadOnlyList<IVendorUsageSource> sources, VendorUsageHarvestScheduler? scheduler = null)
+    /// <summary>
+    /// Test-only seam (Baton.Cli.Tests, via <c>InternalsVisibleTo</c>). <paramref name="countLiveLanes"/>
+    /// substitutes for the room scan so <see cref="TickOnceAsync"/>'s three outcomes — scheduler says
+    /// no, source returns null, source returns a snapshot — can be driven without fabricating a
+    /// Running room per arm. The null-returns-nothing arm is #1869's red arm for
+    /// "an errored harvest must not blank the last good snapshot".
+    /// </summary>
+    internal VendorUsageHarvester(
+        IReadOnlyList<IVendorUsageSource> sources,
+        VendorUsageHarvestScheduler? scheduler = null,
+        Func<CancellationToken, Task<Dictionary<string, int>>>? countLiveLanes = null)
     {
         _sources = sources;
         _scheduler = scheduler ?? new VendorUsageHarvestScheduler(PeriodicInterval, Jitter, PostExitDelay, CoalesceWindow);
+        _countLiveLanes = countLiveLanes ?? CountLiveLanesByVendorAsync;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -73,7 +85,7 @@ public sealed class VendorUsageHarvester : BackgroundService
     /// <summary>One tick's worth of work — public entry point for tests, and what <see cref="ExecuteAsync"/> loops.</summary>
     internal async Task TickOnceAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var liveLanesByVendor = await CountLiveLanesByVendorAsync(cancellationToken).ConfigureAwait(false);
+        var liveLanesByVendor = await _countLiveLanes(cancellationToken).ConfigureAwait(false);
 
         foreach (var source in _sources)
         {
@@ -94,6 +106,10 @@ public sealed class VendorUsageHarvester : BackgroundService
                 continue;
             }
 
+            // Null means the vendor CLI did not produce a usable harvest (not spawned, non-zero exit,
+            // or no output at all -- IVendorUsageSource.ReadAsync's contract). Skipping the write is
+            // what keeps the LAST GOOD snapshot on disk instead of blanking it; pinned by
+            // VendorUsageHarvesterTests' source-returns-null arm.
             if (snapshot is null)
             {
                 continue;

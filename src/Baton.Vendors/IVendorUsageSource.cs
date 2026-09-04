@@ -42,9 +42,13 @@ public interface IVendorUsageSource
 
     /// <summary>
     /// Runs the vendor's own headless usage command once and parses its output. Returns null when the
-    /// CLI could not be spawned or exited non-zero — never a snapshot with fabricated content. A
-    /// spawned-but-unrecognizable output still returns a snapshot, with <see cref="VendorUsageSnapshot.Windows"/>
-    /// empty, so a caller can tell "harvested, nothing parsed" apart from "did not harvest at all".
+    /// CLI could not be spawned, exited non-zero, or exited zero having written nothing at all —
+    /// never a snapshot with fabricated content, and a null tells the harvester to leave the last
+    /// persisted snapshot alone rather than blank it (<see cref="VendorUsageCommandRun"/> is where
+    /// all three cases are decided, and its doc comment has the #1869 defect they close). Output that
+    /// was written but is unrecognizable still returns a snapshot, with
+    /// <see cref="VendorUsageSnapshot.Windows"/> empty, so a caller can tell "harvested, nothing
+    /// parsed" apart from "did not harvest at all".
     /// </summary>
     Task<VendorUsageSnapshot?> ReadAsync(CancellationToken cancellationToken);
 }

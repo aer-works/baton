@@ -1358,9 +1358,15 @@ function vendorUsageHtml(vendors){
     const caveat = typeof v.caveat === "string" && v.caveat
       ? `<div class="vendorusage-caveat">${esc(v.caveat)}</div>` : "";
     const liveLanes = typeof v.liveLanes === "number" ? v.liveLanes : 0;
-    const harvestedAgo = v.harvestedAt ? (age(v.harvestedAt) || "just now") : "unknown";
+    // age() already returns the WORD "just now" under a minute (and null for an absent/unparseable
+    // instant), so the " ago" suffix belongs only to the duration case -- otherwise the header reads
+    // "harvested just now ago" / "harvested unknown ago" (#1869 review). Build the whole clause.
+    const harvestAge = age(v.harvestedAt);
+    const harvested = harvestAge === null ? "harvest time unknown"
+      : harvestAge === "just now" ? "harvested just now"
+      : `harvested ${harvestAge} ago`;
     return `<div class="vendorusage-block"><div class="vendorusage-head">${esc(v.adapter)} — `
-      + `${liveLanes} live lane${liveLanes === 1 ? "" : "s"}, harvested ${esc(harvestedAgo)} ago</div>`
+      + `${liveLanes} live lane${liveLanes === 1 ? "" : "s"}, ${esc(harvested)}</div>`
       + rows + caveat + `</div>`;
   }).join("");
   $("vendorusage").innerHTML = `<div class="vendorusage">${blocks}</div>`;

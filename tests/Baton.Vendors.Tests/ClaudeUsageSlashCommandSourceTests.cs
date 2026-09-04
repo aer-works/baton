@@ -120,4 +120,52 @@ public sealed class ClaudeUsageSlashCommandSourceTests
         Assert.Equal("session", window.Name);
         Assert.Equal(8, window.PercentUsed);
     }
+
+    [Fact]
+    public async Task ReadAsync_CommandExitsNonZeroWithJunkOnStdout_ReturnsNullNotAnEmptySnapshot()
+    {
+        // #1869 review, MEDIUM: the exit code was never read, so an errored-but-spawned CLI produced
+        // a zero-window snapshot that VendorUsageHarvester wrote over the last good one. Spawns a
+        // real child, because the defect lived in the BatonTask event wiring itself.
+        var source = new ClaudeUsageSlashCommandSource(
+            UsageSourceShell.Program, UsageSourceShell.JunkThenExit(exitCode: 1));
+
+        Assert.Null(await source.ReadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReadAsync_CommandExitsZeroWritingNothing_ReturnsNullNotAnEmptySnapshot()
+    {
+        // The third no-harvest case: a clean exit that produced no output at all is "did not
+        // harvest", not "harvested, nothing parsed" (IVendorUsageSource.ReadAsync's contract).
+        var source = new ClaudeUsageSlashCommandSource(
+            UsageSourceShell.Program, UsageSourceShell.PrintNothing());
+
+        Assert.Null(await source.ReadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ReadAsync_CommandExitsZeroWithTheLiveFixture_ParsesItsWindows()
+    {
+        // Polarity arm for both tests above -- identical real-process path, only the exit code and
+        // the stdout differ, so a null result there cannot be an artifact of the harness.
+        var fixturePath = Path.Combine(Path.GetTempPath(), $"baton-claude-usage-fixture-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(fixturePath, LiveCapture20260904, TestContext.Current.CancellationToken);
+        try
+        {
+            var source = new ClaudeUsageSlashCommandSource(
+                UsageSourceShell.Program, UsageSourceShell.PrintFile(fixturePath));
+
+            var snapshot = await source.ReadAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotNull(snapshot);
+            Assert.Equal("claude", snapshot!.Vendor);
+            Assert.Equal(3, snapshot.Windows.Count);
+            Assert.Contains(snapshot.Windows, w => w.Name == "session" && w.PercentUsed == 8);
+        }
+        finally
+        {
+            FileCleanup.Delete(fixturePath);
+        }
+    }
 }

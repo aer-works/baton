@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using Baton.Core;
 
 namespace Baton.Vendors;
@@ -20,33 +19,37 @@ public sealed class AgyUsageSlashCommandSource : IVendorUsageSource
 
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(45);
 
+    private static readonly string[] DefaultArgs = ["-p", "/usage"];
+
+    private readonly string _program;
+    private readonly string[] _args;
+
+    public AgyUsageSlashCommandSource()
+        : this("agy", DefaultArgs)
+    {
+    }
+
+    /// <summary>
+    /// Test-only seam, same shape and same reason as
+    /// <see cref="ClaudeUsageSlashCommandSource(string, IReadOnlyList{string})"/> — that constructor's
+    /// own doc comment has it.
+    /// </summary>
+    internal AgyUsageSlashCommandSource(string program, IReadOnlyList<string> args)
+    {
+        _program = program;
+        _args = [.. args];
+    }
+
     public async Task<VendorUsageSnapshot?> ReadAsync(CancellationToken cancellationToken)
     {
-        string stdout;
-        try
-        {
-            using var task = new BatonTask("agy", "-p", "/usage")
-                .WithCaptureOutput(true)
-                .WithTimeout(CommandTimeout);
+        using var task = new BatonTask(_program, _args)
+            .WithCaptureOutput(true)
+            .WithTimeout(CommandTimeout);
 
-            var output = new StringBuilder();
-            task.EventRaised += (_, e) =>
-            {
-                if (e.Kind == BatonTaskEventKind.StdoutChunk && e.Data is { } data)
-                {
-                    output.Append(Encoding.UTF8.GetString(data));
-                }
-            };
+        var stdout = await VendorUsageCommandRun.CaptureStdoutOrNullAsync(task, Vendor, cancellationToken)
+            .ConfigureAwait(false);
 
-            await task.RunAsync(cancellationToken).ConfigureAwait(false);
-            stdout = output.ToString();
-        }
-        catch (BatonException)
-        {
-            return null;
-        }
-
-        return Parse(stdout, DateTimeOffset.UtcNow);
+        return stdout is null ? null : Parse(stdout, DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -69,9 +72,15 @@ public sealed class AgyUsageSlashCommandSource : IVendorUsageSource
     /// this field's name would show a nearly-full account as nearly-empty.
     /// </para>
     /// <para>
-    /// <b>Window name.</b> The family and window text collide across rows (every family repeats
-    /// "Weekly Limit Remaining" and "Five Hour Limit Remaining"), so <see cref="VendorUsageWindow.Name"/>
-    /// composes both: <c>"&lt;family&gt; · &lt;window&gt;"</c>.
+    /// <b>Window name carries the sense of the number beside it (#1869 review).</b> The family and
+    /// window text collide across rows (every family repeats "Weekly Limit Remaining" and "Five Hour
+    /// Limit Remaining"), so <see cref="VendorUsageWindow.Name"/> composes both:
+    /// <c>"&lt;family&gt; · &lt;window&gt;"</c> — but the word <i>Remaining</i> is dropped from the
+    /// window half first, because the number this record carries has already been inverted to percent
+    /// USED. Left in, Fleet Glass renders the two adjacent (glass.html's <c>vendorUsageRowHtml</c>)
+    /// as "Weekly Limit Remaining 95% used", which reads as 95% left when 5% is left — the exact
+    /// inversion the conversion above exists to prevent. The vendor's own wording is not lost:
+    /// <see cref="VendorUsageWindow.RawLine"/> still carries the row verbatim, "Remaining" included.
     /// </para>
     /// <para>
     /// <b>Reset instant.</b> Already ISO 8601 (<c>Z</c>-suffixed) — parsed directly, no year-rolling
@@ -122,9 +131,28 @@ public sealed class AgyUsageSlashCommandSource : IVendorUsageSource
                 ? parsed
                 : null;
 
-            windows.Add(new VendorUsageWindow($"{family} · {window}", percentUsed, resetsAt, line));
+            var windowSense = StripRemaining(window);
+            var name = windowSense.Length == 0 ? family : $"{family} · {windowSense}";
+            windows.Add(new VendorUsageWindow(name, percentUsed, resetsAt, line));
         }
 
         return new VendorUsageSnapshot("agy", harvestedAt, Caveat: null, windows);
+    }
+
+    /// <summary>
+    /// Removes the standalone word "Remaining" (in any casing) from agy's own window text and
+    /// collapses the whitespace it leaves behind — "Weekly Limit Remaining" becomes "Weekly Limit".
+    /// Every other word of the vendor's wording survives, so a future agy release that renames a
+    /// window still surfaces its own name; only the token that contradicts the percent-USED number
+    /// beside it is dropped. Returns empty when the window text was nothing but that word, which the
+    /// caller resolves by naming the window after its family alone.
+    /// </summary>
+    private static string StripRemaining(string window)
+    {
+        var kept = window
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Where(word => !string.Equals(word, "Remaining", StringComparison.OrdinalIgnoreCase));
+
+        return string.Join(' ', kept);
     }
 }

@@ -86,32 +86,76 @@ public sealed class VendorUsageHarvestSchedulerTests
         }
     }
 
-    [Fact]
-    public void PeriodicDueAndLaneExitWithinCoalesceWindow_ProducesOneCallNotTwo()
+    /// <summary>
+    /// Drives the exact sequence the coalesce rule exists for: a periodic harvest, then a lane exit
+    /// that arms a post-exit trigger, then the tick on which that trigger comes due. Returns whether
+    /// the post-exit tick harvested, plus that tick's gap from the periodic harvest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="jitter"/> is what moves the post-exit trigger across the coalesce boundary,
+    /// and it has to: <c>JitterFor</c> clamps the budget to <c>min(jitter, baseline)</c>, so with the
+    /// SHIPPED constants (PostExit == Coalesce == 60s) and zero jitter the post-exit instant is
+    /// always <c>exit + 60s</c>, and the exit tick is always strictly after the periodic harvest (a
+    /// periodic harvest needs <c>anyLiveLaneNow</c>, an exit needs <c>!anyLiveLaneNow</c>) -- so the
+    /// gap always exceeds 60s and the branch is only reachable on negative jitter. That is the
+    /// narrow corner these two arms exercise; it is a property of the shipped constants, disclosed
+    /// rather than tuned away, since changing a background service's cadence is a change to real
+    /// vendor session traffic that #1869's review scoped out.
+    /// </para>
+    /// </remarks>
+    private static (bool Harvested, TimeSpan GapFromPriorHarvest) RunPeriodicThenPostExit(
+        double jitter, TimeSpan exitAfterHarvest)
     {
-        var scheduler = NoJitterScheduler();
+        var scheduler = new VendorUsageHarvestScheduler(Periodic, Jitter, PostExit, Coalesce, jitterSource: () => jitter);
         var now = Start;
 
-        // Arm the periodic schedule.
         Assert.False(scheduler.OnTick("claude", now, anyLiveLaneNow: true));
 
-        // Advance to exactly the periodic due instant -- harvest fires (call #1).
-        now += Periodic;
-        Assert.True(scheduler.OnTick("claude", now, anyLiveLaneNow: true));
+        // Periodic due = interval + min(Jitter, interval) * jitter.
+        var harvestedAt = Start + Periodic + TimeSpan.FromSeconds(Math.Min(Jitter.TotalSeconds, Periodic.TotalSeconds) * jitter);
+        Assert.True(scheduler.OnTick("claude", harvestedAt, anyLiveLaneNow: true));
 
-        // The lane exits 5s later, well inside the 60s coalesce window of the harvest just above.
-        now += TimeSpan.FromSeconds(5);
-        Assert.False(scheduler.OnTick("claude", now, anyLiveLaneNow: false));
+        // The lane exits -- arms the post-exit trigger, harvests nothing itself.
+        var exitedAt = harvestedAt + exitAfterHarvest;
+        Assert.False(scheduler.OnTick("claude", exitedAt, anyLiveLaneNow: false));
 
-        // Post-exit trigger becomes due (PostExit=60s after the exit tick) -- but that instant is
-        // still inside the coalesce window of the FIRST harvest (5s + up to 60s < 60s coalesce only if
-        // the total gap stays under Coalesce; use a delay short enough to land inside it).
-        now += TimeSpan.FromSeconds(30); // 5s + 30s = 35s since the harvest, still < 60s coalesce window
-        var due = scheduler.OnTick("claude", now, anyLiveLaneNow: false);
+        // Post-exit due = delay + min(Jitter, delay) * jitter.
+        var postExitDueAt = exitedAt + PostExit + TimeSpan.FromSeconds(Math.Min(Jitter.TotalSeconds, PostExit.TotalSeconds) * jitter);
+        var harvested = scheduler.OnTick("claude", postExitDueAt, anyLiveLaneNow: false);
 
-        // Either it's not due yet at this instant, or it's due but coalesced away -- either way, no
-        // SECOND true has been observed across this whole sequence.
-        Assert.False(due);
+        if (!harvested)
+        {
+            // Discriminator: prove the trigger was DUE and got coalesced away, not merely early. A
+            // consumed trigger never fires later; a deferred one would fire on this next tick, which
+            // is past both the due instant and the coalesce window.
+            Assert.False(scheduler.OnTick("claude", postExitDueAt + Coalesce + Periodic, anyLiveLaneNow: false));
+        }
+
+        return (harvested, postExitDueAt - harvestedAt);
+    }
+
+    [Fact]
+    public void PostExitTriggerDueInsideCoalesceWindow_IsCoalescedIntoTheRecentHarvest()
+    {
+        // jitter -0.5 pulls the post-exit instant to exit+30s; the exit lands 10s after the periodic
+        // harvest, so the trigger comes due 40s after it -- inside the 60s window.
+        var (harvested, gap) = RunPeriodicThenPostExit(jitter: -0.5, exitAfterHarvest: TimeSpan.FromSeconds(10));
+
+        Assert.True(gap < Coalesce, $"fixture must place the trigger INSIDE the window; gap was {gap}");
+        Assert.False(harvested);
+    }
+
+    [Fact]
+    public void PostExitTriggerDueOutsideCoalesceWindow_FiresItsOwnHarvest()
+    {
+        // Polarity arm, identical sequence: the same trigger one second the other side of the
+        // boundary (61s after the harvest) must fire. Without this, the assertion above is satisfied
+        // by a scheduler that never harvests at all.
+        var (harvested, gap) = RunPeriodicThenPostExit(jitter: 0, exitAfterHarvest: TimeSpan.FromSeconds(1));
+
+        Assert.True(gap > Coalesce, $"fixture must place the trigger OUTSIDE the window; gap was {gap}");
+        Assert.True(harvested);
     }
 
     [Fact]
