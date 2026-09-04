@@ -3526,6 +3526,13 @@ neither field (`null`), and the replay falls back to re-deriving from today's bi
 did before this fix, for that older history only. agy's own fail-open behaviour is otherwise
 unchanged.
 
+**#532: claude's counterpart resolve-time probe.** `ClaudeWorkerAdapter.Resolve` now runs
+`IClaudeHookLivenessProbe` (`ProcessClaudeHookLivenessProbe`,
+`src/Baton.Vendors/ClaudeHookLivenessProbe.cs` — its own doc comment has the "why", record-once
+canonical) unconditionally before every dispatch, refusing with `ClaudeHookUnverifiedException`
+unless the real hook answers deny to a synthetic call. Same cached-per-process shape as
+`ProcessAgyHookLivenessProbe` above, for the same reason.
+
 **What a harness author must configure before dispatch does anything:** a `bindings.json` naming
 each worker role's adapter, **model** (§2: always pinned at dispatch time, never a mid-lane choice),
 and permission grant, resolvable at both dispatch time (writes the room's copy) and decide time

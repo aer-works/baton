@@ -39,6 +39,15 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
 
     private const string DefaultPermissionScope = "Write";
 
+    private const int HookTimeoutSeconds = 30;
+
+    private readonly IClaudeHookLivenessProbe _hookLivenessProbe;
+
+    public ClaudeWorkerAdapter(IClaudeHookLivenessProbe? hookLivenessProbe = null)
+    {
+        _hookLivenessProbe = hookLivenessProbe ?? new ProcessClaudeHookLivenessProbe();
+    }
+
     public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)
     {
         ArgumentNullException.ThrowIfNull(grant);
@@ -144,6 +153,17 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         // canonical content on every resolve rather than written once, and #667 for why an unchanged
         // file is not rewritten to get there.
         var (settingsPath, mcpConfigPath) = EnsureLaunchConfigFiles();
+
+        // #532: confirm the hook this dispatch is about to rely on can actually run -- see
+        // IClaudeHookLivenessProbe's own doc comment for why BuildSettingsJson's File.Exists guard
+        // above is not enough on its own. Fails closed, never warns and continues.
+        var hookAssemblyPath = HookAssemblyPath;
+        var probeResult = _hookLivenessProbe.Probe(hookAssemblyPath, TimeSpan.FromSeconds(HookTimeoutSeconds));
+        if (!probeResult.IsLive)
+        {
+            throw new ClaudeHookUnverifiedException(hookAssemblyPath, probeResult.Detail);
+        }
+
         args.Add("--settings");
         args.Add(settingsPath);
         args.Add("--mcp-config");
@@ -492,6 +512,12 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     }
 
     /// <summary>
+    /// Shared with the #532 resolve-time liveness probe below, so both readers name the identical
+    /// path rather than two independent interpolations of the same directory.
+    /// </summary>
+    private static string HookAssemblyPath => Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+
+    /// <summary>
     /// The `--settings` content #543 ships: one `PreToolUse` hook, matching every tool
     /// (<c>"matcher": "*"</c>), spawned in exec form (`args` set) so Claude Code invokes it directly
     /// with no shell -- no quoting concerns, matching this adapter's own "direct shell-less" design
@@ -519,7 +545,7 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// </remarks>
     private static string BuildSettingsJson()
     {
-        var hookAssemblyPath = Path.Combine(AppContext.BaseDirectory, "Baton.Cli.dll");
+        var hookAssemblyPath = HookAssemblyPath;
         if (!File.Exists(hookAssemblyPath))
         {
             throw new InvalidOperationException(
