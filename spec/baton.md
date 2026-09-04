@@ -3436,6 +3436,8 @@ own grant already declares it `false` (the #1456 canonical shape, e.g. the built
 `WriteFiles:false` + `NetworkAccess:false` + `ShellCommandsAreReadOnly`) — the ceiling's cap is a
 boolean AND of both sources, so the capped value alone cannot tell which one closed it.
 
+**A vendor-native sensitive-path refusal sits ahead of grant enforcement entirely** — `IWorkerAdapter.SensitiveOutputRoot`/`RunCommand`'s dispatch-time refusal of a room directory under claude's own config root (#1823, #599), pinned live by the `claude.sensitive-root-write-refused` sentinel in `tools/vendor-verify/verify.py` (narrower than the doc comment reads: `docs/vendor-doc-audit.md`, #1827).
+
 **Grants fail closed — as a dispatch-time obligation, not a measured runtime property.** The rule:
 if a denial cannot be enforced for the chosen vendor, the run must not start. Read it together with
 the broken-hook paragraph below, which this rule would otherwise contradict: a hook that fails to

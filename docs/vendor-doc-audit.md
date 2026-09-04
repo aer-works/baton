@@ -2027,6 +2027,33 @@ silently dropped it — the exact #1459 layer drift the method exists to close, 
 that shape as a shell grant the hook channel never scoped. Fixed to REFUSE (throw) on `Bash\s+\(`
 rather than drop it; lowercase `bash(` stays dropped as text, matching the negative-control row above.
 
+### The config-root write refusal (#1823, #599) re-pinned as a sentinel — and it is narrower than the code comment reads (#1827, CLI 2.1.258, 2026-09-04)
+
+Measured `claude -p --model haiku --effort low`, two arms, one variable: whether a `Write`-tool
+target sits under `CLAUDE_CONFIG_DIR`. Both arms ran under the SAME override, seeded only with a
+copy of the operator's own `.credentials.json` (never the real `~/.claude`, never generated); only
+the write target's location relative to that override differed.
+
+| arm | `CLAUDE_CONFIG_DIR` value | target | result |
+|---|---|---|---|
+| in-root | `<tmp>/.claude` | `<tmp>/.claude/<subdir>/out.txt` | no artifact — "I need permission to create/write to this file. Approve the Write tool call to proceed." (rc 0) |
+| control | `<tmp>/.claude` (same) | `<tmp>/<other-tmp>/out.txt` | wrote `OK` |
+
+The refusal reproduces on this build, but its signature moved since the 2.1.220 measurement `IWorkerAdapter.SensitiveOutputRoot`'s doc comment cites: no artifact and an ask-for-approval sentence, not an exit and a named "which is a sensitive file" string — `-p` (headless) mode cannot answer the ask, so the write is silently withheld rather than refused loudly. The issue's own acceptance criterion ("'sensitive file' or no artifact") anticipated exactly this drift.
+
+A second, unanticipated fact came out of getting the in-root arm to reproduce at all: an override
+pointed at an *arbitrarily-named* temp directory (`<tmp>/v-sensroot-cfg-xxxx`, not `.claude`) let the
+write through with no refusal, on the same CLI build. The refusal keys off a literal `.claude` path
+segment in the target, not off whatever `CLAUDE_CONFIG_DIR` is actually pointed at — it fired
+identically with the env var unset entirely, so long as some ancestor of the target was named
+`.claude`. `SensitiveOutputRoot`'s doc comment reads as config-root-value-aware ("the directory
+claude's CLI itself treats as sensitive"); measured behaviour is closer to "any `.claude`-named path
+segment, CLAUDE_CONFIG_DIR notwithstanding." `ClaudeConfigRootOverride` (`BatonEnvironmentSnapshot`)
+is operator-authored and has no reason to be named anything but `.claude` in practice, so this does
+not contradict any dispatch this refusal has actually gated — recorded here because it narrows the
+claim, not because anything currently depends on the wider one. Sentinel:
+`claude.sensitive-root-write-refused` (`tools/vendor-verify/verify.py`).
+
 ### Still not settled — recorded as untested, not refuted
 
 - **`defer`'s single-tool-call limit.** Three attempts failed to make the model batch tool calls
