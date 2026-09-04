@@ -415,4 +415,134 @@ public sealed class WorktreeProvisionerTests : IDisposable
         Assert.True(WorktreeProvisioner.TryReadWorkspaceChanged(worktree, baseSha, out var changedAgainstSha));
         Assert.True(changedAgainstSha);
     }
+
+    // #1373: ReadWorkspaceMutation, against real git trees for the reason this class's own summary
+    // gives — the probe shells out, so a double would only re-state the assumption under test. The
+    // hermetic half (which branch OutcomeClassifier takes GIVEN a reading) lives in
+    // OutcomeClassifierTests, which injects one.
+
+    [Fact]
+    public void ReadWorkspaceMutation_returns_null_when_there_is_no_workspace_to_read()
+    {
+        // Null, not Unmeasurable: an execution with nowhere to leave work keeps its retry, while one
+        // whose workspace cannot be read does not. Folding the two together would foreclose the first.
+        Assert.Null(WorktreeProvisioner.ReadWorkspaceMutation(null, "HEAD"));
+        Assert.Null(WorktreeProvisioner.ReadWorkspaceMutation("   ", "HEAD"));
+        Assert.Null(WorktreeProvisioner.ReadWorkspaceMutation(Path.Combine(_root, "nonexistent"), "HEAD"));
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_reads_an_untouched_workspace_as_unmutated()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        var startSha = RunGitCapture(worktree, "rev-parse", "HEAD").Trim();
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(worktree, startSha);
+
+        // The discriminating control for every arm below: if this one read "mutated" too, the arms
+        // that follow would pass against a probe that answers "mutated" unconditionally.
+        Assert.NotNull(reading);
+        Assert.True(reading.Measured);
+        Assert.False(reading.Mutated);
+        Assert.Equal(0, reading.ChangedPathCount);
+        Assert.Equal(0, reading.NewCommitCount);
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_counts_uncommitted_and_untracked_paths()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        var startSha = RunGitCapture(worktree, "rev-parse", "HEAD").Trim();
+
+        File.WriteAllText(Path.Combine(worktree, "committed.txt"), "edited by the worker");
+        File.WriteAllText(Path.Combine(worktree, "brand-new.txt"), "never added");
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(worktree, startSha);
+
+        Assert.NotNull(reading);
+        Assert.True(reading.Mutated);
+        Assert.Equal(2, reading.ChangedPathCount);
+        Assert.Equal(0, reading.NewCommitCount);
+        Assert.Contains("2 changed/untracked path(s)", reading.Describe(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_counts_commits_made_since_the_start_sha()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+        var startSha = RunGitCapture(worktree, "rev-parse", "HEAD").Trim();
+
+        File.WriteAllText(Path.Combine(worktree, "work.txt"), "the worker's finished work");
+        RunGit(worktree, "add", ".");
+        RunGit(worktree, "commit", "-m", "worker commit");
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(worktree, startSha);
+
+        // A committed work product leaves a CLEAN tree — the shape #1580/#1584 hit, and the one a
+        // status-only probe would report as "nothing here, retry away".
+        Assert.NotNull(reading);
+        Assert.True(reading.Mutated);
+        Assert.Equal(0, reading.ChangedPathCount);
+        Assert.Equal(1, reading.NewCommitCount);
+        Assert.Contains("1 new commit(s)", reading.Describe(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_without_a_start_ref_reports_a_commit_without_counting_it()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        File.WriteAllText(Path.Combine(worktree, "work.txt"), "the worker's finished work");
+        RunGit(worktree, "add", ".");
+        RunGit(worktree, "commit", "-m", "worker commit");
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(worktree, sinceRef: null);
+
+        // The crash-recovery fallback: the reflog can say THAT a commit happened, never how many, so
+        // the count stays null rather than being fabricated — while Mutated still reads true.
+        Assert.NotNull(reading);
+        Assert.True(reading.Measured);
+        Assert.True(reading.Mutated);
+        Assert.True(reading.HasNewCommits);
+        Assert.Null(reading.NewCommitCount);
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_reads_a_non_git_directory_as_mutated()
+    {
+        var plainDirectory = NewDir("not-a-repo");
+        File.WriteAllText(Path.Combine(plainDirectory, "some-work.txt"), "content");
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(plainDirectory, "HEAD");
+
+        // Fail closed: git cannot answer, so surviving work cannot be ruled out, so no blind retry.
+        Assert.NotNull(reading);
+        Assert.False(reading.Measured);
+        Assert.True(reading.Mutated);
+    }
+
+    [Fact]
+    public void ReadWorkspaceMutation_reads_an_unresolvable_start_ref_as_mutated()
+    {
+        var (repo, reference) = CreateRepoWithBranch("committed.txt");
+        var worktree = Path.Combine(NewDir("task"), "workspace");
+        WorktreeProvisioner.Provision(worktree, repo, reference);
+
+        var reading = WorktreeProvisioner.ReadWorkspaceMutation(worktree, "0000000000000000000000000000000000000000");
+
+        // Half a reading is not a reading: the tree is clean, but the commit half failed, so this must
+        // not settle on "clean" — polarity against the untouched-workspace arm above, which is the
+        // same tree with a resolvable ref.
+        Assert.NotNull(reading);
+        Assert.False(reading.Measured);
+        Assert.True(reading.Mutated);
+    }
 }

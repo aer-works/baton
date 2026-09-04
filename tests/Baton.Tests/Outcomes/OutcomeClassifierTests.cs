@@ -2191,5 +2191,237 @@ public class OutcomeClassifierTests
             DirectoryCleanup.DeleteRecursively(directory);
         }
     }
+
+    // #1373: which branch Classify takes GIVEN a reading. The reading itself is measured against real
+    // git trees in WorktreeProvisionerTests — a double cannot answer "is this tree dirty", but it is
+    // exactly the right instrument for "does a mutated reading foreclose the retry", which is what
+    // these pin. See Classify's workspaceMutationProbe parameter doc for the split.
+
+    private static Func<string?, string?, WorkspaceMutationReading?> ProbeReturning(WorkspaceMutationReading? reading) =>
+        (_, _) => reading;
+
+    [Fact]
+    public void Classify_settles_a_timeout_Indeterminate_when_the_workspace_carries_commits_and_changes()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut),
+                contract,
+                directory,
+                worktreePath: "C:/rooms/room/workspaces/implement",
+                workspaceMutationProbe: ProbeReturning(WorkspaceMutationReading.FromCounts(changedPathCount: 14, newCommitCount: 2)));
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            // Indeterminate carries no FailureClassification, and no capture: null CapturedResponseFile
+            // is what makes StateProjector record IndeterminateProducer.ContractFailure, whose resolve
+            // grammar (`--reject --reason`) is the one this shape needs.
+            Assert.Null(classification.FailureClassification);
+            Assert.Null(classification.CapturedResponseFile);
+
+            var reason = classification.Reason!;
+            Assert.Contains("2 new commit(s) and 14 changed/untracked path(s)", reason, StringComparison.Ordinal);
+            Assert.Contains("baton resolve --reject", reason, StringComparison.Ordinal);
+            // The two ends are both load-bearing, not phrasing: WorkflowOutcome.IsTimeoutFailure reads
+            // the prefix, and StateProjector.BuildConductorResolvedReason strips the suffix.
+            Assert.StartsWith("Execution timed out.", reason, StringComparison.Ordinal);
+            Assert.EndsWith("awaiting conductor resolution.", reason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_settles_a_timeout_Indeterminate_when_the_workspace_could_not_be_read()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut),
+                contract,
+                directory,
+                changesTree: true,
+                changesTreeWorkingDirectory: "C:/lanes/w1373",
+                workspaceMutationProbe: ProbeReturning(WorkspaceMutationReading.Unmeasurable));
+
+            Assert.Equal(OutcomeVerdict.Indeterminate, classification.Verdict);
+            Assert.Contains("could not be read", classification.Reason!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_keeps_the_retryable_Failed_verdict_for_a_timeout_on_an_unmutated_workspace()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut),
+                contract,
+                directory,
+                worktreePath: "C:/rooms/room/workspaces/implement",
+                workspaceMutationProbe: ProbeReturning(WorkspaceMutationReading.FromCounts(changedPathCount: 0, newCommitCount: 0)));
+
+            // The discriminating control: same call, same path, only the reading differs. Without this
+            // arm the two above would pass against an unconditional Indeterminate settlement.
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+            Assert.Equal("Execution timed out.", classification.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_never_probes_a_timeout_that_had_no_workspace_to_leave_work_in()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+            var probed = false;
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut),
+                contract,
+                directory,
+                // No provisioned worktree and not a tree-changing role: F4 (#1593 review) forbids
+                // handing this decision the operator's own working directory, so there is no path to
+                // probe and the retry stands.
+                workspaceMutationProbe: (_, _) =>
+                {
+                    probed = true;
+                    return WorkspaceMutationReading.Unmeasurable;
+                });
+
+            Assert.False(probed);
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_still_succeeds_a_finished_then_hung_timeout_on_a_mutated_workspace()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "plan"), "content");
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut, TerminalSuccessObserved: true),
+                contract,
+                directory,
+                worktreePath: "C:/rooms/room/workspaces/implement",
+                workspaceMutationProbe: ProbeReturning(WorkspaceMutationReading.FromCounts(changedPathCount: 3, newCommitCount: 1)));
+
+            // #1089's guard is upstream of this branch and stays upstream of it: a worker that declared
+            // success and satisfied its contract finished, and a mutated tree is what finishing LOOKS
+            // like. Settling that Indeterminate would send every clean tree-changing run to a conductor.
+            Assert.Equal(OutcomeVerdict.Succeeded, classification.Verdict);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void Classify_leaves_an_ordinary_non_timeout_failure_retryable_on_a_mutated_workspace()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+            var probed = false;
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(1, CoreExitReason.Natural),
+                contract,
+                directory,
+                worktreePath: "C:/rooms/room/workspaces/implement",
+                workspaceMutationProbe: (_, _) =>
+                {
+                    probed = true;
+                    return WorkspaceMutationReading.FromCounts(changedPathCount: 14, newCommitCount: 2);
+                });
+
+            // Polarity (#1373 scope): this ruling is about the TIMEOUT arm alone. An exit-1 worker on a
+            // mutated workspace retries exactly as it did before, and the probe is never even consulted.
+            Assert.False(probed);
+            Assert.Equal(OutcomeVerdict.Failed, classification.Verdict);
+
+            // Asserted through the real retry predicate rather than on the classification field: a null
+            // FailureClassification IS the ordinary retryable shape (RetryEngine.MayRetry defaults it),
+            // so pinning the field would have measured a spelling instead of the behaviour that matters.
+            var step = new StepState(
+                new StepId("implement"),
+                StepStatus.Failed,
+                new ExecutionId("exec-1"),
+                new Dictionary<StepId, ExecutionId>(),
+                ConsecutiveFailureCount: 1,
+                LatestFailureClassification: classification.FailureClassification,
+                LatestFailureReason: classification.Reason);
+
+            Assert.True(Baton.Scheduling.RetryEngine.MayRetry(step, new RetryPolicy(3)));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    [Fact]
+    public void A_timeout_on_a_mutated_workspace_is_still_recognised_as_a_timeout_by_status_surfaces()
+    {
+        var directory = CreateTempDirectory();
+        try
+        {
+            var contract = new WorkerContract("worker", [], [new ProducedOutput("plan")], []);
+
+            var classification = OutcomeClassifier.Classify(
+                new CoreDispatchResult(0, CoreExitReason.TimedOut),
+                contract,
+                directory,
+                worktreePath: "C:/rooms/room/workspaces/implement",
+                workspaceMutationProbe: ProbeReturning(WorkspaceMutationReading.FromCounts(changedPathCount: 14, newCommitCount: 2)));
+
+            // The prefix is the only signal any surface has for "this was a timeout" — there is no
+            // FailureClassification value for one. Pinned through the real reader rather than by
+            // re-asserting the literal, so a reword of the sentence fails HERE rather than silently
+            // reclassifying every mutated timeout as an ordinary failure downstream.
+            var step = new StepState(
+                new StepId("implement"),
+                StepStatus.Failed,
+                new ExecutionId("exec-1"),
+                new Dictionary<StepId, ExecutionId>(),
+                LatestFailureReason: classification.Reason);
+
+            Assert.True(WorkflowOutcome.IsTimeoutFailure(step));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
 }
 
