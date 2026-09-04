@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.31.0](https://github.com/philipreese/baton/compare/vendors-v0.30.0...vendors-v0.31.0) (2026-09-04)
+
+
+### Features
+
+* **adapters:** Park a claude quota hit until the reset instant the CLI's rate_limit line carries ([#1810](https://github.com/philipreese/baton/issues/1810)) ([8c1d449](https://github.com/philipreese/baton/commit/8c1d449dc8032c3f0b893257a240e25b63c33b0b))
+* **adapters:** Refuse a spawn whose mandatory hook is missing or tampered at dispatch time ([#1822](https://github.com/philipreese/baton/issues/1822)) ([b56fcae](https://github.com/philipreese/baton/commit/b56fcae8b84bc1905fc623180df29557f6b77788))
+* **dispatch:** Verify an implement lane actually pushed and opened its PR before Succeeded ([#1794](https://github.com/philipreese/baton/issues/1794)) ([b77bb55](https://github.com/philipreese/baton/commit/b77bb55bd256e421a479c3fc02518c7bb486a535))
+* **dispatch:** Withhold the subagent tool from implement and review workers ([#1811](https://github.com/philipreese/baton/issues/1811)) ([865ea6e](https://github.com/philipreese/baton/commit/865ea6e254db42b0088e887e4d8af424049222a0))
+
+
+### Bug Fixes
+
+* **adapters:** Classify a claude worker that writes nothing under the Claude config root ([#1823](https://github.com/philipreese/baton/issues/1823)) ([8141d5b](https://github.com/philipreese/baton/commit/8141d5b2a8849378f5a321def3a54a79220243dd))
+* **adapters:** Name the config-root copy in the skill roster when it shadows a project skill, and pin the measured lookup rules ([#1809](https://github.com/philipreese/baton/issues/1809)) ([1dddbfa](https://github.com/philipreese/baton/commit/1dddbfa241e3ed167526414fc0264d7cf0e08955))
+* **vendors:** Let a project ceiling close a category even against an author-vouched read-only shell ([#1805](https://github.com/philipreese/baton/issues/1805)) ([3af8f56](https://github.com/philipreese/baton/commit/3af8f5680713b990d8b2eb684782f47550c34d9c))
+* **vendors:** Refuse whitespace-before-paren Bash clauses the CLI would honour, and pin both allowedTools measurements ([#1808](https://github.com/philipreese/baton/issues/1808)) ([2289431](https://github.com/philipreese/baton/commit/2289431425a8a8dd617245f8121d180eb5600c0b))
+
 ## [0.30.0](https://github.com/philipreese/baton/compare/vendors-v0.29.0...vendors-v0.30.0) (2026-09-04)
 
 
