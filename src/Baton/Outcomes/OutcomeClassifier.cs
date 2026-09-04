@@ -140,10 +140,19 @@ public static class OutcomeClassifier
     internal const int MaxStderrTailInReason = 350;
 
     /// <summary>
+    /// The one spelling of "Flow's own timeout killed this", opening both timeout reasons this class
+    /// produces. <see cref="Status.WorkflowOutcome.IsTimeoutFailure"/> reads this prefix off the
+    /// recorded reason — there is no structural <c>FailureClassification</c> for a timeout — so a
+    /// reword here is a behaviour change for every surface that tells timeouts apart, not a copy edit.
+    /// </summary>
+    internal const string TimeoutSentence = "Execution timed out.";
+
+    /// <summary>
     /// Classifies <paramref name="result"/> per this table:
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + no ToolDenied/ExhaustedUntil signal in the stream</c> → Succeeded;
     /// <c>NaturalExit + code 0 + all ProducedOutputs satisfied + a ToolDenied/ExhaustedUntil signal in the stream</c> → Failed (#914/#1622);
     /// <c>NaturalExit + code 0 + an unsatisfied ProducedOutput</c> → Indeterminate (#1593/#1594/#1608, unless a dead worker without result on an untouched workspace);
+    /// <c>TimedOut + a mutated workspace</c> → Indeterminate (#1373);
     /// <c>NaturalExit</c> otherwise, or <c>TimedOut</c> → Failed;
     /// <c>CancelRequested</c> → Cancelled.
     /// </summary>
@@ -164,6 +173,21 @@ public static class OutcomeClassifier
     /// <see cref="Mutation.WorkerBinding.Process.IsWorktree"/> the way <paramref name="worktreePath"/>
     /// does would leave workspaceChanged/hollow permanently unable to read "changed".
     /// </param>
+    /// <param name="workspaceHeadShaAtStart">
+    /// #1373: the commit the probed workspace was at immediately before this execution's process was
+    /// spawned, read on the live-dispatch path only. Falls back to <paramref name="worktreeBaseRef"/>,
+    /// then to the reflog heuristic — which is what the crash-recovery caller always gets, since it
+    /// classifies a recorded exit and there is no "before" left to read.
+    /// </param>
+    /// <param name="workspaceMutationProbe">
+    /// #1373: the seam that keeps this class's own tests off a real git tree. Defaults to
+    /// <see cref="Workspaces.WorktreeProvisioner.ReadWorkspaceMutation"/>, which every production
+    /// caller uses. The probe's own reads are verified against real temp repositories in
+    /// <c>WorktreeProvisionerTests</c> instead — a double cannot answer "does git report this tree
+    /// dirty", and F4 (#1593 review) already rewrote one fabricated-workspace test here for exactly
+    /// that reason; what a double CAN discriminate is the branch this class takes given a reading,
+    /// which is all it is used for.
+    /// </param>
     public static OutcomeClassification Classify(
         CoreDispatchResult result,
         WorkerContract contract,
@@ -178,7 +202,9 @@ public static class OutcomeClassifier
         bool changesTree = false,
         string? changesTreeWorkingDirectory = null,
         int? toolCallCount = null,
-        int? hookVerdictCount = null)
+        int? hookVerdictCount = null,
+        string? workspaceHeadShaAtStart = null,
+        Func<string?, string?, Workspaces.WorkspaceMutationReading?>? workspaceMutationProbe = null)
     {
         ArgumentNullException.ThrowIfNull(result);
         ArgumentNullException.ThrowIfNull(contract);
@@ -206,11 +232,43 @@ public static class OutcomeClassifier
                 return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
             }
 
+            // #1373 (spec/baton.md §3, "A timeout on a mutated workspace"): the timeout kill survives as
+            // today's retryable Failed ONLY while the workspace has nothing to lose. A worker killed
+            // mid-lane leaves its commits and its uncommitted edits behind -- the workspace is the same
+            // one across attempts within a step -- so attempt N+1 starting from zero re-does or clobbers
+            // them. Measured 2026-09-01: four lanes timed out, all four were auto-retried onto a
+            // workspace attempt 1 had already mutated, and a person cancelled all four by hand.
+            //
+            // The probe path is the isolated worktree when there is one and the tree-changing role's own
+            // working directory otherwise -- NOT binding.Target.WorkingDirectory unconditionally, which
+            // F4 (#1593 review) forbids handing a retry decision, since the operator's own repository is
+            // routinely dirty for reasons that have nothing to do with this execution. A null path is
+            // therefore "this execution had nowhere to leave work", and keeps the retry.
+            var mutationProbePath = worktreePath ?? changesTreeWorkingDirectory;
+            if (mutationProbePath is not null)
+            {
+                var probe = workspaceMutationProbe ?? Workspaces.WorktreeProvisioner.ReadWorkspaceMutation;
+                var reading = probe(mutationProbePath, workspaceHeadShaAtStart ?? worktreeBaseRef);
+                if (reading is { Mutated: true })
+                {
+                    return new OutcomeClassification(
+                        OutcomeVerdict.Indeterminate,
+                        FailureClassification: null, // Indeterminate carries no FailureClassification — see OutcomeVerdict.Indeterminate's own remarks.
+                        WithStderr(BuildTimeoutOnMutatedWorkspaceReason(reading), result.StderrTail),
+                        // Null, so StateProjector records IndeterminateProducer.ContractFailure: this
+                        // shape has no captured body to accept and IS something a conductor can reject
+                        // after inspecting the workspace, which is precisely that producer's grammar
+                        // (spec/baton.md §3's settle-shape table). No fifth producer value for a fifth
+                        // source that admits exactly the same verbs.
+                        CapturedResponseFile: null);
+                }
+            }
+
             var (classification, retryNotBefore) = ReadOrClassifyFailure(contract, outputDirectory, result, failureClassifier, timeProvider);
             return new OutcomeClassification(
                 OutcomeVerdict.Failed,
                 classification,
-                WithStderr("Execution timed out.", result.StderrTail),
+                WithStderr(TimeoutSentence, result.StderrTail),
                 retryNotBefore);
         }
 
@@ -539,6 +597,30 @@ public static class OutcomeClassifier
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// #1373: the diagnostic for a timeout kill that landed on a workspace carrying work.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Opens with <see cref="TimeoutSentence"/> — the same fixed sentence the plain timeout arm uses,
+    /// and load-bearing rather than stylistic: <see cref="Status.WorkflowOutcome.IsTimeoutFailure"/>
+    /// keys on that prefix, so a room that timed out still reads as a timeout to every surface that
+    /// already tells timeouts apart from other failures. Pinned by
+    /// <c>OutcomeClassifierTests</c> rather than left to this remark.
+    /// </para>
+    /// <para>
+    /// Closes with the <c>awaiting conductor resolution.</c> marker every Indeterminate reason ends
+    /// with, which <see cref="Projection.StateProjector"/>'s <c>BuildConductorResolvedReason</c> strips
+    /// when a conductor settles the step. Counts and the resolution verb come first, prose last:
+    /// truncation cuts the tail, so the actionable half must not be what gets dropped.
+    /// </para>
+    /// </remarks>
+    private static string BuildTimeoutOnMutatedWorkspaceReason(Workspaces.WorkspaceMutationReading reading) =>
+        $"{TimeoutSentence} Workspace carries {reading.Describe()} — resolve it ('baton resolve --reject " +
+        "--reason <text>') or redispatch a brief telling the next worker to finish what this attempt " +
+        "started. Not retried: a from-scratch attempt would restart on top of that work — awaiting " +
+        "conductor resolution.";
 
     /// <summary>
     /// Assembles the diagnostic for a natural, exit-0 completion whose contract still isn't
