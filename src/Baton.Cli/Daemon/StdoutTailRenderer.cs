@@ -216,6 +216,163 @@ internal static class StdoutTailRenderer
     /// <summary>Port of pusher.py's <c>_cap_plain_line</c> (review rev1738 F3): caps to <paramref name="limit"/> codepoints.</summary>
     private static string CapPlainLine(string line, int limit = ProseFieldLimit) => CapToCodepoints(line, limit);
 
+    /// <summary>#1793: <c>rooms[].live.doingNow</c>'s own cap — one line, no elision marker (unlike
+    /// every other cap in this file, a truncated <c>doingNow</c> is cut hard rather than getting a
+    /// trailing <see cref="TruncationMark"/>, per the issue's own "no elision markers" wording).</summary>
+    internal const int DoingNowLimit = 140;
+
+    /// <summary>
+    /// #1793: same first-property summary <see cref="ProseSummarizeToolInput"/> renders as
+    /// <c>key=value</c>, but the VALUE alone (no <c>key=</c> label) — <c>doingNow</c>'s fallback arm
+    /// wants "Bash git status", not "Bash command=git status".
+    /// </summary>
+    private static string? FirstArgumentValue(JsonElement? toolInput)
+    {
+        if (toolInput is not { ValueKind: JsonValueKind.Object } obj)
+        {
+            return null;
+        }
+
+        foreach (var property in obj.EnumerateObject())
+        {
+            return property.Value.ValueKind == JsonValueKind.String
+                ? (property.Value.GetString() ?? "").Replace('\n', ' ')
+                : property.Value.GetRawText().Replace('\n', ' ');
+        }
+
+        return null;
+    }
+
+    /// <summary>Truncates to <paramref name="limit"/> codepoints with NO trailing marker — see <see cref="DoingNowLimit"/>'s own remark on why this differs from <see cref="CapToCodepoints"/>.</summary>
+    private static string TruncatePlainNoMarker(string text, int limit)
+    {
+        if (CodepointLength(text) <= limit)
+        {
+            return text;
+        }
+
+        var count = 0;
+        var index = 0;
+        while (index < text.Length && count < limit)
+        {
+            index += Rune.TryGetRuneAt(text, index, out var rune) ? rune.Utf16SequenceLength : 1;
+            count++;
+        }
+
+        return text[..index];
+    }
+
+    /// <summary>First line of <paramref name="text"/>, untruncated — the line-boundary half of <see cref="ProseFirstLine"/> without its codepoint cap, since <c>doingNow</c> caps with <see cref="TruncatePlainNoMarker"/> instead.</summary>
+    private static string FirstLineOnly(string text)
+    {
+        var stripped = text.Trim();
+        var cut = stripped.IndexOfAny(PythonLineBoundaries);
+        return cut < 0 ? stripped : stripped[..cut];
+    }
+
+    /// <summary>
+    /// spec/baton.md §6's <c>rooms[].live.doingNow</c> (#1793) — that entry is the canonical record of
+    /// the field's shape and both derivation cases, not restated here. Scans the SAME tail read window
+    /// <see cref="ComputeTail"/> reads, from the newest line backward, skipping every line whose own
+    /// <c>type</c> isn't <c>assistant</c> until one is found. <c>null</c>
+    /// when no `assistant` line exists in the window, or that line's content array is empty/carries no
+    /// recognized block — never a fabricated reading, matching <see cref="ComputeTail"/>'s own
+    /// never-fabricated convention. Deliberately independent of <see cref="RenderStreamJsonProse"/>: that
+    /// function renders EVERY tail line to bracketed prose for a scrolling log; this reads only the raw
+    /// shape of the single most recent relevant line. This repo's PR body has the note on why
+    /// `pusher.py`'s own port (`doing_now_for_room`) is a second, independently-written implementation
+    /// rather than a shared call.
+    /// </summary>
+    internal static string? ComputeDoingNow(string stdoutPath)
+    {
+        var text = ReadTailText(stdoutPath);
+        if (text.Length == 0)
+        {
+            return null;
+        }
+
+        var lines = ReadTailLines(text, StdoutTailMaxLines);
+        for (var i = lines.Count - 1; i >= 0; i--)
+        {
+            var raw = lines[i].Trim();
+            if (raw.Length == 0)
+            {
+                continue;
+            }
+
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(raw);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            using (doc)
+            {
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("type", out var typeEl)
+                    || typeEl.ValueKind != JsonValueKind.String || typeEl.GetString() != "assistant")
+                {
+                    continue;
+                }
+
+                if (!doc.RootElement.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+                    || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                {
+                    return null;
+                }
+
+                JsonElement? lastBlock = null;
+                foreach (var block in content.EnumerateArray())
+                {
+                    if (block.ValueKind == JsonValueKind.Object)
+                    {
+                        lastBlock = block;
+                    }
+                }
+
+                if (lastBlock is not { } finalBlock)
+                {
+                    return null;
+                }
+
+                var blockType = TryGetNonEmptyString(finalBlock, "type");
+                if (blockType == "text" && finalBlock.TryGetProperty("text", out var textEl)
+                    && textEl.ValueKind == JsonValueKind.String && textEl.GetString() is { } t && t.Trim().Length > 0)
+                {
+                    return TruncatePlainNoMarker(FirstLineOnly(t), DoingNowLimit);
+                }
+
+                if (blockType == "tool_use" && TryGetNonEmptyString(finalBlock, "name") is { } name)
+                {
+                    var input = finalBlock.TryGetProperty("input", out var inputEl) ? inputEl : (JsonElement?)null;
+                    var description = input is { ValueKind: JsonValueKind.Object } inputObj
+                        && inputObj.TryGetProperty("description", out var descEl) && descEl.ValueKind == JsonValueKind.String
+                        ? descEl.GetString()
+                        : null;
+
+                    if (description is { Length: > 0 })
+                    {
+                        return TruncatePlainNoMarker(FirstLineOnly(description), DoingNowLimit);
+                    }
+
+                    var mainArgument = FirstArgumentValue(input);
+                    var line = mainArgument is { Length: > 0 }
+                        ? $"{name} {TruncatePlainNoMarker(FirstLineOnly(mainArgument), 80)}"
+                        : name;
+                    return TruncatePlainNoMarker(line, DoingNowLimit);
+                }
+
+                return null;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Port of pusher.py's splitlines-based line scanner, shared by <see cref="ProseFirstLine"/> (first
     /// element) and <see cref="ReadTailLines"/> (last N elements). Splits on '\n' alone: Python's

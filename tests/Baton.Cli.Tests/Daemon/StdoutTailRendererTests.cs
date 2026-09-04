@@ -278,4 +278,88 @@ public sealed class StdoutTailRendererTests : IDisposable
         Assert.Equal("…ord word word word word word word word word …", tail);
         Assert.Equal(50, System.Text.Encoding.UTF8.GetByteCount(tail!));
     }
+
+    /// <summary>
+    /// #1793: <c>ComputeDoingNow</c>'s LAST assistant line has two content blocks (a text block, then a
+    /// <c>tool_use</c> block) — the tool_use block wins because it's the LAST one, and its own
+    /// <c>description</c> input field wins over the fallback name+argument summary. Reads the SAME
+    /// checked-in fixture <c>tools/fleet-glass/pusher.py</c>'s selftest reads (see this repo's PR body
+    /// for why the two implementations aren't a literal shared call) — a byte-identical fixture is what
+    /// keeps the two independently-written ports honest against each other.
+    /// </summary>
+    [Fact]
+    public void ComputeDoingNow_ReadsCheckedInFixture_MatchingPusherPySelftest()
+    {
+        var repoRoot = FindRepoRoot();
+        var fixturePath = Path.Combine(repoRoot, "tests", "fixtures", "doing-now-sample.stdout.log");
+        Assert.True(File.Exists(fixturePath), $"Fixture file must exist at {fixturePath}");
+
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(fixturePath);
+
+        Assert.Equal("Running gates a second time before committing", doingNow);
+    }
+
+    [Fact]
+    public void ComputeDoingNow_UsesLastAssistantTextLine_WhenTheLastBlockIsText()
+    {
+        var path = WriteLog("text-only.stdout.log", [
+            """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}""",
+            """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"abc","content":"nothing to commit"}]}}""",
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"Reviewing the diff before I commit."}]}}""",
+        ]);
+
+        Assert.Equal("Reviewing the diff before I commit.", StdoutTailRenderer.ComputeDoingNow(path));
+    }
+
+    [Fact]
+    public void ComputeDoingNow_FallsBackToToolNamePlusFirstArgument_WhenNoDescriptionField()
+    {
+        var path = WriteLog("no-description.stdout.log", [
+            """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}""",
+        ]);
+
+        Assert.Equal("Bash git status", StdoutTailRenderer.ComputeDoingNow(path));
+    }
+
+    [Fact]
+    public void ComputeDoingNow_ReturnsNull_WhenTheTailHasNoAssistantLine()
+    {
+        var path = WriteLog("no-assistant.stdout.log", [
+            """{"type":"system","subtype":"init","session_id":"s-1"}""",
+            """{"type":"result","subtype":"success","is_error":false,"result":"all done"}""",
+        ]);
+
+        Assert.Null(StdoutTailRenderer.ComputeDoingNow(path));
+    }
+
+    /// <summary>Hard-truncates at <see cref="StdoutTailRenderer.DoingNowLimit"/> codepoints — <see cref="StdoutTailRenderer.DoingNowLimit"/>'s own doc comment is the canonical record of why this cap carries no trailing mark, unlike <c>ComputeTail</c>'s "…" suffix elsewhere in this file.</summary>
+    [Fact]
+    public void ComputeDoingNow_TruncatesAt140Codepoints_WithNoElisionMarker()
+    {
+        var longText = string.Join(' ', Enumerable.Repeat("word", 40));
+        var line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + longText + "\"}]}}";
+        var path = WriteLog("long.stdout.log", [line]);
+
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(path);
+
+        Assert.Equal(140, doingNow!.Length);
+        Assert.DoesNotContain('…', doingNow);
+        Assert.Equal(longText[..140], doingNow);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Baton.slnx")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate repo root (Baton.slnx) from " + AppContext.BaseDirectory);
+    }
 }
