@@ -1,3 +1,4 @@
+using Baton.Artifacts;
 using Baton.Status;
 
 namespace Baton.Cli.Mcp;
@@ -49,6 +50,32 @@ public static class McpCommand
             }
 
             tools.Add(new MemoryProposalTool(Path.Combine(outputDirectory, MemoryProposalTool.CaptureDirectoryName)));
+
+            // #595: promote-artifact rides the same opt-in as memory-edit-proposal rather than a
+            // second flag -- both are worker-side escalation tools composed onto this same host, and
+            // neither needs a flag of its own the other doesn't already require. BATON_OUTPUT_DIR is
+            // always `{roomDir}/artifacts/execution_{id}` (ArtifactManager.AllocateOutputDirectory) --
+            // structural, not a worker's claim, the same reasoning MemoryProposalEscalation's own
+            // remarks give for trusting an execution_* directory name -- so the room directory and the
+            // execution id are both derived from it rather than read from a second env var.
+            var executionDirectory = Path.GetFullPath(outputDirectory);
+            var artifactsRoot = Path.GetDirectoryName(executionDirectory);
+            var roomDirectoryPath = artifactsRoot is null ? null : Path.GetDirectoryName(artifactsRoot);
+            if (roomDirectoryPath is null)
+            {
+                Console.Error.WriteLine(
+                    $"--memory-proposal-tool requires BATON_OUTPUT_DIR to resolve to a room's " +
+                    $"artifacts/execution_<id> directory; got '{outputDirectory}'.");
+                return 1;
+            }
+
+            var executionDirectoryName = Path.GetFileName(executionDirectory);
+            var executionId = executionDirectoryName.StartsWith("execution_", StringComparison.Ordinal)
+                ? executionDirectoryName["execution_".Length..]
+                : null;
+            var attribution = new ArtifactAttribution(ExecutionId: executionId, Role: null, Adapter: null, Model: null);
+
+            tools.Add(new PromoteArtifactTool(roomDirectoryPath, attribution));
         }
 
         if (tools.Count == 0)

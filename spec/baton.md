@@ -79,10 +79,19 @@ convention: version history is engine mechanism, not a document a worker or harn
 enumerated. JSONL, for the same append-only crash-safety shape `flow.jsonl` already relies on. The
 index is authoritative over the version files themselves — a version file can land on disk before
 the index line that commits it, and every reader (`Versions`, `Read`) treats a version absent from
-the index as never having happened, orphan file or not. Only two writers land outside an
+the index as never having happened, orphan file or not. Only three writers land outside an
 execution's own `artifacts/execution_<id>/` scratch directory (decision 0021 point 2's "plumbing,
 never surfaced"), so only those route through this primitive: `baton deliver` (`DeliverCommand.cs`)
-— a re-delivery of the same `source_path` now versions rather than replacing the prior bytes.
+— a re-delivery of the same `source_path` now versions rather than replacing the prior bytes — and
+the `promote-artifact` MCP tool (`PromoteArtifactTool.cs`, #595), a worker-side counterpart: a worker
+copies a file out of its own execution scratch directory into `artifacts/` by name, through this
+same primitive, with `producedBy` carrying the calling execution's id (derived from its
+`BATON_OUTPUT_DIR`, the same structural trust `MemoryProposalEscalation`'s remarks give an
+`execution_*` directory name) and `role`/`adapter`/`model` left null — nothing in the MCP host
+today knows a calling worker's role or vendor to record there. Composed onto the same host and
+gated by the same `--memory-proposal-tool` opt-in `MemoryProposalTool` already uses (`McpCommand.cs`)
+rather than a second flag, since both are worker-side escalation tools with the identical
+`BATON_OUTPUT_DIR` precondition.
 `RoleSpecMaterializer.CopyAttachmentsIntoRoom`'s `--attach` copy does not: it is harness-supplied
 input copied in before any execution exists, not something a worker produced (0021 point 1), so it
 has no `ExecutionBindingResolver`-derivable attribution to record — see that method's own remarks.
