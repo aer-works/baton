@@ -2879,7 +2879,7 @@ def _room_is_settled(file_room: dict) -> bool:
     same fast-path fleet_status itself uses). Quiet time is NOT evidence: a Running room whose
     worker is inside one long tool call (a build, a test run, a lock wait) can go quiet for far
     longer than one daemon write interval without its counters having stopped moving -- #1814 found
-    this misreading a still-Running room as settled and reding its `live.contextTokens` on ordinary
+    this misreading a still-Running room as settled and redding its `live.contextTokens` on ordinary
     derive/file sampling drift, not a real derivation bug. A Running room with no terminal fact
     stays Running however quiet it looks, and stays under the presence/shape-only + monotone checks
     `_compare_volatile_live` already gives a still-Running room."""
