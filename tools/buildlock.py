@@ -29,9 +29,14 @@ Nesting:          a wrapped command that itself runs wrapped tasks would deadloc
                   build holds the lock skips the queue; that needs the marker to leak AND the
                   race to land in the same window, strictly narrower than trusting the marker.
 Timeout:          BATON_BUILDLOCK_TIMEOUT_S (default 1800) -- fails LOUDLY on expiry rather than
-                  hanging past a lane's budget. BATON_BUILDLOCK_FILE overrides the lock path;
-                  anyone may set it, but its intended use is selftest isolation -- overriding it
-                  elsewhere opts that process out of the shared exclusion.
+                  hanging past a lane's budget, exiting BUILDLOCK_BLOCKED_EXIT (75, chosen because no
+                  `dotnet` subcommand this wrapper runs exits with it) rather than the generic 1 a
+                  wrapped command's own failure would use (#1796) -- BLOCKED is contention, not a
+                  broken gate, and tools/gates/gates.py (and, through it, the engine's own verify
+                  step) tells the two apart by this exit code alone, never by the wrapped command's
+                  actual failure semantics. BATON_BUILDLOCK_FILE overrides the lock path; anyone may
+                  set it, but its intended use is selftest isolation -- overriding it elsewhere opts
+                  that process out of the shared exclusion.
 Selftest knob:    BATON_BUILDLOCK_SELFTEST_HOLDER_DELAY_S (default 0) -- only read by the
                   --selftest timeout-path holder, sleeps before it acquires the lock. Used to
                   falsify the fix for #1627: set to 1 against the pre-#1627 code (fixed 0.2s
@@ -49,6 +54,8 @@ from typing import BinaryIO
 HELD_MARKER = "BATON_BUILDLOCK_HELD"
 POLL_S = 2.0
 PROGRESS_EVERY_S = 10.0
+# #1796: see the module docstring's Timeout section for why this is distinct from a plain 1.
+BUILDLOCK_BLOCKED_EXIT = 75
 
 
 def lock_path() -> str:
@@ -116,13 +123,19 @@ def acquire(path: str, command: list[str], timeout_s: float) -> BinaryIO:
             now = time.monotonic()
             if now >= deadline:
                 handle.close()
+                # #1796: BLOCKED, exit BUILDLOCK_BLOCKED_EXIT -- distinct from a real gate failure so
+                # tools/gates/gates.py (and, through it, the engine's verify step) can tell "the build
+                # lock was busy" from "the gate broke". BLOCKED is the leading word on this line
+                # deliberately: it is the one machine-recognized marker gates.py and
+                # Baton.Mutation.VerifyRunner both key off (see their own BuildLockBlockedLine/BLOCKED
+                # constants) -- the rest of the message is free text for a human reader.
                 print(
-                    f"buildlock: TIMED OUT after {timeout_s:.0f}s waiting for the build lock "
+                    f"buildlock: BLOCKED after {timeout_s:.0f}s waiting for the build lock "
                     f"held by {read_holder_info(path)} -- raise BATON_BUILDLOCK_TIMEOUT_S or "
                     f"find out why the holder is stuck",
                     flush=True,
                 )
-                sys.exit(1)
+                sys.exit(BUILDLOCK_BLOCKED_EXIT)
             if now - last_progress >= PROGRESS_EVERY_S:
                 last_progress = now
                 print(
@@ -292,10 +305,10 @@ def selftest() -> int:
                 env=env, capture_output=True, text=True, check=False, timeout=30,
             )
             holder.communicate(timeout=30)
-            if waiter.returncode == 0 or "TIMED OUT" not in waiter.stdout:
+            if waiter.returncode != BUILDLOCK_BLOCKED_EXIT or "buildlock: BLOCKED" not in waiter.stdout:
                 print(
-                    f"  control FAILED: timeout path exited {waiter.returncode} "
-                    f"without a loud message -- {waiter.stdout!r}"
+                    f"  control FAILED: timeout path exited {waiter.returncode} (want "
+                    f"{BUILDLOCK_BLOCKED_EXIT}) without a loud BLOCKED message -- {waiter.stdout!r}"
                 )
                 ok = False
 

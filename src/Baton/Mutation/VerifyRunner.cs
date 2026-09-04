@@ -14,12 +14,17 @@ namespace Baton.Mutation;
 /// OWN output (#1701), not a blind tail of the whole combined stream — see
 /// <see cref="VerifyRunner.BuildTail"/>.
 /// <see cref="Kind"/> distinguishes gate breakage from timeouts, cancellations, or engine restarts (F3).
+/// <see cref="NotRunReason"/> is populated only for <see cref="VerifyFailedKind.BuildLockBusy"/> (#1796) —
+/// the one-line "build lock busy for Ns (holder: ...)" text the caller journals verbatim as
+/// <see cref="FlowEvent.VerifyNotRun.Reason"/>, parsed from <see cref="Tail"/> and never fabricated: a
+/// shape miss leaves it null rather than guessing at a holder.
 /// </summary>
 public sealed record VerifyOutcome(
     bool Passed,
     IReadOnlyList<string>? FailingMembers = null,
     string? Tail = null,
-    VerifyFailedKind? Kind = null)
+    VerifyFailedKind? Kind = null,
+    string? NotRunReason = null)
 {
     public static readonly VerifyOutcome Pass = new(true);
 }
@@ -46,6 +51,12 @@ public sealed record VerifyOutcome(
 public static class VerifyRunner
 {
     private const string FailMarker = "GATES: FAIL";
+    // #1796: gates.py's own BLOCKED_MARK — a run whose only non-passing member(s) were blocked on
+    // tools/buildlock.py's lock, never a genuine gate defect. Checked AFTER FailMarker in
+    // ParseVerdict: a mixed run (a real failure alongside a blocked member) still prints
+    // "GATES: FAIL ..." naming only the real failures, so FailMarker wins and BlockedMarker is never
+    // reached for that run — mirroring gates.py's own summarise() precedence.
+    private const string BlockedMarker = "GATES: BLOCKED";
     private const string FailingMembersSeparator = " -- ";
 
     /// <summary>
@@ -62,23 +73,35 @@ public static class VerifyRunner
 
     /// <summary>
     /// The per-member summary line <c>tools/gates/gates.py</c>'s <c>run_gates</c>/<c>join_gates</c>
-    /// print after EVERY member, pass or fail: <c>"  pass  name  (exit 0)"</c> / <c>"  FAIL  name
-    /// (exit 1)"</c>. Both status words are exactly 4 characters, so the <c>{status,&gt;4}</c>
-    /// right-alignment in gates.py never adds padding — the shape is fixed two-space-delimited
-    /// fields. This is what lets #1701 key a failing member's own block out of the combined stream
-    /// instead of guessing from position.
+    /// print after EVERY member: <c>"  pass  name  (exit 0)"</c> / <c>"  FAIL  name (exit 1)"</c> /
+    /// <c>"  BLOCKED  name  (exit 75)"</c> (#1796 — a buildlock-timeout member). The status word's
+    /// length is no longer fixed at 4 characters (<c>BLOCKED</c> is 7), but the shape stays fixed
+    /// two-space-delimited fields regardless — this is what lets #1701 key a failing member's own
+    /// block out of the combined stream instead of guessing from position.
     /// Known narrow gap (#1701 review): <c>gates-selftest</c> is itself an OVERLAP member whose own
     /// selftest fabricates lines in exactly this shape (<c>tools/gates/gates.py</c>'s own
     /// <c>run_gates</c>/<c>join_gates</c> control-arm fixtures) to prove <c>join_gates</c> discriminates
     /// a failing gate. If <c>gates-selftest</c> itself fails under <c>gates-quiet</c>, those fabricated
     /// lines segment inside its own block, so this member's tail can start after its last fabricated
     /// marker rather than at the top of its real output. Affects only that one member's own diagnostic
-    /// completeness, never <see cref="ParseFailingMembers"/>'s verdict; no clean fix without changing
+    /// completeness, never <see cref="ParseVerdict"/>'s verdict; no clean fix without changing
     /// gates.py's fixture shape, so left as a known gap rather than a redesign.
     /// </summary>
     private static readonly Regex MemberMarkerLine = new(
-        @"^  (?<status>pass|FAIL)  (?<name>\S+)  \(exit (?<code>-?\d+)\) *\r?$",
+        @"^  (?<status>pass|FAIL|BLOCKED)  (?<name>\S+)  \(exit (?<code>-?\d+)\) *\r?$",
         RegexOptions.Multiline | RegexOptions.Compiled);
+
+    /// <summary>
+    /// #1796: <c>tools/buildlock.py</c>'s own machine-recognizable timeout line, e.g. <c>"buildlock:
+    /// BLOCKED after 1800s waiting for the build lock held by PID 1234 (dotnet build) since
+    /// 2026-09-04 12:00:00 -- raise BATON_BUILDLOCK_TIMEOUT_S or find out why the holder is
+    /// stuck"</c>. Parsed out of a BLOCKED member's own tail so <see cref="VerifyOutcome.NotRunReason"/>
+    /// can name the seconds waited and the holder without re-deriving either — a shape miss (the
+    /// message text drifting) degrades to null rather than fabricating a holder.
+    /// </summary>
+    private static readonly Regex BuildLockBlockedLine = new(
+        @"buildlock: BLOCKED after (?<secs>\d+)s waiting for the build lock held by (?<holder>.+?) --",
+        RegexOptions.Compiled);
 
     /// <summary>
     /// The program/args-injecting form #1702 made the ONLY production entry point (MutationInterface
@@ -147,9 +170,10 @@ public static class VerifyRunner
             return VerifyOutcome.Pass;
         }
 
-        var failingMembers = ParseFailingMembers(text);
+        var (kind, failingMembers) = ParseVerdict(text);
         var tail = BuildTail(text, failingMembers);
-        return new VerifyOutcome(false, failingMembers, tail, Kind: VerifyFailedKind.GatesFailed);
+        var notRunReason = kind == VerifyFailedKind.BuildLockBusy ? ExtractBuildLockReason(tail) : null;
+        return new VerifyOutcome(false, failingMembers, tail, Kind: kind, NotRunReason: notRunReason);
     }
 
     /// <summary>
@@ -240,15 +264,16 @@ public static class VerifyRunner
     }
 
     /// <summary>
-    /// The failing member(s)' own output, not a blind tail of the whole combined stream (#1701).
-    /// Segments <paramref name="output"/> on <see cref="MemberMarkerLine"/> — each segment is one
-    /// member's own captured output followed by its summary line — and returns the segment(s) for
-    /// members named in <paramref name="failingMembers"/> with a FAIL marker. The JOINED result stays
-    /// bounded to <see cref="MaxTailChars"/> overall (never one-member-worth-of-bound times N members)
-    /// by splitting that budget evenly across however many members failed, each kept tail-first.
-    /// Falls back to a whole-stream tail (the pre-#1701 behavior) when no marker line is recognized at
-    /// all, matching <see cref="ParseFailingMembers"/>'s own shape-drift fallback: degrade detail,
-    /// never fabricate structure that is not there.
+    /// The failing (or, for #1796, blocked) member(s)' own output, not a blind tail of the whole
+    /// combined stream (#1701). Segments <paramref name="output"/> on <see cref="MemberMarkerLine"/> —
+    /// each segment is one member's own captured output followed by its summary line — and returns the
+    /// segment(s) for members named in <paramref name="failingMembers"/> whose own marker is not
+    /// <c>pass</c> (i.e. <c>FAIL</c> or <c>BLOCKED</c>). The JOINED result stays bounded to
+    /// <see cref="MaxTailChars"/> overall (never one-member-worth-of-bound times N members) by
+    /// splitting that budget evenly across however many members failed, each kept tail-first. Falls
+    /// back to a whole-stream tail (the pre-#1701 behavior) when no marker line is recognized at all,
+    /// matching <see cref="ParseVerdict"/>'s own shape-drift fallback: degrade detail, never fabricate
+    /// structure that is not there.
     /// </summary>
     private static string BuildTail(string output, IReadOnlyList<string>? failingMembers)
     {
@@ -269,7 +294,7 @@ public static class VerifyRunner
         foreach (Match match in matches)
         {
             var blockEnd = match.Index + match.Length;
-            if (match.Groups["status"].Value == "FAIL" && wanted.Contains(match.Groups["name"].Value))
+            if (match.Groups["status"].Value != "pass" && wanted.Contains(match.Groups["name"].Value))
             {
                 blocks.Add(output[blockStart..blockEnd]);
             }
@@ -294,11 +319,36 @@ public static class VerifyRunner
     private static string WholeStreamTail(string output) =>
         output.Length > MaxTailChars ? output[^MaxTailChars..] : output;
 
-    private static IReadOnlyList<string>? ParseFailingMembers(string output)
+    /// <summary>
+    /// #1796: which of gates.py's two verdict markers is present, and the member names it names.
+    /// <see cref="FailMarker"/> is checked first — a mixed run (a real gate failure alongside a
+    /// buildlock-blocked member) still prints <c>"GATES: FAIL ..."</c> naming only the real failures
+    /// (gates.py's own <c>summarise()</c> precedence), so this returns <see
+    /// cref="VerifyFailedKind.GatesFailed"/> for that run and <see cref="BlockedMarker"/> is never
+    /// reached. Only when no <see cref="FailMarker"/> line is found at all does a <see
+    /// cref="BlockedMarker"/> line yield <see cref="VerifyFailedKind.BuildLockBusy"/>. Neither marker
+    /// found (a shape drift) falls back to <see cref="VerifyFailedKind.GatesFailed"/> with no member
+    /// names — never a fabricated guess, matching this method's pre-#1796 fallback.
+    /// </summary>
+    private static (VerifyFailedKind Kind, IReadOnlyList<string>? Members) ParseVerdict(string output)
+    {
+        var failing = ParseNamesForMarker(output, FailMarker);
+        if (failing is not null)
+        {
+            return (VerifyFailedKind.GatesFailed, failing);
+        }
+
+        var blocked = ParseNamesForMarker(output, BlockedMarker);
+        return blocked is not null
+            ? (VerifyFailedKind.BuildLockBusy, blocked)
+            : (VerifyFailedKind.GatesFailed, null);
+    }
+
+    private static IReadOnlyList<string>? ParseNamesForMarker(string output, string marker)
     {
         foreach (var line in output.Split('\n'))
         {
-            var markerIndex = line.IndexOf(FailMarker, StringComparison.Ordinal);
+            var markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
             if (markerIndex < 0)
             {
                 continue;
@@ -316,5 +366,24 @@ public static class VerifyRunner
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// #1796: pulls the seconds-waited and holder text out of <c>tools/buildlock.py</c>'s own BLOCKED
+    /// line (<see cref="BuildLockBlockedLine"/>) inside a blocked member's own tail, and reformats it
+    /// into the one-line reason <c>FlowEvent.VerifyNotRun.Reason</c> journals verbatim. Null on a
+    /// shape miss — never a fabricated holder.
+    /// </summary>
+    private static string? ExtractBuildLockReason(string? tail)
+    {
+        if (tail is null)
+        {
+            return null;
+        }
+
+        var match = BuildLockBlockedLine.Match(tail);
+        return match.Success
+            ? $"build lock busy for {match.Groups["secs"].Value}s (holder: {match.Groups["holder"].Value})"
+            : null;
     }
 }

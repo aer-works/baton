@@ -101,14 +101,15 @@ public static class ResolveCommand
         // spec/baton.md §3's producer table for which verb admits which. Mirrors
         // MutationInterface.RecordCaptureResolutionAsync's own guard so the refusal lands here, with a
         // message naming the right remedy, rather than deeper in as a bare "no unresolved indeterminate
-        // capture". --close admits exactly the three producers --reject does NOT: VerifyFailed,
-        // Arrested, and null (a step Indeterminate for no producer at all, the legacy pre-#1593 shape).
+        // capture". --close admits exactly the four producers --reject does NOT: VerifyFailed,
+        // Arrested, BuildLockBusy (#1796), and null (a step Indeterminate for no producer at all, the
+        // legacy pre-#1593 shape).
         var admitsAccept = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer == IndeterminateProducer.CapturedResponse;
         var admitsReject = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure;
         var admitsClose = namedStep is { IndeterminateAwaitingResolution: true }
-            && namedStep.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null;
+            && namedStep.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or IndeterminateProducer.BuildLockBusy or null;
         var isAwaitingResolution = accepted ? admitsAccept : close ? admitsClose : admitsReject;
         var isNonCaptureIndeterminate = namedStep is { IndeterminateAwaitingResolution: true } && !isAwaitingResolution;
 
@@ -182,7 +183,7 @@ public static class ResolveCommand
             var admitsVerb = accepted
                 ? candidate.IndeterminateProducer == IndeterminateProducer.CapturedResponse
                 : close
-                    ? candidate.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                    ? candidate.IndeterminateProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or IndeterminateProducer.BuildLockBusy or null
                     : candidate.IndeterminateProducer is IndeterminateProducer.CapturedResponse or IndeterminateProducer.ContractFailure;
 
             if (!admitsVerb)
@@ -252,12 +253,12 @@ public static class ResolveCommand
             }
         }
 
-        // F1 nit (#1664 re-review): explicit, not a catch-all else — VerifyFailed/Arrested/null are the
-        // only producers this "nothing to accept or reject" text describes, and both callers only reach
-        // this helper for a producer the caller's verb does not admit, so this arm only fires for
-        // --accept-capture/--reject against one of these three (--close admits all three, so it never
-        // reaches here for them).
-        if (producer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null)
+        // F1 nit (#1664 re-review), widened by #1796: explicit, not a catch-all else —
+        // VerifyFailed/Arrested/BuildLockBusy/null are the only producers this "nothing to accept or
+        // reject" text describes, and both callers only reach this helper for a producer the caller's
+        // verb does not admit, so this arm only fires for --accept-capture/--reject against one of these
+        // four (--close admits all four, so it never reaches here for them).
+        if (producer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or IndeterminateProducer.BuildLockBusy or null)
         {
             throw new CliArgumentException(
                 $"Execution '{executionId}' in room '{roomDirectoryPath}' settled Indeterminate "

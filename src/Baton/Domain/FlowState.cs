@@ -22,6 +22,9 @@ public enum IndeterminateProducer
 
     /// <summary>#1623: <see cref="FlowEvent.ExecutionArrested"/> — a live execution crossed its role's token budget and was arrested. #1622 (d): <c>baton resolve --close --reason &lt;text&gt;</c> admits this producer, settling the step resolved-but-Failed; a fresh <c>baton dispatch</c> is still the only way to reopen it.</summary>
     Arrested,
+
+    /// <summary>#1796: <see cref="FlowEvent.VerifyNotRun"/> with <see cref="FlowEvent.VerifyNotRun.BuildLockBusy"/> true — verify started but its only failing member(s) were blocked on <c>tools/buildlock.py</c>'s lock, not genuinely broken. Admits <c>baton resolve --close --reason &lt;text&gt;</c> the same way <see cref="VerifyFailed"/>/<see cref="Arrested"/> do — a conductor's judgement call, no captured response to accept or reject.</summary>
+    BuildLockBusy,
 }
 
 /// <summary>

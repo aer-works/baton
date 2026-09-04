@@ -339,6 +339,21 @@ public static class StateProjector
                 break;
 
             case FlowEvent.VerifyNotRun verifyNotRun:
+                // #1796: the BuildLockBusy shape DID start a real verify run (VerifyStarted fired), so
+                // it must clear UnmatchedVerifyExecutionIds the same way VerifyFailed/VerifyPassed do
+                // below, and it settles Indeterminate -- "nothing verified this run" is not a fact a
+                // room may report as Succeeded. This is the one branch of this event that ever calls
+                // ApplyIndeterminate; the pre-flight shape below it never does.
+                if (verifyNotRun.BuildLockBusy)
+                {
+                    state.UnmatchedVerifyExecutionIds.Remove(verifyNotRun.ExecutionId);
+                    ApplyIndeterminate(
+                        state, verifyNotRun.ExecutionId,
+                        $"{verifyNotRun.Reason} — awaiting conductor resolution.",
+                        IndeterminateProducer.BuildLockBusy);
+                    break;
+                }
+
                 // #1702: diagnostic only, same shape as VerifyStarted/VerifyPassed above -- no
                 // ApplyIndeterminate call. The execution's own already-recorded classification (this
                 // event only appends when that classification was Succeeded) decides StepStatus and

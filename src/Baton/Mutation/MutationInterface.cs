@@ -282,7 +282,8 @@ public static class MutationInterface
         // VerifyFailed/Arrested/null — mirroring ResolveCommand's own widened admission one layer up.
         var admitsThisVerb = target is { IndeterminateAwaitingResolution: true }
             && (close
-                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested or null
+                ? effectiveProducer is IndeterminateProducer.VerifyFailed or IndeterminateProducer.Arrested
+                    or IndeterminateProducer.BuildLockBusy or null
                 : effectiveProducer == IndeterminateProducer.CapturedResponse
                     || (accepted == false && effectiveProducer == IndeterminateProducer.ContractFailure));
         if (!admitsThisVerb)
@@ -2028,6 +2029,23 @@ public static class MutationInterface
                         // gets this arm.
                         await eventLogWriter.AppendAsync(
                             new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                            CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    }
+                    else if (verifyOutcome.Kind == VerifyFailedKind.BuildLockBusy)
+                    {
+                        // #1796: gates.py's only non-passing member(s) were blocked on
+                        // tools/buildlock.py's lock -- contention, not a broken gate. VerifyStarted
+                        // above already fired, so this is the BuildLockBusy: true shape (see its own
+                        // doc) -- it settles Indeterminate via StateProjector's VerifyNotRun arm, the
+                        // same terminal-event shape VerifyFailed uses below, but is journaled as
+                        // VerifyNotRun so the room's record reads "nothing verified this run" rather
+                        // than "the gates broke".
+                        await eventLogWriter.AppendAsync(
+                            new FlowEvent.VerifyNotRun(
+                                prepared.Request.ExecutionId,
+                                verifyOutcome.NotRunReason ?? "build lock busy",
+                                BuildLockBusy: true),
                             CancellationToken.None).ConfigureAwait(false);
                         return;
                     }

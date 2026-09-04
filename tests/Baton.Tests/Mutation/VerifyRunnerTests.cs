@@ -146,6 +146,70 @@ public sealed class VerifyRunnerTests
     }
 
     [Fact]
+    public async Task A_GATES_BLOCKED_summary_line_yields_BuildLockBusy_and_the_blocked_members()
+    {
+        // #1796: the exact shape tools/gates/gates.py's summarise() emits when every non-passing
+        // member was blocked on tools/buildlock.py's lock, not genuinely broken.
+        var outcome = await VerifyRunner.RunProcessAsync(
+            "cmd", ["/c", "echo GATES: BLOCKED 1 of 25 -- lint & exit 3"], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.BuildLockBusy, outcome.Kind);
+        Assert.Equal(["lint"], outcome.FailingMembers);
+    }
+
+    [Fact]
+    public async Task A_mixed_BLOCKED_and_FAIL_run_reports_GatesFailed_naming_only_the_real_failures()
+    {
+        // gates.py's own precedence: a real failure alongside a blocked member still headlines
+        // "GATES: FAIL ..." naming only the real failure, never the blocked one -- the mixed case
+        // must settle VerifyFailed, not VerifyNotRun/BuildLockBusy.
+        var command = string.Join(" & ", new[]
+        {
+            "echo   BLOCKED  lint  (exit 75)",
+            "echo   FAIL  fmt-check  (exit 2)",
+            "echo GATES: FAIL 1 of 25 -- fmt-check",
+        }) + " & exit 1";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.GatesFailed, outcome.Kind);
+        Assert.Equal(["fmt-check"], outcome.FailingMembers);
+    }
+
+    [Fact]
+    public async Task A_BLOCKED_member_s_own_buildlock_line_yields_the_NotRunReason_text()
+    {
+        // #1796: NotRunReason is parsed out of tools/buildlock.py's own BLOCKED line inside the
+        // blocked member's own tail -- the exact shape that member prints to stdout/stderr.
+        var command = string.Join(" & ", new[]
+        {
+            "echo buildlock: BLOCKED after 1800s waiting for the build lock held by PID 1234 (dotnet build) since 2026-09-04 01:00:00 -- raise BATON_BUILDLOCK_TIMEOUT_S or find out why the holder is stuck",
+            "echo   BLOCKED  lint  (exit 75)",
+            "echo GATES: BLOCKED 1 of 25 -- lint",
+        }) + " & exit 3";
+
+        var outcome = await VerifyRunner.RunProcessAsync("cmd", ["/c", command], workingDirectory: null, CancellationToken.None);
+
+        Assert.False(outcome.Passed);
+        Assert.Equal(Baton.Domain.VerifyFailedKind.BuildLockBusy, outcome.Kind);
+        Assert.NotNull(outcome.NotRunReason);
+        Assert.Contains("build lock busy for 1800s", outcome.NotRunReason);
+        Assert.Contains("PID 1234 (dotnet build) since 2026-09-04 01:00:00", outcome.NotRunReason);
+    }
+
+    [Fact]
+    public async Task A_BLOCKED_verdict_with_no_recognizable_buildlock_line_leaves_NotRunReason_null_not_fabricated()
+    {
+        var outcome = await VerifyRunner.RunProcessAsync(
+            "cmd", ["/c", "echo GATES: BLOCKED 1 of 25 -- lint & exit 3"], workingDirectory: null, CancellationToken.None);
+
+        Assert.Equal(Baton.Domain.VerifyFailedKind.BuildLockBusy, outcome.Kind);
+        Assert.Null(outcome.NotRunReason);
+    }
+
+    [Fact]
     public async Task An_unspawnable_program_reports_Failed_rather_than_throwing()
     {
         var outcome = await VerifyRunner.RunProcessAsync(

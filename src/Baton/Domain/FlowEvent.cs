@@ -272,12 +272,23 @@ public abstract record FlowEvent
     /// resolved verify command not runnable, so it was never spawned. Diagnostic only, same "no
     /// <see cref="Status.WorkflowOutcome.Indeterminate"/> consequence" shape as <see cref="VerifyPassed"/>
     /// — the execution's own already-<c>Succeeded</c> classification decides the room word unassisted.
-    /// Never emitted alongside <see cref="VerifyStarted"/> for the same execution, so
+    /// This is the <see cref="BuildLockBusy"/><c>: false</c> (default) shape only: it is never emitted
+    /// alongside <see cref="VerifyStarted"/> for the same execution, so
     /// <see cref="ProjectionCheckpointState.UnmatchedVerifyExecutionIds"/> and the #1608
     /// <c>EngineRestart</c> recovery path are both untouched by this arm.
     /// </summary>
-    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here.</param>
-    public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason) : FlowEvent;
+    /// <param name="Reason"><see cref="Mutation.VerifyCommandResolver"/>'s own verdict text, never re-derived here — or, when <paramref name="BuildLockBusy"/> is <c>true</c>, <see cref="Mutation.VerifyRunner"/>'s own build-lock reason text.</param>
+    /// <param name="BuildLockBusy">
+    /// #1796: <c>true</c> when a verify run actually started (<see cref="VerifyStarted"/> DID fire) and
+    /// its only failing member(s) were blocked on <c>tools/buildlock.py</c>'s lock rather than genuinely
+    /// broken — contention, not a gate defect. Unlike the pre-flight shape above, this DOES settle the
+    /// room Indeterminate (<c>Projection.StateProjector</c>'s <see cref="VerifyNotRun"/> arm), the same
+    /// "awaiting conductor resolution" outcome <see cref="VerifyFailed"/> produces, because a build-lock
+    /// timeout answers neither "the code passed" nor "the code failed" — it answers "nothing verified
+    /// this run", which is not a fact a room may silently report as Succeeded. Defaults to <c>false</c>
+    /// so a ledger line written before #1796 still deserializes into the original diagnostic-only shape.
+    /// </param>
+    public sealed record VerifyNotRun(ExecutionId ExecutionId, string Reason, bool BuildLockBusy = false) : FlowEvent;
 
     /// <summary>
     /// #1708 H1: the workspace's working-tree <c>.baton/verify</c> differed from the one committed in
