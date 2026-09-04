@@ -75,10 +75,6 @@ public static class ArtifactPruner
         }
 
         var executionDirs = Directory.GetDirectories(artifactsRootPath, "execution_*", SearchOption.TopDirectoryOnly);
-        if (executionDirs.Length == 0)
-        {
-            return false;
-        }
 
         var prunedAny = false;
         foreach (var execDir in executionDirs)
@@ -88,6 +84,14 @@ public static class ArtifactPruner
 
             prunedAny |= PruneDirectory(execDir, targetDir);
         }
+
+        // #496 point 4: named artifacts' version history sits inside the same retention boundary as
+        // execution directories, under the same terminal+not-kept+lock gate this method already
+        // established above -- see RoomArtifacts.PruneVersionHistory's own remarks for why this prunes
+        // down to the current version rather than moving anything aside. Runs even when there were no
+        // execution_* directories to prune, since a room's named artifacts are independent of whether
+        // it ran a workflow step.
+        prunedAny |= RoomArtifacts.PruneVersionHistory(artifactsRootPath);
 
         return prunedAny;
     }
