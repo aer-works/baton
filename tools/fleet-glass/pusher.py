@@ -2671,6 +2671,40 @@ _COMPARE_SHAPE_ONLY_KEYS = {
     "elapsed": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
 }
 
+# #1807: fields on a Running room that legitimately move between the daemon's file sample and this
+# process's derive sample (taken ~30s-ish apart, `_DAEMON_PROJECTION_WRITE_INTERVAL_S` below) --
+# excluded from the byte-identity comparison the same way `_COMPARE_SHAPE_ONLY_KEYS` is, and
+# checked instead by `_compare_volatile_live`'s tolerance rules below. Chose per-field tolerance
+# over the issue's other option (excluding Running rooms from `live.*` entirely) because it keeps
+# checking Running rooms -- a counter that goes backwards, or a field that vanishes, is still a
+# real derivation bug and still fails the compare.
+#
+# The issue proposed treating all five as monotone non-decreasing. A live run against this
+# machine's own fleet (see the PR body) reds that on `cacheReadTokens`, which the docstring on
+# `live_telemetry_for_room`'s `"context"` field already calls out as NOT cumulative: it's "a LEVEL
+# (the caller replaces, never sums, its own running value)" taken from the LATEST usage-bearing
+# line, so it moves in either direction as new turns land -- unlike the three true running counters
+# below it. `contextTokens` comes from the same `"context"` object, so it gets the same treatment.
+# #1812: that red turned out to be a genuine derivation bug, not sampling jitter -- the file path's
+# `cacheReadTokens` was a running Σ (Mutation.TokenBudgetMonitor's own display-only accumulator,
+# #1682) while the derive path replaces it per turn. Fixed on the C# side
+# (WorkerUsage.CacheReadLevelTokens, src/Baton/Mutation/TokenBudgetMonitor.cs) so both paths report
+# the same level; `_LEVEL_LIVE_KEYS` below stays presence/shape-only ONLY for a still-Running room
+# (where the two samples can honestly land on different turns) and goes back under exact comparison
+# once a room is settled (`_room_is_settled`), so a reintroduced sum-vs-level mismatch reds again.
+_MONOTONE_LIVE_COUNTER_KEYS = ("billedTokens", "toolCalls", "turns")
+_LEVEL_LIVE_KEYS = ("contextTokens", "cacheReadTokens")
+
+# spec/baton.md §7 / src/Baton.Cli/Daemon/FleetProjectionWriter.cs `DefaultInterval`: the daemon
+# writes the projection file on this cadence. A room counts as "settled" for the ≥3-settled-rooms
+# floor below once its last activity is at least one full write interval old -- by then the file
+# could not still be catching up to a value the derive path just observed.
+_DAEMON_PROJECTION_WRITE_INTERVAL_S = 30
+
+# spec/baton.md §6 PR-B2 gate (#1807): a compare that is green because it had nothing live to check
+# is not evidence -- require at least this many settled rooms before a clean diff counts as a pass.
+_MIN_SETTLED_ROOMS_FOR_GREEN = 3
+
 
 def _canonical(obj) -> str:
     """Canonical JSON per the plan's "byte-for-byte after canonical JSON serialization (sorted
@@ -2680,14 +2714,20 @@ def _canonical(obj) -> str:
 
 
 def _normalize_room_for_compare(room: dict) -> dict:
-    """Strips the fields excluded from strict equality (plan §4/item 3) before the canonical-JSON
-    comparison: the shape-only keys above, and `live.lastActivityAt` (see `_compare_last_activity`
-    -- diffed separately, on the unquantized instant, never on the bucketed string)."""
+    """Strips the fields excluded from strict equality before the canonical-JSON comparison: the
+    shape-only keys above, `live.lastActivityAt` (see `_compare_last_activity` -- diffed
+    separately, on the unquantized instant, never on the bucketed string), and the #1807 volatile
+    live fields (`_MONOTONE_LIVE_COUNTER_KEYS`, `_LEVEL_LIVE_KEYS`, plus `stdoutTail` -- see
+    `_compare_volatile_live`, which diffs them separately under a moving-value tolerance instead of
+    byte equality)."""
     normalized = {k: v for k, v in room.items() if k not in _COMPARE_SHAPE_ONLY_KEYS}
     live = normalized.get("live")
-    if isinstance(live, dict) and "lastActivityAt" in live:
+    if isinstance(live, dict):
         live = dict(live)
-        del live["lastActivityAt"]
+        live.pop("lastActivityAt", None)
+        for key in _MONOTONE_LIVE_COUNTER_KEYS + _LEVEL_LIVE_KEYS:
+            live.pop(key, None)
+        live.pop("stdoutTail", None)
         normalized["live"] = live
     return normalized
 
@@ -2717,10 +2757,106 @@ def _compare_last_activity(path: str, derive_room: dict, file_room: dict) -> lis
     return []
 
 
-def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
+def _tail_contains_earlier_last_line(later_tail: str, earlier_tail: str) -> bool:
+    """#1812: the substring check `_compare_volatile_live` uses for a Running room's `stdoutTail`
+    -- the earlier sample's last non-empty line must still appear somewhere in the later sample's
+    tail, the way two reads of the SAME growing (or `[withheld]`-redacted) log window would. An
+    empty earlier tail has nothing to check (vacuously true) -- covers both a brand-new stream and
+    the earlier sample landing right after an 8 MiB rollover reset it to empty."""
+    lines = [line for line in earlier_tail.splitlines() if line]
+    if not lines:
+        return True
+    return lines[-1] in later_tail
+
+
+def _compare_volatile_live(path: str, derive_room: dict, file_room: dict, derive_is_later: bool | None) -> list[str]:
+    """#1812: which sample is chronologically later is NOT assumed from call order -- it is passed
+    in as `derive_is_later`, computed once in `compare_projection` from both sides' own
+    `derived_at` (`None` when either side's `derived_at` is missing or unparseable, in which case
+    the ordering-dependent checks below are skipped for this room rather than guessing a
+    direction -- the same fail-open shape `_compare_last_activity` uses for a missing timestamp).
+
+    `_MONOTONE_LIVE_COUNTER_KEYS` (true running counters) must be >= whichever side is earlier --
+    never simply "derive >= file": a daemon write landing between `compare_projection`'s derive
+    step and its file-read step can legitimately make the FILE side the later one.
+
+    `_LEVEL_LIVE_KEYS` (the latest-turn snapshot, not cumulative -- see that constant's own
+    comment) get no ordering check on a Running room: only presence and numeric-shape, since either
+    side can legitimately be smaller, larger, or absent-then-present as a new turn lands mid-stream.
+    Once a room is settled (`_room_is_settled` -- terminal, or quiet past one daemon write
+    interval), its counters can no longer legitimately be moving, so both `_LEVEL_LIVE_KEYS` and
+    `stdoutTail` go back under EXACT comparison -- the #1812 review found a settled room's
+    `cacheReadTokens` silently masking a genuine sum-vs-level derivation bug under the same
+    presence/shape-only tolerance a still-Running room needs honestly.
+
+    `stdoutTail` on a still-Running room is compared by containment rather than exact match: the
+    two paths read the SAME `.stdout.log` at different wall-clock instants (`compare_projection`
+    hands `attach_live_telemetry` a fresh `live_telemetry_cache` every run, but that cache has no
+    effect on `stdout_tail_for_room` at all -- it reads the file straight off disk regardless of
+    cache warmth), so the later sample's tail must still contain the earlier sample's last line
+    (skipped, like the monotone counters, when `derive_is_later` could not be determined, and
+    tolerant of an 8 MiB rollover resetting the earlier tail to empty). A field present on one side
+    and missing on the other, or a non-numeric/non-string value, is still a real derivation
+    difference on either kind of room -- none of that is tolerated."""
+    diffs = []
+    d_live = derive_room.get("live")
+    f_live = file_room.get("live")
+    if not isinstance(d_live, dict) or not isinstance(f_live, dict):
+        return diffs
+
+    settled = _room_is_settled(file_room)
+    later, earlier = ("derive", "file") if derive_is_later else ("file", "derive")
+
+    for key in _MONOTONE_LIVE_COUNTER_KEYS + _LEVEL_LIVE_KEYS:
+        d_has, f_has = key in d_live, key in f_live
+        if d_has != f_has:
+            diffs.append(f"{path}: field {key!r} present in {'derive' if d_has else 'file'}, "
+                         f"absent in {'file' if d_has else 'derive'}")
+            continue
+        if not d_has:
+            continue
+        d_val, f_val = d_live[key], f_live[key]
+        if isinstance(d_val, bool) or isinstance(f_val, bool) or not isinstance(d_val, (int, float)) \
+                or not isinstance(f_val, (int, float)):
+            diffs.append(f"{path}: live.{key} not numeric: derive={d_val!r} file={f_val!r}")
+            continue
+        if key in _MONOTONE_LIVE_COUNTER_KEYS and derive_is_later is not None:
+            later_val, earlier_val = (d_val, f_val) if derive_is_later else (f_val, d_val)
+            if later_val < earlier_val:
+                diffs.append(f"{path}: live.{key} moved backwards: {later}={later_val} (later) < "
+                             f"{earlier}={earlier_val} (earlier)")
+        elif key in _LEVEL_LIVE_KEYS and settled and d_val != f_val:
+            diffs.append(f"{path}: live.{key} differs on a settled room: derive={d_val} file={f_val}")
+
+    d_tail, f_tail = d_live.get("stdoutTail"), f_live.get("stdoutTail")
+    if (d_tail is None) != (f_tail is None):
+        diffs.append(f"{path}: field 'stdoutTail' present in "
+                     f"{'derive' if d_tail is not None else 'file'}, absent in "
+                     f"{'file' if d_tail is not None else 'derive'}")
+    elif d_tail is not None and not isinstance(d_tail, str):
+        diffs.append(f"{path}: live.stdoutTail not a string: derive={d_tail!r}")
+    elif f_tail is not None and not isinstance(f_tail, str):
+        diffs.append(f"{path}: live.stdoutTail not a string: file={f_tail!r}")
+    elif d_tail is not None and f_tail is not None:
+        if settled:
+            if d_tail != f_tail:
+                diffs.append(f"{path}: live.stdoutTail differs on a settled room: "
+                             f"derive={d_tail!r} file={f_tail!r}")
+        elif derive_is_later is not None:
+            later_tail, earlier_tail = (d_tail, f_tail) if derive_is_later else (f_tail, d_tail)
+            if not _tail_contains_earlier_last_line(later_tail, earlier_tail):
+                diffs.append(f"{path}: live.stdoutTail: {later}'s tail does not contain "
+                             f"{earlier}'s last line: {later}={later_tail!r} {earlier}={earlier_tail!r}")
+    return diffs
+
+
+def _diff_room(path: str, derive_room: dict, file_room: dict, derive_is_later: bool | None) -> list[str]:
     """Every field-level difference between one room's derive-path and file-path projections,
-    after the plan §4/item 3 exclusions. Empty list means identical."""
+    after the plan §4/item 3 exclusions and the #1807/#1812 volatile-live tolerance. `derive_is_later`
+    is threaded straight through to `_compare_volatile_live` -- see that function's own doc for what
+    it means and where it comes from. Empty list means identical."""
     diffs = _compare_last_activity(path, derive_room, file_room)
+    diffs.extend(_compare_volatile_live(path, derive_room, file_room, derive_is_later))
 
     d_norm = _normalize_room_for_compare(derive_room)
     f_norm = _normalize_room_for_compare(file_room)
@@ -2741,17 +2877,62 @@ def _diff_room(path: str, derive_room: dict, file_room: dict) -> list[str]:
     return diffs
 
 
+def _room_is_settled(file_room: dict) -> bool:
+    """#1807: a room counts toward `_MIN_SETTLED_ROOMS_FOR_GREEN` once its counters can no longer
+    legitimately be moving -- either it's in `_TERMINAL_STATES`, or its own (unquantized)
+    `live.lastActivityAt` is already older than one daemon write interval, so the file's sample
+    could not still be catching up to what the derive path just observed."""
+    if file_room.get("state") in _TERMINAL_STATES:
+        return True
+    live = file_room.get("live")
+    ts = live.get("lastActivityAt") if isinstance(live, dict) else None
+    if not isinstance(ts, str):
+        return False
+    try:
+        epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return (time.time() - epoch) > _DAEMON_PROJECTION_WRITE_INTERVAL_S
+
+
+def _derive_is_later(derive_derived_at: str | None, file_derived_at: str | None) -> bool | None:
+    """#1812: parses both sides' `derived_at` and reports whether the derive sample is the
+    chronologically LATER one. `None` when either side's timestamp is missing or unparseable --
+    callers skip the ordering-dependent checks in that case (`_compare_volatile_live`'s own doc)
+    rather than falling back to an assumed call order, which is exactly the bug this replaces."""
+    if not isinstance(derive_derived_at, str) or not isinstance(file_derived_at, str):
+        return None
+    try:
+        d_epoch = datetime.fromisoformat(derive_derived_at.replace("Z", "+00:00")).timestamp()
+        f_epoch = datetime.fromisoformat(file_derived_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    return d_epoch >= f_epoch
+
+
 def compare_projection(dll: str, roots: list) -> int:
     """Runs the `derive` path (spawn `dotnet mcp`, then `attach_live_telemetry`/
     `attach_pruned_info` -- main()'s own pre-#1557 pipeline) and the `file` path (read
     `BatonPaths.FleetProjectionFile`) ONCE each against the same live rooms, then diffs every room
-    both sides agree exists. Exit 0 on identical, 1 with the diff printed on mismatch."""
+    both sides agree exists. Exit 0 on identical, 1 with the diff printed on mismatch.
+
+    #1812: derivation happens FIRST, the projection file is read SECOND -- an earlier docstring
+    here claimed the opposite order and had the monotone-counter check assume derive is always
+    later because of it. The real order doesn't settle the question either (the daemon writes the
+    file on its own independent cadence, so a write can land between the two steps below and make
+    the file side the later sample) -- so ordering is read from each side's own `derived_at`
+    instead of assumed from either the claimed or the actual call order. `derive_parsed`
+    (fleet_status's raw result) carries no top-level `derived_at` the way the projection FILE does
+    (`FleetProjectionWriter.cs:162`), so the derive side's timestamp is captured explicitly, right
+    after `attach_live_telemetry` has read each room's live counters straight off disk -- that is
+    the actual moment those counters were observed."""
     text, _timelines = derive_snapshot_and_timelines(dll, roots)
     derive_parsed = json.loads(text)
     derive_room_list = derive_parsed if isinstance(derive_parsed, list) else (derive_parsed.get("rooms") or [])
     patterns = load_secret_patterns(DEFAULT_SECRET_PATTERNS_FILE)
     attach_live_telemetry(derive_room_list, {}, patterns)
     attach_pruned_info(derive_room_list, {})
+    derive_derived_at = datetime.now(timezone.utc).isoformat()
 
     projection_path = resolve_projection_file_path()
     file_data, staleness = read_projection_file(projection_path, time.time(), max_age_s=float("inf"))
@@ -2759,6 +2940,8 @@ def compare_projection(dll: str, roots: list) -> int:
         print(f"COMPARE: projection file unreadable/absent/malformed at {projection_path} -- "
               f"{staleness}", file=sys.stderr)
         return 1
+    file_derived_at = file_data.get("derived_at") if isinstance(file_data, dict) else None
+    derive_is_later = _derive_is_later(derive_derived_at, file_derived_at)
     file_room_list = file_data.get("rooms") or []
 
     by_path_derive = {r["path"]: r for r in derive_room_list
@@ -2774,8 +2957,11 @@ def compare_projection(dll: str, roots: list) -> int:
     if only_in_file:
         diffs.append(f"rooms only in file path: {only_in_file}")
 
-    for path in sorted(set(by_path_derive) & set(by_path_file)):
-        diffs.extend(_diff_room(path, by_path_derive[path], by_path_file[path]))
+    common_paths = sorted(set(by_path_derive) & set(by_path_file))
+    for path in common_paths:
+        diffs.extend(_diff_room(path, by_path_derive[path], by_path_file[path], derive_is_later))
+
+    settled_count = sum(1 for p in common_paths if _room_is_settled(by_path_file[p]))
 
     # #1557 plan item 4: an installed daemon build that predates #1786 (PR-A2) never wrote
     # `live.stdoutTail` at all -- that reds this diff on `stdoutTail` for every Running room, which
@@ -2794,7 +2980,16 @@ def compare_projection(dll: str, roots: list) -> int:
             print(f"  !! {d}", file=sys.stderr)
         return 1
 
-    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, "
+    # #1807: a clean diff on zero (or too few) settled rooms is not evidence the monotone-live
+    # tolerance actually discriminates -- it just never got exercised. "green on 0" must not pass.
+    if settled_count < _MIN_SETTLED_ROOMS_FOR_GREEN:
+        print(f"COMPARE: FAIL -- only {settled_count} settled room(s) compared (need >= "
+              f"{_MIN_SETTLED_ROOMS_FOR_GREEN}); a clean diff on too few settled rooms can't "
+              f"certify the compare -- rerun once more rooms have finished or gone quiet.",
+              file=sys.stderr)
+        return 1
+
+    print(f"COMPARE: identical ({len(by_path_file)} room(s) compared, {settled_count} settled, "
           f"{len(only_in_derive) + len(only_in_file)} room-set diff(s))")
     return 0
 
@@ -5186,17 +5381,123 @@ def _selftest() -> int:
     identical_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
                        "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
     check("compare identity diff: identical rooms diff clean (lastActivityAt's own bucket excluded)",
-          _diff_room("C:\\rooms\\room-a", identical_derive, identical_file) == [])
+          _diff_room("C:\\rooms\\room-a", identical_derive, identical_file, True) == [])
 
     planted_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
                      "live": {"toolCalls": 4, "lastActivityAt": "2026-09-03T12:01:00+00:00"}}
-    planted_diff = _diff_room("C:\\rooms\\room-a", identical_derive, planted_file)
+    planted_diff = _diff_room("C:\\rooms\\room-a", identical_derive, planted_file, True)
     check("compare identity diff: a planted field difference is reported (exit 1 -- main() maps this to sys.exit)",
           any("toolCalls" in d for d in planted_diff))
 
     shape_invalid_file = {"processAlive": "not-a-real-status"}
     check("compare identity diff: shape-only fields (never diffed against derive) are still shape-checked",
-          any("processAlive" in d for d in _diff_room("C:\\rooms\\room-a", {}, shape_invalid_file)))
+          any("processAlive" in d for d in _diff_room("C:\\rooms\\room-a", {}, shape_invalid_file, True)))
+
+    # -- #1807/#1812: volatile-live tolerance arms, on a Running room recent enough that
+    # `_room_is_settled` reads False (anchored to real `time.time()`, not a fixed date, so these stay
+    # "not settled" regardless of when selftest runs) -- exercises the STILL-MOVING tolerance path.
+    # `derive_is_later` is passed explicitly rather than assumed. --
+    _live_now = time.time()
+    monotone_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running", "role": "worker",
+                        "live": {"toolCalls": 5, "turns": 2, "billedTokens": 1000, "cacheReadTokens": 50,
+                                 "contextTokens": 200, "stdoutTail": "line2\nline3\nline4\n",
+                                 "lastActivityAt": datetime.fromtimestamp(_live_now, tz=timezone.utc).isoformat()}}
+    monotone_file = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running", "role": "worker",
+                      "live": {"toolCalls": 3, "turns": 1, "billedTokens": 800, "cacheReadTokens": 40,
+                               "contextTokens": 150, "stdoutTail": "line2\nline3\n",
+                               "lastActivityAt": datetime.fromtimestamp(_live_now - 5, tz=timezone.utc).isoformat()}}
+    check("#1807 volatile-live tolerance: a Running room whose live counters moved forward (derive later) diffs clean",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, monotone_file, True) == [])
+
+    backwards_file = {**monotone_file, "live": {**monotone_file["live"], "toolCalls": 9}}
+    backwards_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, backwards_file, True)
+    check("#1807 volatile-live tolerance: a true counter that moved BACKWARDS (derive later) is still a real difference",
+          any("toolCalls" in d and "backwards" in d for d in backwards_diff))
+
+    # Measured on a real live run (PR body): cacheReadTokens/contextTokens are a LEVEL from the
+    # latest turn, not a running counter -- on a still-Running room they can legitimately go DOWN.
+    level_dropped_file = {**monotone_file,
+                           "live": {**monotone_file["live"], "cacheReadTokens": 999999, "contextTokens": 50000}}
+    check("#1807 volatile-live tolerance: cacheReadTokens/contextTokens dropping on a Running room is NOT a real difference",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, level_dropped_file, True) == [])
+
+    role_diff_file = {**monotone_file, "role": "conductor"}
+    role_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, role_diff_file, True)
+    check("#1807 volatile-live tolerance: a room whose role differs still fails (the tolerance doesn't swallow it)",
+          any("role" in d for d in role_diff))
+
+    # -- #1812 F2: derive_is_later is READ, not assumed. When the FILE sample is actually the later
+    # one (a daemon write landed between compare_projection's derive step and its file-read step),
+    # the direction check must invert -- the file's higher counters are legitimate, and a counter
+    # that's higher on derive (the now-EARLIER sample) is the real backwards move. --
+    file_later_file = {**monotone_file, "live": {**monotone_file["live"], "toolCalls": 9, "turns": 4,
+                                                  "billedTokens": 5000, "stdoutTail": "line3\nline4\nline5\n"}}
+    check("#1812 derived_at ordering: file sample later -- file's higher counters are NOT a backwards move",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, file_later_file, False) == [])
+
+    file_later_backwards_file = {**monotone_file, "live": {**monotone_file["live"], "toolCalls": 1}}
+    inverted_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, file_later_backwards_file, False)
+    check("#1812 derived_at ordering: file sample later -- derive's now-stale HIGHER toolCalls (5) "
+          "vs file's fresher lower one (1) is a real backwards move once inverted",
+          any("toolCalls" in d and "backwards" in d for d in inverted_diff))
+
+    check("#1812 derived_at ordering: unknown order (derived_at missing/unparseable on either side) "
+          "skips the monotone-direction check rather than assuming one",
+          _derive_is_later(None, "2026-09-03T12:00:00+00:00") is None
+          and _derive_is_later("not-a-timestamp", "2026-09-03T12:00:00+00:00") is None)
+    unknown_order_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, backwards_file, None)
+    check("#1812 derived_at ordering: unknown order -- a counter difference that would fail under "
+          "either assumed direction is NOT reported when the order can't be established",
+          not any("toolCalls" in d for d in unknown_order_diff))
+
+    # -- #1812 F1: once a room is SETTLED (state terminal, or quiet past one write interval), the
+    # #1807 level tolerance goes back to exact -- a real sum-vs-level derivation bug (like the
+    # cacheReadTokens one this PR fixes) must not hide behind "it's just a level that moved". --
+    settled_derive = {**monotone_derive, "state": "Succeeded",
+                       "live": {**monotone_derive["live"], "cacheReadTokens": 100, "contextTokens": 200}}
+    settled_file_matching = {**monotone_file, "state": "Succeeded",
+                              "live": {**monotone_file["live"], "cacheReadTokens": 100, "contextTokens": 200,
+                                       "stdoutTail": "line2\nline3\nline4\n"}}
+    check("#1812 settled-room level exactness: identical cacheReadTokens/stdoutTail on a settled room diffs clean",
+          _diff_room("C:\\rooms\\room-a", settled_derive, settled_file_matching, True) == [])
+
+    settled_file_mismatched = {**monotone_file, "state": "Succeeded",
+                                "live": {**monotone_file["live"], "cacheReadTokens": 881499}}
+    settled_diff = _diff_room("C:\\rooms\\room-a", settled_derive, settled_file_mismatched, True)
+    check("#1812 settled-room level exactness: a mismatched cacheReadTokens on a SETTLED room is a real "
+          "difference (this is the exact shape of the sum-vs-level bug the PR fixes)",
+          any("cacheReadTokens" in d and "settled" in d for d in settled_diff))
+
+    settled_tail_diff = _diff_room("C:\\rooms\\room-a", settled_derive,
+                                    {**settled_file_matching, "live": {**settled_file_matching["live"], "stdoutTail": "line9\n"}},
+                                    True)
+    check("#1812 settled-room level exactness: a mismatched stdoutTail on a settled room is a real difference",
+          any("stdoutTail" in d and "settled" in d for d in settled_tail_diff))
+
+    # -- #1812 F3: on a still-Running room, stdoutTail is compared by containment (the later sample's
+    # tail must still hold the earlier sample's last line), not by exact match or presence/shape only.
+    tail_ok_file = {**monotone_file, "live": {**monotone_file["live"], "stdoutTail": "line3\n"}}
+    check("#1812 Running-room stdoutTail: derive's tail contains file's (earlier) last line -- clean",
+          _diff_room("C:\\rooms\\room-a", monotone_derive, tail_ok_file, True) == [])
+
+    tail_broken_file = {**monotone_file, "live": {**monotone_file["live"], "stdoutTail": "totally different content\n"}}
+    tail_diff = _diff_room("C:\\rooms\\room-a", monotone_derive, tail_broken_file, True)
+    check("#1812 Running-room stdoutTail: derive's tail does NOT contain file's (earlier) last line -- a real difference",
+          any("stdoutTail" in d and "does not contain" in d for d in tail_diff))
+
+    check("#1807 settled-rooms floor: a terminal room counts as settled",
+          _room_is_settled({"state": "Succeeded"}) is True)
+    check("#1807 settled-rooms floor: a Running room active within the last write interval does not",
+          _room_is_settled({"state": "Running",
+                             "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}) is False)
+    check("#1807 settled-rooms floor: a Running room quiet longer than one write interval does",
+          _room_is_settled({"state": "Running", "live": {"lastActivityAt": datetime.fromtimestamp(
+              time.time() - _DAEMON_PROJECTION_WRITE_INTERVAL_S - 1, tz=timezone.utc).isoformat()}}) is True)
+    fewer_than_floor = [{"state": "Running",
+                          "live": {"lastActivityAt": datetime.now(timezone.utc).isoformat()}}] * 2
+    check(f"#1807 settled-rooms floor: {_MIN_SETTLED_ROOMS_FOR_GREEN} is the actual floor "
+          "(a compare with fewer settled rooms than this must not pass, i.e. 'green on 0')",
+          sum(1 for r in fewer_than_floor if _room_is_settled(r)) < _MIN_SETTLED_ROOMS_FOR_GREEN)
 
     if failures:
         print(f"pusher.py selftest: FAIL -- {len(failures)} check(s):", file=sys.stderr)

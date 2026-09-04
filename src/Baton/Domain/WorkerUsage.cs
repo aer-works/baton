@@ -36,6 +36,15 @@ namespace Baton.Domain;
 /// every incremental line (#1682) — display-only, never itself compared to a budget — the same
 /// per-context duality <paramref name="ContextLevelTokens"/> documents for the input side.
 /// </param>
+/// <param name="CacheReadLevelTokens">
+/// #1812: the LATEST usage line's own <c>CacheReadTokens</c> reading, not the running Σ
+/// <paramref name="CacheReadTokens"/> carries on <see cref="Mutation.TokenBudgetMonitor"/>'s own
+/// snapshot — pusher.py's derive path treats cache-read the same way it treats
+/// <paramref name="ContextLevelTokens"/>'s <c>contextTokens</c> (a LEVEL the caller replaces, never
+/// sums), so a projection consumer comparing against that path needs the same level, not the Σ.
+/// Null for every ordinary vendor-parsed reading, same convention as <paramref name="ContextLevelTokens"/>;
+/// only <c>Mutation.TokenBudgetMonitor</c>'s own snapshot sets it.
+/// </param>
 /// <param name="MessageId">
 /// #1686 (review F6): claude's <c>message.id</c> off an incremental <c>"type":"assistant"</c> line —
 /// measured against real captures to repeat across several consecutive lines with the SAME
@@ -76,6 +85,7 @@ public sealed record WorkerUsage(
     long? CacheCreationTokens = null,
     long? ThinkingTokens = null,
     long? ContextLevelTokens = null,
+    long? CacheReadLevelTokens = null,
     long? BilledTokens = null,
     string? MessageId = null,
     bool BilledIsFloor = false,

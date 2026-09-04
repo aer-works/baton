@@ -221,7 +221,12 @@ public sealed class FleetProjectionWriter : BackgroundService
                     liveNode["contextTokens"] = contextTokens;
                 }
 
-                if (usage.CacheReadTokens is { } cacheReadTokens)
+                // #1812: the LATEST line's reading (WorkerUsage.CacheReadLevelTokens), not the running
+                // Σ TokenBudgetMonitor also tracks (WorkerUsage.CacheReadTokens, display-only per that
+                // field's own doc) -- pusher.py's derive path replaces this value per turn rather than
+                // summing it, so the projection has to report the same level or the compare's identity
+                // check reads a structural sum-vs-level mismatch as an ~8x drift.
+                if (usage.CacheReadLevelTokens is { } cacheReadTokens)
                 {
                     liveNode["cacheReadTokens"] = cacheReadTokens;
                 }

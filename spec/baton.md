@@ -2629,8 +2629,9 @@ itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env, default `derive` — a depl
 is unchanged until an operator flips it) switches `main()`'s loop to `json.load`
 `BatonPaths.FleetProjectionFile` instead of spawning `dotnet mcp` and running its own
 `attach_live_telemetry`/`attach_pruned_info`; `derive` keeps doing exactly what it always has. This
-PR deletes nothing from the `derive` path — that is PR-B2, gated on this PR's own identity diff
-having passed on the live machine. Because no scheduled task runs `baton daemon` today, the fallback
+PR deletes nothing from the `derive` path — that is PR-B2, gated on `compare-projection` reading
+green on ≥ 3 settled rooms plus every static field on every room (#1807; `compare_projection`'s own
+`_MIN_SETTLED_ROOMS_FOR_GREEN` in `pusher.py`, so "green on 0" can't pass). Because no scheduled task runs `baton daemon` today, the fallback
 below is load-bearing from day one, not a defensive edge case: a file older than 3 coalescing
 windows (900s) or absent/unreadable/malformed falls back to `derive` for that one cycle and logs one
 line; on that fallback cycle only, the pushed body carries one more optional top-level field,
@@ -2644,6 +2645,21 @@ diff printed on mismatch — `derived_at` (differs by construction), `rooms[].li
 `processAlive`/`stdout_last_write_ago_sec`/`elapsed` (the `derive` path never emitted these at all)
 are excluded from strict equality for the reasons named inline at each check; everything else must
 match exactly.
+
+**#1807: `rooms[].live` on a Running room needed a second exclusion tier, not more strict-equality
+exceptions.** A live compare run on this machine's own overnight fleet (34+ Running rooms) reads RED
+on `billedTokens`/`cacheReadTokens`/`contextTokens`/`toolCalls`/`turns`/`stdoutTail` on every one of
+them, for the reason and design `_compare_volatile_live`'s own doc comment in `pusher.py` gives
+(canonical — not restated here): `billedTokens`/`toolCalls`/`turns` tolerate forward motion only, in
+whichever direction each side's own `derived_at` says is actually later (#1812 — never assumed from
+call order); `contextTokens`/`cacheReadTokens`/`stdoutTail` tolerate a moving value only on a room
+that is still Running, going back to exact comparison once `_room_is_settled` says a room's counters
+can no longer legitimately be moving (#1812 — the tolerance was masking a genuine `cacheReadTokens`
+sum-vs-level derivation bug, `WorkerUsage.CacheReadLevelTokens` in `src/Baton/Domain/WorkerUsage.cs`).
+A clean diff still is not enough on its own to gate PR-B2 if it happened to run against zero or few
+settled rooms — the `_MIN_SETTLED_ROOMS_FOR_GREEN` floor above exists so "green because nothing live
+was actually checked" can't pass. See `_compare_volatile_live`/`_room_is_settled` in `pusher.py` for
+the mechanics.
 
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate
