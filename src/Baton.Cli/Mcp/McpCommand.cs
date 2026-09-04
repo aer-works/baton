@@ -1,3 +1,4 @@
+using Baton.Artifacts;
 using Baton.Status;
 
 namespace Baton.Cli.Mcp;
@@ -49,6 +50,49 @@ public static class McpCommand
             }
 
             tools.Add(new MemoryProposalTool(Path.Combine(outputDirectory, MemoryProposalTool.CaptureDirectoryName)));
+
+            // #595: promote-artifact rides the same opt-in as memory-edit-proposal rather than a
+            // second flag -- both are worker-side escalation tools composed onto this same host, and
+            // neither needs a flag of its own the other doesn't already require. BATON_OUTPUT_DIR is
+            // always `{roomDir}/artifacts/execution_{id}` (ArtifactManager.AllocateOutputDirectory) --
+            // structural, not a worker's claim, the same reasoning MemoryProposalEscalation's own
+            // remarks give for trusting an execution_* directory name -- so the room directory and the
+            // execution id are both derived from it rather than read from a second env var.
+            //
+            // That trust only holds when the shape actually matches: this is parsed from an inherited
+            // environment variable, not written by AER itself in this process, so a malformed value
+            // (wrong middle segment, missing 'execution_' prefix, a room directory that does not exist)
+            // must fail closed rather than silently derive a wrong or nonexistent room directory --
+            // #1824 review finding 1, RoomArtifacts.Write must never be pointed somewhere unintended.
+            var executionDirectory = Path.GetFullPath(outputDirectory);
+            var artifactsRoot = Path.GetDirectoryName(executionDirectory);
+            var roomDirectoryPath = artifactsRoot is null ? null : Path.GetDirectoryName(artifactsRoot);
+            var artifactsSegmentName = artifactsRoot is null ? null : Path.GetFileName(artifactsRoot);
+            var artifactsSegmentComparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            var artifactsSegmentMatches = artifactsSegmentName is not null
+                && string.Equals(artifactsSegmentName, ArtifactManager.ArtifactsDirectoryName, artifactsSegmentComparison);
+
+            var executionDirectoryName = Path.GetFileName(executionDirectory);
+            var executionId = executionDirectoryName.StartsWith("execution_", StringComparison.Ordinal)
+                && executionDirectoryName.Length > "execution_".Length
+                ? executionDirectoryName["execution_".Length..]
+                : null;
+
+            if (roomDirectoryPath is null || !artifactsSegmentMatches || executionId is null
+                || !Directory.Exists(roomDirectoryPath))
+            {
+                Console.Error.WriteLine(
+                    "--memory-proposal-tool requires BATON_OUTPUT_DIR to be an existing room directory's " +
+                    $"'{ArtifactManager.ArtifactsDirectoryName}{Path.DirectorySeparatorChar}execution_<id>' " +
+                    $"directory; got '{outputDirectory}'.");
+                return 1;
+            }
+
+            var attribution = new ArtifactAttribution(ExecutionId: executionId, Role: null, Adapter: null, Model: null);
+
+            tools.Add(new PromoteArtifactTool(roomDirectoryPath, executionDirectory, attribution));
         }
 
         if (tools.Count == 0)
