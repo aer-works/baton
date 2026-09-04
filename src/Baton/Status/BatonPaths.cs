@@ -204,6 +204,23 @@ public static class BatonPaths
     public const string FleetProjectionFileName = "projection.json";
 
     /// <summary>
+    /// <c>{Root}/secretpatterns.local.txt</c> — the daemon's own copy of the fail-closed secret-gate
+    /// denylist <c>tools/fleet-glass/pusher.py</c>'s <c>load_secret_patterns</c>/<c>secret_hit_index</c>
+    /// already define (spec/baton.md §6): one regex per line, '#' starts a comment, blank lines
+    /// ignored. A NEW path, not the pusher's own <c>tools/fleet-glass/secretpatterns.local.txt</c> —
+    /// the daemon and the pusher are separate processes with no shared working directory in general
+    /// (the daemon runs from an installed <see cref="Tools"/> checkout, the pusher from its own repo
+    /// checkout), so each keeps its own copy under its own storage root, machine-local like the
+    /// pusher's own (never checked in — outside the repo entirely, so no <c>.gitignore</c> entry is
+    /// needed either). Missing or unreadable fails CLOSED (every <c>stdoutTail</c> line withheld),
+    /// matching the pusher's own ruling.
+    /// </summary>
+    public static string SecretPatternsFile => Path.Combine(Root, SecretPatternsFileName);
+
+    /// <summary>Filename of <see cref="SecretPatternsFile"/> relative to a root.</summary>
+    public const string SecretPatternsFileName = "secretpatterns.local.txt";
+
+    /// <summary>
     /// <c>{Root}/deleted-rooms.jsonl</c> — the local record <c>baton room delete</c>/<c>baton rooms
     /// prune</c> leave behind so a deleted room's pushed deliverables can eventually be caught up on
     /// elsewhere. See <see cref="DeletedRoomsTombstoneStore"/> (#1659) for what writes it and why.
