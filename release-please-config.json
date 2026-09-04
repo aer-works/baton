@@ -1,41 +1,19 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
-    "src/Baton": {
+    ".": {
       "release-type": "simple",
-      "component": "flow",
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Bug Fixes" },
-        { "type": "perf", "section": "Performance Improvements" },
-        { "type": "refactor", "section": "Code Refactoring" },
-        { "type": "docs", "section": "Documentation" },
-        { "type": "ci", "section": "Continuous Integration" },
-        { "type": "test", "section": "Tests" },
-        { "type": "chore", "section": "Miscellaneous" }
-      ]
-    },
-    "src/Baton.Vendors": {
-      "release-type": "simple",
-      "component": "vendors",
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Bug Fixes" },
-        { "type": "perf", "section": "Performance Improvements" },
-        { "type": "refactor", "section": "Code Refactoring" },
-        { "type": "docs", "section": "Documentation" },
-        { "type": "ci", "section": "Continuous Integration" },
-        { "type": "test", "section": "Tests" },
-        { "type": "chore", "section": "Miscellaneous" }
-      ]
-    },
-    "src/Baton.Cli": {
-      "release-type": "simple",
-      "component": "cli",
+      "package-name": "baton",
+      "include-component-in-tag": false,
       "extra-files": [
         {
           "type": "xml",
           "path": "Directory.Build.props",
+          "xpath": "/Project/PropertyGroup/Version"
+        },
+        {
+          "type": "xml",
+          "path": "src/Baton.Cli/Directory.Build.props",
           "xpath": "/Project/PropertyGroup/Version"
         }
       ],
@@ -50,12 +28,5 @@
         { "type": "chore", "section": "Miscellaneous" }
       ]
     }
-  },
-  "plugins": [
-    {
-      "type": "linked-versions",
-      "groupName": "core",
-      "components": ["flow", "vendors", "cli"]
-    }
-  ]
+  }
 }

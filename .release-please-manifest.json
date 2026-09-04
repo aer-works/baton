@@ -1,5 +1,3 @@
 {
-  "src/Baton": "0.31.0",
-  "src/Baton.Vendors": "0.31.0",
-  "src/Baton.Cli": "0.31.0"
+  ".": "0.31.0"
 }
