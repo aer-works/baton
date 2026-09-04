@@ -5787,6 +5787,13 @@ def _selftest() -> int:
               "429's resets_at",
               reloaded_cap_ledger.get("snapshot") == SNAPSHOT_DAILY_WRITES
               and reloaded_cap_ledger.get("kv_write_cap_resets_at") == "2026-09-05T00:00:00+00:00")
+        # A daily cap cannot still be live once the ledger has rolled to the next UTC day: the
+        # field must go with the counts, or the glass would show a cap banner for a day that never
+        # hit one (#1831 review).
+        rolled_cap_ledger = load_budget_ledger(load_push_state(cap_restart_ledger_file), 1000.0 + 86400.0)
+        check("(#1829) a UTC-day rollover drops the live 429's resets_at along with the counts",
+              "kv_write_cap_resets_at" not in rolled_cap_ledger
+              and kv_write_cap_pusher_fields(rolled_cap_ledger) == {})
 
     already_high_state: dict = {"__write_budget__": {"date": utc_day_str(1000.0),
                                                        "snapshot": SNAPSHOT_DAILY_WRITES + 5,
