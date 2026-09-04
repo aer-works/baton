@@ -225,11 +225,9 @@ public sealed class WorkflowStatusProjectorLivenessTests
     [Fact]
     public void A_revived_pump_renewing_a_pending_backoff_reports_liveness_alive_off_the_new_stamp()
     {
-        // #1577: a plain `baton run` reviving a room mid-backoff journals a fresh StepRetryScheduled
-        // carrying its OWN engine identity (MutationInterface.PumpToFixedPointAsync's idle-deferral
-        // renewal) rather than leaving the probe stuck reading the original, now-dead engine off the
-        // very first ExecutionRequestAccepted. The newest stamp -- here the renewal, chronologically
-        // after the original accept -- must be what the probe reads, live pid included.
+        // #1577: pins WorkflowStatusView's engineIdentityByExecutionId read (its own remarks have
+        // why) -- the renewal, chronologically after the original accept, must be what the probe
+        // reads, live pid included, not the dead identity the original accept still carries.
         var executionId = new ExecutionId("exec-1");
         var (deadPid, deadStartTime) = DeadProcessIdentity();
         var accepted = new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId), EnginePid: deadPid, EngineStartTime: deadStartTime);

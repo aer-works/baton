@@ -1469,15 +1469,9 @@ public static class MutationInterface
 
                     if (pendingDeferrals.Count > 0 && !hostStopRequested && !state.Steps.Any(s => s.Status == StepStatus.Paused))
                     {
-                        // #1577: a plain `baton run` reviving a room mid-backoff re-enters this exact
-                        // wait without ever going through the retryObligations branch above (the
-                        // obligation is already recorded from a prior, possibly-dead pump) -- nothing
-                        // journals THIS pump's identity, so EngineLivenessProbe keeps reading the old
-                        // engine and fleet_status reports Stalled for the rest of the wait even though
-                        // a live pump is quietly counting it down. Renew a fresh StepRetryScheduled,
-                        // same schedule, this process's own pid/start-time, for every step whose
-                        // deferral this pump has not itself stamped yet -- at most once per step per
-                        // call (engineStampedStepIds), never once per MaxParkWaitChunk re-arm.
+                        // #1577: engineStampedStepIds' own remarks above have why. Renews a step's
+                        // StepRetryScheduled (same schedule, this process's identity) the first time
+                        // this call finds it already pending rather than having just scheduled it.
                         var stepsToRenew = pendingDeferralSteps
                             .Where(s => !engineStampedStepIds.Contains(s.StepId))
                             .ToList();

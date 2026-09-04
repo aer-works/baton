@@ -1763,12 +1763,9 @@ public class MutationInterfaceRetryBackoffTests
         }
     }
 
-    // #1577: a plain `baton run` reviving a room mid-backoff re-enters the SAME idle-deferral wait a
-    // prior (possibly now-dead) pump scheduled, without ever going through the retryObligations
-    // branch that stamps engine identity on a fresh obligation -- so nothing renewed the identity
-    // EngineLivenessProbe reads, and fleet_status kept reading the dead original engine for the
-    // whole of the wait. This pins the fix: the revived pump journals its OWN pid onto a fresh
-    // StepRetryScheduled for the step before it starts waiting on the (unchanged) deadline.
+    // #1577: pins MutationInterface.PumpToFixedPointAsync's engineStampedStepIds renewal (its own
+    // remarks have why) at the pump level -- a fresh StepRetryScheduled, this process's own pid,
+    // before the wait on the (unchanged) deadline actually starts.
     [Fact]
     public async Task Test1577_Revived_pump_stamps_its_own_identity_on_a_backoff_it_did_not_create()
     {
@@ -1849,7 +1846,7 @@ public class MutationInterfaceRetryBackoffTests
                     }
 
                     Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(60), "Timed out waiting for the identity renewal.");
-                    await Task.Delay(10, TestContext.Current.CancellationToken);
+                    await Task.Delay(10, TestContext.Current.CancellationToken); // wait-ok: short poll interval, bounded by the 60s stopwatch above
                 }
             }
 

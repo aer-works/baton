@@ -738,10 +738,9 @@ public static class StatusCommand
         // misreported as abandoned.
         if (step.LatestExecutionId is { } latestExecutionId)
         {
-            // #1577: a revived pump re-entering an already-scheduled backoff renews the step's
-            // engine identity via a fresh StepRetryScheduled rather than a new
-            // ExecutionRequestAccepted (spec/baton.md §7) -- read both in log order so the newest
-            // stamp wins, same as fleet_status's identical read in WorkflowStatusView.
+            // #1577: same newest-stamp-wins read as WorkflowStatusView's engineIdentityByExecutionId
+            // loop -- FlowEvent.StepRetryScheduled.EnginePid's own remarks have why a revival renewal
+            // can land here too, not only ExecutionRequestAccepted.
             int? enginePid = null;
             DateTimeOffset? engineStartTime = null;
             foreach (var evt in events)
