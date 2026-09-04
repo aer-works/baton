@@ -1,10 +1,8 @@
 namespace Baton.Vendors.Tests;
 
 /// <summary>
-/// This assembly's counterpart to <c>Baton.Tests.Projection.ConsoleErrorCaptureCollection</c> --
-/// xUnit collections are scoped per assembly, so the guard needs its own definition here too. See
-/// that class for the race it closes and for <c>ConsoleSwapTests</c> (#1783), the build-time check
-/// enforcing enrollment.
+/// Same purpose as <c>Baton.Cli.Tests.ConsoleErrorCaptureCollection</c>, defined again because xUnit
+/// scopes collections per assembly and this is a different one.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class ConsoleErrorCaptureCollection
