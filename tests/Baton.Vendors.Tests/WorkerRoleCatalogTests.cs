@@ -555,8 +555,7 @@ public class WorkerRoleCatalogTests
         Assert.Contains("r", ex.Message, StringComparison.Ordinal);
     }
 
-    // #1788: delivers_branch marks a role whose brief convention ends in a push -- a post-exit delivery
-    // check (Mutation.DeliveryVerifier) runs for it after the worker exits 0.
+    // #1788: delivers_branch -- see WorkerRole.DeliversBranch's own remarks for what it gates.
 
     [Fact]
     public void The_shipped_implement_role_delivers_a_branch_and_no_other_role_does()

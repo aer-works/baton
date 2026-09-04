@@ -98,12 +98,8 @@ public static class RoleDispatch
     /// <param name="expectPrOverride">
     /// The <c>--expect-pr</c> escape hatch (#1788), independent of the role like <paramref
     /// name="tokenBudgetOverride"/> -- but unlike every override above, its EFFECTIVE value is resolved
-    /// right here rather than left null for the engine to fall back on: <c>expectPrOverride ??
-    /// role.DeliversBranch</c>. A plain <see langword="bool"/> default on
-    /// <see cref="WorkerBindingConfigEntry.ExpectPr"/> would default to <see langword="false"/> for
-    /// every construction path that never sets it, silently disabling the PR half of the check for a
-    /// role the catalog DOES mark <see cref="WorkerRole.DeliversBranch"/> -- resolving it here, against
-    /// the one place that field actually exists, is what avoids that trap.
+    /// right here as <c>expectPrOverride ?? role.DeliversBranch</c> rather than left null; spec/baton.md
+    /// §3's "Post-exit delivery check" entry states why this one resolves early instead of downstream.
     /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,

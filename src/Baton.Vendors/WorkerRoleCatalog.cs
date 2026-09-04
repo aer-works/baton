@@ -54,14 +54,16 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// dispatch (<see cref="RoleDispatch.ToBinding"/>'s own parameter), the only way one is ever set today.
 /// </param>
 /// <param name="DeliversBranch">
-/// #1788 (contract: <c>spec/baton.md</c> §3): whether this role's brief convention ends in a push — the
-/// role a post-exit delivery check (<c>Mutation.MutationInterface</c>) runs for after the worker exits 0
-/// and the ordinary verify command (if any) passes/does not run. False for every read-shaped role
-/// (<c>review</c>, <c>advise</c>, <c>fact-check</c>, <c>patch</c>, <c>orchestrate</c>) and for
-/// <c>janitor</c> — janitor's brief is "make named checkers green", never "open a PR", so the PR half of
-/// the check does not apply to it even though it commits (<c>WorkerRoleCatalogTests</c>' lockstep test
-/// pins the direction this DOES assert: every role with this true also has <see cref="PermissionGrant.WriteFiles"/>).
-/// Only <c>implement</c> sets this true today.
+/// #1788 (contract: <c>spec/baton.md</c> §3, "Post-exit delivery check"): whether the engine runs that
+/// check for this role after its worker exits 0. False for every read-shaped role (<c>review</c>,
+/// <c>advise</c>, <c>fact-check</c>, <c>patch</c>, <c>orchestrate</c>) — <c>WorkerRoleCatalogTests</c>'
+/// lockstep test pins the direction this DOES assert, every role with this true also has
+/// <see cref="PermissionGrant.WriteFiles"/>. <c>janitor</c> writes and commits but stays false too: this
+/// field has no independent PR-half switch of its own (<see cref="Mutation.WorkerBinding.Process.ExpectPr"/>
+/// is derived entirely from it, per-dispatch override aside), so marking it here would force the PR half
+/// on for every janitor dispatch with no per-role way to turn it off — a catalog schema gap, not a
+/// judgement that janitor's own stranded-local-commits case doesn't matter. Only <c>implement</c> sets
+/// this true today.
 /// </param>
 public sealed record WorkerRole(
     string Id,

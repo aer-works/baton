@@ -7,9 +7,9 @@ namespace Baton.Tests.Mutation;
 /// <summary>
 /// Coverage for <see cref="DeliveryVerifier"/> (#1788) — see its own class doc for the contract and
 /// spec/baton.md §3 for the "Post-exit delivery check" register entry. Real git against a local bare
-/// "origin" (a push/fetch round-trip needs a real remote, not <c>TempGitRepository</c>'s ref-only
-/// baseline shortcut) plus a fake <c>gh</c> stand-in script, mirroring
-/// <c>VerifyCommandResolverTests</c>' own "real git, fake pixi/gh binary name" pattern.
+/// "origin" (<see cref="TempGitRepository.InitBareRepository"/>'s own doc has why) plus a fake
+/// <c>gh</c> stand-in script, mirroring <c>VerifyCommandResolverTests</c>' own "real git, fake pixi/gh
+/// binary name" pattern.
 /// </summary>
 public sealed class DeliveryVerifierTests
 {
@@ -273,10 +273,8 @@ public sealed class DeliveryVerifierTests
     [Fact]
     public async Task A_detached_HEAD_fails_branch_not_pushed_rather_than_NotRun()
     {
-        // #1788: checking out a raw commit (`git checkout <sha>`) leaves git DETACHED, whatever
-        // provisioned the workspace this way -- confirmed directly against real git for this issue. A
-        // worker that exits 0 without ever checking out a named branch has delivered nothing pushable,
-        // which is a real failure, not merely unmeasurable.
+        // #1788: checking out a raw commit (`git checkout <sha>`) leaves git DETACHED -- confirmed
+        // directly against real git for this issue; spec/baton.md §3 states why that reads as Failed.
         var origin = TempGitRepository.InitBareRepository(TempPath("origin"));
         var workspace = TempPath("workspace");
         try

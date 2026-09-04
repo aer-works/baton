@@ -42,42 +42,14 @@ public sealed record DeliveryCheckOutcome(
 }
 
 /// <summary>
-/// #1788 (contract: <c>spec/baton.md</c> §3, "Post-exit delivery check"): a post-exit, read-only check
-/// for a role whose catalog entry sets <c>Baton.Vendors.WorkerRole.DeliversBranch</c> — asserts, after
-/// the worker has already exited 0 and the ordinary engine-run verify command (if any) has
-/// passed/did-not-run, that (1) the workspace's <c>HEAD</c> is reachable from
-/// <c>origin/&lt;branch&gt;</c>, and, when a PR is expected, (2) an open PR exists for that branch.
-/// <para>
-/// Every git/gh spawn here answers a question about the WORKSPACE's remote-visible state, never about
-/// what code to run next — unlike <see cref="VerifyCommandResolver"/>'s hardened git reads (whose
-/// output decides what a later step executes), so this class spawns through the plain, ambient-
-/// environment form of <see cref="VerifyRunner.CaptureAsync"/> the engine's own gate run already uses,
-/// with no <c>environmentAllowList</c>/<c>PATH</c> scrubbing to buy. The two network-touching spawns
-/// (<c>ls-remote</c>, <c>fetch</c>) DO override <c>GIT_TERMINAL_PROMPT</c>/<c>credential.interactive</c>
-/// so a host needing a credential refresh reports <see cref="DeliveryCheckStatus.NotRun"/> instead of
-/// hanging the engine's pump waiting on a prompt no one can answer (#1788 review) — the same
-/// non-interactive posture <c>RoleDispatch</c>'s own <c>OneShotContract</c> enforces on the worker side.
-/// </para>
-/// <para>
-/// <b>NotRun is reserved for positive evidence the tool itself could not answer</b> — git/gh missing
-/// from PATH, or a spawn that ran but could not reach the remote (network/auth) — mirroring
-/// <see cref="VerifyCommandResolver.CheckRunnableAsync"/>'s own "never an inference from something
-/// failing" rule. A workspace that plainly never pushed the branch at all (<c>git ls-remote --exit-code
-/// --heads</c> exiting 2, meaning no matching branch ref exists on the remote) is POSITIVE evidence of
-/// the opposite — the loudest form of #1788's own defect — so it settles <c>branch-not-pushed</c>, not
-/// <c>NotRun</c>. <c>--heads</c> scopes the query to branch refs only: without it, a same-named TAG on
-/// origin (measured directly) would make <c>ls-remote --exit-code</c> exit 0 and defer to a fetch that
-/// then fails to resolve <c>refs/heads/&lt;branch&gt;</c>, downgrading a real "never pushed" to a
-/// misleading engine-environment <c>NotRun</c>.
-/// </para>
-/// <para>
-/// <b>Known gap, stated rather than fixed (#1788 review):</b> this asks only "is the WORKSPACE's current
-/// HEAD pushed with an open PR", never "did THIS execution move HEAD or open that PR" — a redispatch into
-/// an already-pushed, already-PR'd workspace that changes nothing still passes. Distinguishing that would
-/// mean comparing against a pre-dispatch SHA or gating on <c>OutcomeClassification.WorkspaceChanged</c>
-/// (already computed for <c>ChangesTree</c> roles), which is a materially different assertion than the
-/// two named in the issue and is left for a follow-up rather than folded in here.
-/// </para>
+/// #1788 (contract: <c>spec/baton.md</c> §3, "Post-exit delivery check"): resolves whether a workspace
+/// has actually delivered what a <c>DeliversBranch</c> role's brief promises — pushed and, when expected,
+/// PR'd. Full rationale (why <c>NotRun</c> vs <c>Failed</c> is drawn where it is, the <c>--heads</c>/
+/// explicit-refspec/credential-prompt details, and the known gap this does NOT close) lives there, not
+/// restated here. Spawns through the plain, ambient-environment form of
+/// <see cref="VerifyRunner.CaptureAsync"/> — unlike <see cref="VerifyCommandResolver"/>'s hardened git
+/// reads (whose output decides what a later step executes), every spawn here only answers a question
+/// about the workspace's remote-visible state.
 /// </summary>
 public static class DeliveryVerifier
 {
@@ -217,11 +189,7 @@ public static class DeliveryVerifier
                 }
                 else if (isEmpty is null)
                 {
-                    // #1788 review: 'gh pr list' exited 0 but its stdout did not parse as the JSON array
-                    // it always emits on success -- an engine-environment surprise (a wrapper script, a
-                    // truncated pipe), never read as "a PR exists" (that would fabricate a pass from a
-                    // read that plainly did not answer the question) nor as "no PR" (a fabricated
-                    // failure the class doc already refuses).
+                    // Neither fabricated pass nor fabricated failure -- see TryIsEmptyJsonArray's own doc.
                     notRunReasons.Add("'gh pr list' succeeded but its output did not parse as the expected JSON array");
                 }
             }
@@ -248,16 +216,9 @@ public static class DeliveryVerifier
     private static async Task<DeliveryCheckOutcome> CheckPushedAsync(
         string gitProgram, string workingDirectory, string branch, CancellationToken cancellationToken)
     {
-        // The explicit refspec form does not depend on this remote's configured fetch refspec (or lack
-        // of one): git DOES opportunistically update `refs/remotes/origin/<branch>` on a plain `git
-        // fetch origin <branch>` when the remote's OWN `remote.<name>.fetch` setting covers that ref --
-        // measured directly against real git, correcting an earlier, narrower claim here. But this
-        // check cannot assume every workspace it ever runs against carries that configuration (a
-        // hand-built remote with a non-standard or absent fetch refspec would silently read a STALE
-        // `origin/<branch>`), so the explicit
-        // `+refs/heads/<branch>:refs/remotes/origin/<branch>` form is used to make the ref this check
-        // reads next independent of that assumption entirely, rather than relying on opportunistic
-        // update behaviour that happens to hold for the common case.
+        // The explicit refspec form (spec/baton.md §3 states why it's needed rather than a bare `git
+        // fetch origin <branch>`) makes the `origin/<branch>` ref read below independent of this
+        // workspace's own `remote.origin.fetch` configuration.
         var fetchResult = await RunNetworkAsync(
             gitProgram, ["fetch", "origin", $"+refs/heads/{branch}:refs/remotes/origin/{branch}"], workingDirectory, cancellationToken)
             .ConfigureAwait(false);

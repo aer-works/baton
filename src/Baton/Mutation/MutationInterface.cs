@@ -1981,13 +1981,10 @@ public static class MutationInterface
                 }
             }
 
-            // #1788 (contract: spec/baton.md §3, "Post-exit delivery check"): a role whose brief
-            // convention ends in a push gets one more post-exit assertion, after the worker exited 0
-            // AND the ordinary engine-run verify (if any) has already passed or did not run — never
-            // instead of it, and never for a role the catalog does not mark DeliversBranch. Read-only;
-            // a real failure here is journaled exactly like a gate failure (VerifyFailed,
-            // VerifyFailedKind.DeliveryFailed) so the room settles Indeterminate for the conductor to
-            // resolve, rather than reading Succeeded while nothing was actually pushed or opened.
+            // #1788: DeliveryVerifier.CheckAsync's own doc names the contract (spec/baton.md §3). Placed
+            // here so it only runs once the block above has fallen through without an early return
+            // (verify passed, was not runnable, or the role declares none) -- never after a VerifyFailed
+            // return.
             if (classification.Verdict == OutcomeVerdict.Succeeded && binding.DeliversBranch)
             {
                 var deliveryOutcome = await DeliveryVerifier.CheckAsync(

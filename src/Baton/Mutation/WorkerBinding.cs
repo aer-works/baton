@@ -64,11 +64,9 @@ public abstract record WorkerBinding(WorkerContract Contract, GrantAuditMode Gra
     /// null, and <c>WorktreeProvisioner.IsWorkspaceUntouched</c>'s for what it's compared against.
     /// </param>
     /// <param name="DeliversBranch">
-    /// #1788: <c>Baton.Vendors.WorkerRole.DeliversBranch</c>, carried the same hop -- whether
-    /// <c>MutationInterface</c> runs <c>DeliveryVerifier.CheckAsync</c> after this execution's worker
-    /// exits 0 and its ordinary verify (if any) passes/does not run. False for every entry not
-    /// constructed through <c>Baton.Vendors.RoleDispatch.ToBinding</c>, the same safe default the
-    /// <c>ChangesTree</c> parameter below uses.
+    /// #1788: <c>Baton.Vendors.WorkerRole.DeliversBranch</c>, carried the same hop -- see that field's
+    /// own remarks for what it gates. Same safe <see langword="false"/> default as <c>ChangesTree</c>
+    /// below for any entry not built through <c>Baton.Vendors.RoleDispatch.ToBinding</c>.
     /// </param>
     /// <param name="ExpectPr">
     /// #1788: whether the delivery check's PR half runs — <c>--expect-pr</c>'s resolved value
