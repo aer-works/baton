@@ -140,6 +140,8 @@ public static class RunCommand
         var bindingConfig = await WorkerBindingConfigParser.LoadFromFileAsync(options.BindingsFilePath, cancellationToken)
             .ConfigureAwait(false);
 
+        RefuseIfRoomDirectoryIsSensitive(bindingConfig, adapters, options.RoomDirectoryPath);
+
         // #669: a binding declaring a worktree workspace is provisioned here, before resolution, and its
         // WorkingDirectory rewritten to the provisioned tree — so everything below (and the worker) sees
         // an ordinary directory. Idempotent across resume; torn down after the pump reaches Terminal.
@@ -463,6 +465,34 @@ public static class RunCommand
 
         throw new ResumedTemplateMismatchException(
             snapshot.WorkflowTemplateId.Value, named.WorkflowTemplateId.Value, options.RoomDirectoryPath);
+    }
+
+    /// <summary>
+    /// #599: refuse before <see cref="WorktreeWorkspaces.Provision"/> or any dispatch when a binding's
+    /// resolved adapter names a <see cref="IWorkerAdapter.SensitiveOutputRoot"/> the room directory
+    /// falls inside — that adapter's own vendor CLI would silently refuse every write into
+    /// <c>BATON_OUTPUT_DIR</c> regardless of the grant, so nothing this room's workers write would ever
+    /// satisfy their contract. An entry naming an unknown adapter is left for
+    /// <see cref="WorkerBindingResolver.Resolve"/>'s own <see cref="UnknownWorkerAdapterException"/>
+    /// below rather than duplicated here.
+    /// </summary>
+    private static void RefuseIfRoomDirectoryIsSensitive(
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindingConfig,
+        IReadOnlyDictionary<string, IWorkerAdapter> adapters,
+        string roomDirectoryPath)
+    {
+        foreach (var (workerName, entry) in bindingConfig)
+        {
+            if (!adapters.TryGetValue(entry.Adapter, out var adapter))
+            {
+                continue;
+            }
+
+            if (adapter.SensitiveOutputRoot is { } sensitiveRoot && OutboxPath.IsInside(roomDirectoryPath, sensitiveRoot))
+            {
+                throw new SensitiveOutputRootException(workerName, roomDirectoryPath, sensitiveRoot);
+            }
+        }
     }
 
     /// <summary>

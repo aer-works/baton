@@ -1115,6 +1115,16 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// </summary>
     public bool WithheldWritesReachTheOutbox => true;
 
+    /// <summary>
+    /// #599: the operator-configured config root (<see cref="BatonEnvironmentSnapshot.ClaudeConfigRootOverride"/>)
+    /// when set, else claude's own default <c>~/.claude</c> — either way, the directory claude's CLI
+    /// itself treats as sensitive. See this property's interface remarks for the measurement.
+    /// </summary>
+    public string? SensitiveOutputRoot =>
+        BatonEnvironmentSnapshot.Current.ClaudeConfigRootOverride is { Length: > 0 } configRoot
+            ? configRoot
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+
     private static List<string> WithheldToolNames(PermissionGrant grant, bool includeWriteTools)
     {
         List<string> denied = [];
