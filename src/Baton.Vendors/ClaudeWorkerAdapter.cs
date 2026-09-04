@@ -1584,11 +1584,28 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         string? stderrOrReason,
         TimeProvider timeProvider,
         out FailureClassification? classification,
-        out DateTimeOffset? retryNotBefore)
+        out DateTimeOffset? retryNotBefore) =>
+        TryClassifyQuotaExhaustion(stderrOrReason, timeProvider, out classification, out retryNotBefore, out _);
+
+    /// <summary>
+    /// Same as the four-out overload, plus <paramref name="quotaLimitsPlacement"/> recording which of
+    /// <c>quotaLimits@root</c> / <c>quotaLimits@message</c> / <c>text-suffix</c> produced the rate-limit
+    /// classification (<c>null</c> for the typed <c>credits_required</c> path, which reads neither).
+    /// Internal for now: no caller outside this adapter and its tests needs the placement yet, but it
+    /// is the seam a future correlation against a live capture (or a park-reason detail string) would
+    /// hang off without touching <see cref="FailureClassification"/>'s shape (#1810 review).
+    /// </summary>
+    internal static bool TryClassifyQuotaExhaustion(
+        string? stderrOrReason,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
     {
         ArgumentNullException.ThrowIfNull(timeProvider);
         classification = null;
         retryNotBefore = null;
+        quotaLimitsPlacement = null;
 
         if (string.IsNullOrWhiteSpace(stderrOrReason))
         {
@@ -1602,18 +1619,17 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
             return true;
         }
 
-        return TryClassifyRateLimitEnvelopeFromText(stderrOrReason, timeProvider, out classification, out retryNotBefore);
+        return TryClassifyRateLimitEnvelopeFromText(stderrOrReason, timeProvider, out classification, out retryNotBefore, out quotaLimitsPlacement);
     }
 
     /// <summary>
     /// Recognizes the CLI's synthetic <c>assistant</c>-line rate-limit envelope (#1609, zero-spend
     /// measurement 2026-09-03: read out of the installed CLI bundle's minified strings, not yet seen
-    /// live). The envelope carries <c>error == "rate_limit"</c> and a <c>quotaLimits</c> object, but
-    /// the bundle read could not confirm whether <c>quotaLimits</c> nests under the stream-json line's
-    /// <c>message</c> object or sits as its sibling — both are checked, and a live capture is what
-    /// settles which one the CLI actually emits.
-    /// </summary>
-    /// <summary>
+    /// live). The envelope carries <c>error == "rate_limit"</c> at its root and a <c>quotaLimits</c>
+    /// object whose OWN placement -- root sibling of the stream-json line's <c>message</c> object, or
+    /// nested under it -- the bundle read could not confirm; both are checked (root first), and a live
+    /// capture is what settles which one the CLI actually emits (#1810 review: <c>error</c>'s
+    /// placement was previously, and wrongly, what selected the branch).
     /// Same whole-parse-then-split-on-<c>'\n'</c> bug #1727 fixed for
     /// <see cref="ContainsTypedCreditsRequiredError"/> applies here too: the retained tail is
     /// whitespace-collapsed on capture, so a real multi-object tail arrives as one line and a
@@ -1623,16 +1639,33 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         string input,
         TimeProvider timeProvider,
         out FailureClassification? classification,
-        out DateTimeOffset? retryNotBefore)
+        out DateTimeOffset? retryNotBefore) =>
+        TryClassifyRateLimitEnvelopeFromText(input, timeProvider, out classification, out retryNotBefore, out _);
+
+    /// <summary>
+    /// Same as the four-out overload, plus <paramref name="quotaLimitsPlacement"/> -- which of the
+    /// three read paths (<c>quotaLimits@root</c>, <c>quotaLimits@message</c>, <c>text-suffix</c>)
+    /// actually produced the classification, so a future live capture can be correlated against which
+    /// branch fired instead of only against the raw stderr tail already riding along in the park
+    /// reason (#1810 review, medium finding).
+    /// </summary>
+    internal static bool TryClassifyRateLimitEnvelopeFromText(
+        string input,
+        TimeProvider timeProvider,
+        out FailureClassification? classification,
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
     {
         FailureClassification? matchedClassification = null;
         DateTimeOffset? matchedRetryNotBefore = null;
+        string? matchedPlacement = null;
 
         var matched = StreamJsonTailScanner.AnyObject(input, root =>
-            TryClassifyRateLimitEnvelope(root, timeProvider, out matchedClassification, out matchedRetryNotBefore));
+            TryClassifyRateLimitEnvelope(root, timeProvider, out matchedClassification, out matchedRetryNotBefore, out matchedPlacement));
 
         classification = matched ? matchedClassification : null;
         retryNotBefore = matched ? matchedRetryNotBefore : null;
+        quotaLimitsPlacement = matched ? matchedPlacement : null;
         return matched;
     }
 
@@ -1640,12 +1673,17 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         JsonElement root,
         TimeProvider timeProvider,
         out FailureClassification? classification,
-        out DateTimeOffset? retryNotBefore)
+        out DateTimeOffset? retryNotBefore,
+        out string? quotaLimitsPlacement)
     {
         classification = null;
         retryNotBefore = null;
+        quotaLimitsPlacement = null;
 
-        if (root.ValueKind != JsonValueKind.Object)
+        // #1810 review fix: `error` always sits at the envelope root in the documented shape (the CLI
+        // does not repeat it under "message"), so that -- not quotaLimits's own placement -- is what
+        // decides whether this is a rate-limit envelope at all.
+        if (root.ValueKind != JsonValueKind.Object || !IsRateLimitContainer(root))
         {
             return false;
         }
@@ -1655,24 +1693,23 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
                 ? messageProp
                 : null;
 
-        // Placement is checked at the sibling level first, then under "message" -- which nesting the
-        // CLI actually emits is exactly the open question #1609's bundle read could not settle.
-        JsonElement? quotaLimits = null;
-        if (IsRateLimitContainer(root))
+        // quotaLimits's OWN placement -- root sibling of "message", or nested under it -- is the actual
+        // open question #1609's bundle read could not settle, and is looked up independently of where
+        // "error" was found: root is checked first, then "message".
+        JsonElement? quotaLimits;
+        if (root.TryGetProperty("quotaLimits", out var qRoot) && qRoot.ValueKind == JsonValueKind.Object)
         {
-            quotaLimits = root.TryGetProperty("quotaLimits", out var qSibling) && qSibling.ValueKind == JsonValueKind.Object
-                ? qSibling
-                : null;
+            quotaLimits = qRoot;
+            quotaLimitsPlacement = "quotaLimits@root";
         }
-        else if (message is { } msg && IsRateLimitContainer(msg))
+        else if (message is { } msg && msg.TryGetProperty("quotaLimits", out var qNested) && qNested.ValueKind == JsonValueKind.Object)
         {
-            quotaLimits = msg.TryGetProperty("quotaLimits", out var qNested) && qNested.ValueKind == JsonValueKind.Object
-                ? qNested
-                : null;
+            quotaLimits = qNested;
+            quotaLimitsPlacement = "quotaLimits@message";
         }
         else
         {
-            return false;
+            quotaLimits = null;
         }
 
         if (quotaLimits is { } limits &&
@@ -1694,6 +1731,7 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
 
         if (retryNotBefore is null && message is { } messageForText)
         {
+            quotaLimitsPlacement = "text-suffix";
             retryNotBefore = TryParseResetSuffix(messageForText, timeProvider);
         }
 
