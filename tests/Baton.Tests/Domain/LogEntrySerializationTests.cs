@@ -62,9 +62,8 @@ public class LogEntrySerializationTests
     }
 
     /// <summary>
-    /// Polarity control for the test above: a KNOWN owner ("flow") whose payload is missing a required
-    /// member still throws -- "loud beats silent" is unchanged for that case, only for a genuinely
-    /// unknown discriminator (#1779).
+    /// The <c>owner</c> counterpart of <see cref="FlowEventSerializationTests.Deserializing_a_known_event_type_missing_a_required_member_still_throws"/>
+    /// -- a KNOWN owner ("flow") whose nested event is missing a required member.
     /// </summary>
     [Fact]
     public void Deserializing_a_known_owner_with_a_malformed_event_still_throws()
