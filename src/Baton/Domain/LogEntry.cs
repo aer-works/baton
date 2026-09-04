@@ -35,10 +35,8 @@ public abstract record LogEntry
     public sealed record RoomLogEntry(RoomEvent Event, DateTime? WriterUtcTimestamp = null) : LogEntry;
 
     /// <summary>
-    /// #1779: an <c>owner</c> discriminator this binary does not recognize -- a newer writer's log
-    /// entry kind, not corrupt data. Same shape and same lifetime as <see cref="FlowEvent.UnknownFlowEvent"/>:
-    /// constructed only by <see cref="Baton.Store.FlowEventLogJson"/>'s converter and filtered out by
-    /// <see cref="Baton.Store.FlowEventLogReader"/> before it is ever returned.
+    /// The <c>owner</c> counterpart of <see cref="FlowEvent.UnknownFlowEvent"/> -- see that type's
+    /// remarks for the #1779 rationale and lifetime, both identical here one level up the union.
     /// </summary>
     internal sealed record UnknownLogEntry(string Owner, string RawJson) : LogEntry;
 }

@@ -47,12 +47,8 @@ public class LogEntrySerializationTests
 
 
     /// <summary>
-    /// #1779 owner ruling: an unrecognized <c>owner</c> is a newer writer, not corruption -- it
-    /// deserializes to the internal <see cref="LogEntry.UnknownLogEntry"/> sentinel rather than
-    /// throwing. Goes through <see cref="FlowEventLogJson.DeserializeLine"/> (see its own remarks for
-    /// why the tolerance lives there rather than in a <see cref="JsonConverter{T}"/> on
-    /// <see cref="FlowEventLogJson.Options"/>). <see cref="Store.FlowEventLogReaderTests"/> covers the
-    /// skip-and-count behaviour the sentinel exists to enable; this only pins the contract.
+    /// The <c>owner</c> counterpart of <see cref="FlowEventSerializationTests.Deserializing_an_unknown_event_type_discriminator_does_not_throw"/>
+    /// -- see that test's remarks for the #1779 rationale, shared verbatim one layer up the union.
     /// </summary>
     [Fact]
     public void Deserializing_an_unknown_owner_discriminator_does_not_throw()

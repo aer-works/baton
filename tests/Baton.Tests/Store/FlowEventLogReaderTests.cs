@@ -347,10 +347,10 @@ public class FlowEventLogReaderTests
     }
 
     /// <summary>
-    /// #1779 owner ruling: an unrecognized <c>eventType</c>/<c>owner</c> is a newer writer, not
-    /// corruption — the read still succeeds, the unrecognized lines are dropped from the returned
-    /// sequence, and the count is reported once (not per line) on the same stderr channel
-    /// <c>[ProjectionCheckpoint] Fallback to full replay LOUDLY</c> already uses.
+    /// #1779 owner ruling: the read still succeeds past an unrecognized <c>eventType</c>/<c>owner</c>,
+    /// dropping the unrecognized lines from the returned sequence and reporting the count once (not
+    /// per line) -- see <see cref="FlowEventLogReader"/>'s own remarks for which diagnostics channel
+    /// that report lands on.
     /// </summary>
     [Fact]
     public async Task ReadAllAsync_skips_and_counts_unknown_event_kinds_instead_of_throwing()
