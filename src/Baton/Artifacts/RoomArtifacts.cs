@@ -73,9 +73,9 @@ public static class RoomArtifacts
     /// <summary>
     /// Writes <paramref name="content"/> under the named artifact <paramref name="name"/> (a path
     /// relative to <c>artifacts/</c>, which may include subdirectories — e.g. <c>"conductor/x.md"</c>).
-    /// Absent target → version 1. Present and byte-identical → nothing new (<see cref="ArtifactWriteOutcome.Unchanged"/>).
-    /// Present and different → version <c>n+1</c>, and <c>artifacts/&lt;name&gt;</c> is atomically
-    /// replaced (temp file + move) so no reader ever observes a partial write.
+    /// See <see cref="ArtifactWriteOutcome"/>'s three members for the exact branching this takes.
+    /// The eventual replacement of <c>artifacts/&lt;name&gt;</c> goes through a temp file plus move, so
+    /// no reader ever observes a half-written file.
     /// </summary>
     public static ArtifactWriteResult Write(
         string roomDirectoryPath,
