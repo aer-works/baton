@@ -555,6 +555,63 @@ public class WorkerRoleCatalogTests
         Assert.Contains("r", ex.Message, StringComparison.Ordinal);
     }
 
+    // #1788: delivers_branch -- see WorkerRole.DeliversBranch's own remarks for what it gates.
+
+    [Fact]
+    public void The_shipped_implement_role_delivers_a_branch_and_no_other_role_does()
+    {
+        using var env = ShippedDefault();
+
+        Assert.True(WorkerRoleCatalog.For("implement").DeliversBranch);
+
+        foreach (var role in WorkerRoleCatalog.All.Where(r => r.Id != "implement"))
+        {
+            Assert.False(role.DeliversBranch, $"role '{role.Id}' unexpectedly declares delivers_branch: true.");
+        }
+    }
+
+    /// <summary>
+    /// The lockstep half of #1788's own Build section: a role whose brief ends in a push must actually
+    /// be able to write to the tree in the first place -- a read-shaped role (write_files: false)
+    /// declaring delivers_branch would be incoherent, and nothing else in the catalog loader catches it.
+    /// One-directional on purpose (a write-capable role need not deliver a branch, e.g. janitor -- see
+    /// WorkerRole.DeliversBranch's own remarks for why that one stays false).
+    /// </summary>
+    [Fact]
+    public void Every_role_that_delivers_a_branch_can_write_files()
+    {
+        using var env = ShippedDefault();
+
+        foreach (var role in WorkerRoleCatalog.All.Where(r => r.DeliversBranch))
+        {
+            Assert.True(role.Grant.WriteFiles, $"role '{role.Id}' declares delivers_branch: true but write_files: false.");
+        }
+    }
+
+    [Fact]
+    public void A_role_with_no_delivers_branch_key_parses_as_false()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            $"[{Role("r", "t")}]");
+
+        Assert.False(WorkerRoleCatalog.For("r").DeliversBranch);
+    }
+
+    [Fact]
+    public void A_role_declaring_delivers_branch_true_parses_as_true()
+    {
+        using var cat = new TempCatalog();
+        using var env = PointAt(
+            cat,
+            """{"t":{"adapter":"gemini","model":"m","effort":null}}""",
+            "[" + Role("r", "t")[..^1] + ", \"delivers_branch\": true}]");
+
+        Assert.True(WorkerRoleCatalog.For("r").DeliversBranch);
+    }
+
     /// <summary>#1745: spec/baton.md §3 has why `review` and why its two values are equal.</summary>
     [Fact]
     public void The_shipped_review_role_carries_a_per_adapter_map_whose_values_equal_the_prior_single_figure()

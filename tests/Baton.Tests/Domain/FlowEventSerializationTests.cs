@@ -105,6 +105,8 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "timed out", VerifyFailedKind.TimedOut)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "cancelled", VerifyFailedKind.Cancelled)];
         yield return [new FlowEvent.VerifyFailed(ExecutionId, null, "restart", VerifyFailedKind.EngineRestart)];
+        // #1788
+        yield return [new FlowEvent.VerifyFailed(ExecutionId, ["branch-on-origin"], "1788-lane is 1 commit ahead of origin", VerifyFailedKind.DeliveryFailed)];
         // #1702
         yield return [new FlowEvent.VerifyNotRun(ExecutionId, "task absent: gates-quiet")];
         // #1708 H1 -- both digests present, and the "nothing committed" shape that carries a null.

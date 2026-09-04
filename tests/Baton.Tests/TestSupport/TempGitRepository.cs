@@ -51,6 +51,25 @@ public static class TempGitRepository
         return sha;
     }
 
+    /// <summary>
+    /// #1788: a bare repository standing in for a real GitHub remote -- <c>DeliveryVerifier</c>'s own
+    /// tests need a real <c>origin</c> a workspace can actually push to and fetch from, not the
+    /// <see cref="SetReviewedBaselineAtHead"/> ref-only stand-in (that shortcut is fine for a read that
+    /// only ever resolves <c>origin/main</c> locally; a push/fetch round-trip needs a real remote).
+    /// </summary>
+    public static string InitBareRepository(string path)
+    {
+        Directory.CreateDirectory(path);
+        Run(path, "init", "--bare");
+        return path;
+    }
+
+    public static void AddRemote(string path, string name, string url) => Run(path, "remote", "add", name, url);
+
+    public static void CreateAndCheckoutBranch(string path, string branch) => Run(path, "checkout", "-b", branch);
+
+    public static void Push(string path, string remote, string refspec) => Run(path, "push", remote, refspec);
+
     private static void Run(string workingDirectory, params string[] args) =>
         RunCapturingOutput(workingDirectory, args);
 

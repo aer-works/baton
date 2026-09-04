@@ -95,6 +95,12 @@ public static class RoleDispatch
     /// (<c>Baton.Mutation.VerifyCommandResolver.Resolve</c>): a <c>.baton/verify</c> declaration, then
     /// <see cref="WorkerRole.VerifyPixiTask"/>.
     /// </param>
+    /// <param name="expectPrOverride">
+    /// The <c>--expect-pr</c> escape hatch (#1788), independent of the role like <paramref
+    /// name="tokenBudgetOverride"/> -- but unlike every override above, its EFFECTIVE value is resolved
+    /// right here as <c>expectPrOverride ?? role.DeliversBranch</c> rather than left null; spec/baton.md
+    /// §3's "Post-exit delivery check" entry states why this one resolves early instead of downstream.
+    /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
         string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
@@ -102,7 +108,8 @@ public static class RoleDispatch
         bool autoProvisionWorktree = true, TimeSpan? timeoutOverride = null,
         IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
         long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
-        long? billedRateLimitOverride = null, string? verifyCommandOverride = null)
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null,
+        bool? expectPrOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -206,7 +213,11 @@ public static class RoleDispatch
             // touch it -- see WorkerBindingConfigEntry.ChangesTree's own remarks for why re-deriving
             // this from the (possibly widened) `grant` local a few lines up would misclassify a
             // read-only role under some adapters.
-            ChangesTree: role.Grant.WriteFiles && role.Grant.RunShellCommands);
+            ChangesTree: role.Grant.WriteFiles && role.Grant.RunShellCommands,
+            // #1788: DeliversBranch is purely catalog-controlled (no dispatch-time override exists for
+            // it); ExpectPr is resolved HERE against it -- see expectPrOverride's own doc for why.
+            DeliversBranch: role.DeliversBranch,
+            ExpectPr: expectPrOverride ?? role.DeliversBranch);
     }
 
     /// <summary>
@@ -229,7 +240,7 @@ public static class RoleDispatch
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
         string? attachmentsDirectory = null, long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
-        long? billedRateLimitOverride = null, string? verifyCommandOverride = null)
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null, bool? expectPrOverride = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
@@ -239,7 +250,7 @@ public static class RoleDispatch
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
             tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
             billedRateLimitOverride: billedRateLimitOverride,
-            verifyCommandOverride: verifyCommandOverride);
+            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 

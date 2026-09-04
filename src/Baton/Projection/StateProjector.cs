@@ -339,9 +339,15 @@ public static class StateProjector
                 // ApplyIndeterminate call. The execution's own already-recorded classification (this
                 // event only appends when that classification was Succeeded) decides StepStatus and
                 // WorkflowOutcome unassisted; this only records WHY the step ran unverified.
+                // #1788: FIRST reason wins, via TryAdd rather than an unconditional overwrite -- the
+                // engine-run gate's own not-run (if any) always ran first and is the more actionable
+                // diagnostic, and a second, orthogonal not-run from the post-exit delivery check
+                // (Mutation.DeliveryVerifier) for the SAME execution must not silently erase it. Both
+                // events still land in flow.jsonl regardless; this only decides which reason the
+                // projected StepState surfaces.
                 if (state.StepIdByExecutionId.TryGetValue(verifyNotRun.ExecutionId, out var notRunStepId))
                 {
-                    state.VerifyNotRunReasonByStepId[notRunStepId] = verifyNotRun.Reason;
+                    state.VerifyNotRunReasonByStepId.TryAdd(notRunStepId, verifyNotRun.Reason);
                 }
 
                 break;

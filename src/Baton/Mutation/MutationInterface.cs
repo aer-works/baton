@@ -1981,6 +1981,48 @@ public static class MutationInterface
                 }
             }
 
+            // #1788: DeliveryVerifier.CheckAsync's own doc names the contract (spec/baton.md §3). Placed
+            // here so it only runs once the block above has fallen through without an early return
+            // (verify passed, was not runnable, or the role declares none) -- never after a VerifyFailed
+            // return.
+            if (classification.Verdict == OutcomeVerdict.Succeeded && binding.DeliversBranch)
+            {
+                var deliveryOutcome = await DeliveryVerifier.CheckAsync(
+                    binding.Target.WorkingDirectory, binding.ExpectPr, dispatchCancellationToken).ConfigureAwait(false);
+                switch (deliveryOutcome.Status)
+                {
+                    // #1788 review: the operator's own cancel landing inside this check's own window --
+                    // mirrors the ordinary verify block's identical arm a few lines up. Never a
+                    // VerifyFailed/VerifyNotRun (both would be a misleading account of an execution the
+                    // operator asked to stop, not one the delivery check itself judged), and never a
+                    // silent fall-through to the Succeeded outcome append below.
+                    case DeliveryCheckStatus.Cancelled when dispatchCancellationToken.IsCancellationRequested:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.ExecutionCancelled(prepared.Request.ExecutionId),
+                                CancellationToken.None).ConfigureAwait(false);
+                        return;
+                    case DeliveryCheckStatus.Failed:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyFailed(
+                                    prepared.Request.ExecutionId,
+                                    deliveryOutcome.FailingMembers,
+                                    deliveryOutcome.Tail,
+                                    VerifyFailedKind.DeliveryFailed),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        return;
+                    case DeliveryCheckStatus.NotRun:
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.VerifyNotRun(prepared.Request.ExecutionId, deliveryOutcome.NotRunReason!),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        break;
+                    case DeliveryCheckStatus.Passed:
+                    default:
+                        break;
+                }
+            }
+
             // Never gated on dispatchCancellationToken: that token having fired is exactly what
             // produced this outcome (Cancelled) in the first place, so recording it must not itself
             // be cancellable by the same signal — the outcome append always completes once
