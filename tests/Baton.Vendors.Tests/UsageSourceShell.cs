@@ -35,4 +35,8 @@ internal static class UsageSourceShell
     /// <summary>Exits 0 having written nothing at all to stdout.</summary>
     public static string[] PrintNothing() =>
         IsWindows ? ["/c", "rem"] : ["-c", ":"];
+
+    /// <summary>Exits 0 having written a single blank line and nothing else.</summary>
+    public static string[] PrintBlankLine() =>
+        IsWindows ? ["/c", "echo."] : ["-c", "echo"];
 }

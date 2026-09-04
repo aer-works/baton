@@ -145,6 +145,18 @@ public sealed class ClaudeUsageSlashCommandSourceTests
     }
 
     [Fact]
+    public async Task ReadAsync_CommandExitsZeroWritingOnlyABlankLine_ReturnsNullNotAnEmptySnapshot()
+    {
+        // The realistic shape of a failed-but-zero-exit CLI: diagnostics on stderr, a bare newline on
+        // stdout. Every parser here skips blank lines, so anything short of a blank-aware check hands
+        // back a zero-window snapshot and the harvester writes it over the good one.
+        var source = new ClaudeUsageSlashCommandSource(
+            UsageSourceShell.Program, UsageSourceShell.PrintBlankLine());
+
+        Assert.Null(await source.ReadAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task ReadAsync_CommandExitsZeroWithTheLiveFixture_ParsesItsWindows()
     {
         // Polarity arm for both tests above -- identical real-process path, only the exit code and

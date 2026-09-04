@@ -32,7 +32,10 @@ namespace Baton.Vendors;
 /// vendor's parser does not recognize still produces a snapshot with an empty
 /// <see cref="VendorUsageSnapshot.Windows"/> — that is the "harvested, nothing parsed" case
 /// <see cref="IVendorUsageSource.ReadAsync"/>'s doc comment keeps distinguishable from "did not
-/// harvest at all". Only a literally empty stdout is treated as no harvest.
+/// harvest at all". Stdout that is empty OR nothing but whitespace is treated as no harvest: a CLI
+/// that reports its error on stderr and leaves a bare newline behind on stdout still exercises the
+/// overwrite path, since every parser here skips blank lines and would hand back a zero-window
+/// snapshot for it.
 /// </para>
 /// </remarks>
 internal static class VendorUsageCommandRun
@@ -84,9 +87,9 @@ internal static class VendorUsageCommandRun
         }
 
         var stdout = output.ToString();
-        if (stdout.Length == 0)
+        if (stdout.Trim().Length == 0)
         {
-            Console.Error.WriteLine($"VendorUsageCommandRun: {vendor} usage command exited 0 but wrote nothing -- no snapshot, last persisted one left alone.");
+            Console.Error.WriteLine($"VendorUsageCommandRun: {vendor} usage command exited 0 but wrote no non-blank output -- no snapshot, last persisted one left alone.");
             return null;
         }
 
