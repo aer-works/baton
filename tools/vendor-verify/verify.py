@@ -1966,6 +1966,89 @@ def _config_dir():
     return PASS, f"{note}; CLI said: {said!r}"
 
 
+@check("claude.skills-follow-config-dir-flat-and-shadow-project", "durability",
+       "under a fresh CLAUDE_CONFIG_DIR, skill lookup is flat (<root>/skills, not "
+       "<root>/.claude/skills) and a name collision resolves to the config-root copy, not the "
+       "project copy -- the fact #1575's roster fix rests on", sentinel=True)
+def _skills_config_dir_flat_and_shadow():
+    """Re-runs the #1575 probe (docs/vendor-doc-audit.md has the original transcript and table): a
+    fresh CLAUDE_CONFIG_DIR root with the operator's own credentials copied in (never generated or
+    read from elsewhere -- the real root is only ever read, and only its credentials file), and five
+    planted skills the model is asked to enumerate without invoking. Truth is read off which
+    description words come back, never off the model's prose about what it did (asserting on a
+    planted MARKER string, not narration, per this module's rule 2).
+
+    Two arms are the control this needs: `--setting-sources project` (the project-only arm --
+    config-root skills must NOT surface) against the default invocation (no `--setting-sources`,
+    matching what ClaudeWorkerAdapter's spawn argv actually passes -- it never sets the flag). If
+    the control arm still showed the root skills, the probe would be proving nothing about
+    `--setting-sources`; if the default arm showed only project skills, #1575's fix would be
+    unmeasured, not merely unnecessary.
+
+    Root's `.credentials.json` is read only to copy its bytes; the real ~/.claude is otherwise
+    untouched, and the fresh root is removed in a `finally` either way.
+    """
+    real_creds = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
+    if not os.path.isfile(real_creds):
+        return INCONCLUSIVE, f"no credentials file found at {real_creds!r} to seed the fresh root"
+
+    root = tempfile.mkdtemp(prefix="v-skills-root-")
+    proj = tempfile.mkdtemp(prefix="v-skills-proj-")
+    try:
+        shutil.copyfile(real_creds, os.path.join(root, ".credentials.json"))
+
+        def plant(base, *segments, marker):
+            d = os.path.join(base, *segments)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"---\nname: {segments[-1]}\ndescription: {marker}\n---\n")
+
+        plant(root, "skills", "zebra-root-flat", marker="FLATROOT")
+        plant(root, ".claude", "skills", "zebra-root-dotdir", marker="DOTDIRROOT")
+        plant(root, "skills", "zebra-shared", marker="ROOTCOPY")
+        plant(proj, ".claude", "skills", "zebra-shared", marker="PROJECTCOPY")
+        plant(proj, ".claude", "skills", "zebra-project", marker="PROJECTONLY")
+
+        # record-once-ok: #1575 docs/vendor-doc-audit.md
+        # Wording deliberately matches the original probe's prompt so this re-runs the same
+        # question, not a paraphrase of it.
+        prompt = "List every skill starting with zebra and its description. Do not invoke any of them."
+
+        def arm(setting_sources):
+            extra = ["--setting-sources", setting_sources] if setting_sources else []
+            rc, out, err = run(["claude", "-p", prompt, "--add-dir", root,
+                                "--output-format", "json", *extra],
+                               timeout=180, cwd=proj, extra_env={"CLAUDE_CONFIG_DIR": root})
+            return rc, (out + err)
+
+        rc_ctrl, blob_ctrl = arm("project")
+        rc_def, blob_def = arm(None)
+
+        def words(blob):
+            return {w for w in ("FLATROOT", "DOTDIRROOT", "ROOTCOPY", "PROJECTCOPY", "PROJECTONLY")
+                    if w in blob}
+
+        w_ctrl, w_def = words(blob_ctrl), words(blob_def)
+        note = f"control (--setting-sources project): {sorted(w_ctrl)}; default (no flag): {sorted(w_def)}"
+
+        if "PROJECTONLY" not in w_ctrl:
+            return INCONCLUSIVE, f"the control arm did not even see the project's own skill; {note}"
+        if w_ctrl & {"FLATROOT", "DOTDIRROOT", "ROOTCOPY"}:
+            return INCONCLUSIVE, f"--setting-sources project still surfaced a root skill, so the control does not discriminate; {note}"
+
+        flat_loads = "FLATROOT" in w_def
+        dotdir_loads = "DOTDIRROOT" in w_def
+        shadow_wins = "ROOTCOPY" in w_def and "PROJECTCOPY" not in w_def
+
+        if flat_loads and not dotdir_loads and shadow_wins:
+            return PASS, note
+        return FAIL, (f"lookup shape or shadow precedence changed from what #1575 measured -- "
+                      f"flat_loads={flat_loads} dotdir_loads={dotdir_loads} shadow_wins={shadow_wins}; {note}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(proj, ignore_errors=True)
+
+
 @check("durability.agy-home-redirect-isolates-state", "durability",
        "agy launched with redirected HOME/USERPROFILE creates its state tree under the redirect "
        "and completes a model call without touching the real ~/.gemini")

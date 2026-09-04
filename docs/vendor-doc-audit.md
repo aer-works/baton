@@ -1984,6 +1984,29 @@ cannot rule out some *other* agy shape (e.g. a future CLI version streaming a su
 inline) — this measurement is scoped to the one `invoke_subagent` capture available while agy is
 quota-exhausted, not to every agy build.
 
+### Skill roster: config-root skills load flat and shadow a same-named project skill (#1575, 2026-09-03)
+
+Measured 2026-09-03 21:27 ET, Claude Code 2.1.258, `claude -p --model haiku --output-format json --max-turns 1`, run from a scratch project dir with `CLAUDE_CONFIG_DIR` pointed at a fresh root holding only the operator's copied `.credentials.json` (deleted after). Skills planted, each with a distinct description word the model was asked to echo back (list every skill starting with `zebra` and its description, no invocation):
+
+- `<root>/skills/zebra-root-flat/SKILL.md` (FLATROOT)
+- `<root>/.claude/skills/zebra-root-dotdir/SKILL.md` (DOTDIRROOT)
+- `<root>/skills/zebra-shared/SKILL.md` (ROOTCOPY) and `<project>/.claude/skills/zebra-shared/SKILL.md` (PROJECTCOPY) — same name, precedence probe
+- `<project>/.claude/skills/zebra-project/SKILL.md` (PROJECTONLY)
+
+| invocation | skills the CLI listed |
+|---|---|
+| `--setting-sources project` | zebra-project: PROJECTONLY, zebra-shared: PROJECTCOPY |
+| no `--setting-sources` flag | zebra-root-flat: FLATROOT, zebra-shared: **ROOTCOPY**, zebra-project: PROJECTONLY |
+
+| # | fact | verdict |
+|---|---|---|
+| 1 | `CLAUDE_CONFIG_DIR` relocates skill lookup | confirmed — a skill under the redirected root loads |
+| 2 | Skill directory shape under a redirected root | flat, `<root>/skills/` — `<root>/.claude/skills/` never loaded (confirms #1566) |
+| 3 | Precedence on a same-named skill in both project and config-root | the config-root (user-scope) copy wins — the model saw ROOTCOPY, not PROJECTCOPY |
+| 4 | `--setting-sources` | governs whether user-scope (config-root) skills load at all; `ClaudeWorkerAdapter` passes no `--setting-sources` flag in its spawn argv, so the default (project + user-scope both load, config-root wins a collision) is what every dispatched worker actually gets |
+
+Fact 3 is the opposite of `ClaudeWorkerAdapter`'s prior project-first `GroupBy(...).First()` dedup ordering for skills, which named the project copy on a collision — the roster printed the wrong file. Fixed in #1575 by scanning the config-root skills directory ahead of the project one (commands keep their prior project-first ordering; unmeasured either way, left unchanged). Sentinel: `claude.skills-follow-config-dir-flat-and-shadow-project` (`tools/vendor-verify/verify.py`).
+
 ### `--allowedTools Bash(...)` clause parsing: comma-lists, case, and whitespace before the paren (#1515, #1514, CLI 2.1.258, 2026-09-03)
 
 Measured `claude -p --model haiku --setting-sources ""`, probe command `git tag probe-tag` in a

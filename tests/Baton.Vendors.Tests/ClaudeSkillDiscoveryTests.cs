@@ -171,6 +171,45 @@ public sealed class ClaudeSkillDiscoveryTests
     }
 
     [Fact]
+    public async Task DiscoverCapabilities_ConfigRoot_ShadowsAProjectSkillOfTheSameName()
+    {
+        // #1575: measured 2026-09-03 against the installed CLI -- with no `--setting-sources` flag
+        // (which ClaudeWorkerAdapter never passes), a name collision between a config-root skill and
+        // a project skill resolves to the config-root copy, the opposite of the project-over-user
+        // precedence the plain ~/.claude fallback keeps (see the sibling test above). The roster must
+        // name the same copy the CLI actually loads.
+        var tempWorkspace = Path.Combine(Path.GetTempPath(), $"claude-workspace-{Guid.NewGuid():N}");
+        var tempConfigRoot = Path.Combine(Path.GetTempPath(), $"claude-config-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempWorkspace);
+        Directory.CreateDirectory(tempConfigRoot);
+        try
+        {
+            var projSharedSkill = Path.Combine(tempWorkspace, ".claude", "skills", "shared-skill");
+            Directory.CreateDirectory(projSharedSkill);
+            File.WriteAllText(Path.Combine(projSharedSkill, "SKILL.md"), "description: Project version of shared skill");
+
+            var rootSharedSkill = Path.Combine(tempConfigRoot, "skills", "shared-skill");
+            Directory.CreateDirectory(rootSharedSkill);
+            File.WriteAllText(Path.Combine(rootSharedSkill, "SKILL.md"), "description: Config root version of shared skill");
+
+            var adapter = new ClaudeWorkerAdapter();
+            var caps = await adapter.DiscoverCapabilitiesAsync(
+                workingDirectory: tempWorkspace,
+                userHomeDirectory: string.Empty,
+                configRootDirectory: tempConfigRoot,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            var sharedItem = Assert.Single(caps.Items, i => i.Name == "shared-skill" && i.Kind == "skill");
+            Assert.Equal("Config root version of shared skill", sharedItem.Description);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempWorkspace);
+            DirectoryCleanup.DeleteRecursively(tempConfigRoot);
+        }
+    }
+
+    [Fact]
     public async Task DiscoverCapabilities_HonoursAnAlreadyCancelledToken()
     {
         // #1512 M7: DiscoverCapabilitiesAsync used to accept a CancellationToken and never consult it
