@@ -22,6 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Fixtures\**\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Baton.Vendors\Baton.Vendors.csproj" />
     <!-- #543: ClaudeWorkerAdapterTests spawns the real hook-check executable end to end, which
          needs Baton.Cli's build output copied alongside this test binary. Baton.Vendors itself must

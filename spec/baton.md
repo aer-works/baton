@@ -784,24 +784,28 @@ the scheduling engine dead — a Stalled room keeps reporting the exact same, no
 glass chip (`tools/fleet-glass/glass.html`) is what renders that honestly (a relative "was due 3d
 ago — no scheduler" rather than a live countdown), never this field. A far-future instant (#1183,
 not fixed here) is rendered, not fixed, by the same chip — the park's own crash-on-dispatch bug is
-tracked separately. In practice only one vendor path ever records an obligation to gate on: the agy
-duration-parse path (`Resets in …` → `AgyWorkerAdapter`) is what sets `RetryNotBefore` on an
-`ExhaustedUntil` park today; claude's `credits_required` park records none. **Corrected (#1609):**
-that is not "the vendor never reports a reset instant" — `claude -p "/usage"`/`/cost` reliably
-report real, headless reset instants for the session and weekly windows (decision 0026,
-`docs/vendor-capabilities.md`), so the claim as stated in the prior revision of this paragraph
-overreached. What is actually true is narrower: `ClaudeWorkerAdapter.TryClassifyQuotaExhaustion`
-recognizes only the typed `errorCode == "credits_required"` shape (#1115), and neither that shape
-nor the CLI's own interactive 5-hour-window limit message has ever been captured, live, carrying a
-reset field — every `credits_required` fixture this adapter is tested against is synthetic
-(`ClaudeWorkerAdapterTests.cs`), and #1115's own record calls a real cap hit "unprovokable without a
-real cap". Provoking one deliberately would mean burning most of a subscription window to capture an
-error string, which is an operator spend decision (`CLAUDE.md` "Cost and reversibility are the
-operator's call"), not a default action. So today's null `retryNotBefore` on a claude park is a
-parser-scope and measurement gap, not a vendor limitation — #1115 still forbids fabricating an
-instant nobody has actually observed. A claude park therefore still surfaces the
-`"ExhaustedUntil"` `failureKind`, just with `exhaustedUntil` absent and the chip showing no time,
-until a real capture exists to build a parser against.
+tracked separately. In practice two vendor paths record an obligation to gate on: the agy duration-parse path (`Resets
+in …` → `AgyWorkerAdapter`) sets `RetryNotBefore` on an `ExhaustedUntil` park, and so does claude's
+`rate_limit` assistant-line envelope (`ClaudeWorkerAdapter.TryClassifyQuotaExhaustion`, #1609) —
+claude's typed `credits_required` park still records none. **Corrected (#1609), narrowing #1631's
+sentence:** the claim that the CLI carries no typed reset instant on a quota-park line was itself too
+broad. A zero-spend read of the installed CLI bundle's minified strings (2.1.258, 2026-09-03, no
+quota burned) found that a 429 makes the CLI emit a synthetic `assistant` stream-json line with
+`error == "rate_limit"` and a sibling `quotaLimits` object carrying `resetsAt` (epoch seconds) and,
+for the overage window, `overageResetsAt` — a real typed instant, not prose. The parser now reads
+`quotaLimits.resetsAt`, falling back to `overageResetsAt`, then to the envelope's human-readable
+"… · resets 3am" content-text suffix, before giving up. Two things this still does **not** settle:
+exactly where `quotaLimits` sits in the envelope (`TryClassifyRateLimitEnvelope`'s doc comment in
+`ClaudeWorkerAdapter.cs` records the open placement question and why both are checked), and whether
+any of this matches a real capture at all — every fixture this adapter is tested against remains
+bundle-derived (`claude-rate-limit.bundle-derived.jsonl`), and #1115's own record still calls a real
+cap hit "unprovokable without a real cap" (an operator spend decision, `CLAUDE.md` "Cost and
+reversibility are the operator's call", not a default action). What #1631 got right and #1609 leaves
+unchanged: the typed `credits_required` shape and the CLI's own interactive 5-hour-window limit
+message have still never been captured, live, carrying a reset field, so a `credits_required` park
+still surfaces the `"ExhaustedUntil"` `failureKind` with `exhaustedUntil` absent and the chip showing
+no time — #1115 still forbids fabricating an instant nobody has actually observed, live or
+bundle-derived.
 
 The scan itself is a **single-level** `Directory.GetDirectories` per root
 (`FleetStatusTool.cs`) — it does not recurse, so project-grouped nesting is not found by the scan
