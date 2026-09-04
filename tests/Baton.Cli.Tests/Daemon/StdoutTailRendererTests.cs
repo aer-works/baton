@@ -294,7 +294,7 @@ public sealed class StdoutTailRendererTests : IDisposable
         var fixturePath = Path.Combine(repoRoot, "tests", "fixtures", "doing-now-sample.stdout.log");
         Assert.True(File.Exists(fixturePath), $"Fixture file must exist at {fixturePath}");
 
-        var doingNow = StdoutTailRenderer.ComputeDoingNow(fixturePath);
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(fixturePath, patterns: []);
 
         Assert.Equal("Running gates a second time before committing", doingNow);
     }
@@ -308,7 +308,7 @@ public sealed class StdoutTailRendererTests : IDisposable
             """{"type":"assistant","message":{"content":[{"type":"text","text":"Reviewing the diff before I commit."}]}}""",
         ]);
 
-        Assert.Equal("Reviewing the diff before I commit.", StdoutTailRenderer.ComputeDoingNow(path));
+        Assert.Equal("Reviewing the diff before I commit.", StdoutTailRenderer.ComputeDoingNow(path, patterns: []));
     }
 
     [Fact]
@@ -318,7 +318,7 @@ public sealed class StdoutTailRendererTests : IDisposable
             """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}""",
         ]);
 
-        Assert.Equal("Bash git status", StdoutTailRenderer.ComputeDoingNow(path));
+        Assert.Equal("Bash git status", StdoutTailRenderer.ComputeDoingNow(path, patterns: []));
     }
 
     [Fact]
@@ -329,7 +329,33 @@ public sealed class StdoutTailRendererTests : IDisposable
             """{"type":"result","subtype":"success","is_error":false,"result":"all done"}""",
         ]);
 
-        Assert.Null(StdoutTailRenderer.ComputeDoingNow(path));
+        Assert.Null(StdoutTailRenderer.ComputeDoingNow(path, patterns: []));
+    }
+
+    /// <summary>#1818: a hit on the SAME denylist <c>ComputeTail</c> gates through withholds the derived doingNow line too.</summary>
+    [Fact]
+    public void ComputeDoingNow_Withholds_WhenTheDerivedLineMatchesASecretPattern()
+    {
+        var path = WriteLog("secret-doing-now.stdout.log", [
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"AKIA_FAKE_SECRET_TOKEN leaked here"}]}}""",
+        ]);
+
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(path, patterns: [new Regex("AKIA_FAKE")]);
+
+        Assert.Equal("[withheld]", doingNow);
+    }
+
+    /// <summary>#1818: <c>patterns</c> null is the fail-closed sentinel — every doingNow line is withheld, not just ones that happen to match.</summary>
+    [Fact]
+    public void ComputeDoingNow_WithholdsUnconditionally_WhenPatternsIsNull()
+    {
+        var path = WriteLog("null-patterns-doing-now.stdout.log", [
+            """{"type":"assistant","message":{"content":[{"type":"text","text":"nothing secret here"}]}}""",
+        ]);
+
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(path, patterns: null);
+
+        Assert.Equal("[withheld]", doingNow);
     }
 
     /// <summary>Hard-truncates at <see cref="StdoutTailRenderer.DoingNowLimit"/> codepoints — <see cref="StdoutTailRenderer.DoingNowLimit"/>'s own doc comment is the canonical record of why this cap carries no trailing mark, unlike <c>ComputeTail</c>'s "…" suffix elsewhere in this file.</summary>
@@ -340,7 +366,7 @@ public sealed class StdoutTailRendererTests : IDisposable
         var line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + longText + "\"}]}}";
         var path = WriteLog("long.stdout.log", [line]);
 
-        var doingNow = StdoutTailRenderer.ComputeDoingNow(path);
+        var doingNow = StdoutTailRenderer.ComputeDoingNow(path, patterns: []);
 
         Assert.Equal(140, doingNow!.Length);
         Assert.DoesNotContain('…', doingNow);

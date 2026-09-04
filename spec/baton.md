@@ -2631,7 +2631,10 @@ or a trailing tool call's `description` input field (falling back to the tool na
 argument) — `StdoutTailRenderer.ComputeDoingNow`'s doc comment is the canonical port record, mirrored
 independently in `pusher.py`'s `doing_now_for_room` (kept in lock-step by a shared fixture,
 `tests/fixtures/doing-now-sample.stdout.log`, rather than a literal shared implementation across the
-C#/Python boundary) and compared exactly on settled rooms by `--compare-projection`
+C#/Python boundary). `doingNow` is gated by the SAME secret denylist as `stdoutTail` above, including
+its withhold-everything fallback when the denylist itself fails to load — a hit, or a missing/
+unreadable pattern file, withholds the derived line as `[withheld]` rather than skipping the gate
+because the line is short. It is compared exactly on settled rooms by `--compare-projection`
 (`_compare_volatile_live`), same tolerance shape as `stdoutTail` above. `glass.html` renders it above
 the STDOUT block on a Running room's detail card; the timeline separately collapses consecutive
 `executionProgress` heartbeat rows into one "alive · N heartbeats · <first> → <last>" row (any other

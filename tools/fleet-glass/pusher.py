@@ -1178,7 +1178,7 @@ def _first_argument_value(tool_input: object) -> str | None:
     return None
 
 
-def doing_now_for_room(room_path: str, execution_id: str,
+def doing_now_for_room(room_path: str, execution_id: str, patterns: list[re.Pattern] | None,
                         max_lines: int = STDOUT_TAIL_MAX_LINES) -> str | None:
     """`live.doingNow` (#1793, spec/baton.md §6 has the schema entry -- not restated here). This
     module's own arm is a second, independently-written implementation of the C# side's
@@ -1190,7 +1190,16 @@ def doing_now_for_room(room_path: str, execution_id: str,
     line backward, for the last `assistant` stream-json line, passing over any non-assistant line
     found along the way rather than halting the search at it. `None` on every shape
     `StdoutTailRenderer.ComputeDoingNow`'s own doc comment lists as a no-fabrication case, matching
-    `stdout_tail_for_room`'s own never-fabricated convention."""
+    `stdout_tail_for_room`'s own never-fabricated convention. The derived line runs through the SAME
+    `_gate_tail_lines` secret gate `stdout_tail_for_room` applies, as a one-element list -- a hit
+    becomes `[withheld]`, and `patterns` `None` (the `_load_secret_patterns` fail-closed sentinel)
+    withholds it unconditionally."""
+    line = _doing_now_line_for_room(room_path, execution_id, max_lines)
+    return _gate_tail_lines([line], patterns)[0] if line is not None else None
+
+
+def _doing_now_line_for_room(room_path: str, execution_id: str,
+                              max_lines: int = STDOUT_TAIL_MAX_LINES) -> str | None:
     stdout_path, _rollover_path = _find_stdout_paths(room_path, execution_id)
     if stdout_path is None:
         return None
@@ -1317,7 +1326,7 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None,
     tail = stdout_tail_for_room(room_path, execution_id, patterns)
     if tail is not None:
         result["stdoutTail"] = tail
-    doing_now = doing_now_for_room(room_path, execution_id)
+    doing_now = doing_now_for_room(room_path, execution_id, patterns)
     if doing_now is not None:
         result["doingNow"] = doing_now
     return result
@@ -4655,7 +4664,7 @@ def _selftest() -> int:
         fixture_exec_dir.mkdir(parents=True)
         (fixture_exec_dir / ".stdout.log").write_text(
             fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
-        fixture_doing_now = doing_now_for_room(str(fixture_room_dir), "exec-fixture-1")
+        fixture_doing_now = doing_now_for_room(str(fixture_room_dir), "exec-fixture-1", [])
         check("#1793: doing_now_for_room reads the checked-in fixture identically to the C# port "
               "(StdoutTailRenderer.ComputeDoingNow) -- a tool_use's own description field, since "
               "it's the LAST content block on the LAST assistant line",
@@ -4669,7 +4678,7 @@ def _selftest() -> int:
                 {"type": "text", "text": "Reviewing the diff before I commit."}]}}) + "\n",
             encoding="utf-8")
         check("#1793: doing_now_for_room uses the last assistant TEXT block when it's the last block",
-              doing_now_for_room(str(text_room_dir), "exec-text-1") ==
+              doing_now_for_room(str(text_room_dir), "exec-text-1", []) ==
               "Reviewing the diff before I commit.")
 
         fallback_room_dir = Path(tmp) / "doing-now-fallback-room"
@@ -4681,7 +4690,7 @@ def _selftest() -> int:
             encoding="utf-8")
         check("#1793: doing_now_for_room falls back to 'name first-argument-value' when the "
               "tool_use input carries no description field",
-              doing_now_for_room(str(fallback_room_dir), "exec-fallback-1") == "Bash git status")
+              doing_now_for_room(str(fallback_room_dir), "exec-fallback-1", []) == "Bash git status")
 
         no_assistant_room_dir = Path(tmp) / "doing-now-no-assistant-room"
         no_assistant_exec_dir = no_assistant_room_dir / "artifacts" / "execution_exec-no-assistant-1"
@@ -4690,7 +4699,23 @@ def _selftest() -> int:
             json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"}) + "\n",
             encoding="utf-8")
         check("#1793: doing_now_for_room is absent (None) when the tail carries no assistant line",
-              doing_now_for_room(str(no_assistant_room_dir), "exec-no-assistant-1") is None)
+              doing_now_for_room(str(no_assistant_room_dir), "exec-no-assistant-1", []) is None)
+
+        # #1818: doingNow runs through the SAME secret gate stdoutTail does.
+        secret_doing_now_room_dir = Path(tmp) / "doing-now-secret-room"
+        secret_doing_now_exec_dir = secret_doing_now_room_dir / "artifacts" / "execution_exec-doing-now-secret-1"
+        secret_doing_now_exec_dir.mkdir(parents=True)
+        (secret_doing_now_exec_dir / ".stdout.log").write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "AKIA_FAKE_SECRET_TOKEN leaked here"}]}}) + "\n",
+            encoding="utf-8")
+        check("#1818: doing_now_for_room withholds a line matching a secret pattern, exactly like "
+              "stdout_tail_for_room does",
+              doing_now_for_room(str(secret_doing_now_room_dir), "exec-doing-now-secret-1",
+                                  [re.compile(r"AKIA_FAKE")]) == "[withheld]")
+        check("#1818: doing_now_for_room withholds unconditionally when patterns is None (the "
+              "fail-closed sentinel), matching stdout_tail_for_room's own posture",
+              doing_now_for_room(str(text_room_dir), "exec-text-1", None) == "[withheld]")
 
     # Absence on a terminal room: attach_live_telemetry never runs live_telemetry_for_room (and so
     # never the stdout tail) for anything other than a Running room -- covered structurally by the

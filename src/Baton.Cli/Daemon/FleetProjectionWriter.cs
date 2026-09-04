@@ -256,7 +256,7 @@ public sealed class FleetProjectionWriter : BackgroundService
 
             // #1793: same stdoutPath, one more read of the SAME tail window -- StdoutTailRenderer's
             // own doc comment on ComputeDoingNow is the port record.
-            var doingNow = StdoutTailRenderer.ComputeDoingNow(stdoutPath);
+            var doingNow = StdoutTailRenderer.ComputeDoingNow(stdoutPath, secretPatterns);
             if (doingNow is not null)
             {
                 liveNode["doingNow"] = doingNow;

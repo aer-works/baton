@@ -283,7 +283,13 @@ internal static class StdoutTailRenderer
     /// `pusher.py`'s own port (`doing_now_for_room`) is a second, independently-written implementation
     /// rather than a shared call.
     /// </summary>
-    internal static string? ComputeDoingNow(string stdoutPath)
+    internal static string? ComputeDoingNow(string stdoutPath, IReadOnlyList<Regex>? patterns)
+    {
+        var line = ComputeDoingNowLine(stdoutPath);
+        return line is null ? null : GateTailLines([line], patterns)[0];
+    }
+
+    private static string? ComputeDoingNowLine(string stdoutPath)
     {
         var text = ReadTailText(stdoutPath);
         if (text.Length == 0)
