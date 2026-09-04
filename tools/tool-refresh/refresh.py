@@ -405,14 +405,20 @@ def daemon_task_state(deps: Deps) -> Optional[str]:
     return result.stdout.strip() or None
 
 
-DAEMON_VERIFY_RETRIES = 5
-DAEMON_VERIFY_BACKOFF_S = 1.0
+# #1842: the scheduled task's wrapper (`powershell -Command "& { baton daemon ... }"`) reaches
+# `baton.exe daemon` through the dotnet-tools shim; measured at ~21 s on the operator's machine on
+# 2026-09-04, against the previous 5 x 1 s poll, which declared a healthy refresh failed. The ceiling
+# is what the launch latency needs with margin; the elapsed time is printed so it can be re-tuned
+# from evidence rather than guessed again.
+DAEMON_VERIFY_RETRIES = 30
+DAEMON_VERIFY_BACKOFF_S = 2.0
 
 
 def verify_daemon_started_under(deps: Deps, tool_dir: str, print_fn: Callable[[str], None]) -> bool:
     """Confirms a NEW baton.exe daemon process is running with an executable path under tool_dir --
     the just-installed tools/<sha> -- rather than assuming Start-ScheduledTask succeeded just because
-    it returned 0. Polls briefly since the task's process can take a moment to actually launch."""
+    it returned 0. Polls up to DAEMON_VERIFY_RETRIES x DAEMON_VERIFY_BACKOFF_S since the task's
+    process takes a while to actually launch, and reports how long it took when it does."""
     # A bare startswith would accept a sibling side-path install too -- tools/abc123 is a prefix of
     # tools/abc123-1 as strings, even though they are different installed directories. Comparing
     # against the directory PLUS a trailing separator is what makes this a containment check, not a
@@ -421,6 +427,8 @@ def verify_daemon_started_under(deps: Deps, tool_dir: str, print_fn: Callable[[s
     for attempt in range(DAEMON_VERIFY_RETRIES):
         for _pid, path in find_daemon_processes(deps):
             if path and os.path.normcase(os.path.normpath(path)).startswith(tool_dir_norm):
+                waited = attempt * DAEMON_VERIFY_BACKOFF_S
+                print_fn(f"tool-refresh: daemon appeared after ~{waited:.0f}s (poll {attempt + 1} of {DAEMON_VERIFY_RETRIES})")
                 return True
         if attempt < DAEMON_VERIFY_RETRIES - 1:
             deps.sleep(DAEMON_VERIFY_BACKOFF_S)
@@ -669,11 +677,20 @@ def refresh(deps: Deps, dry_run: bool, print_fn: Callable[[str], None]) -> int:
                 print_fn("tool-refresh: restarted baton-daemon scheduled task")
 
                 if not verify_daemon_started_under(deps, tool_dir, print_fn):
+                    ceiling = DAEMON_VERIFY_RETRIES * DAEMON_VERIFY_BACKOFF_S
+                    # #1842: name what WAS found. The query is anchored on the `daemon` verb, so
+                    # anything listed here really is a daemon instance -- a `baton.exe dispatch ...`
+                    # lane on the old sha never appears and must not be mistaken for an orphan.
+                    found = find_daemon_processes(deps)
+                    if found:
+                        listing = ", ".join(f"pid={pid} path={path}" for pid, path in found)
+                        why = f"daemon processes found, none under the new tool_dir: {listing} -- an orphaned instance on the old sha may still be holding the singleton mutex"
+                    else:
+                        why = "no baton.exe daemon process at all -- the task failed to launch, or it took longer than the ceiling"
                     print_fn(
-                        f"tool-refresh: no baton.exe daemon process came up under {tool_dir} after "
-                        "restarting baton-daemon -- an orphaned instance on the old sha may still be "
-                        "holding the singleton mutex, or the task failed to launch. Refusing to declare "
-                        "the refresh done."
+                        f"tool-refresh: no baton.exe daemon process came up under {tool_dir} within "
+                        f"~{ceiling:.0f}s of restarting baton-daemon ({why}). Refusing to declare the "
+                        "refresh done."
                     )
                     return 1
                 print_fn(f"tool-refresh: confirmed baton.exe daemon running under {tool_dir}")
@@ -1123,6 +1140,77 @@ def _selftest_fail_closed_on_daemon_verify_failure() -> bool:
             ok = False
         if not any("no baton.exe daemon process came up under" in m for m in messages):
             print(f"  FAILED: refresh did not report the daemon-verify failure loudly. Messages: {messages}")
+            ok = False
+
+    return ok
+
+
+def _selftest_daemon_verify_waits_for_a_slow_launch() -> bool:
+    """#1842: the daemon came up ~21s after Start-ScheduledTask on the operator's machine and the old
+    5s poll declared a successful refresh failed. The verify must keep polling up to its ceiling and
+    succeed when the daemon appears on a later poll -- and say how long it took."""
+    import tempfile
+
+    ok = True
+    with tempfile.TemporaryDirectory() as td:
+        baton_home = os.path.join(td, "baton")
+        tools_root = os.path.join(baton_home, "tools")
+        rooms_root = os.path.join(baton_home, "rooms")
+        dotnet_tools_root = os.path.join(td, "dotnet_tools")
+        nuget_root = os.path.join(td, "nuget")
+        repo_root = _fixture_repo(os.path.join(td, "repo"), "6.6.6")
+        tool_dir = os.path.join(tools_root, "6060606")
+        # First Win32_Process query is the pre-restart orphan kill; the daemon then appears on the
+        # 8th verify poll (well past the old 5-poll ceiling, well inside the new one).
+        appear_on_query = 1 + 8
+        queries = {"n": 0}
+
+        def run(cmd: List[str]) -> CommandResult:
+            if cmd[:3] == ["git", "-C", repo_root] and cmd[3:5] == ["rev-parse", "--short"]:
+                return CommandResult(0, "6060606\n")
+            if cmd[:3] == ["pixi", "run", "pack"]:
+                return CommandResult(0)
+            if cmd[:3] == ["dotnet", "tool", "list"]:
+                return CommandResult(0, "")
+            if cmd[:4] == ["dotnet", "tool", "install", "baton"]:
+                os.makedirs(tool_dir, exist_ok=True)
+                target_exe = os.path.join(tool_dir, "baton.exe" if (sys.platform == "win32" or os.name == "nt") else "baton")
+                open(target_exe, "w").close()
+                return CommandResult(0)
+            if len(cmd) == 2 and cmd[1] == "--version":
+                return CommandResult(0, "6.6.6\n")
+            if len(cmd) == 3 and cmd[1:] == ["templates", "--json"]:
+                return CommandResult(0, "[]\n")
+            if cmd[:3] == ["dotnet", "build", "src/Baton.Cli"]:
+                return CommandResult(0)
+            if cmd[0] == "powershell" and "Get-ScheduledTask" in cmd[3]:
+                return CommandResult(0, "Ready\n")
+            if cmd[0] == "powershell" and "Win32_Process" in cmd[3]:
+                queries["n"] += 1
+                if queries["n"] >= appear_on_query:
+                    return CommandResult(0, f"4242|{os.path.join(tool_dir, 'baton.exe')}\n")
+                return CommandResult(0, "")
+            if cmd[0] == "powershell":
+                return CommandResult(0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        deps = Deps(
+            run=run, baton_home=baton_home, rooms_root=rooms_root,
+            tools_root=tools_root, dotnet_tools_root=dotnet_tools_root,
+            nuget_packages_root=nuget_root, repo_root=repo_root, sleep=lambda s: None,
+        )
+        _assert_isolated(deps)
+
+        messages: List[str] = []
+        code = refresh(deps, dry_run=False, print_fn=messages.append)
+        if code != 0:
+            print(f"  FAILED: refresh exited {code} although the daemon appeared on poll {appear_on_query - 1}. Messages: {messages}")
+            ok = False
+        if not any("daemon appeared after" in m for m in messages):
+            print(f"  FAILED: refresh did not report how long the daemon took to appear. Messages: {messages}")
+            ok = False
+        if queries["n"] < appear_on_query:
+            print(f"  FAILED: verify stopped polling after {queries['n'] - 1} polls, before the daemon appeared")
             ok = False
 
     return ok
@@ -1700,6 +1788,7 @@ def selftest() -> int:
         ("install_launcher fails closed on a stale exe", _selftest_install_launcher_fails_closed_on_stale_exe),
         ("daemon orphan-kill stops the reported pid, and verify only accepts the right tool_dir", _selftest_daemon_orphan_kill_and_verify),
         ("fail closed when no daemon process comes up under the new tool_dir after restart", _selftest_fail_closed_on_daemon_verify_failure),
+        ("keep polling for a slow daemon launch and report how long it took", _selftest_daemon_verify_waits_for_a_slow_launch),
         ("daemon task absent/disabled skips restart and verify, refresh still exits 0", _selftest_daemon_task_absent_or_disabled_skips_restart_and_verify),
         ("daemon process query anchors on the verb position, not '*daemon*' anywhere", _selftest_daemon_query_matches_verb_position_not_anywhere),
     ]
