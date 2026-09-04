@@ -236,11 +236,10 @@ public static class OutcomeClassifier
             // measurement behind it, and why the probe fails closed are stated once, in
             // spec/baton.md §3's #1373 paragraph.
             //
-            // The probe path is the isolated worktree when there is one and the tree-changing role's own
-            // working directory otherwise -- NOT binding.Target.WorkingDirectory unconditionally, which
-            // F4 (#1593 review) forbids handing a retry decision, since the operator's own repository is
-            // routinely dirty for reasons that have nothing to do with this execution. A null path is
-            // therefore "this execution had nowhere to leave work", and keeps the retry.
+            // Which path gets probed, and why it is not simply the working directory, is part of that
+            // same paragraph -- the two parameters read here carry F4 (#1593 review)'s constraint
+            // already, on their own docs above. A null path means this execution had nowhere to leave
+            // work, and keeps the retry.
             var mutationProbePath = worktreePath ?? changesTreeWorkingDirectory;
             if (mutationProbePath is not null)
             {
