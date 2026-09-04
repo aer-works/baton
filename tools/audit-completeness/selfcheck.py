@@ -904,7 +904,7 @@ def _recordonce_discriminates():
     excl = rec.excluded_from_comparison
     assert excl("docs/decisions/0001-two-nouns-workflow-and-session.md") == "restored-decision", (
         "record-once: a restored decision record was not excluded from comparison")
-    assert excl("src/Baton/CHANGELOG.md") == "changelog", (
+    assert excl("CHANGELOG.md") == "changelog", (
         "record-once: a generated changelog was not excluded from comparison")
     for near_miss in ("docs/decisionsx/0001-imposter.md", "docs/B.md", "src/A.cs",
                       "docs/CHANGELOG-notes.md"):
@@ -963,7 +963,7 @@ def _recordonce_applies_every_exclusion():
     # excluded_from_comparison without registering a sample path fixture here, the test fails
     # immediately rather than silently testing an incomplete set of reasons.
     fixtures = {
-        "changelog": "src/Baton/CHANGELOG.md",
+        "changelog": "CHANGELOG.md",
         "restored-decision": "docs/decisions/0001-two-nouns-workflow-and-session.md",
     }
     uncovered = reasons - set(fixtures.keys())
