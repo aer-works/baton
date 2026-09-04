@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -1999,11 +1998,14 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
                     out var monthParse) &&
                 int.TryParse(dateMatch.Groups["day"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var day))
             {
+                // Next occurrence of that month/day at or after now in the named zone. A day the
+                // target year lacks (Feb 29 rolling into a non-leap year) clamps to that month's last
+                // day rather than throwing -- a park a day early beats an unparked lane (#1860 review).
                 var year = nowInZone.Year;
-                var candidateLocal = new DateTime(year, monthParse.Month, day, dateHour24, dateMinute, 0, DateTimeKind.Unspecified);
+                var candidateLocal = BuildLocalInstant(year, monthParse.Month, day, dateHour24, dateMinute);
                 if (candidateLocal <= nowInZone.DateTime)
                 {
-                    candidateLocal = new DateTime(year + 1, monthParse.Month, day, dateHour24, dateMinute, 0, DateTimeKind.Unspecified);
+                    candidateLocal = BuildLocalInstant(year + 1, monthParse.Month, day, dateHour24, dateMinute);
                 }
 
                 return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidateLocal, zone), TimeSpan.Zero);
@@ -2025,6 +2027,12 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         }
 
         return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(candidate, localZone), TimeSpan.Zero);
+    }
+
+    private static DateTime BuildLocalInstant(int year, int month, int day, int hour24, int minute)
+    {
+        var clampedDay = Math.Min(Math.Max(day, 1), DateTime.DaysInMonth(year, month));
+        return new DateTime(year, month, clampedDay, hour24, minute, 0, DateTimeKind.Unspecified);
     }
 
     private static bool TryParseClockParts(Match match, out int hour24, out int minute)
@@ -2054,7 +2062,9 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
     /// Resolves the reset suffix's IANA zone id (e.g. <c>America/New_York</c>). .NET on Windows maps
     /// IANA ids since .NET 6 when ICU is present, so this normally succeeds; if the id is unrecognised
     /// this falls back to <see cref="TimeProvider.LocalTimeZone"/> rather than null, since the text
-    /// plainly named a date -- and traces a diagnostic so the fallback is visible instead of silent.
+    /// plainly named a date -- and writes one warning line to stderr (this adapter's diagnostic
+    /// idiom, same as the commands-directory warning above) so the fallback lands in the room's
+    /// captured stderr instead of an unconfigured trace listener.
     /// </summary>
     private static TimeZoneInfo ResolveTimeZone(string zoneId, TimeProvider timeProvider)
     {
@@ -2064,8 +2074,8 @@ public sealed partial class ClaudeWorkerAdapter : IWorkerAdapter, IPermissionGra
         }
         catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
         {
-            Trace.TraceWarning(
-                $"ClaudeWorkerAdapter: unrecognised reset-suffix zone id '{zoneId}', falling back to local time zone ({ex.GetType().Name}: {ex.Message}).");
+            Console.Error.WriteLine(
+                $"Warning: unrecognised reset-suffix zone id '{zoneId}', falling back to the local time zone ({ex.GetType().Name}).");
             return timeProvider.LocalTimeZone;
         }
     }
