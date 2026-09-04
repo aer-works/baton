@@ -232,9 +232,9 @@ public static class OutcomeClassifier
                 return BuildSucceededClassification(contract, changesTreeWorkingDirectory, worktreeBaseRef, changesTree);
             }
 
-            // #1373: a timeout kill keeps today's retryable Failed only while the workspace has nothing
-            // to lose. The ruling, the measurement behind it, and why the probe fails closed are stated
-            // once, in spec/baton.md §3's #1373 paragraph.
+            // #1373: a timeout kill stays retryable only over an empty workspace. The ruling, the
+            // measurement behind it, and why the probe fails closed are stated once, in
+            // spec/baton.md §3's #1373 paragraph.
             //
             // The probe path is the isolated worktree when there is one and the tree-changing role's own
             // working directory otherwise -- NOT binding.Target.WorkingDirectory unconditionally, which
