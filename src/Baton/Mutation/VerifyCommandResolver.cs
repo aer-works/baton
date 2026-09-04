@@ -438,31 +438,162 @@ public static class VerifyCommandResolver
             return (true, null);
         }
 
-        if (!output.Contains(TaskListHeader, StringComparison.Ordinal))
+        var knownTasks = output.Split([' ', '\t', '\r', '\n', ','], StringSplitOptions.RemoveEmptyEntries);
+
+        // #1836: pixi 0.68.1 (this repo's dev machine) prints a fixed header before naming any task;
+        // pixi 0.79.0 (CI's setup-pixi version) does not, so a header-text match discriminates a real
+        // listing on one pixi version and nothing on the other. The evidence that survives a version
+        // bump instead lives in the WORKSPACE: the probed workspace's own manifest names its real
+        // tasks, and a genuine listing must echo at least one of them regardless of pixi's prose. A
+        // manifest with no declared tasks, or one this can't read, is not positive evidence either way
+        // and defers the same direction the old header-miss arm did.
+        var declaredTasks = ReadDeclaredPixiTasks(workingDirectory);
+        if (declaredTasks.Count == 0 || !declaredTasks.Any(declared => knownTasks.Contains(declared, StringComparer.Ordinal)))
         {
-            // #1797: exit 0 whose output never actually reached pixi's own listing header is not the
-            // positive listing spec/baton.md §3's second producer requires -- it is the probe having
-            // answered without completing a real listing (a degraded/short-circuited run under
-            // contention, a stray warning with no listing at all), the same engine-environment class as
-            // a non-zero exit above. A shape drift in pixi's own header text degrades the SAME direction
-            // (defers instead of misreading absence), never the other way.
             LogProbeDeferral("exited 0 without a recognized task listing");
             return (true, null);
         }
 
-        var knownTasks = output.Split([' ', '\t', '\r', '\n', ','], StringSplitOptions.RemoveEmptyEntries);
         return knownTasks.Any(known => string.Equals(known, task, StringComparison.Ordinal))
             ? (true, null)
             : (false, $"task absent: {task}");
     }
 
     /// <summary>
-    /// #1797: the fixed line `pixi task list` prints (to stderr, as of the version this was measured
-    /// against) before naming any task at all -- present on every genuine listing regardless of how
-    /// many tasks the workspace declares, so its presence is what discriminates a real listing from
-    /// output that merely happens to have SOME text in it.
+    /// #1836: names pixi declares runnable in the probed workspace, read directly from its own manifest
+    /// rather than assumed from pixi's stdout prose -- the discriminator a real task listing needs must
+    /// not depend on one pixi version's header text. Same ancestor walk as <see cref="HasPixiManifest"/>
+    /// so both agree on which manifest governs; an empty result (no manifest found, or one that could
+    /// not be read) is deliberately indistinguishable from "manifest declares zero tasks" -- both are
+    /// "no positive evidence", the caller's own fail-closed direction.
     /// </summary>
-    private const string TaskListHeader = "Tasks that can run on this machine:";
+    private static HashSet<string> ReadDeclaredPixiTasks(string? workingDirectory)
+    {
+        var none = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return none;
+        }
+
+        DirectoryInfo? dir;
+        try
+        {
+            dir = new DirectoryInfo(Path.GetFullPath(workingDirectory));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return none;
+        }
+
+        for (; dir is not null; dir = dir.Parent)
+        {
+            var pixiToml = Path.Combine(dir.FullName, "pixi.toml");
+            if (File.Exists(pixiToml))
+            {
+                return ReadTasksFromToml(pixiToml, "tasks");
+            }
+
+            var pyproject = Path.Combine(dir.FullName, "pyproject.toml");
+            if (!File.Exists(pyproject))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (File.ReadAllText(pyproject).Contains("[tool.pixi", StringComparison.Ordinal))
+                {
+                    return ReadTasksFromToml(pyproject, "tool.pixi.tasks");
+                }
+            }
+            catch (IOException)
+            {
+                return none;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return none;
+            }
+        }
+
+        return none;
+    }
+
+    /// <summary>
+    /// Minimal TOML table-key reader, deliberately not a general parser -- one section is all this
+    /// needs. Reads keys declared directly under <c>[section]</c>, plus the name segment of any
+    /// <c>[section.name]</c> sub-table (pixi's per-task inline-table shorthand), which together are
+    /// exactly the set <c>pixi task list</c> itself would enumerate.
+    /// </summary>
+    private static HashSet<string> ReadTasksFromToml(string path, string section)
+    {
+        var tasks = new HashSet<string>(StringComparer.Ordinal);
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (IOException)
+        {
+            return tasks;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return tasks;
+        }
+
+        var inSection = false;
+        var sectionPrefix = $"{section}.";
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
+                continue;
+            }
+
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                var header = line[1..^1].Trim();
+                if (string.Equals(header, section, StringComparison.Ordinal))
+                {
+                    inSection = true;
+                    continue;
+                }
+
+                if (header.StartsWith(sectionPrefix, StringComparison.Ordinal))
+                {
+                    var name = header[sectionPrefix.Length..].Trim();
+                    if (name.Length > 0)
+                    {
+                        tasks.Add(name);
+                    }
+                }
+
+                inSection = false;
+                continue;
+            }
+
+            if (!inSection)
+            {
+                continue;
+            }
+
+            var eq = line.IndexOf('=');
+            if (eq <= 0)
+            {
+                continue;
+            }
+
+            var key = line[..eq].Trim().Trim('"', '\'');
+            if (key.Length > 0)
+            {
+                tasks.Add(key);
+            }
+        }
+
+        return tasks;
+    }
 
     /// <summary>
     /// #1797: one diagnostic line naming which arm deferred the pre-flight verdict to the real run --

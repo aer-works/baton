@@ -1,3 +1,4 @@
+using System.Linq;
 using Baton.Mutation;
 using Baton.Tests.Shared;
 using Baton.Tests.TestSupport;
@@ -490,9 +491,9 @@ public sealed class VerifyCommandResolverTests
     }
 
     /// <summary>
-    /// #1797, red-first: a stub that exits 0 without printing pixi's own listing header. Rationale for
-    /// why this must defer rather than read as absence lives on <see cref="VerifyCommandResolver.TaskListHeader"/>'s
-    /// own doc — not restated here.
+    /// #1797, red-first: a stub that exits 0 without ever echoing one of the workspace's own declared
+    /// task names. Rationale for why this must defer rather than read as absence lives on
+    /// <see cref="VerifyCommandResolver"/>'s <c>CheckPixiTaskAsync</c> comment — not restated here.
     /// </summary>
     [Fact]
     public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_pixi_probe_exits_zero_with_no_listing()
@@ -520,6 +521,99 @@ public sealed class VerifyCommandResolverTests
     {
         var path = Path.Combine(Path.GetTempPath(), $"aer-empty-listing-{Guid.NewGuid():N}.cmd");
         File.WriteAllText(path, "@echo off\r\necho warning: could not load environment 1>&2\r\nexit /b 0\r\n");
+        return path;
+    }
+
+    // ---- #1836: the discriminator must not depend on which pixi version wrote the listing ----
+
+    /// <summary>
+    /// pixi 0.68.1's real shape, captured verbatim from `pixi task list` in this repo's own checkout
+    /// (this machine's installed pixi) -- the header text the pre-#1836 check keyed on.
+    /// </summary>
+    private const string Pixi0681ListingOfBuildAndTest =
+        "Tasks that can run on this machine:\r\n" +
+        "-----------------------------------\r\n" +
+        "build, test, gates-quiet\r\n" +
+        "Task  Description\r\n";
+
+    /// <summary>
+    /// pixi 0.79.0's shape (the version CI's setup-pixi installed for #1836) -- no fixed prose header at
+    /// all, per PR prefix-dev/pixi#6367 ("Correct `task list` runnability and show every task", changelog
+    /// 0.76.1) which replaced it with a per-environment summary plus a `Task\tDescription` table. Cited
+    /// from that PR's own description rather than a locally installed 0.79.0, since this machine only
+    /// carries 0.68.1; every token this test depends on (the task names, comma/tab separation) is common
+    /// to both the PR description and the general shape pixi's docs describe.
+    /// </summary>
+    private const string Pixi0790ListingOfBuildAndTest =
+        "Tasks per environment:\r\n" +
+        "-----------------------\r\n" +
+        "default (by design): build, test, gates-quiet\r\n" +
+        "Task\tDescription\r\n" +
+        "build\t\r\n" +
+        "test\t\r\n" +
+        "gates-quiet\t\r\n";
+
+    [Theory]
+    [InlineData(nameof(Pixi0681ListingOfBuildAndTest))]
+    [InlineData(nameof(Pixi0790ListingOfBuildAndTest))]
+    public async Task CheckRunnableAsync_role_default_reports_runnable_when_the_task_is_present_under_either_pixi_shape(string fixtureName)
+    {
+        var listing = fixtureName == nameof(Pixi0681ListingOfBuildAndTest) ? Pixi0681ListingOfBuildAndTest : Pixi0790ListingOfBuildAndTest;
+        var stub = CreateFixedListingBatchFile(listing);
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "build");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.True(runnable);
+            Assert.Null(reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(stub);
+        }
+    }
+
+    /// <summary>
+    /// #1836's own repro: the CI failure was a real listing (positive evidence — it echoes tasks the
+    /// workspace's own manifest declares) that simply doesn't name the probed task, under BOTH pixi
+    /// shapes. Before this fix, only the 0.68.1 shape's header was recognized as "real"; the 0.79.0 shape
+    /// fell through to "runnable" (deferred) and the absence was never reported.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(Pixi0681ListingOfBuildAndTest))]
+    [InlineData(nameof(Pixi0790ListingOfBuildAndTest))]
+    public async Task CheckRunnableAsync_role_default_reports_not_runnable_when_the_task_is_absent_under_either_pixi_shape(string fixtureName)
+    {
+        var listing = fixtureName == nameof(Pixi0681ListingOfBuildAndTest) ? Pixi0681ListingOfBuildAndTest : Pixi0790ListingOfBuildAndTest;
+        var stub = CreateFixedListingBatchFile(listing);
+        try
+        {
+            var resolved = VerifyCommandResolver.Resolve(
+                committedRepoDeclaration: null, overrideCommand: null, roleVerifyPixiTask: "this-task-definitely-does-not-exist");
+
+            var (runnable, reason) = await VerifyCommandResolver.CheckRunnableAsync(
+                resolved!, RepoRoot(), TestContext.Current.CancellationToken, pixiProgram: stub);
+
+            Assert.False(runnable);
+            Assert.Equal("task absent: this-task-definitely-does-not-exist", reason);
+        }
+        finally
+        {
+            FileCleanup.Delete(stub);
+        }
+    }
+
+    /// <summary>A stub `pixi task list` that prints a fixed, pre-baked listing regardless of pixi version installed on the test machine.</summary>
+    private static string CreateFixedListingBatchFile(string listing)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"aer-fixed-listing-{Guid.NewGuid():N}.cmd");
+        var lines = listing.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        var script = "@echo off\r\n" + string.Join("\r\n", lines.Select(line => $"echo {line}")) + "\r\nexit /b 0\r\n";
+        File.WriteAllText(path, script);
         return path;
     }
 
