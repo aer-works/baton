@@ -738,9 +738,25 @@ public static class StatusCommand
         // misreported as abandoned.
         if (step.LatestExecutionId is { } latestExecutionId)
         {
-            var accepted = events.OfType<FlowEvent.ExecutionRequestAccepted>()
-                .FirstOrDefault(e => e.Request.ExecutionId == latestExecutionId);
-            var probeResult = EngineLivenessProbe.Probe(accepted?.EnginePid, accepted?.EngineStartTime);
+            // #1577: a revived pump re-entering an already-scheduled backoff renews the step's
+            // engine identity via a fresh StepRetryScheduled rather than a new
+            // ExecutionRequestAccepted (spec/baton.md §7) -- read both in log order so the newest
+            // stamp wins, same as fleet_status's identical read in WorkflowStatusView.
+            int? enginePid = null;
+            DateTimeOffset? engineStartTime = null;
+            foreach (var evt in events)
+            {
+                if (evt is FlowEvent.ExecutionRequestAccepted accepted && accepted.Request.ExecutionId == latestExecutionId)
+                {
+                    (enginePid, engineStartTime) = (accepted.EnginePid, accepted.EngineStartTime);
+                }
+                else if (evt is FlowEvent.StepRetryScheduled { EnginePid: not null } retryScheduled && retryScheduled.ForExecutionId == latestExecutionId)
+                {
+                    (enginePid, engineStartTime) = (retryScheduled.EnginePid, retryScheduled.EngineStartTime);
+                }
+            }
+
+            var probeResult = EngineLivenessProbe.Probe(enginePid, engineStartTime);
             if (probeResult.Status == EngineLivenessStatus.Dead)
             {
                 // #1582 review (HIGH-1): `baton resume`/`baton redispatch` both refuse a room in this

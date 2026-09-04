@@ -179,11 +179,24 @@ public abstract record FlowEvent
     public sealed record WorkflowResumed(DecisionId DecisionId) : FlowEvent;
 
     /// <summary>Flow has scheduled a retry backoff deadline for a failed step attempt.</summary>
+    /// <param name="EnginePid">
+    /// #1577: the same (pid, start-time) pair <see cref="ExecutionRequestAccepted"/> stamps, carried
+    /// here too because a step's retry wait can outlive the pump that first scheduled it -- a plain
+    /// <c>baton run</c> reviving a room mid-backoff re-enters the same wait without ever admitting a
+    /// fresh execution, so nothing would otherwise re-stamp the engine actually counting it down.
+    /// Null on the obligation's original creation carries no meaning either way (every creator stamps
+    /// its own identity); a later, IDENTICAL-schedule re-append with a NEW identity is a revival
+    /// renewal, never a re-schedule -- <see cref="Projection.StateProjector"/> applies it the same
+    /// idempotent way as the first.
+    /// </param>
+    /// <param name="EngineStartTime">Paired with <paramref name="EnginePid"/>; see its remarks.</param>
     public sealed record StepRetryScheduled(
         StepId StepId,
         ExecutionId ForExecutionId,
         DateTimeOffset RetryNotBefore,
-        int RetryDelayMs) : FlowEvent;
+        int RetryDelayMs,
+        int? EnginePid = null,
+        DateTimeOffset? EngineStartTime = null) : FlowEvent;
 
     /// <summary>
     /// #1586 S1: a scheduled retry (<see cref="StepRetryScheduled"/>) was voided without ever being

@@ -260,6 +260,15 @@ public static class WorkflowStatusProjector
             {
                 engineIdentityByExecutionId[accepted.Request.ExecutionId.Value] = (accepted.EnginePid, accepted.EngineStartTime);
             }
+            // #1577: a revived pump re-entering an already-scheduled retry backoff renews this same
+            // step's engine identity with a fresh StepRetryScheduled rather than a new
+            // ExecutionRequestAccepted (which would wrongly read as a fresh dispatch) -- read in log
+            // order same as above, so the newest stamp for a given execution always wins whichever
+            // event kind carries it.
+            else if (entry is LogEntry.FlowLogEntry { Event: FlowEvent.StepRetryScheduled { EnginePid: not null } retryScheduled })
+            {
+                engineIdentityByExecutionId[retryScheduled.ForExecutionId.Value] = (retryScheduled.EnginePid, retryScheduled.EngineStartTime);
+            }
         }
 
         var steps = new List<WorkflowStatusStepView>(state.Steps.Count);

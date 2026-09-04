@@ -683,14 +683,16 @@ So `"Stalled"` reads as "nothing is currently making progress, but this is not d
 it needs the operator to start a fresh `baton run` pointed at the room" — never as a `Failed` room a
 caller might reasonably discard, and never as a room `baton resume` will quietly fix on its own.
 
-**Known limitation, not closed by this change: a re-drive can still misreport briefly.** If an
-operator revives a stalled room with a fresh `baton run` (rather than `baton resume`) while the room
-is still inside its retry backoff wait, the new pump re-enters the same `Task.Delay` without writing
-a fresh `ExecutionRequestAccepted` — nothing is dispatched again until the wait elapses. `liveness`
-still probes the dead original pump's `EnginePid` until then, so `fleet_status` keeps reporting
-`"Stalled"` for a room a live pump is, in fact, quietly waiting on. Tracked as #1577, filed rather
-than fixed here — closing it needs the new pump to record its own liveness before dispatch, which
-belongs with #1556's arrest-predicate/pump-liveness plumbing rather than bolted on separately.
+**Closed by #1577: a re-drive mid-backoff no longer misreports for the whole wait.** A fresh `baton
+run` reviving a room while it is still inside a retry backoff wait re-enters the same idle-deferral
+wait without ever admitting a fresh execution (no new `ExecutionRequestAccepted` — ordinary backoff
+is not a fresh dispatch), so `liveness`'s original `ExecutionRequestAccepted`-only read would keep
+probing the dead prior pump for the whole wait. `PumpToFixedPointAsync` (`MutationInterface.cs`) now
+renews a `FlowEvent.StepRetryScheduled` carrying this pump's own `EnginePid`/`EngineStartTime` the
+moment it re-enters a pending deferral it did not itself schedule (once per step per call, not once
+per `MaxParkWaitChunk` re-arm); `liveness`'s engine-identity read (`WorkflowStatusView.cs`,
+`StatusCommand.FormatParkedStatus`) takes whichever of `ExecutionRequestAccepted` or
+`StepRetryScheduled` stamped a given execution most recently, in log order.
 
 ### The terminal vocabulary, and the two-predicate model (#1586 S1)
 

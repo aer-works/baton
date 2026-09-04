@@ -956,6 +956,15 @@ public static class MutationInterface
         // gate: spec/baton.md §2.
         var cancellationRequestedExecutionIds = new HashSet<ExecutionId>();
 
+        // #1577: which steps' current retry backoff already carries THIS process's own engine
+        // identity on a StepRetryScheduled event -- populated the moment this pump appends one
+        // (fresh obligation below, or a revival renewal in the idle-deferral branch), so a step
+        // is stamped at most once per call no matter how many MaxParkWaitChunk pieces its wait
+        // splits into. A step absent from this set when the idle branch is about to sleep on it
+        // means some EARLIER pump (possibly now dead) is the last one who journaled its identity --
+        // exactly the false-Stalled shape #1577 exists to close.
+        var engineStampedStepIds = new HashSet<StepId>();
+
         // Starts as the caller's own token, but is switched to CancellationToken.None the instant a
         // host stop is detected below (M10 Phase 2): every read/write this loop performs to reach
         // its fixed point must keep completing even after the ambient token has fired, or the pump
@@ -1313,6 +1322,7 @@ public static class MutationInterface
                 var retryObligations = GetRetryObligations(state, snapshot, timeProvider, jitterSource, settleOnVendorExhaustion);
                 if (retryObligations.Count > 0)
                 {
+                    var (obligationPid, obligationStartTime) = GetCurrentEngineIdentity();
                     foreach (var obligation in retryObligations)
                     {
                         await eventLogWriter.AppendAsync(
@@ -1320,9 +1330,12 @@ public static class MutationInterface
                                     obligation.StepId,
                                     obligation.ForExecutionId,
                                     obligation.RetryNotBefore,
-                                    obligation.RetryDelayMs),
+                                    obligation.RetryDelayMs,
+                                    obligationPid,
+                                    obligationStartTime),
                                 ioCancellationToken)
                             .ConfigureAwait(false);
+                        engineStampedStepIds.Add(obligation.StepId);
                     }
 
                     continue;
@@ -1447,13 +1460,46 @@ public static class MutationInterface
                     // ready by waiting, so treating it as waitable turns this branch into a zero-delay
                     // spin (delay <= 0, continue, re-project, repeat). With no future deadline, no
                     // ready step and nothing in flight, this state IS the pump's fixed point.
-                    var pendingDeferrals = state.Steps
+                    var pendingDeferralSteps = state.Steps
                         .Where(s => s.RetryNotBefore is not null && s.RetryNotBefore.Value > now)
+                        .ToList();
+                    var pendingDeferrals = pendingDeferralSteps
                         .Select(s => s.RetryNotBefore!.Value)
                         .ToList();
 
                     if (pendingDeferrals.Count > 0 && !hostStopRequested && !state.Steps.Any(s => s.Status == StepStatus.Paused))
                     {
+                        // #1577: a plain `baton run` reviving a room mid-backoff re-enters this exact
+                        // wait without ever going through the retryObligations branch above (the
+                        // obligation is already recorded from a prior, possibly-dead pump) -- nothing
+                        // journals THIS pump's identity, so EngineLivenessProbe keeps reading the old
+                        // engine and fleet_status reports Stalled for the rest of the wait even though
+                        // a live pump is quietly counting it down. Renew a fresh StepRetryScheduled,
+                        // same schedule, this process's own pid/start-time, for every step whose
+                        // deferral this pump has not itself stamped yet -- at most once per step per
+                        // call (engineStampedStepIds), never once per MaxParkWaitChunk re-arm.
+                        var stepsToRenew = pendingDeferralSteps
+                            .Where(s => !engineStampedStepIds.Contains(s.StepId))
+                            .ToList();
+                        if (stepsToRenew.Count > 0)
+                        {
+                            var (renewPid, renewStartTime) = GetCurrentEngineIdentity();
+                            foreach (var s in stepsToRenew)
+                            {
+                                await eventLogWriter.AppendAsync(
+                                        new FlowEvent.StepRetryScheduled(
+                                            s.StepId,
+                                            s.RetryScheduledForExecutionId!.Value,
+                                            s.RetryNotBefore!.Value,
+                                            s.RetryDelayMs ?? 0,
+                                            renewPid,
+                                            renewStartTime),
+                                        ioCancellationToken)
+                                    .ConfigureAwait(false);
+                                engineStampedStepIds.Add(s.StepId);
+                            }
+                        }
+
                         var minNotBefore = pendingDeferrals.Min();
                         var nowAtCheck = timeProvider.GetUtcNow();
                         var delay = minNotBefore - nowAtCheck;
@@ -1779,10 +1825,16 @@ public static class MutationInterface
         WorkerBinding.Process? processBinding) =>
         (processBinding?.Target.CountHookVerdicts is not null, processBinding?.Target.HookVerdictLedgerFileName);
 
-    private static FlowEvent.ExecutionRequestAccepted CreateExecutionRequestAccepted(ExecutionRequest request)
+    private static (int Pid, DateTimeOffset StartTime) GetCurrentEngineIdentity()
     {
         var pid = Environment.ProcessId;
         var startTime = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
+        return (pid, startTime);
+    }
+
+    private static FlowEvent.ExecutionRequestAccepted CreateExecutionRequestAccepted(ExecutionRequest request)
+    {
+        var (pid, startTime) = GetCurrentEngineIdentity();
         return new FlowEvent.ExecutionRequestAccepted(request, pid, startTime);
     }
 
