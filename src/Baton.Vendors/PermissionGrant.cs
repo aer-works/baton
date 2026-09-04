@@ -117,14 +117,9 @@ public sealed record PermissionGrant(
     /// <param name="honorReadOnlyAssertion">
     /// Whether <see cref="ShellCommandsAreReadOnly"/> may exempt <see cref="WriteFiles"/>/
     /// <see cref="NetworkAccess"/> at all. Defaults to <see langword="true"/>, preserving #1456's
-    /// behaviour for every caller that does not pass this explicitly. #1784: the assertion answers the
-    /// grant AUTHOR's own coherence question ("are my patterns internally consistent?") — it was never
-    /// meant to answer the OPERATOR's project-ceiling question ("is this category closed?"), because
-    /// nothing but the vendor's own <c>--allowedTools</c> matcher (or, under agy's skip-permissions,
-    /// its tool-name list alone — #623) enforces the pattern, and baton cannot guarantee e.g.
-    /// <c>gh pr view*</c> reaches only github.com. <see cref="ProjectCeilingGate"/> passes
-    /// <see langword="false"/> for exactly this reason: a ceiling that withholds a category stays
-    /// closed regardless of what the author vouches for their own shell pattern.
+    /// behaviour for every caller that does not pass this explicitly. <see cref="ProjectCeilingGate"/>
+    /// is the one caller that passes <see langword="false"/> — rationale is spec/baton.md §9's #1784
+    /// operator ruling, not restated here.
     /// </param>
     public IReadOnlyList<string> CategoriesDefeatedByTheShell(bool honorReadOnlyAssertion = true)
     {
