@@ -120,11 +120,8 @@ public static class DeliveryVerifier
 
         var branch = branchResult.Output.Trim();
 
-        // Unlike the arm above, a SUCCESSFUL rev-parse that answers "HEAD" is git positively saying
-        // this workspace has no named branch checked out (detached HEAD) -- a workspace state that can
-        // arise however the workspace was prepared (not tied to any one provisioning code path). That
-        // is positive evidence nothing pushable was ever delivered, not merely unmeasurable, so it
-        // settles Failed the same way a never-pushed ref does below.
+        // Unlike the arm above, a SUCCESSFUL rev-parse that answers "HEAD" is a detached HEAD -- spec/
+        // baton.md §3 states why that settles Failed rather than NotRun.
         if (branch.Length == 0 || string.Equals(branch, "HEAD", StringComparison.Ordinal))
         {
             return new DeliveryCheckOutcome(

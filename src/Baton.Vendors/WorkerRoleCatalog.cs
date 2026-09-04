@@ -54,8 +54,9 @@ public sealed record WorkerTier([property: JsonRequired] string Adapter, string?
 /// dispatch (<see cref="RoleDispatch.ToBinding"/>'s own parameter), the only way one is ever set today.
 /// </param>
 /// <param name="DeliversBranch">
-/// #1788 (contract: <c>spec/baton.md</c> §3, "Post-exit delivery check"): whether the engine runs that
-/// check for this role after its worker exits 0. False for every read-shaped role (<c>review</c>,
+/// #1788: whether <see cref="Mutation.DeliveryVerifier"/>'s own post-exit delivery check
+/// (<c>spec/baton.md</c> §3) runs for this role after its worker exits 0. False for every
+/// read-shaped role (<c>review</c>,
 /// <c>advise</c>, <c>fact-check</c>, <c>patch</c>, <c>orchestrate</c>) — <c>WorkerRoleCatalogTests</c>'
 /// lockstep test pins the direction this DOES assert, every role with this true also has
 /// <see cref="PermissionGrant.WriteFiles"/>. <c>janitor</c> writes and commits but stays false too: this

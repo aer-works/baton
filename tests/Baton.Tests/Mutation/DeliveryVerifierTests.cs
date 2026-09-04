@@ -133,10 +133,8 @@ public sealed class DeliveryVerifierTests
 
     /// <summary>
     /// The <c>--heads</c> scoping's own control (#1788 review): a TAG on origin sharing the branch's
-    /// name must not make <c>ls-remote --exit-code</c> read as "the branch exists" — measured directly
-    /// against real git, an unscoped query matches tags too, which would defer to a fetch that then
-    /// fails to resolve <c>refs/heads/&lt;branch&gt;</c> and downgrade this real "never pushed" into a
-    /// misleading <see cref="DeliveryCheckStatus.NotRun"/> instead.
+    /// name must not make <c>ls-remote --exit-code</c> read as "the branch exists" — spec/baton.md §3
+    /// states why an unscoped query would misread this as <see cref="DeliveryCheckStatus.NotRun"/>.
     /// </summary>
     [Fact]
     public async Task A_same_named_tag_on_origin_does_not_mask_a_branch_that_was_never_pushed()
