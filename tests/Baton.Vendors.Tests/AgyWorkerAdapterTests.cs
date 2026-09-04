@@ -992,11 +992,10 @@ public class AgyWorkerAdapterTests
     }
 
     /// <summary>
-    /// #1802: the second, independent trigger. implement's grant keeps both WriteFiles and
-    /// RunShellCommands true, so the write/shell-withheld predicate above never fires for it -- an
-    /// implement worker on agy kept the subagent trio unconditionally until this role-level flag
-    /// existed. Passing the real catalog value end to end is what a hand-typed
-    /// <c>allowsSubagents: false</c> literal would not catch (it would pass even if
+    /// #1802 (see <c>AgyWorkerAdapter.SubagentAndTaskTools</c>'s own remarks for the full reasoning):
+    /// implement's grant keeps both WriteFiles and RunShellCommands true, so the pre-existing
+    /// write/shell-withheld predicate above never fires for it. Passing the real catalog value end to
+    /// end is what a hand-typed <c>allowsSubagents: false</c> literal would not catch (it would pass even if
     /// <c>WorkerRoleCatalog.For("implement").AllowsSubagents</c> silently reverted to true).
     /// </summary>
     [Fact]

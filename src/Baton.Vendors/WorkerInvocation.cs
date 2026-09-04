@@ -118,8 +118,8 @@ namespace Baton.Vendors;
 /// this rather than <paramref name="WorkingDirectory"/> whenever it is set.
 /// </param>
 /// <param name="AllowsSubagents">
-/// #1802: forwarded verbatim from <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> -- whether
-/// this worker keeps the vendor's own subagent/fan-out tool. <see langword="false"/> makes
+/// #1802: forwarded verbatim from <see cref="WorkerBindingConfigEntry.AllowsSubagents"/> (see
+/// <see cref="WorkerRole.AllowsSubagents"/> for what this gates and why). <see langword="false"/> makes
 /// <see cref="ClaudeWorkerAdapter"/> append <c>Agent</c>/<c>Task</c> to <c>--disallowedTools</c> and
 /// <see cref="AgyWorkerAdapter"/> add its subagent tool names to the denied-tools list, alongside
 /// (never instead of) whatever each already withholds from <paramref name="PermissionGrant"/>. Default

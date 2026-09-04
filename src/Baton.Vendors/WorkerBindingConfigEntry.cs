@@ -141,8 +141,8 @@ namespace Baton.Vendors;
 /// disables the whole check in that case).
 /// </param>
 /// <param name="AllowsSubagents">
-/// #1802: <see cref="WorkerRole.AllowsSubagents"/>, carried onto the resolved <see cref="WorkerInvocation"/>
-/// unchanged -- whether the spawned worker keeps the vendor's own subagent/fan-out tool. Defaults to
+/// #1802: <see cref="WorkerRole.AllowsSubagents"/> (see that member's own doc for what this gates and
+/// why), carried onto the resolved <see cref="WorkerInvocation"/> unchanged. Defaults to
 /// <see langword="true"/> here, UNLIKE <paramref name="ChangesTree"/>/<paramref name="DeliversBranch"/>
 /// above: those two are additive signals a false default merely omits, while this one drives an actual
 /// enforcement flag on the spawn argv, so defaulting it to withhold would newly restrict every
