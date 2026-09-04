@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.31.0](https://github.com/philipreese/baton/compare/flow-v0.30.0...flow-v0.31.0) (2026-09-04)
+
+
+### Features
+
+* **dispatch:** Arrest non-process work from the pump through a registry intent mark ([#1825](https://github.com/philipreese/baton/issues/1825)) ([af7aad4](https://github.com/philipreese/baton/commit/af7aad4e52ca7a457bb293c24ddb71cc553f4cd4))
+* **dispatch:** Collapse the running-lane predicates into one ArrestableExecutions projection ([#1819](https://github.com/philipreese/baton/issues/1819)) ([791de60](https://github.com/philipreese/baton/commit/791de60545e8c3c1a4ed3dd9a24e441ed6f5d2c3))
+* **dispatch:** Verify an implement lane actually pushed and opened its PR before Succeeded ([#1794](https://github.com/philipreese/baton/issues/1794)) ([b77bb55](https://github.com/philipreese/baton/commit/b77bb55bd256e421a479c3fc02518c7bb486a535))
+* **flow:** Settle a timed-out execution Indeterminate when its workspace was mutated, and brief a retry to finish rather than restart ([#1800](https://github.com/philipreese/baton/issues/1800)) ([68270a3](https://github.com/philipreese/baton/commit/68270a3df6d581c1176a94f395c1829fa8a72156))
+* **flow:** Skip and count unknown event kinds when reading the journal instead of failing the read ([#1806](https://github.com/philipreese/baton/issues/1806)) ([c4f1bc7](https://github.com/philipreese/baton/commit/c4f1bc7f3433f110c04fbef597345f70e3524ce5))
+
+
+### Bug Fixes
+
+* **dispatch:** Stamp the reviving engine on a re-entered backoff wait so Stalled reads the live pump ([#1817](https://github.com/philipreese/baton/issues/1817)) ([3b55488](https://github.com/philipreese/baton/commit/3b55488819b5b20276fff8db7bb1d571e679f00a))
+* **flow:** Wake the deferred-retry test on the pump's own clock read instead of a fixed advance count ([#1798](https://github.com/philipreese/baton/issues/1798)) ([aa6b2e5](https://github.com/philipreese/baton/commit/aa6b2e522cf698b1c512032d549c6ea8b588a91a))
+* **gates:** Report a build-lock wait timeout as BLOCKED and settle the room Indeterminate instead of red ([#1813](https://github.com/philipreese/baton/issues/1813)) ([a271d5a](https://github.com/philipreese/baton/commit/a271d5a4ed9235318405e276a0148e39481fc6a0))
+* **glass:** Let the projection identity compare tolerate moving live counters ([#1812](https://github.com/philipreese/baton/issues/1812)) ([df03253](https://github.com/philipreese/baton/commit/df03253259950f4907a12436a97c7e7e7b67cee0))
+* **glass:** Read the secret denylist from the fleet-glass directory on both sides and log a withhold-everything fallback ([#1820](https://github.com/philipreese/baton/issues/1820)) ([0b045e4](https://github.com/philipreese/baton/commit/0b045e4e202a26d15bc34cfe189d0911c958f997))
+
 ## [0.30.0](https://github.com/philipreese/baton/compare/flow-v0.29.0...flow-v0.30.0) (2026-09-04)
 
 

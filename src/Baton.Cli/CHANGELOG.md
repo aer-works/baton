@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.31.0](https://github.com/philipreese/baton/compare/cli-v0.30.0...cli-v0.31.0) (2026-09-04)
+
+
+### Features
+
+* **dispatch:** Arrest non-process work from the pump through a registry intent mark ([#1825](https://github.com/philipreese/baton/issues/1825)) ([af7aad4](https://github.com/philipreese/baton/commit/af7aad4e52ca7a457bb293c24ddb71cc553f4cd4))
+* **dispatch:** Collapse the running-lane predicates into one ArrestableExecutions projection ([#1819](https://github.com/philipreese/baton/issues/1819)) ([791de60](https://github.com/philipreese/baton/commit/791de60545e8c3c1a4ed3dd9a24e441ed6f5d2c3))
+* **dispatch:** Verify an implement lane actually pushed and opened its PR before Succeeded ([#1794](https://github.com/philipreese/baton/issues/1794)) ([b77bb55](https://github.com/philipreese/baton/commit/b77bb55bd256e421a479c3fc02518c7bb486a535))
+* **dispatch:** Withhold the subagent tool from implement and review workers ([#1811](https://github.com/philipreese/baton/issues/1811)) ([865ea6e](https://github.com/philipreese/baton/commit/865ea6e254db42b0088e887e4d8af424049222a0))
+* **flow:** Settle a timed-out execution Indeterminate when its workspace was mutated, and brief a retry to finish rather than restart ([#1800](https://github.com/philipreese/baton/issues/1800)) ([68270a3](https://github.com/philipreese/baton/commit/68270a3df6d581c1176a94f395c1829fa8a72156))
+* **glass:** Show a plain-words doing-now line on a running room and collapse heartbeat rows ([#1818](https://github.com/philipreese/baton/issues/1818)) ([959d7ed](https://github.com/philipreese/baton/commit/959d7ed13730624085733a754c63509c4ac6c3ca))
+* **mcp:** Promote a scratch file to a room-owned artifact through one structured tool ([#1824](https://github.com/philipreese/baton/issues/1824)) ([301f7c3](https://github.com/philipreese/baton/commit/301f7c3d7cde690e86bf36e902dfa4c8966e8491))
+
+
+### Bug Fixes
+
+* **adapters:** Classify a claude worker that writes nothing under the Claude config root ([#1823](https://github.com/philipreese/baton/issues/1823)) ([8141d5b](https://github.com/philipreese/baton/commit/8141d5b2a8849378f5a321def3a54a79220243dd))
+* **dispatch:** Stamp the reviving engine on a re-entered backoff wait so Stalled reads the live pump ([#1817](https://github.com/philipreese/baton/issues/1817)) ([3b55488](https://github.com/philipreese/baton/commit/3b55488819b5b20276fff8db7bb1d571e679f00a))
+* **gates:** Report a build-lock wait timeout as BLOCKED and settle the room Indeterminate instead of red ([#1813](https://github.com/philipreese/baton/issues/1813)) ([a271d5a](https://github.com/philipreese/baton/commit/a271d5a4ed9235318405e276a0148e39481fc6a0))
+* **glass:** Let the projection identity compare tolerate moving live counters ([#1812](https://github.com/philipreese/baton/issues/1812)) ([df03253](https://github.com/philipreese/baton/commit/df03253259950f4907a12436a97c7e7e7b67cee0))
+* **glass:** Read the secret denylist from the fleet-glass directory on both sides and log a withhold-everything fallback ([#1820](https://github.com/philipreese/baton/issues/1820)) ([0b045e4](https://github.com/philipreese/baton/commit/0b045e4e202a26d15bc34cfe189d0911c958f997))
+
 ## [0.30.0](https://github.com/philipreese/baton/compare/cli-v0.29.0...cli-v0.30.0) (2026-09-04)
 
 
