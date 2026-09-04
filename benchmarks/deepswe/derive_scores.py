@@ -97,7 +97,8 @@ def main(argv: list[str]) -> int:
         w = csv.DictWriter(buf, fieldnames=fields, lineterminator="\n")
         w.writeheader()
         w.writerows(derived)
-        current = target.read_text(encoding="utf-8") if target.exists() else ""
+        # newline="" so CRLF drift is a difference, not something universal-newline reading hides.
+        current = target.open(encoding="utf-8", newline="").read() if target.exists() else ""
         if current != buf.getvalue():
             print(f"derive_scores: {target} is stale; rerun without --check", file=sys.stderr)
             return 1
