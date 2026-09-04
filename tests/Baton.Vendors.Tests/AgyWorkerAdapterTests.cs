@@ -1784,14 +1784,15 @@ public class AgyWorkerAdapterTests
         var roles = BuiltInWorkflowTemplates.GetRoleTemplates();
         Assert.NotEmpty(roles);
 
-        // Prove standard and cheap tiers map to agy adapter while keeping gemini-3.6-flash-* model names
+        // Prove the agy-bound tier (cheap, since #1861 moved standard onto claude opus) still maps to
+        // the agy adapter while keeping its gemini-3.6-flash-* model name -- the adapter is named
+        // "agy", never "gemini", and the model string is the vendor's own.
         var tiersJsonPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "Baton.Vendors", "WorkerTiers.json");
         Assert.True(File.Exists(tiersJsonPath), $"WorkerTiers.json must exist at {tiersJsonPath}");
 
         var json = File.ReadAllText(tiersJsonPath);
         Assert.Contains("\"adapter\": \"agy\"", json);
         Assert.DoesNotContain("\"adapter\": \"gemini\"", json);
-        Assert.Contains("\"model\": \"gemini-3.6-flash-high\"", json);
         Assert.Contains("\"model\": \"gemini-3.6-flash-low\"", json);
 
         Assert.True(WorkerAdapterRegistry.Default.TryGetValue("agy", out var agyAdapter));

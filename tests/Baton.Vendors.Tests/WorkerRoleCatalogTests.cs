@@ -79,7 +79,9 @@ public class WorkerRoleCatalogTests
 
         var review = WorkerRoleCatalog.For("review");
         Assert.Equal("claude", review.Adapter);
-        Assert.Equal("sonnet", review.Model);
+        // #1861: frontier is opus/high (benchmarks/deepswe/2026-09-04 -- Sonnet never beat 54% at any
+        // effort and took two to five times the steps; docs/dispatch.md has the tier paragraph).
+        Assert.Equal("opus", review.Model);
         Assert.Equal("high", review.Effort);
         Assert.False(review.Grant.WriteFiles);
         // #1456 (spec/baton.md §9): review reverses #1355's flat shell refusal on claude specifically
@@ -119,11 +121,15 @@ public class WorkerRoleCatalogTests
         Assert.False(advise.Grant.RunShellCommands);
 
         var implement = WorkerRoleCatalog.For("implement");
-        Assert.Equal("agy", implement.Adapter);
+        // #1861: standard is claude opus/medium (interim until the agy 3.8 probe and the codex adapter,
+        // #1863); the grant shape below is vendor-independent and unchanged by the tier move.
+        Assert.Equal("claude", implement.Adapter);
+        Assert.Equal("opus", implement.Model);
+        Assert.Equal("medium", implement.Effort);
         Assert.True(implement.Grant.RunShellCommands);
-        // #1355: network stays granted here -- implement's tier defaults to agy, and agy's translator
-        // refuses RunShellCommands without NetworkAccess (no scoped-shell-without-network exists on
-        // that vendor), so defaulting it off would make every unmodified dispatch of this role throw.
+        // #1355: network stays granted here -- RunShellCommands without NetworkAccess is refused for
+        // EVERY grant-consuming adapter (PermissionGrant.CategoriesDefeatedByTheShell), so defaulting it
+        // off would make every unmodified dispatch of this role throw whichever vendor the tier names.
         // See the role's own purpose field in WorkerRoles.json for the full reasoning.
         Assert.True(implement.Grant.NetworkAccess);
         Assert.False(implement.ProducesVerdict);

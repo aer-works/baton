@@ -168,21 +168,27 @@ public class RoleDispatchTests
     }
 
     private static WorkerRole Advise => WorkerRoleCatalog.For("advise");
+    // #1861 moved advise's tier onto claude, so the vendor-swap tests below use janitor -- the role
+    // whose tier (cheap) still pins an agy model -- to keep swapping agy -> claude, the measured #1082
+    // direction. Janitor's grant is Enforced on claude, so a swap keeps WorkingDirectory in place
+    // rather than moving it into a worktree spec the way an audited (withheld-write) role would.
+    private static WorkerRole Janitor => WorkerRoleCatalog.For("janitor");
 
     [Fact]
     public void An_adapter_override_to_a_different_vendor_drops_the_tiers_vendor_specific_model()
     {
-        // advise is an agy-tier role whose tier pins a (gemini) model; running it on claude must NOT
+        // janitor is an agy-tier role whose tier pins a (gemini) model; running it on claude must NOT
         // carry that vendor-specific string to claude's CLI — the measured #1082 failure. With no
         // explicit --model, the swapped vendor falls back to its own default (null model).
-        Assert.False(string.IsNullOrEmpty(Advise.Model)); // the tier really does pin a model to drop
+        Assert.False(string.IsNullOrEmpty(Janitor.Model)); // the tier really does pin a model to drop
+        Assert.Equal("agy", Janitor.Adapter);              // so "claude" below really is a swap
 
-        var onClaude = RoleDispatch.ToBinding(Advise, "spec", "claude");
+        var onClaude = RoleDispatch.ToBinding(Janitor, "spec", "claude");
         Assert.Equal("claude", onClaude.Adapter);
         Assert.Null(onClaude.Model);
 
         // Control — same vendor keeps the tier's own model, so this is about the swap, not a blanket null.
-        Assert.Equal(Advise.Model, RoleDispatch.ToBinding(Advise, "spec").Model);
+        Assert.Equal(Janitor.Model, RoleDispatch.ToBinding(Janitor, "spec").Model);
     }
 
     [Fact]
@@ -220,8 +226,8 @@ public class RoleDispatchTests
     public void Materialize_threads_the_working_directory_and_axis_overrides_onto_the_binding()
     {
         var (_, bindings) = RoleDispatch.Materialize(
-            Advise, "spec", "claude", workingDirectory: "/w", effortOverride: "careful");
-        var binding = Assert.Contains("advise", bindings);
+            Janitor, "spec", "claude", workingDirectory: "/w", effortOverride: "careful");
+        var binding = Assert.Contains("janitor", bindings);
 
         Assert.Equal("claude", binding.Adapter);
         Assert.Null(binding.Model);              // vendor swapped, no explicit --model

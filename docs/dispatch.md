@@ -247,6 +247,18 @@ declared name(s) — `baton resolve` is the one permitted writer here (spec/bato
 | `janitor` | cheap | `janitor.md`, `branch.diff` | Running named mechanical checkers to green after an implementer, without changing behaviour. |
 | `orchestrate` | orchestrator | `turn-actions.json` | A resident room turn that reads room state and emits turn actions. |
 
+Each tier pins one vendor, model and effort in
+[`src/Baton.Vendors/WorkerTiers.json`](../src/Baton.Vendors/WorkerTiers.json). As of #1861 (2026-09-04)
+`frontier` is claude opus at high effort and `standard` is claude opus at medium: in
+[`benchmarks/deepswe/2026-09-04`](../benchmarks/deepswe/2026-09-04/README.md) Opus medium scored 69%
+at 52 agent steps while Sonnet never exceeded 54% at any effort and took two to five times the steps,
+and [`benchmarks/subscription-usage/2026-09-04`](../benchmarks/subscription-usage/2026-09-04/README.md)
+shows steps, not output, are what drained the weekly allowance. High buys review four more points for
+about 40% more steps; xhigh and max buy nothing. The `standard` pin is interim — `cheap` keeps agy's
+flash-low for when that quota is idle, and the codex adapter (#1853) is expected to add a compact
+route (Sol high: 69% at 37 steps in the same snapshot) worth comparing against Opus medium for
+`implement` once it exists.
+
 The prompt each worker receives is the spec followed by the role's own output instructions, so the
 worker is told to produce exactly what the contract asserts. A dispatched worker is also told its turn
 is one-shot (#1095): do the work to completion now and write the outputs before the turn ends — never
