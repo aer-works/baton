@@ -320,6 +320,10 @@ public sealed class FleetProjectionWriterTests : IDisposable
         var live = roomNode["live"]!.AsObject();
 
         Assert.Equal("Drafting the plan now.\n[withheld]", live["stdoutTail"]!.GetValue<string>());
+        // #1793: same stdout, one more read off the same path -- StdoutTailRendererTests pins the
+        // renderer's own output; this pins that FleetProjectionWriter actually calls it and attaches
+        // the result under live.doingNow.
+        Assert.Equal("Drafting the plan now.", live["doingNow"]!.GetValue<string>());
     }
 
     /// <summary>Fail-closed polarity arm: no <see cref="BatonPaths.SecretPatternsFile"/> under this

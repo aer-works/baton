@@ -2640,6 +2640,22 @@ new, daemon-owned file rather than a share of the pusher's own copy), not restat
 `pusher.py`'s own stdout-tail rendering block (`_read_tail_text` through `stdout_tail_for_room`) dead
 code once PR-B reads this file instead of deriving its own snapshot — PR-B removes it.
 
+**#1793 adds `live.doingNow`**: one plain-words line (≤ 140 chars, no elision marker) naming what the
+Running room's worker is doing right now, derived from the SAME stdout tail window — the last
+`assistant` line's own last content block, either its trailing text (the model's own one-line intent)
+or a trailing tool call's `description` input field (falling back to the tool name plus its first
+argument) — `StdoutTailRenderer.ComputeDoingNow`'s doc comment is the canonical port record, mirrored
+independently in `pusher.py`'s `doing_now_for_room` (kept in lock-step by a shared fixture,
+`tests/fixtures/doing-now-sample.stdout.log`, rather than a literal shared implementation across the
+C#/Python boundary). `doingNow` is gated by the SAME secret denylist as `stdoutTail` above, including
+its withhold-everything fallback when the denylist itself fails to load — a hit, or a missing/
+unreadable pattern file, withholds the derived line as `[withheld]` rather than skipping the gate
+because the line is short. It is compared exactly on settled rooms by `--compare-projection`
+(`_compare_volatile_live`), same tolerance shape as `stdoutTail` above. `glass.html` renders it above
+the STDOUT block on a Running room's detail card; the timeline separately collapses consecutive
+`executionProgress` heartbeat rows into one "alive · N heartbeats · <first> → <last>" row (any other
+event breaks the run) — pure client-side rendering, no projection change.
+
 **PR-B1 (#1557) gives `pusher.py` a second, opt-in source for the SAME body it has always derived
 itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env, default `derive` — a deployed pusher's behavior
 is unchanged until an operator flips it) switches `main()`'s loop to `json.load`

@@ -254,6 +254,14 @@ public sealed class FleetProjectionWriter : BackgroundService
                 liveNode["stdoutTail"] = stdoutTail;
             }
 
+            // #1793: same stdoutPath, one more read of the SAME tail window -- StdoutTailRenderer's
+            // own doc comment on ComputeDoingNow is the port record.
+            var doingNow = StdoutTailRenderer.ComputeDoingNow(stdoutPath, secretPatterns);
+            if (doingNow is not null)
+            {
+                liveNode["doingNow"] = doingNow;
+            }
+
             // spec/baton.md §6 (pre-existing pusher.py contract): `live` itself stays gated on the
             // room's DISPLAYED state being exactly "Running" -- never a live section for a room #1513
             // already downgraded to "Stalled" once its engine is confirmed dead, matching pusher's own

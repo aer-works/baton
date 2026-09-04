@@ -200,6 +200,9 @@ footer{margin-top:2rem; font-size:.7rem; color:var(--ink-soft); border-top:1px s
 .detail-path.expanded{white-space:normal; word-break:break-all; overflow-wrap:anywhere;}
 .section-heading{font:600 .7rem 'Public Sans'; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:.6rem 0 .2rem;}
 .stdout-asof{text-transform:none; letter-spacing:normal; font-weight:400;}
+/* #1793: the plain-words doing-now line -- bolder than an .ev line (it's the answer to "what is it
+   doing", not a supporting detail), one line, no wrap-induced height jump on a long summary. */
+.doing-now{font:600 .82rem 'Public Sans'; color:var(--ink); margin:.3rem 0 .2rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 /* #1710: a bounded, internally-scrolling box regardless of viewport -- its own max-height rather than
    growing with the pane (#1693's own rules let the pane itself grow unbounded on the phone breakpoint;
    a multi-KB stdout tail must not drag the whole page down with it there). */
@@ -710,10 +713,45 @@ function timelineEntryDetail(e){
   if(e.exitCode != null) bits.push(`exit ${esc(String(e.exitCode))}`);
   return bits.length ? ` (${bits.join(", ")})` : "";
 }
+// #1793: consecutive `executionProgress` rows (the 5-minute run-liveness heartbeat,
+// Baton.Cli.ExecutionProgressHeartbeat / FlowEvent.ExecutionProgress) carry no information beyond
+// "still alive" -- a run of them with no OTHER event in between collapses into one summary row. Any
+// other event breaks the run, so a heartbeat immediately before/after something informative (started,
+// exited, review started) still shows that neighbor on its own line. Pure client-side grouping over
+// the same entries array -- no projection change, and a lone (non-consecutive) heartbeat still
+// renders as an ordinary row rather than "1 heartbeats".
+function isHeartbeatEntry(e){
+  const rawType = e && e.type || "";
+  return rawType === "executionProgress" || rawType === "flow.executionProgress";
+}
+function collapseHeartbeatRuns(entries){
+  const groups = [];
+  for(const e of entries){
+    const last = groups[groups.length - 1];
+    if(isHeartbeatEntry(e) && last && last.heartbeat){
+      last.entries.push(e);
+      continue;
+    }
+    groups.push({heartbeat: isHeartbeatEntry(e), entries: [e]});
+  }
+  return groups;
+}
+function clockLabel(iso){
+  const ms = iso ? Date.parse(iso) : NaN;
+  return isFinite(ms) ? new Date(ms).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
+}
+function heartbeatRunHtml(group){
+  const first = clockLabel(group.entries[0].timestamp);
+  const last = clockLabel(group.entries[group.entries.length - 1].timestamp);
+  const span = (first && last) ? ` · ${first} → ${last}` : "";
+  return `<div class="tl-entry"><span class="tl-type mono">alive · ${group.entries.length} heartbeats${span}</span></div>`;
+}
 function timelineHtml(room, timelines, isOpen = false){
   const entries = timelines && room.path ? timelines[room.path] : null;
   if(!Array.isArray(entries) || !entries.length) return "";
-  const rows = entries.map(e => {
+  const rows = collapseHeartbeatRuns(entries).map(group => {
+    if(group.heartbeat && group.entries.length > 1) return heartbeatRunHtml(group);
+    const e = group.entries[0];
     const a = age(e.timestamp);
     const rawType = e.type || "";
     const label = friendlyEventName(rawType);
@@ -945,6 +983,16 @@ function stdoutTailHtml(room, derivedAt){
     <div class="stdout-tail mono">${esc(tail)}</div>
     <div class="verbs">${copyButtonHtml(tail, "copy stdout")}</div>`;
 }
+// #1793: `live.doingNow` -- one plain-words line saying what a Running room's worker is doing right
+// now (the last assistant text line, or a tool call's own `description`/name+argument summary --
+// StdoutTailRenderer.ComputeDoingNow's own doc comment is the port record). Absent-safe like every
+// other `live` field: nothing renders on a terminal room, a Running room whose pusher predates
+// #1793, or one with no captured stdout yet.
+function doingNowHtml(room){
+  const text = room.state === "Running" && room.live && typeof room.live.doingNow === "string"
+    ? room.live.doingNow : null;
+  return text ? `<div class="doing-now">${esc(text)}</div>` : "";
+}
 function fullTelemetryHtml(room){
   if(room.state === "Running"){
     return liveTelemetryHtml(room) || `<div class="ev">—</div>`;
@@ -1097,6 +1145,7 @@ function roomDetailHtml(room, timelines, openTimelinePaths, derivedAt, roomsByPa
     ${pathHtml}
     ${bindingLineHtml(room)}
     ${err}${tryLine}
+    ${doingNowHtml(room)}
     <div class="section-heading">Telemetry</div>
     ${fullTelemetryHtml(room)}
     ${stdoutTailHtml(room, derivedAt)}
