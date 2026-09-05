@@ -1,5 +1,3 @@
-using System.Text;
-using System.Text.Json;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Status;
@@ -9,9 +7,10 @@ namespace Baton.Accounting;
 /// <summary>
 /// Reads and writes the repository-keyed cost ledger (#1849 phase A) —
 /// <c>{BatonPaths.Root}/ledger/&lt;repo-slug&gt;.jsonl</c>, one immutable append-only row per settled
-/// execution attempt. Shares <see cref="MutexGuardedFileLock"/> with <c>QuotaLedgerStore</c> and
-/// <c>RoomRegistryStore</c> rather than introducing a third concurrency mechanism, under its own lock
-/// name prefix so the three files never contend with each other.
+/// execution attempt. Shares the whole append-only JSONL store — <see cref="JsonLinesLedger{TEntry}"/>,
+/// and through it <see cref="MutexGuardedFileLock"/> — with <c>QuotaLedgerStore</c> (#1884) rather than
+/// introducing a second copy of it or a third concurrency mechanism, under its own lock name prefix so
+/// the three files never contend with each other.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,17 +29,14 @@ namespace Baton.Accounting;
 /// </remarks>
 public static class CostLedgerStore
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
-
-    /// <summary>Same generous timeout the other two stores use, for the same reason: every critical section here is one small append or one whole-file read.</summary>
-    private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
-
     /// <summary>
-    /// Distinct from <c>QuotaLedgerStore</c>'s and <c>RoomRegistryStore</c>'s prefixes, per
-    /// <see cref="MutexGuardedFileLock"/>'s own remarks. Changing this string renames the lock and lets
-    /// an older and a newer <c>baton</c> build write the same file under two different mutexes.
+    /// This ledger's shared store — <see cref="JsonLinesLedger{TEntry}"/>, whose own remarks state what
+    /// it guarantees and why the prefix handed to it here is not free to rename. <c>baton-cost-ledger</c>
+    /// is deliberately unlike <c>QuotaLedgerStore</c>'s and <c>RoomRegistryStore</c>'s, so the three
+    /// files never contend.
     /// </summary>
-    private const string LockNamePrefix = "baton-cost-ledger";
+    internal static readonly JsonLinesLedger<CostLedgerEntry> Ledger =
+        new("baton-cost-ledger", "cost ledger", entry => entry.Execution);
 
     /// <summary><c>estimateReason</c> when the tokens are a sum across more than one model, so no single rate applies to them.</summary>
     internal const string MultiModelUsageReason = "multi-model-usage";
@@ -315,125 +311,19 @@ public static class CostLedgerStore
     /// accounting ledger that double-counts is worse than one that is missing rows: the totals every
     /// consumer (#1391's drill-down, #1848's enforcement) reads would silently inflate. It does NOT
     /// collapse retries: a retry is a different <c>ExecutionId</c> and therefore a different row.
-    /// An entry with no <see cref="CostLedgerEntry.Execution"/> cannot be deduplicated against
-    /// anything and is always appended. Creates the file and its parent directory if neither exists; a
-    /// no-op when nothing survives the filter, never opening the file to write zero bytes. Throws
-    /// exactly as <c>QuotaLedgerStore.AppendAsync</c> documents — the caller logs and swallows.
+    /// The filter itself, and every mechanical guarantee around it, belongs to
+    /// <see cref="JsonLinesLedger{TEntry}.AppendAsync"/>. Throws exactly as
+    /// <c>QuotaLedgerStore.AppendAsync</c> documents — the caller logs and swallows.
     /// </summary>
     public static Task AppendAsync(
-        IReadOnlyList<CostLedgerEntry> entries, string ledgerFilePath, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(entries);
-        ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
-
-        if (entries.Count == 0)
-        {
-            return Task.CompletedTask;
-        }
-
-        var directory = Path.GetDirectoryName(ledgerFilePath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        return Task.Run(
-            () => MutexGuardedFileLock.RunUnderLock(ledgerFilePath, LockNamePrefix, LockTimeout, () =>
-            {
-                var alreadyRecorded = ReadAllUnlocked(ledgerFilePath)
-                    .Where(e => e.Execution is { Length: > 0 })
-                    .Select(e => e.Execution!)
-                    .ToHashSet(StringComparer.Ordinal);
-
-                var toAppend = entries
-                    .Where(e => e.Execution is not { Length: > 0 } id || !alreadyRecorded.Contains(id))
-                    .ToList();
-                if (toAppend.Count == 0)
-                {
-                    return;
-                }
-
-                var builder = new StringBuilder();
-                foreach (var entry in toAppend)
-                {
-                    builder.Append(JsonSerializer.Serialize(entry, SerializerOptions)).Append('\n');
-                }
-
-                var bytes = Encoding.UTF8.GetBytes(builder.ToString());
-                using var stream = new FileStream(
-                    ledgerFilePath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 4096, useAsync: false);
-                stream.Write(bytes);
-                stream.Flush();
-            }),
-            cancellationToken);
-    }
+        IReadOnlyList<CostLedgerEntry> entries, string ledgerFilePath, CancellationToken cancellationToken = default) =>
+        Ledger.AppendAsync(entries, ledgerFilePath, cancellationToken);
 
     /// <summary>
-    /// Reads every parseable line in <paramref name="ledgerFilePath"/>, in file (= write) order, under
-    /// the <see cref="MutexGuardedFileLock"/> keyed on this file. A missing file resolves to an empty
-    /// list; a malformed line is skipped rather than failing the whole read. Never throws — a
-    /// lock-acquire timeout or an I/O failure resolves to an empty list, same as a missing file.
+    /// This ledger's rows, oldest first. Delegated whole to
+    /// <see cref="JsonLinesLedger{TEntry}.ReadAllAsync"/>.
     /// </summary>
     public static Task<IReadOnlyList<CostLedgerEntry>> ReadAllAsync(
-        string ledgerFilePath, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
-
-        return Task.Run(
-            () =>
-            {
-                try
-                {
-                    return MutexGuardedFileLock.RunUnderLock(
-                        ledgerFilePath, LockNamePrefix, LockTimeout, () => ReadAllUnlocked(ledgerFilePath));
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
-                {
-                    Console.Error.WriteLine($"Could not read the cost ledger at '{ledgerFilePath}': {ex.Message}.");
-                    return (IReadOnlyList<CostLedgerEntry>)[];
-                }
-            },
-            cancellationToken);
-    }
-
-    /// <summary>
-    /// The read half, factored out so <see cref="AppendAsync"/> can read-then-write inside ONE lock
-    /// acquisition — two acquisitions would let a concurrent writer land in the gap. Callers must
-    /// already hold the lock; this method takes none of its own.
-    /// </summary>
-    private static IReadOnlyList<CostLedgerEntry> ReadAllUnlocked(string ledgerFilePath)
-    {
-        if (!File.Exists(ledgerFilePath))
-        {
-            return [];
-        }
-
-        string text;
-        using (var stream = new FileStream(ledgerFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var reader = new StreamReader(stream, Encoding.UTF8))
-        {
-            text = reader.ReadToEnd();
-        }
-
-        var result = new List<CostLedgerEntry>();
-        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            CostLedgerEntry? entry;
-            try
-            {
-                entry = JsonSerializer.Deserialize<CostLedgerEntry>(line, SerializerOptions);
-            }
-            catch (JsonException)
-            {
-                continue;
-            }
-
-            if (entry is not null)
-            {
-                result.Add(entry);
-            }
-        }
-
-        return result;
-    }
+        string ledgerFilePath, CancellationToken cancellationToken = default) =>
+        Ledger.ReadAllAsync(ledgerFilePath, cancellationToken);
 }

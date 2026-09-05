@@ -879,6 +879,39 @@ public sealed class CostLedgerStoreTests
     }
 
     [Fact]
+    public async Task This_store_is_the_cost_ledgers_own_JSONL_ledger_under_its_own_lock_name()
+    {
+        // This ledger's half of the pair QuotaLedgerStoreTests' own smoke test explains: a prefix that
+        // must stay distinct from the burn ledger's, and a live dedupe round trip.
+        Assert.Equal("baton-cost-ledger", CostLedgerStore.Ledger.LockNamePrefix);
+        Assert.NotEqual(QuotaLedgerStore.Ledger.LockNamePrefix, CostLedgerStore.Ledger.LockNamePrefix);
+
+        var path = NewLedgerPath();
+        try
+        {
+            await CostLedgerStore.AppendAsync(
+                [new CostLedgerEntry(CostSourceKind.BatonExecution, Execution: "exec-a")], path, TestContext.Current.CancellationToken);
+            await CostLedgerStore.AppendAsync(
+                [
+                    new CostLedgerEntry(CostSourceKind.BatonExecution, Execution: "exec-a"),
+                    new CostLedgerEntry(CostSourceKind.BatonExecution, Execution: "exec-b"),
+                ],
+                path,
+                TestContext.Current.CancellationToken);
+
+            var all = await CostLedgerStore.ReadAllAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, all.Count);
+            Assert.Contains(all, e => e.Execution == "exec-a");
+            Assert.Contains(all, e => e.Execution == "exec-b");
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
     public void The_source_kind_label_survives_a_round_trip_as_the_wire_name_phase_C_will_filter_on()
     {
         var json = JsonSerializer.Serialize(new CostLedgerEntry(CostSourceKind.BatonExecution, Execution: "e"));

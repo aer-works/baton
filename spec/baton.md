@@ -3498,7 +3498,11 @@ which lane spent what, on which vendor — cross-room, append-only JSONL at `Bat
 for `room-registry.jsonl`. That mechanism was extracted to `MutexGuardedFileLock`
 (`src/Baton/Status/MutexGuardedFileLock.cs`) so this store shares it rather than copying it —
 `RoomRegistryStore`'s own `RunUnderLock` is now a thin wrapper over the same primitive, name-preserving,
-so an older and a newer `baton` build still contend on the one lock. `QuotaLedgerStore.BuildEntries`
+so an older and a newer `baton` build still contend on the one lock. The append/read half above that
+lock — the JSONL file format, the dedupe-on-execution-id skip, and the skip-malformed-line read
+tolerance — is likewise one shared primitive, `JsonLinesLedger<T>`
+(`src/Baton/Status/JsonLinesLedger.cs`, #1884), which this store and the cost ledger below both wrap
+under their own lock names; its own remarks state what it guarantees. `QuotaLedgerStore.BuildEntries`
 harvests engine-side, at settle — `Program.cs`'s own terminal-sentinel write site — from the terminal
 usage `ExecutionUsageProjector` already has in hand for every execution with a recorded start and exit:
 one ledger line per execution — `AppendAsync`'s own doc comment states why it skips an execution id
@@ -3532,8 +3536,8 @@ The burn ledger above stays exactly what it is: the per-execution source, keyed 
 nothing. The **cost ledger** consumes it and adds three things it does not have — a *repository* key,
 *versioned price provenance*, and durability past the vendors' own history windows. Append-only JSONL
 at `BatonPaths.CostLedgerFile(slug)` (`{BatonPaths.Root}/ledger/<repository-slug>.jsonl`), one file per
-canonical repository identity, guarded by the same `MutexGuardedFileLock` primitive under its own lock
-name. Written at the same settle site as `quota-ledger.jsonl` (`Program.cs`'s terminal-sentinel write),
+canonical repository identity, written through the same `JsonLinesLedger<T>` the burn ledger above
+wraps (and so the same `MutexGuardedFileLock`) under its own lock name. Written at the same settle site as `quota-ledger.jsonl` (`Program.cs`'s terminal-sentinel write),
 from the same `terminalEntries` already in hand, in its own `try`/`catch` so neither ledger's failure
 loses the other's. Fails open identically: logged on stderr, never a reason a settled run reports as
 failed.

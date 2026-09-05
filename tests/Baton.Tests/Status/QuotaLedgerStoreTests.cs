@@ -186,56 +186,6 @@ public sealed class QuotaLedgerStoreTests
     }
 
     [Fact]
-    public async Task Concurrent_appends_from_many_tasks_lose_no_entries()
-    {
-        var path = TempLedgerPath();
-        try
-        {
-            const int writerCount = 12;
-            var executionIds = Enumerable.Range(0, writerCount).Select(i => $"exec-concurrent-{i}").ToList();
-
-            await Task.WhenAll(executionIds.Select(id => Task.Run(() =>
-                QuotaLedgerStore.AppendAsync(
-                    [new QuotaLedgerEntry(Execution: id, TokensIn: 1)], path, TestContext.Current.CancellationToken))));
-
-            var all = await QuotaLedgerStore.ReadAllAsync(path, TestContext.Current.CancellationToken);
-
-            Assert.Equal(writerCount, all.Count);
-            var found = all.Select(e => e.Execution).ToHashSet(StringComparer.Ordinal);
-            Assert.All(executionIds, id => Assert.Contains(id, found));
-        }
-        finally
-        {
-            FileCleanup.Delete(path);
-        }
-    }
-
-    [Fact]
-    public async Task AppendAsync_throws_a_sanctioned_exception_when_the_ledger_path_is_itself_a_directory()
-    {
-        // The fail-open contract's own instrument: Program.cs's settle-time call site catches exactly
-        // IOException/UnauthorizedAccessException/WaitHandleCannotBeOpenedException and swallows them.
-        // Pointing the "file" path at a real directory forces the FileStream open to throw one of those
-        // with no mock or injected writer -- proving the exception this store's contract promises is
-        // one the caller's catch clause actually reaches.
-        var path = Path.Combine(Path.GetTempPath(), $"baton-quota-ledger-dir-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        try
-        {
-            var ex = await Assert.ThrowsAnyAsync<Exception>(() => QuotaLedgerStore.AppendAsync(
-                [new QuotaLedgerEntry(Execution: "exec-1", TokensIn: 1)], path, TestContext.Current.CancellationToken));
-
-            Assert.True(
-                ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException,
-                $"Expected one of the three sanctioned fail-open exceptions, got {ex.GetType()}: {ex.Message}");
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(path);
-        }
-    }
-
-    [Fact]
     public async Task RebuildAsync_preserves_a_ledger_line_whose_room_the_fresh_walk_did_not_reach()
     {
         // #1570 review (advisor pass): a rebuild sourced from the walk alone would delete every entry
@@ -321,38 +271,21 @@ public sealed class QuotaLedgerStoreTests
     }
 
     [Fact]
-    public async Task AppendAsync_never_duplicates_a_line_for_an_execution_id_already_in_the_ledger()
+    public async Task This_store_is_the_burn_ledgers_own_JSONL_ledger_under_its_own_lock_name()
     {
-        // AppendAsync's own doc comment states why this dedupe exists (a room can settle more than
-        // once). Pinned directly rather than only through the end-to-end suite.
+        // The wrapper smoke test #1884 left behind when the shared arms moved to JsonLinesLedgerTests.
+        // Pins the two things the move could silently change: the lock-name prefix this store was
+        // constructed with (MutexGuardedFileLock's own remarks state what renaming it costs), and that
+        // the dedupe key really is Execution -- exercised end to end rather than read off the selector.
+        Assert.Equal("baton-quota-ledger", QuotaLedgerStore.Ledger.LockNamePrefix);
+
         var path = TempLedgerPath();
         try
         {
             await QuotaLedgerStore.AppendAsync(
                 [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
             // Simulates BuildEntries re-deriving the same, already-settled execution on a second
-            // Terminal-reaching command against the same room.
-            await QuotaLedgerStore.AppendAsync(
-                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
-
-            var all = await QuotaLedgerStore.ReadAllAsync(path, TestContext.Current.CancellationToken);
-
-            Assert.Single(all);
-        }
-        finally
-        {
-            FileCleanup.Delete(path);
-        }
-    }
-
-    [Fact]
-    public async Task AppendAsync_still_appends_an_unrelated_execution_alongside_an_already_recorded_one()
-    {
-        var path = TempLedgerPath();
-        try
-        {
-            await QuotaLedgerStore.AppendAsync(
-                [new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10)], path, TestContext.Current.CancellationToken);
+            // Terminal-reaching command against the same room, alongside a genuinely new one.
             await QuotaLedgerStore.AppendAsync(
                 [
                     new QuotaLedgerEntry(Execution: "exec-a", TokensIn: 10),
