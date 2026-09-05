@@ -47,6 +47,12 @@ public sealed record PricePoint(
 /// works without them is everything this type does apart from holding a rate.
 /// </para>
 /// <para>
+/// <b>Effective dates are UTC.</b> They are compared against an execution's own exit timestamp, which
+/// is <c>LogEntry.WriterUtcTimestamp</c>. An entry written with a local-time or unqualified literal is
+/// silently off by the author's offset, which picks the wrong range near a boundary — write them with
+/// a trailing <c>Z</c>.
+/// </para>
+/// <para>
 /// <b>Reproducibility.</b> Every row records the <see cref="Id"/> and <see cref="Version"/> that
 /// produced its estimate. Re-pricing an old row against a newer catalog is therefore a visible
 /// mismatch rather than a silent rewrite — a catalog edit changes what NEW rows say and nothing else.

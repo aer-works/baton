@@ -3400,7 +3400,7 @@ restated here. Cite the ruling above — "accumulation from lane logs is attribu
 reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
 second one.
 
-### The cost ledger (#1849) — phase A shipped
+### The cost ledger (#1849) — phase A, PR #1883 (open)
 
 The burn ledger above stays exactly what it is: the per-execution source, keyed by machine, pruned by
 nothing. The **cost ledger** consumes it and adds three things it does not have — a *repository* key,

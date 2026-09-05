@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Baton.Accounting;
+using Baton.Status;
+using Baton.Vendors;
 
 namespace Baton.Cli;
 
@@ -19,6 +21,38 @@ namespace Baton.Cli;
 internal static class RepositoryIdentityResolver
 {
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The identity of the repository <paramref name="roomDirectoryPath"/>'s work was done in, resolved
+    /// from that room's own recorded <see cref="RoomRegistryEntry.ProjectRoot"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not the process's working directory, deliberately.</b> A room lives under
+    /// <c>{BatonPaths.Root}/rooms</c> and carries no git of its own, so the workspace has to come from
+    /// somewhere else — and the ambient CWD is the wrong somewhere twice over, in ways that produce no
+    /// signal. A <c>baton</c> invoked from outside any repository (a conductor, the daemon, an install
+    /// directory) would resolve to nothing and silently contribute no rows at all; a session sitting in
+    /// one checkout while dispatching work into another would key every row to the wrong repository,
+    /// which is a well-formed row with a wrong join key rather than a visible failure. The registry
+    /// records the project root at registration time, per room, which is the fact this needs.
+    /// Registration is itself fail-open (<c>RunCommand.RegisterRoomAsync</c>), so a room with no entry
+    /// is reachable and falls back to the working directory rather than losing the row.
+    /// </remarks>
+    public static async Task<RepositoryIdentity?> TryResolveForRoomAsync(
+        string roomDirectoryPath, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+
+        var recordedRoomPath = BatonPaths.RecordKey(roomDirectoryPath);
+        var registrations = await RoomRegistryStore
+            .ReadDistinctByRoomAsync(BatonPaths.RoomRegistryFile, cancellationToken).ConfigureAwait(false);
+
+        var projectRoot = registrations
+            .FirstOrDefault(entry => BatonPaths.RecordKeyComparer.Equals(entry.RoomPath, recordedRoomPath))
+            ?.ProjectRoot;
+
+        return await TryResolveAsync(projectRoot ?? Environment.CurrentDirectory, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// The canonical identity of the repository at <paramref name="workingDirectory"/>, or

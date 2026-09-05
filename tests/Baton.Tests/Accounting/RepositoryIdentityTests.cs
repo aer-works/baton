@@ -43,12 +43,12 @@ public sealed class RepositoryIdentityTests
     }
 
     [Fact]
-    public void The_origin_remote_wins_over_the_common_directory_so_two_worktrees_share_one_ledger()
+    public void The_origin_remote_wins_over_the_common_directory()
     {
-        // A linked worktree and its main checkout report the same origin and the same common dir but
-        // live at different paths -- the path is exactly what this key must NOT be derived from.
+        // Two checkouts of one repository report the same origin and DIFFERENT `.git` locations. The
+        // remote is what has to decide, or the ledger splits per checkout.
         var main = RepositoryIdentity.From("https://github.com/aer-works/baton.git", @"C:\src\baton\.git");
-        var worktree = RepositoryIdentity.From("https://github.com/aer-works/baton.git", @"C:\src\baton\.git");
+        var worktree = RepositoryIdentity.From("https://github.com/aer-works/baton.git", @"C:\src\w1849\.git");
 
         Assert.Equal(main!.Value, worktree!.Value);
         Assert.Equal(Canonical, main.Value);
