@@ -3670,6 +3670,38 @@ sanitizing alone would let two distinct identities share one ledger file. The en
 this type is pure string work, and `Baton.Cli.RepositoryIdentityResolver` is the probe that runs git and
 resolves to nothing rather than throwing.
 
+**Views — shipped (phase B's CLI half).** `baton ledger [<room-dir>] [filters] [--format
+text|json|csv] [--drill]` reads the file above; `baton ledger --rebuild` remains the burn ledger's
+rebuild, against a different file, and neither touches the other's. No `<room-dir>` is the fleet
+reading over the repository the operator is standing in (`--repo-identity <key>` names another); with
+one, it is that room's attempts and total — **literally the fleet reading with the room facet set**,
+because `LedgerRollup` is the one accounting projection and the CLI formats what it returns rather
+than summing anything itself (#1849's "one accounting projection, not divergent arithmetic"). Facets:
+vendor, model, role, project, outcome, workflow, PR, issue, source kind. The **window is on
+`endedAt`** — `--since` inclusive, `--until` exclusive, so two adjacent windows partition a range.
+An attempt whose `endedAt` was never recorded cannot be placed in any window at all: it is left out
+and reported as `undatedExcluded` rather than quietly assumed in. **Output order is fixed in every
+format that has one:** per-vendor subtotals, then the labelled all-vendor estimate, then the
+contributing rows under `--drill`. Determinism is `LedgerRollup`'s promise rather than each caller's —
+its own remarks state the three sort keys and why the third is not redundant.
+
+`--format json` is the machine contract Fleet Glass (#1746) and enforcement (#1848) read — one object
+`{query, vendors, total, rows?}`, `WhenWritingNull`, with the ledger record's own field names inside
+it, `rows` present only with `--drill` (absent, not empty, so "not asked for" and "none matched" stay
+distinguishable). `--format csv` writes the rows only, header = the record's field names,
+LF-terminated, and that column set is pinned against the record by test rather than by review.
+A subtotal keeps the row-level doctrine through the addition, and **discloses what its own arithmetic
+cannot preserve**: a token dimension **no** row reported is absent rather than `0` (agy reports no
+cache-creation at all); a dimension only *some* of the attempts reported is a partial sum, and
+`reportedBy` carries one contributor count per dimension so that a total cannot be read as more
+complete than it is (`LedgerReportedBy`'s remarks state the reading it prevents). A row that produced
+no estimate
+is counted in `attempts` and disclosed under **its own recorded status name** —
+`apiEquivalentByStatus`/`planMeterByStatus` carry one count per `EstimateStatus` value, so agy's
+never-measured plan meter reads `unmeasured` and a missing rate reads `unpriced`, rather than three
+states sharing one bucket named after one of them. Per-model token dimensions — the schema change that would let a multi-model tree be priced
+instead of refused — remain phase B's *unshipped* half; nothing above depends on them.
+
 **Phase plan.** A is the record, the catalog, the factor table, the identity key and the settle-time
 writer. **B** is the CLI views — room and fleet, time-range and facet filters, JSON/CSV export. **C** is
 the import of the vendors' own native session logs under the three reserved `sourceKind` values (and is

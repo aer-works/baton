@@ -128,6 +128,9 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine($"       {RoomDeleteOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {RoomsPruneOptionsParser.Usage[7..]}");
     Console.Error.WriteLine($"       {LedgerCommand.Usage[7..]}");
+    Console.Error.WriteLine($"       {LedgerViewOptionsParser.Usage[7..]}");
+    Console.Error.WriteLine(
+        "              (the two 'ledger' forms read different files -- 'baton ledger --help' says which)");
     Console.Error.WriteLine(
         "       baton mcp [--capture-file <path>] [--memory-proposal-tool] [--fleet-status-tool] [--room-detail-tool]");
     Console.Error.WriteLine("       baton daemon [--no-mutex]");
@@ -247,12 +250,24 @@ try
     // joins room/rooms above rather than the CommandResult/FlowStateReporter switch below.
     if (args[0] == "ledger")
     {
-        if (args.Length < 2 || args[1] != "--rebuild")
+        // Two commands under one verb, against two different files: `--rebuild` re-walks live rooms
+        // into the per-execution BURN ledger (#1570, quota-ledger.jsonl), everything else READS the
+        // repository-keyed COST ledger (#1849 phase B, ledger/<repo>.jsonl). Neither touches the
+        // other's file -- LedgerViewOptionsParser.HelpLines says so where an operator will see it.
+        if (args.Length >= 2 && args[1] == "--rebuild")
         {
-            throw new CliArgumentException($"Unknown 'baton ledger' invocation. {LedgerCommand.Usage}");
+            if (args.Length > 2)
+            {
+                throw new CliArgumentException(
+                    $"'baton ledger --rebuild' takes no other arguments (got '{args[2]}'). {LedgerCommand.Usage}");
+            }
+
+            return await LedgerCommand.RebuildAsync(Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
         }
 
-        return await LedgerCommand.RebuildAsync(Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
+        var ledgerViewOptions = LedgerViewOptionsParser.Parse(args[1..]);
+        return await LedgerViewCommand
+            .ExecuteAsync(ledgerViewOptions, Console.Out, cancellationToken: hostStopSource.Token).ConfigureAwait(false);
     }
 
     CommandResult result;
