@@ -1,3 +1,4 @@
+using Baton.Accounting;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Mutation;
@@ -38,7 +39,8 @@ public static class ResolveCommand
     /// </exception>
     public static async Task<CommandResult> ExecuteAsync(
         ResolveOptions options,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? costLedgerFilePathOverride = null)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -77,6 +79,42 @@ public static class ResolveCommand
                 options.Close,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        // #1901 C1: accepting a capture is not a terminal conductor verdict. A reject/close is, so
+        // enrich the room's most recent cost row after the journal mutation is durable. Cost ledgers
+        // are append-only: CostLedgerStore appends a replacement physical row and logical reads fold
+        // that execution last-write-wins, preserving the original accounting evidence without
+        // counting it twice. Like settle accounting, this optional write never reverses a resolution.
+        if (!options.Accept && options.Reason is { Length: > 0 } resolutionReason)
+        {
+            try
+            {
+                var ledgerPath = costLedgerFilePathOverride;
+                if (ledgerPath is null)
+                {
+                    var repository = await RepositoryIdentityResolver
+                        .TryResolveForRoomAsync(options.RoomDirectoryPath, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    ledgerPath = repository is null ? null : BatonPaths.CostLedgerFile(repository.FileSlug);
+                }
+
+                if (ledgerPath is not null)
+                {
+                    await CostLedgerStore.AppendResolutionAsync(
+                            options.RoomDirectoryPath,
+                            options.Close ? "close" : "reject",
+                            resolutionReason,
+                            ledgerPath,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (
+                ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+            {
+                Console.Error.WriteLine($"Could not append the conductor resolution to the cost ledger: {ex.Message}.");
+            }
+        }
 
         return new CommandResult(state, snapshot, RoomDirectoryPath: options.RoomDirectoryPath);
     }

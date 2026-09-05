@@ -3728,7 +3728,7 @@ restated here. Cite the ruling above — "accumulation from lane logs is attribu
 reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
 second one.
 
-### The cost ledger (#1849) — phase A, shipped (#1883)
+### The cost ledger (#1849) — phases A, B and C1 shipped (#1883, #1901)
 
 The burn ledger above stays exactly what it is: the per-execution source, keyed by machine, pruned by
 nothing. The **cost ledger** consumes it and adds three things it does not have — a *repository* key,
@@ -3739,6 +3739,14 @@ wraps (and so the same `MutexGuardedFileLock`) under its own lock name. Written 
 from the same `terminalEntries` already in hand, in its own `try`/`catch` so neither ledger's failure
 loses the other's. Fails open identically: logged on stderr, never a reason a settled run reports as
 failed.
+
+At that settle boundary the CLI also captures #1901's perishable joins while the room and checkout
+still exist. `DispatchCommand` stamps the caller's named branch onto every binding before an audited
+role can move into a detached worktree. Settle derives `issue` from that branch's leading
+`<number>-`, asks the existing injected `IGhCliRunner` for the branch's PR, and probes local git for
+the pushed diff. An unavailable branch, forge response, or git result omits only the affected fields;
+it never invents a zero and never turns a settled run into a failure. Tests inject both process seams,
+so no test invokes `gh` or reaches the network.
 
 **One row per settled execution attempt.** `CostLedgerStore.BuildEntries` reuses
 `ExecutionUsageProjector.BuildByExecutionId` and `ExecutionBindingResolver.Resolve` — the same two
@@ -3752,6 +3760,13 @@ already emits.
 `AppendAsync` skips an execution id the file already holds — its own doc comment states against which
 repeated-settle shapes, and what inflated totals that skip is buying, not restated here.
 
+`baton resolve --reject` and `--close` enrich the room's last cost row after the resolution journal
+fact is durable. The file remains append-only: Baton appends a full replacement row carrying
+`resolution` and `resolutionReason`, never rewrites the earlier physical line. Normal ledger reads
+fold repeated execution ids last-write-wins at the original position, so history remains inspectable
+on disk while every accounting view counts the attempt exactly once. `--accept-capture` records no
+intervention row because it is neither a reject nor an administrative close.
+
 **Schema** (JSON names exactly; every field except `sourceKind`, `estimateStatus` and
 `planMeterEstimateStatus` is independently absent when unavailable — omitted, never zero, never
 `null`):
@@ -3764,15 +3779,20 @@ repeated-settle shapes, and what inflated totals that skip is buying, not restat
 | `adapter`, `model`, `outcome`, `startedAt`, `endedAt` | Route and lifecycle. **`model` is the model the step was REQUESTED at** (`ExecutionBindingResolver`, i.e. the accepted request plus any `StepRebound`), never the model the CLI echoed back — a substitution or a quota-driven downgrade is invisible in it, so grouping rows by `model` groups by intent, not by what ran. |
 | `modelsObserved` | The models this row's token dimensions were summed ACROSS, off the vendor's own per-model breakdown (§3). Absent = the vendor reported no breakdown, which is *unknown*, never *one model*. |
 | `modelEchoed` | **Reserved, no phase-A writer** — the model as the CLI itself echoed it, which is the one `model` is not. Named now so phase C fills it rather than inventing a competitor. |
+| `issue`, `pr` | Settle-time work join. `issue` is the leading issue number in the dispatch-stamped branch (or the issue already recorded for this room); `pr` is the existing PR returned for that branch. A branch with no PR writes `issue` only. |
 | `tokensIn`, `tokensOut`, `cacheRead`, `cacheCreation`, `thinking`, `turns`, `wallClockMs` | The dimensions `QuotaLedgerEntry` carries, same names and same nullability. Cache-read is first-class here, never folded into a billed figure. |
 | `verifyStepMs`, `verifyResultsBytes` | #1882's two non-token dimensions, carried through from `ExecutionUsageView` under the same names and by the same attribution — §3 above states which execution gets them and why they are present together or not at all. Neither enters either estimate: a zero-token step changes no price. |
+| `verdict`, `findingsHigh`, `findingsMedium`, `findingsLow` | A valid execution-scoped `verdict.json`: `APPROVE` when it has no confirmed findings, otherwise `BLOCK`; the three explicit counts include confirmed findings only. All four are absent when the artifact is absent or invalid; when it is valid, a zero count is written as zero. |
+| `reviewedPr`, `reviewedHead` | PR number and hexadecimal commit parsed independently from `verdict.json`'s required `reviewedRef`. Either stays absent when that component is not present in the reference. |
+| `filesChanged`, `additions`, `deletions`, `testFilesChanged` | For the last successful `deliversBranch` execution whose HEAD is confirmed on `origin/<branch>`: `git diff --shortstat origin/main...HEAD` plus the number of paths under a `tests` directory in `--numstat`. All four are absent when no push was confirmed or either diff probe failed. |
+| `resolution`, `resolutionReason` | A later conductor `reject` or `close` and its required reason, carried by the append-only correcting row described above. Both are absent before such an intervention. |
 | `billedTokens`, `liveBilledTokens`, `billedUnderReadTokens`, `peakBilledInWindow` | #1706/#1709's vendor-derived figures, carried through under the names `ExecutionUsageView` already defines. |
 | `completeness`, `completenessReason` | `complete` / `partial` / **absent**, plus the stream reader's own reason string. `complete` requires a terminal line to have parsed AND the replay over the same bytes to have reconciled against it (§3's #1706 triple present) — it is *not* the default. **Every** value of `billedReconciliationUnavailable` maps to `partial` — including the two that describe no truncation at all, whose ambiguity `ExecutionUsageView`'s reason constants state — because an undecidable case takes the weaker label. **Absent** is the third state, for an attempt whose usage was never read (no parser registered for its adapter, no captured `.stdout.log`): neither label is true of a row nothing was read for, and calling it `complete` is what put an empty row in #1848's trustworthy set. `CostLedgerStore.ResolveCompleteness` is the one decision point. |
 | `apiEquivalentUsd`, `estimateStatus` | List-price estimate and its status (`estimated` / `unpriced`). |
 | `planMeterEstimateUsd`, `planMeterEstimateStatus` | Plan-meter estimate and its status (`estimated` / `unpriced` / `unknown` / `unmeasured`). |
 | `estimateReason` | Why BOTH estimates are `unpriced` for a reason other than a missing rate: `multi-model-usage` or `model-mismatch` (below). Absent when pricing was attempted at all — absent never means *priced*. |
 | `priceCatalogId`, `priceCatalogVersion`, `planFactorTableId`, `planFactorTableVersion` | The four provenance stamps that make an estimate reproducible. |
-| `attempt`, `effort`, `issue`, `pr`, `parentRoom`, `workstream`, `raw` | **Reserved, no phase-A writer** — none is derivable from the events a settle has in hand. Named now so a later phase fills a reserved field rather than inventing a competing one. |
+| `attempt`, `effort`, `parentRoom`, `workstream`, `raw` | **Reserved, no writer** — none is currently derivable from the settled evidence. Named now so a later phase fills a reserved field rather than inventing a competing one. |
 
 **Two estimates, both labelled, neither an invoice.** `apiEquivalentUsd` comes from `PriceCatalog`
 (vendor → model → dimension → effective ranges, each with a source); `planMeterEstimateUsd` re-weights
@@ -3833,9 +3853,23 @@ contributing rows under `--drill`. Determinism is `LedgerRollup`'s promise rathe
 its own remarks state the three sort keys and why the third is not redundant.
 
 `--format json` is the machine contract Fleet Glass (#1746) and enforcement (#1848) read — one object
-`{query, vendors, total, rows?}`, `WhenWritingNull`, with the ledger record's own field names inside
-it, `rows` present only with `--drill` (absent, not empty, so "not asked for" and "none matched" stay
-distinguishable). `--format csv` writes the rows only, header = the record's field names,
+`{query, vendors, prs, verdicts, total, rows?}`, `WhenWritingNull`, with the ledger record's own
+field names inside it. `prs` and `verdicts` are deterministic subtotal lists over rows that carry
+those values; an absent value creates no synthetic "unknown" group. `rows` is present only with
+`--drill` (absent, not empty, so "not asked for" and "none matched" stay distinguishable).
+The shape, abridging each subtotal's already-defined arithmetic members, is:
+
+```json
+{
+  "query": {"undatedExcluded": 0},
+  "vendors": [{"adapter": "claude", "attempts": 2, "...": "subtotal members"}],
+  "prs": [{"pr": "1901", "total": {"attempts": 1, "...": "subtotal members"}}, {"pr": "1902", "total": {"attempts": 1, "...": "subtotal members"}}],
+  "verdicts": [{"verdict": "APPROVE", "total": {"attempts": 1, "...": "subtotal members"}}, {"verdict": "BLOCK", "total": {"attempts": 1, "...": "subtotal members"}}],
+  "total": {"attempts": 2, "...": "subtotal members"}
+}
+```
+
+`--format csv` writes the rows only, header = the record's field names,
 LF-terminated, and that column set is pinned against the record by test rather than by review.
 A subtotal keeps the row-level doctrine through the addition, and **discloses what its own arithmetic
 cannot preserve**: a token dimension **no** row reported is absent rather than `0` (agy reports no
@@ -3851,11 +3885,12 @@ instead of refused — remain phase B's *unshipped* half; nothing above depends 
 
 **Phase plan.** A is the record, the catalog, the factor table, the identity key and the settle-time
 writer. **B** is the CLI views — room and fleet, time-range and facet filters, JSON/CSV export. **C** is
-the import of the vendors' own native session logs under the three reserved `sourceKind` values (and is
-where `raw` gets a writer, since only a whole session log carries the vendor's fields verbatim). **D**
-is backfill of retained rooms plus compaction, at the 90-day window the native-retention survey on
-#1849 settles on. Nothing in B–D requires a schema migration: the source-kind label and the repository
-key exist from day one.
+split deliberately: **C1**, shipped here, captures perishable issue/PR, review, pushed-diff and
+conductor-resolution facts at settle. **C2 remains separate and unshipped**: it backfills retained
+rooms and GitHub history, including native session imports under the three reserved `sourceKind`
+values and `raw` (only a whole session log carries the vendor's fields verbatim). This C1 work does
+not scan old rooms, mint backfill rows, or change retention. Nothing in the later import/backfill
+requires a migration: the source-kind label and repository key exist from day one.
 
 ---
 

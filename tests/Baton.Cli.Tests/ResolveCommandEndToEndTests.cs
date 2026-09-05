@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Baton.Accounting;
 using Baton.Vendors;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
@@ -39,10 +40,13 @@ public class ResolveCommandEndToEndTests
         try
         {
             var executionId = await SeedIndeterminateRoomAsync(testRoot, roomDirectory, "advice.md", "the worker's real answer");
+            var ledgerPath = Path.Combine(testRoot, "cost-ledger.jsonl");
+            await SeedCostRowAsync(ledgerPath, roomDirectory, executionId);
 
             var result = await ResolveCommand.ExecuteAsync(
                 new ResolveOptions(roomDirectory, ExecutionId: null, Accept: true),
-                TestContext.Current.CancellationToken);
+                TestContext.Current.CancellationToken,
+                ledgerPath);
 
             var step = Assert.Single(result.State.Steps);
             Assert.Equal(StepStatus.Succeeded, step.Status);
@@ -50,6 +54,12 @@ public class ResolveCommandEndToEndTests
 
             var outputPath = Path.Combine(roomDirectory, "artifacts", $"execution_{executionId.Value}", "advice.md");
             Assert.Equal("the worker's real answer", await File.ReadAllTextAsync(outputPath, TestContext.Current.CancellationToken));
+
+            Assert.Single(await File.ReadAllLinesAsync(ledgerPath, TestContext.Current.CancellationToken));
+            var ledgerRow = Assert.Single(await CostLedgerStore.ReadAllAsync(
+                ledgerPath, TestContext.Current.CancellationToken));
+            Assert.Null(ledgerRow.Resolution);
+            Assert.Null(ledgerRow.ResolutionReason);
         }
         finally
         {
@@ -65,14 +75,24 @@ public class ResolveCommandEndToEndTests
         try
         {
             var executionId = await SeedIndeterminateRoomAsync(testRoot, roomDirectory, "advice.md", "not honest advice.md");
+            var ledgerPath = Path.Combine(testRoot, "cost-ledger.jsonl");
+            await SeedCostRowAsync(ledgerPath, roomDirectory, executionId);
 
             var result = await ResolveCommand.ExecuteAsync(
                 new ResolveOptions(roomDirectory, executionId.Value, Accept: false, Reason: "does not honestly satisfy advice.md"),
-                TestContext.Current.CancellationToken);
+                TestContext.Current.CancellationToken,
+                ledgerPath);
 
             var step = Assert.Single(result.State.Steps);
             Assert.Equal(StepStatus.Failed, step.Status);
             Assert.Equal(WorkflowOutcome.Failed, WorkflowOutcome.Describe(result.State));
+
+            Assert.Equal(2, (await File.ReadAllLinesAsync(
+                ledgerPath, TestContext.Current.CancellationToken)).Length);
+            var ledgerRow = Assert.Single(await CostLedgerStore.ReadAllAsync(
+                ledgerPath, TestContext.Current.CancellationToken));
+            Assert.Equal("reject", ledgerRow.Resolution);
+            Assert.Equal("does not honestly satisfy advice.md", ledgerRow.ResolutionReason);
         }
         finally
         {
@@ -610,6 +630,19 @@ public class ResolveCommandEndToEndTests
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }
+
+
+    private static Task SeedCostRowAsync(string ledgerPath, string roomDirectory, ExecutionId executionId) =>
+        CostLedgerStore.AppendAsync(
+            [
+                new CostLedgerEntry(
+                    CostSourceKind.BatonExecution,
+                    Room: BatonPaths.RecordKey(roomDirectory),
+                    Execution: executionId.Value,
+                    TokensIn: 17),
+            ],
+            ledgerPath,
+            TestContext.Current.CancellationToken);
 
     /// <summary>
     /// The durable shape a crash between "fact" and "files" leaves behind — an accepted

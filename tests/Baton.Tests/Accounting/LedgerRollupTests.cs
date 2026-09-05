@@ -405,7 +405,35 @@ public sealed class LedgerRollupTests
 
         Assert.Equal(first.Rows!.Select(r => r.Execution), second.Rows!.Select(r => r.Execution));
         Assert.Equal(first.Vendors, second.Vendors);
+        Assert.Equal(first.PullRequests, second.PullRequests);
+        Assert.Equal(first.Verdicts, second.Verdicts);
         Assert.Equal(first.Total, second.Total);
         Assert.Equal(first.Query, second.Query);
     }
+
+    [Fact]
+    public void PR_and_verdict_groups_are_separate_deterministic_subtotals_and_absence_is_not_a_group()
+    {
+        var rows = new[]
+        {
+            Claude1 with { Execution = "group-e1", PullRequest = "2002", Verdict = "BLOCK" },
+            Claude2 with { Execution = "group-e2", PullRequest = "2001", Verdict = "APPROVE" },
+            Agy with { Execution = "group-e3", PullRequest = "2002", Verdict = "APPROVE" },
+            Codex with { Execution = "group-e4", PullRequest = null, Verdict = null },
+        };
+
+        var rollup = LedgerRollup.Build(rows, new LedgerQuery());
+
+        Assert.Equal(["2001", "2002"], rollup.PullRequests.Select(group => group.PullRequest).ToArray());
+        Assert.Equal(1, rollup.PullRequests[0].Total.Attempts);
+        Assert.Equal(2, rollup.PullRequests[1].Total.Attempts);
+        Assert.Equal(["APPROVE", "BLOCK"], rollup.Verdicts.Select(group => group.Verdict).ToArray());
+        Assert.Equal(2, rollup.Verdicts[0].Total.Attempts);
+        Assert.Equal(1, rollup.Verdicts[1].Total.Attempts);
+
+        Assert.Equal(4, rollup.Total.Attempts);
+        Assert.DoesNotContain(rollup.PullRequests, group => string.IsNullOrEmpty(group.PullRequest));
+        Assert.DoesNotContain(rollup.Verdicts, group => string.IsNullOrEmpty(group.Verdict));
+    }
+
 }

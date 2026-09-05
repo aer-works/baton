@@ -102,6 +102,19 @@ public static class DispatchCommand
         var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
+        // #1901 C1: preserve the caller's named branch before an audited role is moved into a detached
+        // worktree. Settle later uses this stable room fact for issue/PR joins; inability to read git is
+        // an optional-metadata absence and never a dispatch refusal.
+        var workspaceBranch = await CostLedgerSettlementMetadata
+            .TryReadBranchAsync(workspace, cancellationToken).ConfigureAwait(false);
+        if (workspaceBranch is not null)
+        {
+            bindings = bindings.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value with { WorkspaceBranch = workspaceBranch },
+                StringComparer.Ordinal);
+        }
+
         // #1499: stamped onto every entry -- a composed template's bindings.json holds one per phase.
         if (options.Label is not null)
         {

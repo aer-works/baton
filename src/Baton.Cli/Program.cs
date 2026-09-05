@@ -1,6 +1,7 @@
 using System.Reflection;
 using Baton.Vendors;
 using Baton.Cli;
+using Baton.Cli.Daemon;
 using Baton;
 using Baton.Accounting;
 using Baton.Domain;
@@ -422,9 +423,18 @@ try
                 // the row.
                 var runwayOverrides = await RunwayOverrideReasons
                     .ReadForRoomAsync(terminalRoomDirectoryPath, CancellationToken.None).ConfigureAwait(false);
+                var settlementMetadata = await CostLedgerSettlementMetadata
+                    .BuildAsync(
+                        terminalEntries,
+                        terminalRoomDirectoryPath,
+                        costLedgerPath,
+                        new GhCliRunner(),
+                        cancellationToken: CancellationToken.None)
+                    .ConfigureAwait(false);
                 var costEntries = CostLedgerStore.BuildEntries(
                     terminalEntries, terminalRoomDirectoryPath, repository,
-                    runwayOverrideReasonByWorker: runwayOverrides);
+                    runwayOverrideReasonByWorker: runwayOverrides,
+                    metadataByExecutionId: settlementMetadata);
                 await CostLedgerStore.AppendAsync(costEntries, costLedgerPath, CancellationToken.None).ConfigureAwait(false);
             }
             else

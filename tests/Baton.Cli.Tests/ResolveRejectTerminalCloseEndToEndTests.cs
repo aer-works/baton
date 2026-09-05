@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Baton.Accounting;
 using Baton.Cli.Tests.TestSupport;
 using Baton.Domain;
 using Baton.Projection;
@@ -148,10 +149,22 @@ public class ResolveRejectTerminalCloseEndToEndTests
         {
             var (_, executionId) = await SeedIndeterminateRoomAsync(roomDirectory);
             await AppendPreFixRejectionAsync(roomDirectory, executionId);
+            var ledgerPath = Path.Combine(roomDirectory, "cost-ledger.jsonl");
+            await CostLedgerStore.AppendAsync(
+                [
+                    new CostLedgerEntry(
+                        CostSourceKind.BatonExecution,
+                        Room: BatonPaths.RecordKey(roomDirectory),
+                        Execution: executionId.Value,
+                        TokensIn: 23),
+                ],
+                ledgerPath,
+                TestContext.Current.CancellationToken);
 
             var options = ResolveOptionsParser.Parse(
                 [roomDirectory, "--close", "--reason", "intentional control probe; closing the evidence room"]);
-            var result = await ResolveCommand.ExecuteAsync(options, TestContext.Current.CancellationToken);
+            var result = await ResolveCommand.ExecuteAsync(
+                options, TestContext.Current.CancellationToken, ledgerPath);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
             Assert.Equal(StepStatus.Failed, Assert.Single(result.State.Steps).Status);
@@ -166,6 +179,16 @@ public class ResolveRejectTerminalCloseEndToEndTests
             // Exactly-once still holds for the resolution fact itself: --close records a foreclosure,
             // never a second CaptureResolved (FlowEvent.CaptureResolved's own remarks).
             Assert.Single(events.OfType<FlowEvent.CaptureResolved>());
+
+            Assert.Equal(2, (await File.ReadAllLinesAsync(
+                ledgerPath, TestContext.Current.CancellationToken)).Length);
+            var ledgerRow = Assert.Single(await CostLedgerStore.ReadAllAsync(
+                ledgerPath, TestContext.Current.CancellationToken));
+            Assert.Equal("close", ledgerRow.Resolution);
+            Assert.Equal(
+                "intentional control probe; closing the evidence room",
+                ledgerRow.ResolutionReason);
+            Assert.Equal(23, ledgerRow.TokensIn);
         }
         finally
         {

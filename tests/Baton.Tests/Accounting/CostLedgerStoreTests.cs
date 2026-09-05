@@ -1085,4 +1085,193 @@ public sealed class CostLedgerStoreTests
             DirectoryCleanup.DeleteRecursively(room);
         }
     }
+
+    [Fact]
+    public void Settle_metadata_populates_issue_PR_and_diff_shape_and_omits_every_unavailable_member()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-joined");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var settled = SettledExecution(executionId, "claude", "claude-opus-5", Start);
+            var populated = Assert.Single(CostLedgerStore.BuildEntries(
+                settled,
+                room,
+                Repository,
+                metadataByExecutionId: new Dictionary<string, CostLedgerExecutionMetadata>(StringComparer.Ordinal)
+                {
+                    [executionId.Value] = new(
+                        Issue: "1901",
+                        PullRequest: "2001",
+                        FilesChanged: 7,
+                        Additions: 42,
+                        Deletions: 9,
+                        TestFilesChanged: 3),
+                }));
+            var absent = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+
+            Assert.Equal("1901", populated.Issue);
+            Assert.Equal("2001", populated.PullRequest);
+            Assert.Equal(7, populated.FilesChanged);
+            Assert.Equal(42, populated.Additions);
+            Assert.Equal(9, populated.Deletions);
+            Assert.Equal(3, populated.TestFilesChanged);
+
+            Assert.Null(absent.Issue);
+            Assert.Null(absent.PullRequest);
+            Assert.Null(absent.FilesChanged);
+            Assert.Null(absent.Additions);
+            Assert.Null(absent.Deletions);
+            Assert.Null(absent.TestFilesChanged);
+
+            var populatedJson = JsonSerializer.Serialize(populated);
+            Assert.Contains("\"issue\":\"1901\"", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"pr\":\"2001\"", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"filesChanged\":7", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"additions\":42", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"deletions\":9", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"testFilesChanged\":3", populatedJson, StringComparison.Ordinal);
+
+            var absentJson = JsonSerializer.Serialize(absent);
+            Assert.DoesNotContain("\"issue\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"pr\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"filesChanged\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"additions\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"deletions\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"testFilesChanged\"", absentJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void A_valid_review_artifact_populates_verdict_counts_and_reviewed_reference_and_absence_stays_absent()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-review");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(
+                Path.Combine(room, ArtifactManager.ArtifactsDirectoryName), executionId);
+            var verdictPath = Path.Combine(outputDirectory, "verdict.json");
+            File.WriteAllText(
+                verdictPath,
+                """
+                {
+                  "reviewedRef": "PR #2001 @ abcdef1234567890",
+                  "findings": [
+                    {"severity":"high","claim":"confirmed high","status":"confirmed"},
+                    {"severity":"medium","claim":"refuted medium","status":"refuted"},
+                    {"severity":"medium","claim":"unverified medium","status":"unverified"},
+                    {"severity":"low","claim":"confirmed low","status":"confirmed"}
+                  ]
+                }
+                """);
+
+            var settled = SettledExecution(executionId, "claude", "claude-opus-5", Start, worker: "review");
+            var populated = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+
+            Assert.Equal("BLOCK", populated.Verdict);
+            Assert.Equal(1, populated.FindingsHigh);
+            Assert.Equal(0, populated.FindingsMedium);
+            Assert.Equal(1, populated.FindingsLow);
+            Assert.Equal(2001, populated.ReviewedPr);
+            Assert.Equal("abcdef1234567890", populated.ReviewedHead);
+
+            var populatedJson = JsonSerializer.Serialize(populated);
+            Assert.Contains("\"verdict\":\"BLOCK\"", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"findingsHigh\":1", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"findingsMedium\":0", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"findingsLow\":1", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"reviewedPr\":2001", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"reviewedHead\":\"abcdef1234567890\"", populatedJson, StringComparison.Ordinal);
+
+            File.WriteAllText(
+                verdictPath,
+                """
+                {
+                  "reviewedRef": "abcdef1234567890",
+                  "findings": []
+                }
+                """);
+            var approved = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+            Assert.Equal("APPROVE", approved.Verdict);
+            Assert.Equal(0, approved.FindingsHigh);
+            Assert.Equal(0, approved.FindingsMedium);
+            Assert.Equal(0, approved.FindingsLow);
+            Assert.Null(approved.ReviewedPr);
+            Assert.Equal("abcdef1234567890", approved.ReviewedHead);
+
+            var approvedJson = JsonSerializer.Serialize(approved);
+            Assert.Contains("\"verdict\":\"APPROVE\"", approvedJson, StringComparison.Ordinal);
+            Assert.Contains("\"findingsHigh\":0", approvedJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"reviewedPr\"", approvedJson, StringComparison.Ordinal);
+
+            File.Delete(verdictPath);
+            var absent = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+            Assert.Null(absent.Verdict);
+            Assert.Null(absent.FindingsHigh);
+            Assert.Null(absent.FindingsMedium);
+            Assert.Null(absent.FindingsLow);
+            Assert.Null(absent.ReviewedPr);
+            Assert.Null(absent.ReviewedHead);
+
+            var absentJson = JsonSerializer.Serialize(absent);
+            Assert.DoesNotContain("\"verdict\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsHigh\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsMedium\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsLow\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"reviewedPr\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"reviewedHead\"", absentJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public async Task A_resolution_appends_a_physical_correction_but_logical_reads_count_the_attempt_once()
+    {
+        var room = NewRoom();
+        var ledgerPath = NewLedgerPath();
+        try
+        {
+            var original = new CostLedgerEntry(
+                CostSourceKind.BatonExecution,
+                Room: BatonPaths.RecordKey(room),
+                Execution: "exec-resolved",
+                TokensIn: 12);
+            await CostLedgerStore.AppendAsync([original], ledgerPath, TestContext.Current.CancellationToken);
+
+            Assert.True(await CostLedgerStore.AppendResolutionAsync(
+                room, "reject", "manual repair did not satisfy the contract", ledgerPath,
+                TestContext.Current.CancellationToken));
+
+            var physicalLines = await File.ReadAllLinesAsync(ledgerPath, TestContext.Current.CancellationToken);
+            Assert.Equal(2, physicalLines.Length);
+            Assert.DoesNotContain("\"resolution\"", physicalLines[0], StringComparison.Ordinal);
+            Assert.Contains("\"resolution\":\"reject\"", physicalLines[1], StringComparison.Ordinal);
+            Assert.Contains(
+                "\"resolutionReason\":\"manual repair did not satisfy the contract\"",
+                physicalLines[1],
+                StringComparison.Ordinal);
+
+            var logical = Assert.Single(await CostLedgerStore.ReadAllAsync(
+                ledgerPath, TestContext.Current.CancellationToken));
+            Assert.Equal("reject", logical.Resolution);
+            Assert.Equal("manual repair did not satisfy the contract", logical.ResolutionReason);
+            Assert.Equal(12, logical.TokensIn);
+        }
+        finally
+        {
+            FileCleanup.Delete(ledgerPath);
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
 }

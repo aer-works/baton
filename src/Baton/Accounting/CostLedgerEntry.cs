@@ -87,8 +87,8 @@ public enum CostCompleteness
 /// from "the vendor reported zero" by accident; absence is the only spelling of the former.
 /// </para>
 /// <para>
-/// <b>Fields reserved with no phase-A writer.</b> <see cref="Attempt"/>, <see cref="Effort"/>,
-/// <see cref="Issue"/>, <see cref="PullRequest"/>, <see cref="ParentRoom"/>, <see cref="Workstream"/>,
+/// <b>Fields reserved with no writer.</b> <see cref="Attempt"/>, <see cref="Effort"/>,
+/// <see cref="ParentRoom"/>, <see cref="Workstream"/>,
 /// <see cref="ModelEchoed"/> and <see cref="Raw"/> are named here but never populated by <see cref="CostLedgerStore.BuildEntries"/>:
 /// none of them is derivable from the events a settle already has in hand, and #1849's telemetry
 /// checklist wants the NAME pinned now so a later phase fills a reserved field rather than inventing
@@ -322,4 +322,44 @@ public sealed record CostLedgerEntry(
     /// </summary>
     [property: JsonPropertyName("runwayOverrideReason")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? RunwayOverrideReason = null);
+    string? RunwayOverrideReason = null,
+
+    // #1901 C1: outcome joins captured while their source room/worktree still exists. Review counts
+    // include confirmed findings only; a refuted or unverified suspicion is evidence in verdict.json,
+    // but is not a ledger finding or a reason to spell the derived verdict BLOCK.
+    [property: JsonPropertyName("verdict")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Verdict = null,
+    [property: JsonPropertyName("findingsHigh")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? FindingsHigh = null,
+    [property: JsonPropertyName("findingsMedium")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? FindingsMedium = null,
+    [property: JsonPropertyName("findingsLow")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? FindingsLow = null,
+    [property: JsonPropertyName("reviewedPr")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ReviewedPr = null,
+    [property: JsonPropertyName("reviewedHead")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReviewedHead = null,
+    [property: JsonPropertyName("filesChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? FilesChanged = null,
+    [property: JsonPropertyName("additions")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? Additions = null,
+    [property: JsonPropertyName("deletions")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? Deletions = null,
+    [property: JsonPropertyName("testFilesChanged")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? TestFilesChanged = null,
+    [property: JsonPropertyName("resolution")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Resolution = null,
+    [property: JsonPropertyName("resolutionReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolutionReason = null);

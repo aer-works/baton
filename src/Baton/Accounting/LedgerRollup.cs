@@ -123,6 +123,16 @@ public sealed record LedgerSubtotal(
     [property: JsonPropertyName("planMeterByStatus")]
     LedgerEstimateStatusCounts PlanMeterByStatus);
 
+/// <summary>A PR grouping in the JSON projection, with the same subtotal arithmetic as every other view.</summary>
+public sealed record LedgerPullRequestGroup(
+    [property: JsonPropertyName("pr")] string PullRequest,
+    [property: JsonPropertyName("total")] LedgerSubtotal Total);
+
+/// <summary>A review-verdict grouping in the JSON projection.</summary>
+public sealed record LedgerVerdictGroup(
+    [property: JsonPropertyName("verdict")] string Verdict,
+    [property: JsonPropertyName("total")] LedgerSubtotal Total);
+
 /// <summary>
 /// <b>The one accounting projection</b> (#1849 phase B, operator ruling 2026-09-05): the arithmetic
 /// behind every cost-ledger view — room and fleet, text, JSON and CSV — lives here, and each surface
@@ -157,6 +167,8 @@ public sealed record LedgerSubtotal(
 /// Per-vendor subtotals, ordered by vendor name; the unknown-vendor group sorts last so a named
 /// vendor's position never depends on whether an unlabelled row happened to be in the window.
 /// </param>
+/// <param name="PullRequests">Rows carrying a PR, grouped by PR number; absent PRs form no invented group.</param>
+/// <param name="Verdicts">Review rows carrying a verdict, grouped ordinally by APPROVE/BLOCK.</param>
 /// <param name="Rows">
 /// The contributing rows, in the order above — <see langword="null"/> unless the caller asked for
 /// them (<c>--drill</c>). Absent rather than empty, so "not requested" and "none matched" stay
@@ -165,6 +177,8 @@ public sealed record LedgerSubtotal(
 public sealed record LedgerRollup(
     [property: JsonPropertyName("query")] LedgerQuery Query,
     [property: JsonPropertyName("vendors")] IReadOnlyList<LedgerSubtotal> Vendors,
+    [property: JsonPropertyName("prs")] IReadOnlyList<LedgerPullRequestGroup> PullRequests,
+    [property: JsonPropertyName("verdicts")] IReadOnlyList<LedgerVerdictGroup> Verdicts,
     [property: JsonPropertyName("total")] LedgerSubtotal Total,
     [property: JsonPropertyName("rows")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -222,9 +236,27 @@ public sealed record LedgerRollup(
             .Select(g => Summarize(g.Key, g.ToList()))
             .ToList();
 
+        var pullRequests = ordered
+            .Where(entry => entry.PullRequest is { Length: > 0 })
+            .GroupBy(entry => entry.PullRequest!, StringComparer.Ordinal)
+            .OrderBy(group => int.TryParse(group.Key, out _) ? 0 : 1)
+            .ThenBy(group => int.TryParse(group.Key, out var number) ? number : int.MaxValue)
+            .ThenBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => new LedgerPullRequestGroup(group.Key, Summarize(null, group.ToList())))
+            .ToList();
+
+        var verdicts = ordered
+            .Where(entry => entry.Verdict is { Length: > 0 })
+            .GroupBy(entry => entry.Verdict!, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => new LedgerVerdictGroup(group.Key, Summarize(null, group.ToList())))
+            .ToList();
+
         return new LedgerRollup(
             query with { UndatedExcluded = undatedExcluded },
             vendors,
+            pullRequests,
+            verdicts,
             Summarize(null, ordered),
             includeRows ? ordered : null);
     }

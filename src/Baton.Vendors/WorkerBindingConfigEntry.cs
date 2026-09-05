@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Baton.Domain;
 
 namespace Baton.Vendors;
@@ -151,6 +152,11 @@ namespace Baton.Vendors;
 /// cref="RoleDispatch.ToBinding"/> is the one caller that overrides this from the catalog role's own
 /// value for every role dispatched through the front door.
 /// </param>
+/// <param name="WorkspaceBranch">
+/// #1901 C1: the named branch of the caller's workspace at dispatch time. This survives an
+/// auto-provisioned detached worktree and lets settle join the room to its issue/PR without guessing
+/// from a later process directory. Null for older rooms, detached HEAD, or an unreadable git checkout.
+/// </param>
 /// <param name="FallbackOnExhaustion">
 /// #802 (S6, the design ratified on that issue): a declared vendor to rebind this role onto when its own dispatch
 /// parks on a vendor-quota <see cref="Domain.FailureClassification.ExhaustedUntil"/> outcome, rather
@@ -196,7 +202,10 @@ public sealed record WorkerBindingConfigEntry(
     // bindings.json (baton run/resume/decide) that omits this must not be able to spawn.
     bool AllowsSubagents = false,
     FallbackBinding? FallbackOnExhaustion = null,
-    RunwayOverride? RunwayOverride = null);
+    RunwayOverride? RunwayOverride = null,
+    [property: JsonPropertyName("workspaceBranch")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? WorkspaceBranch = null);
 
 /// <summary>
 /// #1848: the audit record a <c>--override-runway "&lt;reason&gt;"</c> dispatch leaves on the room's

@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Baton.Artifacts;
 using Baton.Domain;
 using Baton.Status;
@@ -65,13 +68,18 @@ public static class CostLedgerStore
     /// <see cref="CostLedgerEntry.RunwayOverrideReason"/>'s own doc states what an absent value means
     /// and does not mean.
     /// </param>
+    /// <param name="metadataByExecutionId">
+    /// Issue/PR and pushed-diff facts collected at settle by the CLI's injected forge/git lookup.
+    /// Missing executions and missing members remain absent; this layer never performs network I/O.
+    /// </param>
     public static IReadOnlyList<CostLedgerEntry> BuildEntries(
         IReadOnlyList<LogEntry> entries,
         string roomDirectoryPath,
         RepositoryIdentity? repository,
         PriceCatalog? catalog = null,
         PlanFactorTable? planFactors = null,
-        IReadOnlyDictionary<string, string>? runwayOverrideReasonByWorker = null)
+        IReadOnlyDictionary<string, string>? runwayOverrideReasonByWorker = null,
+        IReadOnlyDictionary<string, CostLedgerExecutionMetadata>? metadataByExecutionId = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
@@ -165,6 +173,11 @@ public static class CostLedgerStore
 
             var unavailableReason = usage.BilledReconciliationUnavailable;
             var completeness = ResolveCompleteness(unavailableReason, usage.BilledTokens);
+            var metadata = metadataByExecutionId is not null
+                && metadataByExecutionId.TryGetValue(executionId, out var capturedMetadata)
+                    ? capturedMetadata
+                    : null;
+            var review = TryReadReviewFields(artifactsRootPath, executionId);
 
             result.Add(new CostLedgerEntry(
                 SourceKind: CostSourceKind.BatonExecution,
@@ -178,6 +191,8 @@ public static class CostLedgerStore
                 Model: binding.Model,
                 ModelsObserved: usage.ModelsObserved,
                 Outcome: outcome,
+                Issue: metadata?.Issue,
+                PullRequest: metadata?.PullRequest,
                 StartedAt: startedAt,
                 EndedAt: endedAt,
                 TokensIn: usage.TokensIn,
@@ -209,11 +224,126 @@ public static class CostLedgerStore
                 RunwayOverrideReason: request?.Worker is { } worker && runwayOverrideReasonByWorker is not null
                     && runwayOverrideReasonByWorker.TryGetValue(worker, out var runwayReason)
                         ? runwayReason
-                        : null));
+                        : null,
+                Verdict: review?.Verdict,
+                FindingsHigh: review?.FindingsHigh,
+                FindingsMedium: review?.FindingsMedium,
+                FindingsLow: review?.FindingsLow,
+                ReviewedPr: review?.ReviewedPr,
+                ReviewedHead: review?.ReviewedHead,
+                FilesChanged: metadata?.FilesChanged,
+                Additions: metadata?.Additions,
+                Deletions: metadata?.Deletions,
+                TestFilesChanged: metadata?.TestFilesChanged));
         }
 
         return result;
     }
+
+    private const string VerdictOutputName = "verdict.json";
+
+    private static readonly Regex ReviewedPrPattern = new(
+        @"(?:https://github\.com/[\w.-]+/[\w.-]+/pull/|\bPR\s*#?|#)(?<number>\d+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private sealed record ReviewFields(
+        string Verdict,
+        int FindingsHigh,
+        int FindingsMedium,
+        int FindingsLow,
+        int? ReviewedPr,
+        string? ReviewedHead);
+
+    /// <summary>
+    /// Reads the same schema-checked verdict artifact <c>DispatchCommand</c> stamps after a review.
+    /// Invalid, absent or unreadable worker content enriches nothing and never suppresses the cost row.
+    /// Only confirmed findings enter the counts: refuted and unverified suspicions remain in the source
+    /// verdict as evidence, but do not turn its derived ledger verdict into <c>BLOCK</c>.
+    /// </summary>
+    private static ReviewFields? TryReadReviewFields(string artifactsRootPath, string executionId)
+    {
+        var verdictPath = Path.Combine(
+            ArtifactManager.ResolveOutputDirectory(artifactsRootPath, new ExecutionId(executionId)),
+            VerdictOutputName);
+        if (!File.Exists(verdictPath))
+        {
+            return null;
+        }
+
+        ReviewVerdict? verdict;
+        try
+        {
+            if (!ReviewVerdictSchema.TryParse(File.ReadAllBytes(verdictPath), out verdict, out _))
+            {
+                return null;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        var confirmed = verdict!.Findings
+            .Where(finding => finding.Status == ReviewFindingStatus.Confirmed)
+            .ToList();
+        return new ReviewFields(
+            confirmed.Count == 0 ? "APPROVE" : "BLOCK",
+            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.High),
+            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Medium),
+            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Low),
+            ParseReviewedPr(verdict.ReviewedRef),
+            ParseReviewedHead(verdict.ReviewedRef));
+    }
+
+    private static int? ParseReviewedPr(string reviewedRef)
+    {
+        var trimmed = reviewedRef.Trim();
+        if (int.TryParse(trimmed.TrimStart('#'), out var bareNumber))
+        {
+            return bareNumber;
+        }
+
+        var match = ReviewedPrPattern.Match(trimmed);
+        return match.Success && int.TryParse(match.Groups["number"].Value, out var number) ? number : null;
+    }
+
+    private static string? ParseReviewedHead(string reviewedRef)
+    {
+        var trimmed = reviewedRef.Trim();
+        if (IsHexSha(trimmed))
+        {
+            return trimmed;
+        }
+
+        var at = trimmed.LastIndexOf('@');
+        if (at >= 0)
+        {
+            var candidate = trimmed[(at + 1)..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (candidate is not null && IsHexSha(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        var headMarker = trimmed.IndexOf("head", StringComparison.OrdinalIgnoreCase);
+        if (headMarker >= 0)
+        {
+            var candidate = trimmed[(headMarker + "head".Length)..]
+                .TrimStart(' ', ':', '=')
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault();
+            if (candidate is not null && IsHexSha(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsHexSha(string value) =>
+        value.Length is >= 7 and <= 40
+        && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
 
     /// <summary>
     /// How much of an attempt a row accounts for, from the two things the stream reader reports about
@@ -336,10 +466,85 @@ public static class CostLedgerStore
         Ledger.AppendAsync(entries, ledgerFilePath, cancellationToken);
 
     /// <summary>
-    /// This ledger's rows, oldest first. Delegated whole to
-    /// <see cref="JsonLinesLedger{TEntry}.ReadAllAsync"/>.
+    /// Appends a replacement for the room's last physical row carrying the conductor's
+    /// <c>close</c>/<c>reject</c> resolution (#1901 C1). The existing line is never rewritten:
+    /// append-only history remains auditable, while <see cref="ReadAllAsync"/> folds repeated execution
+    /// ids last-write-wins so accounting views still count the attempt once.
     /// </summary>
-    public static Task<IReadOnlyList<CostLedgerEntry>> ReadAllAsync(
-        string ledgerFilePath, CancellationToken cancellationToken = default) =>
-        Ledger.ReadAllAsync(ledgerFilePath, cancellationToken);
+    /// <returns><see langword="true"/> when a matching row was found and corrected; otherwise false.</returns>
+    public static Task<bool> AppendResolutionAsync(
+        string roomDirectoryPath,
+        string resolution,
+        string resolutionReason,
+        string ledgerFilePath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
+        ArgumentException.ThrowIfNullOrEmpty(resolutionReason);
+        ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
+        if (resolution is not ("close" or "reject"))
+        {
+            throw new ArgumentOutOfRangeException(nameof(resolution), resolution, "Resolution must be 'close' or 'reject'.");
+        }
+
+        var recordedRoom = BatonPaths.RecordKey(roomDirectoryPath);
+        return Ledger.RunUnderLockAsync(
+            ledgerFilePath,
+            () =>
+            {
+                var last = Ledger.ReadAllUnlocked(ledgerFilePath)
+                    .LastOrDefault(row => row.Room is not null
+                        && BatonPaths.RecordKeyComparer.Equals(row.Room, recordedRoom));
+                if (last is null)
+                {
+                    return false;
+                }
+
+                var correction = last with
+                {
+                    Resolution = resolution,
+                    ResolutionReason = resolutionReason,
+                };
+                var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(correction, Ledger.SerializerOptions) + "\n");
+                using var stream = new FileStream(
+                    ledgerFilePath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 4096, useAsync: false);
+                stream.Write(bytes);
+                stream.Flush();
+                return true;
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// This ledger's logical rows, oldest first. Physical correcting rows are folded by execution id,
+    /// last-write-wins, at the original row's position; rows without an execution id remain distinct.
+    /// </summary>
+    public static async Task<IReadOnlyList<CostLedgerEntry>> ReadAllAsync(
+        string ledgerFilePath, CancellationToken cancellationToken = default)
+    {
+        var physical = await Ledger.ReadAllAsync(ledgerFilePath, cancellationToken).ConfigureAwait(false);
+        var logical = new List<CostLedgerEntry>(physical.Count);
+        var indexByExecution = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var row in physical)
+        {
+            if (row.Execution is not { Length: > 0 } execution)
+            {
+                logical.Add(row);
+                continue;
+            }
+
+            if (indexByExecution.TryGetValue(execution, out var index))
+            {
+                logical[index] = row;
+            }
+            else
+            {
+                indexByExecution[execution] = logical.Count;
+                logical.Add(row);
+            }
+        }
+
+        return logical;
+    }
 }

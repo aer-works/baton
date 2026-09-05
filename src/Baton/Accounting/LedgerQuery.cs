@@ -157,8 +157,8 @@ public sealed record LedgerQuery(
 
     /// <summary>
     /// <c>#1849</c>, <c>1849</c> and <c>1849</c>-with-whitespace are one issue. The ledger's own
-    /// <c>issue</c>/<c>pr</c> fields are strings with no phase-A writer, so no spelling is settled yet
-    /// and both sides are normalized rather than one side being declared canonical.
+    /// <c>issue</c>/<c>pr</c> fields are canonical digit strings when C1 can resolve them, while
+    /// imported or older rows may use a leading hash; normalize both sides for a stable query.
     /// </summary>
     private static string? NormalizeNumberReference(string? value) =>
         value is { Length: > 0 } ? value.Trim().TrimStart('#') : value;

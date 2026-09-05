@@ -2,8 +2,11 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Baton.Accounting;
+using Baton.Cli.Daemon;
+using Baton.Domain;
 using Baton.Status;
 using Baton.Tests.Shared;
+using Baton.Vendors;
 
 namespace Baton.Cli.Tests;
 
@@ -112,7 +115,7 @@ public sealed class LedgerViewCommandTests : IDisposable
         var root = document.RootElement;
 
         Assert.Equal(
-            ["query", "vendors", "total"],
+            ["query", "vendors", "prs", "verdicts", "total"],
             root.EnumerateObject().Select(p => p.Name).ToArray());
 
         var query = root.GetProperty("query");
@@ -128,6 +131,18 @@ public sealed class LedgerViewCommandTests : IDisposable
         // Absent stays absent through the projection: agy reports no cache-creation at all.
         Assert.False(agy.TryGetProperty("cacheCreation", out _));
         Assert.True(agy.TryGetProperty("cacheRead", out _));
+
+        var prs = root.GetProperty("prs").EnumerateArray().ToList();
+        Assert.Equal(["2001", "2002"], prs.Select(group => group.GetProperty("pr").GetString()).ToArray());
+        Assert.Equal(5, prs[0].GetProperty("total").GetProperty("attempts").GetInt32());
+        Assert.Equal(1, prs[1].GetProperty("total").GetProperty("attempts").GetInt32());
+
+        var verdicts = root.GetProperty("verdicts").EnumerateArray().ToList();
+        Assert.Equal(
+            ["APPROVE", "BLOCK"],
+            verdicts.Select(group => group.GetProperty("verdict").GetString()).ToArray());
+        Assert.All(verdicts, group => Assert.Equal(
+            1, group.GetProperty("total").GetProperty("attempts").GetInt32()));
 
         Assert.Equal(6, root.GetProperty("total").GetProperty("attempts").GetInt32());
         Assert.False(root.TryGetProperty("rows", out _));
@@ -303,6 +318,111 @@ public sealed class LedgerViewCommandTests : IDisposable
         Assert.Contains("endedAt >= 2026-09-04T00:00:00Z (inclusive) and < 2026-09-05T00:00:00Z (exclusive)", text, StringComparison.Ordinal);
     }
 
+
+    [Fact]
+    public async Task Settlement_metadata_uses_the_source_repository_after_a_terminal_worktree_was_removed()
+    {
+        var room = Path.Combine(Path.GetTempPath(), $"baton-1901-settle-{Guid.NewGuid():N}");
+        var workspace = Path.Combine(room, "workspace");
+        var ledgerPath = Path.Combine(room, "ledger.jsonl");
+        Directory.CreateDirectory(workspace);
+
+        try
+        {
+            var contract = new WorkerContract("settle", [], [], []);
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                new Dictionary<string, WorkerBindingConfigEntry>(StringComparer.Ordinal)
+                {
+                    ["implement"] = new(
+                        "test",
+                        contract,
+                        "prompt",
+                        TimeSpan.FromMinutes(1),
+                        WorkingDirectory: Path.Combine(room, "removed-worktree"),
+                        IsWorktree: true,
+                        WorktreeSourceRepository: workspace,
+                        DeliversBranch: true,
+                        WorkspaceBranch: "1901-sol"),
+                    ["review"] = new(
+                        "test",
+                        contract,
+                        "prompt",
+                        TimeSpan.FromMinutes(1),
+                        WorkingDirectory: workspace,
+                        WorkspaceBranch: "1901-sol"),
+                },
+                BatonPaths.RoomBindingsFile(room),
+                TestContext.Current.CancellationToken);
+
+            static ExecutionRequest Request(string id, string worker) => new(
+                new ExecutionId(id),
+                new WorkflowId("wf"),
+                new StepId(worker),
+                worker,
+                Inputs: [],
+                Outputs: [],
+                Timeout: TimeSpan.FromMinutes(1),
+                Environment: [],
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+            IReadOnlyList<LogEntry> entries =
+            [
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(Request("exec-implement", "implement"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionSucceeded(new ExecutionId("exec-implement"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(Request("exec-review", "review"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionSucceeded(new ExecutionId("exec-review"))),
+            ];
+            var gh = new RecordingGhRunner();
+            var git = new RecordingLedgerGitRunner();
+
+            var metadata = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(
+                ["pr", "list", "--head", "1901-sol", "--state", "all", "--json", "number", "--limit", "1"],
+                Assert.Single(gh.Calls));
+            Assert.Equal("1901", metadata["exec-implement"].Issue);
+            Assert.Equal("4321", metadata["exec-implement"].PullRequest);
+            Assert.Equal(3, metadata["exec-implement"].FilesChanged);
+            Assert.Equal(12, metadata["exec-implement"].Additions);
+            Assert.Equal(4, metadata["exec-implement"].Deletions);
+            Assert.Equal(2, metadata["exec-implement"].TestFilesChanged);
+
+            Assert.Equal("1901", metadata["exec-review"].Issue);
+            Assert.Equal("4321", metadata["exec-review"].PullRequest);
+            Assert.Null(metadata["exec-review"].FilesChanged);
+            Assert.Null(metadata["exec-review"].Additions);
+            Assert.Null(metadata["exec-review"].Deletions);
+            Assert.Null(metadata["exec-review"].TestFilesChanged);
+
+            Assert.Contains(git.Calls, args => args.SequenceEqual(
+                ["diff", "--shortstat", "origin/main...origin/1901-sol"]));
+            Assert.Contains(git.Calls, args => args.SequenceEqual(
+                ["diff", "--numstat", "origin/main...origin/1901-sol"]));
+
+            gh.Stdout = "[]";
+            var withoutPr = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Equal("1901", withoutPr["exec-implement"].Issue);
+            Assert.Null(withoutPr["exec-implement"].PullRequest);
+            Assert.Null(withoutPr["exec-review"].PullRequest);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
     [Fact]
     public async Task Help_says_which_ledger_this_reads_and_which_instant_the_window_is_on()
     {
@@ -341,6 +461,8 @@ public sealed class LedgerViewCommandTests : IDisposable
             Adapter: "claude",
             Model: "claude-opus-5",
             Outcome: "Succeeded",
+            Issue: "1901",
+            PullRequest: "2001",
             EndedAt: Sep4.AddHours(10),
             TokensIn: 100,
             TokensOut: 50,
@@ -364,6 +486,12 @@ public sealed class LedgerViewCommandTests : IDisposable
                 Adapter = "agy",
                 Model = "gemini-3-pro",
                 Role = "review",
+                Verdict = "BLOCK",
+                FindingsHigh = 1,
+                FindingsMedium = 0,
+                FindingsLow = 0,
+                ReviewedPr = 2001,
+                ReviewedHead = "abcdef1234567890",
                 EndedAt = Sep4.AddHours(12),
                 TokensIn = 300,
                 TokensOut = 30,
@@ -379,6 +507,7 @@ public sealed class LedgerViewCommandTests : IDisposable
                 Room = _roomB,
                 Adapter = "codex",
                 Model = "gpt-5-codex",
+                PullRequest = "2002",
                 EndedAt = Sep4.AddDays(1).AddHours(9),
                 ApiEquivalentUsd = null,
                 EstimateStatus = EstimateStatus.Unpriced,
@@ -389,6 +518,10 @@ public sealed class LedgerViewCommandTests : IDisposable
             claude with
             {
                 Execution = "e5",
+                Verdict = "APPROVE",
+                FindingsHigh = 0,
+                FindingsMedium = 0,
+                FindingsLow = 0,
                 EndedAt = Sep4.AddHours(13),
                 Completeness = CostCompleteness.Partial,
                 CompletenessReason = "no-terminal-billed-figure",
@@ -398,4 +531,43 @@ public sealed class LedgerViewCommandTests : IDisposable
 
         await CostLedgerStore.AppendAsync(entries, _ledgerFilePath, TestContext.Current.CancellationToken);
     }
+
+    private sealed class RecordingGhRunner : IGhCliRunner
+    {
+        public string Stdout { get; set; } = """[{"number":4321}]""";
+
+        public List<IReadOnlyList<string>> Calls { get; } = [];
+
+        public Task<GhCliResult> RunAsync(
+            string workingDirectory,
+            IReadOnlyList<string> args,
+            CancellationToken cancellationToken)
+        {
+            Calls.Add(args.ToArray());
+            return Task.FromResult(new GhCliResult(true, 0, Stdout, string.Empty));
+        }
+    }
+
+    private sealed class RecordingLedgerGitRunner : ILedgerGitRunner
+    {
+        public List<IReadOnlyList<string>> Calls { get; } = [];
+
+        public Task<LedgerGitResult> RunAsync(
+            string workingDirectory,
+            IReadOnlyList<string> args,
+            CancellationToken cancellationToken)
+        {
+            Calls.Add(args.ToArray());
+            var command = string.Join(' ', args);
+            var stdout = command switch
+            {
+                "diff --shortstat origin/main...origin/1901-sol" => " 3 files changed, 12 insertions(+), 4 deletions(-)\n",
+                "diff --numstat origin/main...origin/1901-sol" =>
+                    "8\t1\tsrc/Baton/Feature.cs\n3\t2\ttests/Baton.Tests/FeatureTests.cs\n1\t1\ttests/Baton.Cli.Tests/FeatureTests.cs\n",
+                _ => string.Empty,
+            };
+            return Task.FromResult(new LedgerGitResult(true, 0, stdout, string.Empty));
+        }
+    }
+
 }
