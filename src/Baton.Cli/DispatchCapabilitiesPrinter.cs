@@ -23,8 +23,17 @@ namespace Baton.Cli;
 /// </summary>
 public static class DispatchCapabilitiesPrinter
 {
-    public static string BuildText()
+    public static string BuildText() => BuildText(new CodexWorkerAdapter());
+
+    /// <summary>
+    /// The same text, with Codex's grant translator injected so a test can drive both branches of the
+    /// printed sentence. The shipped translator accepts every built-in grant today; the refusing
+    /// branch is not dead text, it is what the sentence must say the day an adapter's translator
+    /// starts refusing one again (#1875).
+    /// </summary>
+    internal static string BuildText(IPermissionGrantTranslator translator)
     {
+        ArgumentNullException.ThrowIfNull(translator);
         var sb = new StringBuilder();
         sb.AppendLine("Adapters, Models & Efforts:");
 
@@ -52,7 +61,7 @@ public static class DispatchCapabilitiesPrinter
             ", ", EffortTierMapping.CanonicalWords.Select(w => $"{w} (-> {EffortTierMapping.CodexByCanonical[w]})"));
         sb.AppendLine($"    Canonical:  {codexCanonical}");
         sb.AppendLine($"    Raw Effort: {string.Join(", ", EffortTierMapping.CodexRawValues)}");
-        sb.AppendLine("    Note:       Efforts are model-specific. No built-in role currently has a grant Codex can express exactly; all fail closed.");
+        sb.AppendLine($"    Note:       Efforts are model-specific. {CodexGrantSentence(translator)}");
 
         sb.AppendLine();
         sb.AppendLine("Role Timebox Defaults:");
@@ -68,6 +77,34 @@ public static class DispatchCapabilitiesPrinter
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Asks <paramref name="translator"/> about every built-in role's own grant and reports which
+    /// roles Codex can express exactly. Derived rather than written down: the previous sentence said
+    /// no built-in role's grant could be expressed and all failed closed, which #1871 made false —
+    /// the broker translator accepts the canonical grant, and the built-in <c>patch</c> role reached a
+    /// real model turn through it — and nothing in the printer noticed (#1875).
+    /// </summary>
+    private static string CodexGrantSentence(IPermissionGrantTranslator translator)
+    {
+        List<string> expressible = [];
+        List<string> failClosed = [];
+        foreach (var role in WorkerRoleCatalog.All)
+        {
+            var accepted = translator.TryTranslatePermissionGrant(role.Grant, out _, out _);
+            (accepted ? expressible : failClosed).Add(role.Id);
+        }
+
+        if (expressible.Count == 0)
+        {
+            return "No built-in role has a grant Codex can express exactly; all fail closed.";
+        }
+
+        var sentence = $"Codex expresses these built-in roles' grants exactly: {string.Join(", ", expressible)}.";
+        return failClosed.Count == 0
+            ? sentence
+            : $"{sentence} Fails closed for: {string.Join(", ", failClosed)}.";
     }
 
     public static void Print(TextWriter writer)

@@ -22,6 +22,16 @@
     <None Include="WorkflowTemplates.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- #1875: the opposite call from the three files above, for the opposite reason. Those are
+         operator-tunable policy, so they are copied and re-readable at runtime. This is a dated
+         recording of what `codex app-server model/list` answered (codex-cli 0.153.2, 2026-09-04) —
+         evidence, not policy (what it is and what it settles: docs/vendor-capabilities.md). Embedding
+         it is what stops a deployment from silently editing or losing the evidence CodexWorkerAdapter's
+         validation table rests on. -->
+    <EmbeddedResource Include="codex-model-list-2026-09-04.jsonl" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

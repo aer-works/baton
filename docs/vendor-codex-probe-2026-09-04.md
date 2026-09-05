@@ -161,9 +161,19 @@ The observed visible catalog on 2026-09-04 included:
 | `gpt-5.4-mini` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
 | `gpt-5.3-codex-spark` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
 
-`gpt-6-astra` was marked as the catalog default. The response also contained hidden entries; the
-sanitized fixture deliberately omits them. Visibility must be honored rather than inferred from a
-model-name allowlist.
+`gpt-6-astra` was marked as the catalog default. The response the table above was transcribed from
+also contained hidden entries, while the retained recording below was taken with `includeHidden:false`
+and carries visible models only; the probe notes do not record whether those were one call or two, so
+this document does not claim either. Visibility must be honored rather than inferred from a model-name
+allowlist.
+
+**Superseded in part by the retained recording (#1875).** The table above was transcribed from probe
+notes, not from a kept response — which is why four of its rows say "not retained in the probe notes".
+A raw `model/list` answer from the same day and CLI version is now kept, shipped, and used for
+validation; [`vendor-capabilities.md`](vendor-capabilities.md) records where it lives and what it is
+for. Where the two disagree, the recording is the record: it carries seven visible models and **no
+`gpt-5.4`**, whose row above is therefore a transcription artifact rather than evidence. Every effort
+set the two do share is identical, `gpt-6-astra`'s `ultra` included.
 
 ## Sandbox and approval behavior
 
@@ -247,7 +257,8 @@ The included error fixture is schema-derived rather than a live quota-wall captu
 - `codex-exec-tool-denied-completes.jsonl` — failed command item followed by a successful turn.
 - `codex-exec-turn-failed.jsonl` — documented failed terminal event, represented synthetically.
 - `codex-exec-error.jsonl` — documented top-level error event, represented synthetically.
-- `codex-app-server-model-list.jsonl` — sanitized model/effort discovery response.
+- (removed in #1875) `codex-app-server-model-list.jsonl` — a fully sanitized model/effort discovery
+  response, replaced by the unsanitized recording described under "Model and effort discovery" above.
 - `codex-app-server-errors.jsonl` — schema-derived structured limit notifications.
 - `codex-app-server-broker-readonly-success.jsonl` — live-shaped grant-tool success with exact per-turn usage.
 - `codex-app-server-broker-resume-cache-miss.jsonl` — same thread resumed across a broker process with zero cached input.

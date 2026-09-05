@@ -431,8 +431,20 @@ both resolve to `agy`'s `high`, and the UI must say so at the point of choosing 
 visibly different canonical choices silently produce the same run. `claude`'s `xhigh` is not reached
 by any canonical level; it remains available only as a raw, unvalidated escape hatch (the same path
 `#566` already threads through `WorkerInvocation.Effort`), not through the canonical picker.
-Codex likewise keeps `xhigh` and `ultra` on the raw path. Availability is model-specific and comes
-from `model/list`; Baton rejects unknown models and unsupported pairs. Subagent feature switches are
+Codex likewise keeps `xhigh` and `ultra` on the raw path. Availability is model-specific, and Baton
+rejects unknown models and unsupported pairs before a process starts. Note which `model/list` that
+check reads (#1875): a **dated recording** of one, `src/Baton.Vendors/codex-model-list-2026-09-04.jsonl`
+(codex-cli 0.153.2, 2026-09-04, `includeHidden:false`), kept as the raw app-server JSONL the CLI
+wrote — initialize line included, which is where that CLI version comes from — embedded in
+`Baton.Vendors`, and parsed into `CodexWorkerAdapter`'s validation table by the same parser live
+discovery uses. Live `model/list` is asked separately — `DiscoverCapabilitiesAsync`, from the
+real-dispatch preflight that prints a worker's skills (`DispatchCommand`; that preflight prints only
+the skill items, so the models it discovers are asked for but never shown), not from `baton dispatch
+--list-capabilities`, which prints static text and returns without starting a CLI — and is
+**not** cross-checked against the recorded table at dispatch time, so a model the installed CLI has
+gained since the recording is refused locally until the recording is replaced. That is the trade the
+issue asked for: correcting an effort set is a data change with provenance, not a hand edit to a table
+that merely claimed to be probed. Subagent feature switches are
 enforced independently—an `ultra` effort label is not treated as evidence that delegation occurs.
 
 **A genuine vendor divergence, measured while building the sentinel above, worth its own line: the
