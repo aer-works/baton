@@ -11,8 +11,10 @@ namespace Baton.Architecture.Tests;
 /// demonstrably reads a directory that is not an execution's output directory.
 /// <para>
 /// As of #1351, <c>src/</c> has zero call sites that enumerate an execution's own output directory —
-/// the four sites below all list an unrelated directory (a memory root, a capture directory, or a
-/// commands directory), never <c>{artifactsRoot}/execution_{id}</c> itself. This test pins that fact
+/// the sites below each list an unrelated directory, never <c>{artifactsRoot}/execution_{id}</c>
+/// itself. Which directory is said per entry in the allowlist rather than summarised here: this
+/// sentence used to carry both a count and a list of directory kinds, and both went stale the moment
+/// the allowlist grew, which is what an entry's own comment cannot do. This test pins that fact
 /// structurally: the allowlist below is the complete, named set of raw file-listing calls in <c>src/</c>,
 /// each with a comment saying why it does not need the filter. The next author who adds a new one must
 /// either route it through a filtered listing that excludes <see cref="Baton.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/>
@@ -64,6 +66,15 @@ public class ExecutionOutputDirectoryListingTests
         // unfiltered on purpose -- see that call site's own comment in FleetProjectionWriter.cs for why.
         ["Baton.Cli/Daemon/FleetProjectionWriter.cs"] =
             "GetFileSystemEntries lists the pruned room root, not an execution output directory; the nested EnumerateFiles walks a pruned execution's own former output directory but deliberately does not filter ExecutionStreamLogger.IsStreamLogFileName -- see #1557 comment above",
+        // #1852: both list a VENDOR's memory root under ~/.claude (projects/*/memory and
+        // memory-archive/<label>/*) and a Claude project directory's session transcripts. Neither is
+        // under a room's artifacts root at all, so an execution output directory is unreachable from
+        // here — and `baton memory audit` writes nothing, so nothing it lists can be presented as a
+        // worker's output.
+        ["Baton/Memory/MemoryRootInventory.cs"] =
+            "EnumerateFiles lists a ~/.claude memory root (live or archived), not an execution output directory",
+        ["Baton/Memory/MemoryRootPath.cs"] =
+            "EnumerateFiles lists a Claude project directory's session transcripts, not an execution output directory",
         // #496: lists artifacts/.versions/ (a named artifact's own version-history sidecar, one
         // index.jsonl per name), never an execution's own output directory.
         ["Baton/Artifacts/RoomArtifacts.cs"] =

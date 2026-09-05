@@ -375,6 +375,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | `templates` | `baton templates [--json]` | `Program.cs` |
 | `keep` | `baton keep <room-dir>` | `KeepOptionsParser.cs` |
 | `unkeep` | `baton unkeep <room-dir>` | `UnkeepOptionsParser.cs` |
+| `memory` | `baton memory audit [--format text\|json] [--help]` | `MemoryAuditOptionsParser.cs` |
 
 `templates` narrows to the built-in catalog only (`Baton.Vendors`'s `BuiltInWorkflowTemplates`) —
 there is no authoring UI to browse a saved-template library visually against (Appendix, R7 in the
@@ -4817,6 +4818,90 @@ and excluding `GeneratedCodeAttribute`/`CompilerGeneratedAttribute`/
 `ExcludeFromCodeCoverageAttribute`-marked types from the cobertura report. In the measured control,
 the generated `QuotaResetDurationRegex_0.RunnerFactory.Runner` contributed 197 coverable lines;
 with the settings file, that type and every `RegexGenerator.g.cs` class were absent.
+
+---
+
+## §12 Memory: vendor memory roots and Baton's canonical store (#1852)
+
+**Not the room-memory sense of the word.** §2 and §5's "memory" is a room's own fact files and the
+`MemoryProposalTool` that edits them (`RoomMemoryDocument`, `MemoryProposalApplier`) — per room, inside
+a room's directory, and untouched by anything below. This section's referent is different and
+unrelated: the **vendor memory roots** a coding agent keeps per machine (`~/.claude/projects/*/memory`
+and `~/.claude/memory-archive/*/*`), and the **canonical store** Baton is consolidating them into. The
+two senses share a noun and nothing else; where one file names both — the allowlist in
+`ExecutionOutputDirectoryListingTests` now does — each entry says which it means.
+
+**The authority model is ratified on #1852 (operator, 2026-09-04) and is not restated here** — read
+the issue for it, and for the phased plan and the Q1–Q5 rulings of 2026-09-05. What this section
+owns is the part that is now code: phase A's verb and the reading it produces.
+
+The one thing worth stating in the register, because every phase below rests on it: **the canonical
+store is keyed by `RepositoryIdentity`, not by a checkout path.** That is the same key §7's cost
+ledger already files under, reused rather than re-derived — see the "Canonical repository identity"
+paragraph there for the derivation and the worktree-convergence property it buys.
+
+**The store's layout is ruled and unbuilt.** Q3 (operator, 2026-09-05) settled per-repository
+directories with the memory store **inside** each — `~/.baton/<repo-slug>/memory/…`, explicitly *not*
+`~/.baton/memory/<repo-slug>` — because the repository directory is the unit the operator intends to
+work in. Phase B builds it; **phase A writes no canonical store at all**, so nothing under `~/.baton`
+has this shape today. The same ruling carries a follow-up for the cost ledger's own path (§7) — moving
+under the same per-repo root, with a reader that accepts both during the transition — which is a later
+phase's work, not a correction to what §7 states now.
+
+**`baton memory audit [--format text|json]` — phase A, shipped.** Read-only, and read-only *by
+construction* rather than by flag: nothing on the path opens a file for writing, so there is
+deliberately **no `--dry-run`** (a flag with no off position is noise, and offering one would imply a
+writing mode that does not exist). It reports counts, paths, sizes, mtimes and SHA-256 digests. **It
+never reads what a memory file says** — bytes enter a digest and are discarded — and it never edits,
+moves or deletes one.
+
+**Population: both halves.** Every live root at `{claude-home}/projects/<encoded-path>/memory`, and
+every archived root at `{claude-home}/memory-archive/<label>/<name>`. The archive is not optional: a
+live root can be empty precisely *because* an earlier undocumented migration drained it into one, and
+an inventory of the live half alone would report such a machine as having no memory at all.
+
+**Mapping a root to a repository is ordered, and reports rather than guesses.** A project directory's
+name is a lossy flattening of the path it came from, so decoding it is not a function — several
+checkouts encode identically, and some characters cannot be recovered at all. `MemoryRootPath`'s own
+remarks enumerate which, with the live example. The ordering is what the register owns: session
+transcript `cwd` (ground truth — the value the name was derived *from*) beats a decoded reading that
+is a **work tree's own root** on this machine, which beats reporting `ambiguous` with candidates and
+**no** selected path. `RepositoryIdentityResolver` then probes git at that checkout, and only when it
+exists.
+
+**Two constraints on that middle rung, because it is a guess being confirmed rather than a fact being
+read** (#1908 review F1): a reading is only offered to disk when it is a **fully qualified** path —
+a relative one would be resolved against whatever directory `audit` happened to run from, so the same
+machine would answer differently per shell — and it only counts when it is the work tree's own root,
+because git discovers a repository by walking **up** and would otherwise file a root under whatever
+checkout a guessed subdirectory happened to sit inside. Both refusals degrade to `ambiguous`, which is
+the direction that matters: a lost resolution, never an invented one.
+
+**Five finding kinds**, defined on `MemoryFindingKind` and partitioned on `MemoryAuditReport`:
+`duplicate`, `orphan`, `stale`, `no-provenance`, `ambiguous`. The ruling here is the one thing a
+reader would otherwise assume wrongly: **not one of them decides anything.** Each names something
+left open for the import to settle with the entries in hand. `stale` accordingly attaches to a whole
+archived root rather than to matched filenames — the per-file question is answerable only from the
+entries' text, and phase B's import is where it is answered.
+
+**Provenance and subject are two facts, not one.** Where a memory file came from is observable;
+whose memory it *is* is not, without reading it. #1852's `alpaca-agent-bot` root is the live case, and
+Q1's ruling settles it at **import** — a write, therefore phase B's. What phase A does is refuse to
+pre-empt that: both candidates on the row, neither selected. `MemorySubjectVocabulary` carries the
+constraint that makes the read reproducible (its own remarks say why it is a fixed table and what
+that costs).
+
+**What phase A does not do**, so a reader's prior does not fill the gap: it inventories Claude roots
+only (Codex and Antigravity — third-party surfaces whose formats nothing here has yet opened — are
+phase A2's probe), it writes no canonical store, it projects nothing, and it deletes nothing anywhere,
+ever.
+
+**`~/.baton/codex-home` is not a vendor surface**, however much its `memories_1.sqlite` looks like
+one. Q5 (operator, 2026-09-05) ruled it **Baton's own first beta** of this memory system, so it does
+not belong with the third-party roots A2 probes: its memories are part of **phase B's import
+population** and must be preserved into the canonical store. Phase A does not read it — a store keyed
+by repository identity is the thing phase B builds, and importing into one that does not exist yet is
+not a read.
 
 ---
 

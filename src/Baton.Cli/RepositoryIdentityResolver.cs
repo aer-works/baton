@@ -78,6 +78,40 @@ internal static class RepositoryIdentityResolver
         return RepositoryIdentity.From(originUrl, commonDir);
     }
 
+    /// <summary>
+    /// <see langword="true"/> when <paramref name="path"/> is an existing directory that is <b>itself</b>
+    /// the root of a git work tree — not merely a directory somewhere inside one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this is a filesystem check and not <c>git rev-parse --show-toplevel</c>.</b> The predicate
+    /// is equivalent: <c>--show-toplevel</c> walks up from its working directory to the first directory
+    /// holding a <c>.git</c> entry, so "git's discovered root is <paramref name="path"/>" and
+    /// "<paramref name="path"/> holds a <c>.git</c> entry" are the same statement. The difference is
+    /// cost, and it decides the design — <see cref="Baton.Memory.MemoryRootPath.Resolve"/> applies this
+    /// to each reading of a decoded directory name, an enumeration capped at
+    /// <see cref="Baton.Memory.MemoryRootPath.MaxReadingsEnumerated"/>, so a process spawn per candidate would put
+    /// thousands of ten-second-timeout git invocations behind one audited root.
+    /// </para>
+    /// <para>
+    /// <b>Where the two diverge, they diverge safely.</b> A <c>.git</c> file whose <c>gitdir:</c> pointer
+    /// is broken, a stray non-repository directory named <c>.git</c>, and a bare repository all pass here
+    /// and then fail <see cref="TryResolveAsync"/>, which yields no identity — a <c>no-provenance</c>
+    /// finding, never a confident wrong repository. That is the direction this predicate exists to
+    /// protect (#1908 review F1).
+    /// </para>
+    /// </remarks>
+    public static bool IsWorkTreeRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            return false;
+        }
+
+        var gitEntry = Path.Combine(path, ".git");
+        return Directory.Exists(gitEntry) || File.Exists(gitEntry);
+    }
+
     /// <summary>Stdout of a git invocation, trimmed — or null on any non-zero exit, missing git, or timeout.</summary>
     private static async Task<string?> RunGitAsync(
         string workingDirectory, CancellationToken cancellationToken, params string[] arguments)
