@@ -2596,7 +2596,7 @@ anticipated this shape):
           "percentUsed"?: number,    // ALWAYS percent USED (agy's own "percent remaining" is converted before this field is populated) -- absent, never a guessed number, when unparsed
           "resetsAt"?: string,       // ISO-8601 UTC instant -- absent when the vendor's own line carried no reset clause, or claude's non-ISO "Jul 25, 12:09am (America/New_York)" format (minutes optional) failed to resolve; "rawLine" still carries the vendor's own text either way
           "rawLine": string,         // the vendor's own line, verbatim, for a reader that wants to show what parsing dropped
-          "ratePctPerHour"?: number, // #1746: advisory burn, percentage points of this window consumed per hour, derived over the persisted sample ring (oldest to newest). ABSENT under two samples -- never 0, which would read as "idle" when the truth is "not yet known" -- and absent when the ring spans no time at all. Present as 0 when two or more samples show no movement the two-decimal rounding can see; the ring keeps at most twelve samples and none older than three hours before the newest, so a rate is never averaged across an idle gap the harvester's backoff created
+          "ratePctPerHour"?: number, // #1746: advisory burn, percentage points of this window consumed per hour, derived over the persisted sample ring (oldest to newest). ABSENT under two samples -- never 0, which would read as "idle" when the truth is "not yet known" -- and absent when the ring spans no time at all. Present as 0 when two or more samples show no movement the two-decimal rounding can see; the ring keeps at most twelve samples and none older than three hours before the newest, so a rate is never averaged across an idle gap the harvester's backoff created. **Always absent on a `source: derived` entry (#1904)**, and so is `minutesToExhaustion` beneath it: no ring is kept for such an entry at all, because a derived percentage is not the monotonic counter every rule above assumes — `CodexUsageSource`'s own doc comment owns why, and `VendorUsageBurn.Advance` is where the skip happens
           "minutesToExhaustion"?: number // #1746: (100 - percentUsed) / ratePctPerHour, in minutes, at that rate. Absent whenever the rate is absent or not positive (nothing is being consumed to run out) and whenever percentUsed itself is absent
         }
       ],
@@ -2644,7 +2644,9 @@ the window rule, what the total misses, and why `percentUsed` is absent unless
 `docs/vendor-codex-probe-2026-09-04.md`'s known-unknowns is the register for that, and for what
 retires the derivation. Being on `RunwayGate.MeasuredVendors` is what gives codex a snapshot file and
 a glass block; it is **not** what gates it, and codex is deliberately absent from
-`RunwayGate`'s window-name table (that list's own doc comment states why).
+`RunwayGate`'s window-name table (that list's own doc comment states why). A derived entry also never
+carries the two burn fields — the `windows[]` table above says so on `ratePctPerHour`, and that is the
+fourth thing `derived` costs, alongside the rolling boundary, the lower bound, and the absent percentage.
 
 **Burn rate and minutes-to-exhaustion (#1746).** A single harvest carries no rate, so the persisted
 snapshot file keeps a bounded ring of the last `VendorUsageBurn.RingCapacity` readings per window

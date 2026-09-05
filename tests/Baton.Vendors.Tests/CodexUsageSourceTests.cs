@@ -43,10 +43,24 @@ public class CodexUsageSourceTests : IDisposable
             CacheCreationTokens: cacheCreation,
             ThinkingTokens: thinking);
 
+    /// <summary>A settled row the ledger recorded with no instant — <see cref="QuotaLedgerEntry.At"/>
+    /// is nullable, so this is a shape the store can actually hand back, not a hypothetical.</summary>
+    private static QuotaLedgerEntry Undated(string adapter, long? tokensIn = null) =>
+        new(
+            At: null,
+            Execution: Guid.NewGuid().ToString("N"),
+            Adapter: adapter,
+            TokensIn: tokensIn,
+            TokensOut: null,
+            CacheReadTokens: null,
+            CacheCreationTokens: null,
+            ThinkingTokens: null);
+
     [Fact]
     public void Aggregate_sums_only_codex_rows_and_only_the_billed_dimensions()
     {
-        // 1000 + 200 + 30 = 1230 billed; the 9999 thinking and 8888 cache-read figures are deliberately
+        // 1000 + 200 + 30 = 1230 on the first row, + 10 on the second = 1240 billed; the 9999 thinking
+        // and 8888 cache-read figures are deliberately
         // OUTSIDE the sum (WorkerUsage.BilledTokens' own definition, #1682), and the agy row is another
         // vendor's burn that must never land on codex's window.
         var snapshot = CodexUsageSource.Aggregate(
@@ -156,7 +170,69 @@ public class CodexUsageSourceTests : IDisposable
         var snapshot = CodexUsageSource.Aggregate([Row("codex", Now.AddDays(-30), tokensIn: 1_000)], ceiling: null, Now);
 
         Assert.NotNull(snapshot);
-        Assert.All(snapshot.Windows, w => Assert.Contains("0 billed tokens", w.RawLine, StringComparison.Ordinal));
+        // The EXACT clause, anchored on "derived: " -- a bare Contains("0 billed tokens") is satisfied
+        // by "1,000 billed tokens" and so could not fail if the 30-day-old row leaked into the window.
+        Assert.All(
+            snapshot.Windows,
+            w => Assert.Contains(
+                "derived: 0 billed tokens across 0 settled codex executions",
+                w.RawLine,
+                StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// #1926 review. An undatable row must not by itself turn the harvest into a measured zero across
+    /// both windows — that would report "codex burned nothing in the last 5 hours" on evidence saying
+    /// only "codex ran, at an unknown time". Null is the honest answer, the same as never having seen
+    /// codex at all; the guard's own comment in <see cref="CodexUsageSource"/> has the reasoning.
+    /// </summary>
+    [Fact]
+    public void Aggregate_does_not_treat_an_undatable_codex_row_as_a_measured_zero()
+    {
+        Assert.Null(CodexUsageSource.Aggregate([Undated("codex", tokensIn: 500)], ceiling: null, Now));
+    }
+
+    /// <summary>
+    /// The control arm one condition away from the one above: a DATABLE codex row that reported none of
+    /// the three billed dimensions is still evidence codex ran, so it harvests — reporting zero tokens
+    /// across zero executions rather than vanishing. Without this pair, "undatable returns null" could
+    /// equally mean the whole tokenless path returns null.
+    /// </summary>
+    [Fact]
+    public void Aggregate_harvests_zero_for_a_datable_codex_row_that_reported_no_tokens()
+    {
+        var snapshot = CodexUsageSource.Aggregate([Row("codex", Now.AddMinutes(-5))], ceiling: null, Now);
+
+        Assert.NotNull(snapshot);
+        Assert.All(
+            snapshot.Windows,
+            w => Assert.Contains(
+                "derived: 0 billed tokens across 0 settled codex executions",
+                w.RawLine,
+                StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The rolling window is NON-monotonic, which is the whole reason no burn ring is kept for a derived
+    /// snapshot (<c>VendorUsageBurn.Advance</c>'s first rule, spec/baton.md §6). This is the arm that
+    /// feeds a row rolling off the back: same ledger, same ceiling, two harvest instants five hours
+    /// apart, and the five-hour percentage FALLS with no reset having occurred. The weekly window is the
+    /// control — it still holds the row at both instants, so the fall is the five-hour lookback's edge
+    /// and not the aggregation losing rows outright.
+    /// </summary>
+    [Fact]
+    public void Aggregate_lets_the_five_hour_percentage_fall_as_a_row_rolls_off_the_back()
+    {
+        var entries = new[] { Row("codex", Now.AddHours(-1), tokensIn: 500) };
+        var ceiling = new CodexPlanCeilingSettings { FiveHourTokens = 1_000, WeeklyTokens = 1_000 };
+
+        var earlier = CodexUsageSource.Aggregate(entries, ceiling, Now);
+        var later = CodexUsageSource.Aggregate(entries, ceiling, Now.AddHours(5));
+
+        Assert.Equal(50, Assert.Single(earlier!.Windows, w => w.Name == CodexUsageSource.FiveHourWindowName).PercentUsed);
+        Assert.Equal(0, Assert.Single(later!.Windows, w => w.Name == CodexUsageSource.FiveHourWindowName).PercentUsed);
+        Assert.Equal(50, Assert.Single(earlier.Windows, w => w.Name == CodexUsageSource.WeeklyWindowName).PercentUsed);
+        Assert.Equal(50, Assert.Single(later.Windows, w => w.Name == CodexUsageSource.WeeklyWindowName).PercentUsed);
     }
 
     [Fact]

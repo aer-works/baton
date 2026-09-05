@@ -22,8 +22,9 @@ namespace Baton.Vendors;
 /// limits. A parser written against that today would be a guess. <b>This source is therefore interim</b>
 /// — the replacement is a <c>CodexRateLimitsSource</c> reading the real response through
 /// <see cref="CodexAppServerBroker"/> (already an approved spawn site, already speaking app-server
-/// JSON-RPC) once one authenticated probe run records the payload. #1904's PR body and
-/// <c>docs/vendor-doc-audit.md</c> carry that finding; this comment is not its register.
+/// JSON-RPC) once one authenticated probe run records the payload.
+/// <c>docs/vendor-codex-probe-2026-09-04.md</c> — its measured findings and its known-unknowns — is
+/// that finding's register, and the one place to correct it; this comment is not.
 /// </para>
 /// <para>
 /// <b>Rolling windows, not the vendor's own boundaries.</b> When ChatGPT's 5-hour and weekly windows
@@ -32,6 +33,19 @@ namespace Baton.Vendors;
 /// null: a rolling window has no reset instant, and inventing one would be exactly the relabelling the
 /// probe's known-unknowns rule out. <see cref="VendorUsageWindow.Name"/> says "rolling" and "derived"
 /// in the vendor's place, for the same reason.
+/// </para>
+/// <para>
+/// <b>A rolling total is NOT monotonic, so these windows carry no burn ring.</b> A vendor's counter
+/// only falls when its window resets, which is the assumption #1746's ring rests on — a percent below
+/// the previous sample means "rolled over, start a new ring". A rolling lookback falls whenever an old
+/// row ages out of the back of the window with nothing new at the front, with no reset having happened,
+/// so feeding these readings to that ring would produce a burn rate and a minutes-to-exhaustion built
+/// on a boundary that never occurred. Making the figure monotonic instead (cumulative since the
+/// window's start, reset at its boundary) would require naming when a ChatGPT window begins — the exact
+/// thing the paragraph above says is unmeasured. So the ring is skipped for every
+/// <see cref="VendorUsageProvenance.Derived"/> snapshot instead: <c>VendorUsageBurn.Advance</c> owns
+/// that rule, spec/baton.md §6's <c>windows[]</c> table states it canonically, and the effect on the
+/// glass is that a derived window's rate and ETA read "unknown" rather than reading as a number.
 /// </para>
 /// <para>
 /// <b>What the number covers, and what it misses.</b> The ledger holds one row per <i>settled</i>
@@ -147,12 +161,20 @@ public sealed class CodexUsageSource : IVendorUsageSource
                 continue;
             }
 
-            sawCodexRow = true;
-            if (entry.At is not { } at || BilledTokens(entry) is not { } tokens)
+            if (entry.At is not { } at)
             {
-                // A codex row with no timestamp, or none of the three billed dimensions, cannot be
-                // placed in a window or added to one. It still counts as "codex has been seen", so the
-                // source harvests rather than returning null -- the windows just do not include it.
+                // A codex row with no timestamp cannot be placed in ANY window, so it is not evidence
+                // that codex has been seen either: counting it would turn a ledger of undatable rows
+                // into a harvest reporting a measured zero across both windows, which is a stronger
+                // claim than "nothing is known about when this ran". Deliberately BEFORE sawCodexRow.
+                continue;
+            }
+
+            sawCodexRow = true;
+            if (BilledTokens(entry) is not { } tokens)
+            {
+                // A datable row reporting none of the three billed dimensions IS evidence codex ran --
+                // it just contributes no tokens and no execution count to the window it lands in.
                 continue;
             }
 
@@ -189,6 +211,14 @@ public sealed class CodexUsageSource : IVendorUsageSource
         {
             // Closed on both ends: a row exactly on the trailing edge is IN, so a row cannot fall out
             // of and back into the same window across two harvests a tick apart.
+            //
+            // A ledger row carries ONE instant -- the execution's settle instant (QuotaLedgerEntry.At,
+            // written when the execution finished) -- so an execution's whole burn lands at that single
+            // point rather than being spread across the wall-clock time it actually ran. A six-hour
+            // codex lane therefore contributes all of its tokens to the five-hour window it settled in
+            // and none to the earlier one it spent most of its time in. That is a placement
+            // approximation on top of the lower-bound caveat, not a second undercount: no tokens are
+            // lost, they are attributed to the settle instant.
             if (row.At >= since && row.At <= now)
             {
                 tokens += row.Tokens;

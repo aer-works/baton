@@ -152,9 +152,21 @@ public sealed class VendorUsageHarvesterTests : IDisposable
 
         Assert.Equal(VendorUsageProvenance.Derived, persisted.Source);
         Assert.Null(Assert.Single(persisted.Windows).PercentUsed);
-        // A null percentage contributes NO sample, so no ring is written for this window -- the
-        // alternative (a fabricated 0) would let VendorUsageBurn.Derive publish a burn rate and an ETA
-        // built out of invented zeros, in the one place this whole change says "never a number".
+        // A derived snapshot keeps NO ring at all (VendorUsageBurn.Advance's first rule) -- and a null
+        // percentage would contribute no sample either way. The alternative, a fabricated 0, would let
+        // VendorUsageBurn.Derive publish a burn rate and an ETA built out of invented zeros, in the one
+        // place this whole change says "never a number".
         Assert.True(persisted.Rings is null || persisted.Rings.Count == 0);
+
+        // The STRING, on the path glass.html actually compares against. Everything above asserts the
+        // enum survived the persisted file's round trip; glass.html tests `v.source === "derived"`
+        // against the projection's JSON, so an enum serialized as a number (0/1) or as PascalCase
+        // "Derived" would leave every arm above green while the glass silently labelled a derived
+        // block as a vendor counter. Spacing included: FleetStatusTool.SerializerOptions is
+        // WriteIndented, which is the same options the daemon's projection writer uses.
+        var wire = JsonSerializer.Serialize(
+            VendorUsageProjectionReader.ReadAll(new Dictionary<string, int>(StringComparer.Ordinal)),
+            FleetStatusTool.SerializerOptions);
+        Assert.Contains("\"source\": \"derived\"", wire, StringComparison.Ordinal);
     }
 }

@@ -247,4 +247,32 @@ public class RunwayGateTests
         Assert.Equal(RunwayDisposition.Admit, decision.Disposition);
         Assert.Equal(RunwayGate.UnmeasuredReason, decision.Reason);
     }
+
+    /// <summary>
+    /// #1926 review. Adding codex to <see cref="RunwayGate.MeasuredVendors"/> must not have put it
+    /// behind the staleness arm either: a codex snapshot far older than <c>maxSnapshotAgeHours</c> still
+    /// admits as unmeasured, because the window-table check runs first. The control is the arm directly
+    /// below: the same age on <c>claude</c>, which IS in the table, Holds — so this test is measuring
+    /// codex's exemption and not a broken staleness check.
+    /// </summary>
+    [Fact]
+    public void A_stale_derived_codex_snapshot_still_admits_while_the_same_age_holds_claude()
+    {
+        var stale = Now.AddHours(-48);
+        var codex = CodexUsageSource.Aggregate(
+            [new Baton.Status.QuotaLedgerEntry(At: stale.UtcDateTime, Execution: "e1", Adapter: "codex", TokensIn: 500)],
+            ceiling: null,
+            stale);
+
+        var codexDecision = RunwayGate.Evaluate("codex", codex, new RunwayThresholds(), Now);
+        Assert.Equal(RunwayDisposition.Admit, codexDecision.Disposition);
+        Assert.Equal(RunwayGate.UnmeasuredReason, codexDecision.Reason);
+
+        var claudeDecision = RunwayGate.Evaluate(
+            "claude",
+            new VendorUsageSnapshot("claude", stale, null, [new VendorUsageWindow("session", 1, null, "session: 1%")]),
+            new RunwayThresholds(),
+            Now);
+        Assert.Equal(RunwayDisposition.Hold, claudeDecision.Disposition);
+    }
 }
