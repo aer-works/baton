@@ -68,6 +68,27 @@ public sealed class VendorUsageBurnTests : IDisposable
     }
 
     [Fact]
+    public void Advance_drops_samples_older_than_MaxLookBack_so_an_idle_gap_is_not_averaged_into_the_rate()
+    {
+        // #1891 review; the why is on VendorUsageBurn.MaxLookBack. Three quick samples, a gap longer
+        // than the bound, one more: only the post-gap sample survives, so the rate is absent until a
+        // second recent sample lands rather than reading as "consumed 30 points over six hours".
+        var rings = VendorUsageBurn.Advance(null, Snapshot(T0, ("session", 10)));
+        rings = VendorUsageBurn.Advance(rings, Snapshot(T0.AddMinutes(15), ("session", 20)));
+        rings = VendorUsageBurn.Advance(rings, Snapshot(T0.AddMinutes(30), ("session", 30)));
+        var afterGap = T0.AddMinutes(30) + VendorUsageBurn.MaxLookBack + TimeSpan.FromMinutes(1);
+        rings = VendorUsageBurn.Advance(rings, Snapshot(afterGap, ("session", 40)));
+
+        var ring = RingFor(rings, "session");
+        Assert.Single(ring);
+        Assert.Equal(40, ring[0].PercentUsed);
+
+        // A sample exactly at the horizon is kept (the bound is "older than", not "at least as old").
+        rings = VendorUsageBurn.Advance(rings, Snapshot(afterGap + VendorUsageBurn.MaxLookBack, ("session", 50)));
+        Assert.Equal(2, RingFor(rings, "session").Count);
+    }
+
+    [Fact]
     public void Derive_two_samples_yields_rate_and_minutes_to_exhaustion()
     {
         // 10% -> 20% over two hours = 5 percentage points/hour; 80 points left = 16 hours = 960 min.

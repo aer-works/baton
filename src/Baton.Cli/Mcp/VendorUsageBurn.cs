@@ -52,10 +52,17 @@ public sealed record PersistedVendorUsage(
 public static class VendorUsageBurn
 {
     /// <summary>How many harvests of one window are retained. Twelve harvests at the harvester's
-    /// 15-minute periodic cadence is roughly a three-hour look-back — long enough for a rate to mean
-    /// something on claude's 5-hour session window, short enough that a burst an hour ago stops
-    /// dominating the number.</summary>
+    /// 15-minute periodic cadence is three hours when lanes are live; the count alone does not bound
+    /// the span, because the harvester backs off while the fleet is idle, so
+    /// <see cref="MaxLookBack"/> bounds it in time as well (#1891 review).</summary>
     public const int RingCapacity = 12;
+
+    /// <summary>The oldest a retained sample may be, measured from the newest sample in the same ring.
+    /// Three hours: long enough for a rate to mean something on claude's 5-hour session window, short
+    /// enough that a burst an hour ago stops dominating the number, and the bound that keeps an idle
+    /// gap (the harvester's own backoff) from being averaged into a rate as though tokens were being
+    /// spent across it.</summary>
+    public static readonly TimeSpan MaxLookBack = TimeSpan.FromHours(3);
 
     /// <summary>
     /// Folds <paramref name="snapshot"/> into <paramref name="existing"/>, returning the rings to
@@ -71,6 +78,9 @@ public static class VendorUsageBurn
     /// <item>A percent BELOW the previous sample's means the vendor's window rolled over: the ring is
     /// cleared first, and this reading becomes post-reset sample #1. Rate is therefore absent until a
     /// second post-reset harvest lands.</item>
+    /// <item>Samples older than <see cref="MaxLookBack"/> before this reading are dropped before the
+    /// capacity trim, so a ring that sat idle across the harvester's backoff resumes from the recent
+    /// samples only; the rate never averages across a gap nothing was measured in.</item>
     /// <item>A window absent from this snapshot loses its ring entirely, which is what keeps the file
     /// bounded when a vendor renames or drops a window.</item>
     /// </list>
@@ -115,6 +125,8 @@ public static class VendorUsageBurn
             }
 
             ring.Add(new VendorUsageSample(snapshot.HarvestedAt, percentUsed));
+            var horizon = snapshot.HarvestedAt - MaxLookBack;
+            ring.RemoveAll(sample => sample.At < horizon);
             if (ring.Count > RingCapacity)
             {
                 ring.RemoveRange(0, ring.Count - RingCapacity);
