@@ -65,7 +65,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
             var options = new DispatchOptions(
                 "fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace, OutputPath: outputPath);
 
-            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, evaluateRunway: RunwayTestGate.Admit);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
             var step = Assert.Single(result.State.Steps);
@@ -106,7 +106,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
-            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, evaluateRunway: RunwayTestGate.Admit);
             Console.SetOut(originalOut);
 
             Assert.Contains(
@@ -156,7 +156,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 
             var options = new DispatchOptions("fact-check", specPath, roomDirectory, Adapter: "agy", WorkspaceDirectory: workspace);
 
-            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, evaluateRunway: RunwayTestGate.Admit);
 
             Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
             var step = Assert.Single(result.State.Steps);
@@ -202,7 +202,7 @@ public sealed class DispatchAuditedWorktreeAcceptanceTests : IDisposable
 
             using var consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
-            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+            await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken, evaluateRunway: RunwayTestGate.Admit);
             Console.SetOut(originalOut);
 
             var output = consoleOutput.ToString();

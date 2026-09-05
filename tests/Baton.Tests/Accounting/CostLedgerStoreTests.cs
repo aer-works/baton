@@ -1046,4 +1046,43 @@ public sealed class CostLedgerStoreTests
             DirectoryCleanup.DeleteRecursively(room);
         }
     }
+
+    /// <summary>
+    /// #1848: a row whose execution was admitted only because a runway hold was overridden carries the
+    /// operator's reason. Both polarities, because the field's whole value is that its ABSENCE is
+    /// readable — an unsupplied map must leave it absent rather than stamping an empty string.
+    /// </summary>
+    [Fact]
+    public void A_runway_override_reason_is_stamped_onto_the_row_for_the_worker_it_was_recorded_for()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-override");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var settled = SettledExecution(executionId, "claude", "claude-opus-5", Start);
+
+            var stamped = Assert.Single(CostLedgerStore.BuildEntries(
+                settled, room, Repository,
+                runwayOverrideReasonByWorker: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["implement"] = "conductor lane, week resets in 2h",
+                }));
+            var unstamped = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+            var otherWorker = Assert.Single(CostLedgerStore.BuildEntries(
+                settled, room, Repository,
+                runwayOverrideReasonByWorker: new Dictionary<string, string>(StringComparer.Ordinal) { ["review"] = "other lane" }));
+
+            Assert.Equal("implement", stamped.Role);
+            Assert.Equal("conductor lane, week resets in 2h", stamped.RunwayOverrideReason);
+            Assert.Null(unstamped.RunwayOverrideReason);
+            Assert.Null(otherWorker.RunwayOverrideReason);
+            Assert.DoesNotContain(
+                "runwayOverrideReason", JsonSerializer.Serialize(unstamped), StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
 }

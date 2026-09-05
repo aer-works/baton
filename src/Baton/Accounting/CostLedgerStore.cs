@@ -58,12 +58,20 @@ public static class CostLedgerStore
     /// </param>
     /// <param name="catalog">Defaults to <see cref="PriceCatalog.Default"/>. Its id/version is stamped on every row it prices.</param>
     /// <param name="planFactors">Defaults to <see cref="PlanFactorTable.Default"/>. Same stamping rule.</param>
+    /// <param name="runwayOverrideReasonByWorker">
+    /// #1848: worker name to the runway-override reason recorded on that worker's binding at dispatch,
+    /// for overrides that actually bypassed a Hold. Supplied by the settle site (which can read
+    /// <c>bindings.json</c>; this layer cannot see <c>Baton.Vendors</c>), null everywhere else —
+    /// <see cref="CostLedgerEntry.RunwayOverrideReason"/>'s own doc states what an absent value means
+    /// and does not mean.
+    /// </param>
     public static IReadOnlyList<CostLedgerEntry> BuildEntries(
         IReadOnlyList<LogEntry> entries,
         string roomDirectoryPath,
         RepositoryIdentity? repository,
         PriceCatalog? catalog = null,
-        PlanFactorTable? planFactors = null)
+        PlanFactorTable? planFactors = null,
+        IReadOnlyDictionary<string, string>? runwayOverrideReasonByWorker = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
@@ -197,7 +205,11 @@ public static class CostLedgerStore
                 PriceCatalogId: catalog.Id,
                 PriceCatalogVersion: catalog.Version,
                 PlanFactorTableId: planFactors.Id,
-                PlanFactorTableVersion: planFactors.Version));
+                PlanFactorTableVersion: planFactors.Version,
+                RunwayOverrideReason: request?.Worker is { } worker && runwayOverrideReasonByWorker is not null
+                    && runwayOverrideReasonByWorker.TryGetValue(worker, out var runwayReason)
+                        ? runwayReason
+                        : null));
         }
 
         return result;

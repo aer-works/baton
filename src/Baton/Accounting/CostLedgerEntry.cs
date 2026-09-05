@@ -308,4 +308,18 @@ public sealed record CostLedgerEntry(
     string? PlanFactorTableId = null,
     [property: JsonPropertyName("planFactorTableVersion")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? PlanFactorTableVersion = null);
+    string? PlanFactorTableVersion = null,
+
+    /// <summary>
+    /// #1848: the operator's reason, verbatim, when this execution was admitted only because a
+    /// <c>baton dispatch --override-runway "&lt;reason&gt;"</c> bypassed a runway hold. <b>Absence means
+    /// "no override was recorded for this execution", never "no override happened"</b> — a row built
+    /// for a room dispatched some other way (<c>baton run</c> against a hand-authored
+    /// <c>bindings.json</c>, a room whose bindings file is gone by settle time) simply has nothing to
+    /// read, and the settle site's read is deliberately fail-open. A dispatch that passed the flag and
+    /// was admitted anyway is also absent here: that override bypassed nothing, and only the room
+    /// record distinguishes it (<c>Baton.Vendors.RunwayOverride.Used</c>).
+    /// </summary>
+    [property: JsonPropertyName("runwayOverrideReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? RunwayOverrideReason = null);

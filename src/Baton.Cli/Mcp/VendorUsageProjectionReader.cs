@@ -17,8 +17,11 @@ namespace Baton.Cli.Mcp;
 public static class VendorUsageProjectionReader
 {
     /// <summary>Every adapter tag a snapshot file can exist for (issue #1391's scope: claude/agy —
-    /// Codex is explicitly out of scope, see the issue's "Decisions already made").</summary>
-    private static readonly string[] KnownVendors = ["claude", "agy"];
+    /// Codex is explicitly out of scope, see the issue's "Decisions already made"). One list, owned by
+    /// <see cref="RunwayGate.MeasuredVendors"/> since #1848: the population that has an
+    /// <see cref="Baton.Vendors.IVendorUsageSource"/> and the population whose snapshot files exist are
+    /// the same population, and a second copy here is how one of them would go stale.</summary>
+    private static readonly IReadOnlyList<string> KnownVendors = RunwayGate.MeasuredVendors;
 
     private static readonly JsonSerializerOptions PersistedSnapshotOptions = new();
 

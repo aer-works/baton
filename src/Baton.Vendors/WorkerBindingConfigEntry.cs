@@ -195,7 +195,28 @@ public sealed record WorkerBindingConfigEntry(
     // #1802 review: default-closed like ChangesTree/DeliversBranch/ExpectPr above -- a hand-authored
     // bindings.json (baton run/resume/decide) that omits this must not be able to spawn.
     bool AllowsSubagents = false,
-    FallbackBinding? FallbackOnExhaustion = null);
+    FallbackBinding? FallbackOnExhaustion = null,
+    RunwayOverride? RunwayOverride = null);
+
+/// <summary>
+/// #1848: the audit record a <c>--override-runway "&lt;reason&gt;"</c> dispatch leaves on the room's
+/// own <c>bindings.json</c> entry — the operator's reason verbatim, the vendor it applied to, and the
+/// counters the gate actually read at admission time. Written by <c>DispatchCommand</c> only; a
+/// hand-authored <c>bindings.json</c> that carries one changes nothing, because the gate is consulted
+/// at dispatch and never re-read from a binding.
+/// </summary>
+/// <param name="Used">
+/// <see langword="false"/> when the flag was passed and the gate admitted anyway — the flag bypassed
+/// nothing, and the record says so rather than being omitted, so "an override was offered and not
+/// needed" stays distinguishable from "no override was offered". <see langword="true"/> is the audited
+/// case: a Hold that this reason overrode.
+/// </param>
+public sealed record RunwayOverride(
+    string Vendor,
+    string Reason,
+    bool Used,
+    IReadOnlyList<RunwayCounter> Counters,
+    string? HoldReason = null);
 
 
 /// <summary>

@@ -129,6 +129,14 @@ namespace Baton.Cli;
 /// The <c>--verify-timeout</c> bound (#1882) on EACH <paramref name="VerifyCommands"/> entry's wall
 /// clock. Null keeps <c>Baton.Mutation.VerifyStepRunner.DefaultTimeout</c> (10 minutes).
 /// </param>
+/// <param name="OverrideRunwayReason">
+/// <c>--override-runway "&lt;reason&gt;"</c> (#1848) — the only bypass of the runway hold, and the
+/// reason is mandatory (a blank one is a parse error in <see cref="DispatchOptionsParser"/>). Unlike
+/// <paramref name="Timeout"/> and its neighbours this is NOT role-dispatch-only: a workflow template
+/// admits new vendor spend exactly the way a role does, so the flag applies to both. Null means no
+/// override — a held vendor refuses the dispatch. Whether it was needed is recorded either way:
+/// <see cref="Baton.Vendors.RunwayOverride.Used"/>.
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -154,4 +162,5 @@ public sealed record DispatchOptions(
     bool? ExpectPr = null,
     string? ContinueFromRoomDirectoryPath = null,
     IReadOnlyList<string>? VerifyCommands = null,
-    TimeSpan? VerifyTimeout = null);
+    TimeSpan? VerifyTimeout = null,
+    string? OverrideRunwayReason = null);

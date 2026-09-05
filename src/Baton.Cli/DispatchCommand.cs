@@ -34,11 +34,17 @@ public static class DispatchCommand
     /// controls rather than racing on the process-global current directory. Null resolves to the cwd.
     /// Note it governs the capture step only — a role phase's own working directory is unchanged.
     /// </param>
+    /// <param name="evaluateRunway">
+    /// #1848's admission gate, per adapter tag. Null (production) reads the operator's thresholds from
+    /// <c>settings.json</c> and each vendor's latest harvested snapshot off disk; a test passes its own
+    /// so the gate's arms are drivable without a <c>~/.baton</c> snapshot or a vendor CLI.
+    /// </param>
     public static async Task<CommandResult> ExecuteAsync(
         DispatchOptions options,
         IReadOnlyDictionary<string, IWorkerAdapter> adapters,
         CancellationToken cancellationToken = default,
-        string? workspaceDirectory = null)
+        string? workspaceDirectory = null,
+        Func<string, RunwayDecision>? evaluateRunway = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(adapters);
@@ -145,6 +151,12 @@ public static class DispatchCommand
         // through the CLI -- it is reachable through a hand-built DispatchOptions, which is exactly what
         // an in-process caller (and every test) constructs.
         var verifyCommands = ParseVerifyCommands(options.VerifyCommands);
+
+        // #1848: the runway hold — the last thing checked before this invocation provisions anything,
+        // for the same reason the drain refusal is the first: a refusal here must leave no
+        // half-provisioned room behind (Program's typed boundary still lands a ValidationRefused
+        // terminal.json in the room it creates, the same shape every other pre-run refusal has).
+        bindings = await ApplyRunwayGateAsync(options, bindings, evaluateRunway, cancellationToken).ConfigureAwait(false);
 
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
@@ -507,6 +519,108 @@ public static class DispatchCommand
     /// "whatever the first output happens to be called".
     /// </summary>
     private const string VerdictOutputName = "verdict.json";
+
+    /// <summary>
+    /// #1848's admission gate at the one entry point that admits NEW vendor spend from cold. Every
+    /// distinct adapter this dispatch would spawn on is evaluated separately — a claude Hold never
+    /// holds an agy dispatch (operator ruling, 2026-09-05) — and each decision is printed as a status
+    /// line whether it admits, holds, or is overridden. A Hold with no <c>--override-runway</c> throws,
+    /// which is how this exits non-zero (<see cref="RunExitCode.ValidationRefused"/>) with the counters
+    /// and the exact flag printed once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not gated: <c>--continue</c>.</b> Rehiring the worker that already ran in a prior room is
+    /// continuation of work the fleet already admitted, and the ruling holds new admissions rather than
+    /// interrupting work in flight — the same reason <c>baton redispatch</c>/<c>resolve</c>/<c>run</c>/
+    /// <c>resume</c> consult no gate at all. spec/baton.md §7's "Runway hold (#1848)" is the register
+    /// for that list; this comment does not restate it.
+    /// </para>
+    /// <para>
+    /// <b>Nothing here journals.</b> A refusal happens before the room has a ledger to write to, so
+    /// what carries each decision instead — and why — is settled in spec/baton.md §7, under "Runway
+    /// hold (#1848)": stdout, plus <see cref="WorkerBindingConfigEntry.RunwayOverride"/> for an override.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyDictionary<string, WorkerBindingConfigEntry>> ApplyRunwayGateAsync(
+        DispatchOptions options,
+        IReadOnlyDictionary<string, WorkerBindingConfigEntry> bindings,
+        Func<string, RunwayDecision>? evaluateRunway,
+        CancellationToken cancellationToken)
+    {
+        if (options.ContinueFromRoomDirectoryPath is not null)
+        {
+            return bindings;
+        }
+
+        var evaluate = evaluateRunway ?? await CreateDiskRunwayEvaluatorAsync(cancellationToken).ConfigureAwait(false);
+
+        var decisions = new Dictionary<string, RunwayDecision>(StringComparer.Ordinal);
+        foreach (var vendor in bindings.Values
+            .Select(b => b.Adapter)
+            // The capture step spawns git, not a vendor CLI — it admits no vendor spend to gate.
+            .Where(a => !string.Equals(a, WorkflowTemplateComposer.CaptureAdapter, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal))
+        {
+            decisions[vendor] = evaluate(vendor);
+        }
+
+        var holds = decisions.Values.Where(d => d.IsHold).ToList();
+        foreach (var decision in decisions.Values)
+        {
+            var verdict = decision switch
+            {
+                { IsHold: true } when options.OverrideRunwayReason is not null => "HELD, OVERRIDDEN",
+                { IsHold: true } => "HELD",
+                { Reason: RunwayGate.UnmeasuredReason } => "admit (unmeasured)",
+                _ => "admit",
+            };
+            var because = decision.Reason is { } reason ? $" — {reason}" : string.Empty;
+            Console.Out.WriteLine($"Runway ({decision.Vendor}): {verdict}{because} [{decision.DescribeCounters()}]");
+        }
+
+        if (holds.Count > 0 && options.OverrideRunwayReason is null)
+        {
+            var detail = string.Join(
+                "; ", holds.Select(h => $"{h.Vendor}: {h.Reason} [{h.DescribeCounters()}]"));
+            throw new CliArgumentException(
+                $"Runway hold — not dispatching new work on {string.Join(", ", holds.Select(h => h.Vendor))}. {detail}. "
+                + "Work already running is unaffected.",
+                $"""dispatch it anyway with --override-runway "<reason>" (the reason is recorded on the room), or wait for the vendor's window to reset.""");
+        }
+
+        if (options.OverrideRunwayReason is not { } overrideReason)
+        {
+            return bindings;
+        }
+
+        // Stamped per binding, off that binding's OWN vendor decision — the same stamp-onto-every-entry
+        // shape Label/Workstream/ToolSha above already use. Used=false is the recorded "the flag was
+        // passed and nothing needed bypassing" case the issue asks for by name.
+        return bindings.ToDictionary(
+            pair => pair.Key,
+            pair => decisions.TryGetValue(pair.Value.Adapter, out var decision)
+                ? pair.Value with
+                {
+                    RunwayOverride = new RunwayOverride(
+                        decision.Vendor, overrideReason, decision.IsHold, decision.Counters,
+                        decision.IsHold ? decision.Reason : null),
+                }
+                : pair.Value,
+            StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The production evaluator: the operator's thresholds from <c>settings.json</c>, loaded once per
+    /// dispatch, closed over each vendor's latest PERSISTED snapshot. Never spawns a vendor CLI — the
+    /// daemon harvests, dispatch reads (<see cref="RunwaySnapshotReader"/>).
+    /// </summary>
+    private static async Task<Func<string, RunwayDecision>> CreateDiskRunwayEvaluatorAsync(CancellationToken cancellationToken)
+    {
+        var settings = await DaemonSettingsStore.LoadAsync(BatonPaths.SettingsFile, cancellationToken).ConfigureAwait(false);
+        return vendor => RunwayGate.Evaluate(
+            vendor, RunwaySnapshotReader.Read(vendor), settings.RunwayHold.For(vendor), DateTimeOffset.UtcNow);
+    }
 
     /// <summary>
     /// #1841: persists ids already recovered from live worker stdout by
