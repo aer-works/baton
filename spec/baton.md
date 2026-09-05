@@ -327,7 +327,9 @@ passing `--workstream ""`. `RedispatchCommand` also (re-)creates that redispatch
 by-workstream junction against whichever slug `InheritBinding` just resolved — inherited, cleared, or
 overridden — never the raw `--workstream` flag alone, since a bare `baton redispatch` with no
 `--workstream` flag at all must still link into the parent's workstream directory. `--spec`
-omitted reuses the parent's already-built prompt verbatim; given, the amended brief is rebuilt through
+omitted reuses the parent's already-built prompt verbatim — but for #1882's verify-results paragraph,
+stripped (#1895) because it names the parent room's results file for a step that did not run in the
+child room, the one exception and the reason §9 states; given, the amended brief is rebuilt through
 the same `RoleSpecMaterializer` seam a fresh dispatch uses, with the parent's recorded axes as defaults
 — including the inherited-unless-overridden label, applied after that rebuild since
 `RoleDispatch.Materialize` itself knows nothing of it (`RedispatchCommand.ExecuteAsync`). That seam is
@@ -4152,10 +4154,18 @@ commands before the worker's first turn, sequentially, and the contract is:
   which is what the field's own doc, `docs/agents/invoking-baton.md` and this bullet all already say.
   Skipping the stamp when no step ran is what made the field a claim rather than a record on the
   majority of review lanes: nothing removed a model-written array, and `--notify` carries
-  `verdict.json` verbatim off disk. **Scoped to `dispatch` because that is where the stamp is wired:
-  `baton redispatch` drives the same pump and does not stamp**, so a redispatched review's verdict can
-  still carry a model-written `instruments`. Stated rather than left as a silent second door; it is
-  the same boundary that keeps `--verify-cmd` from being inherited on that path.
+  `verdict.json` verbatim off disk. **`baton redispatch` stamps too (#1895)**, always on the removal
+  arm: no verify step can run on that path — `--verify-cmd` is a `DispatchOptions` field with no
+  binding to inherit, so a redispatched review has no instruments of its own and the key is removed
+  rather than left carrying whatever the model wrote. (Not `--verify`, the post-exit flag, which *is*
+  inherited as `WorkerBindingConfigEntry.VerifyCommandOverride` — §3's "Verify command resolution";
+  conflating the two is what the earlier wording of this sentence did.) The prompt half of the same
+  door is closed with it: the bare (`--spec`-less) redispatch reuses the parent's already-built
+  prompt, so the paragraph below rode across naming the PARENT room's `verify-results.md` — a run
+  that did not happen in the child room, possibly against a different tree, since `--workspace` is
+  overridable on redispatch. It is stripped from the inherited prompt
+  (`RoleDispatch.WithoutVerifyResultsParagraph`, applied in `RedispatchCommand.InheritBinding`), which
+  is the same rule as "the prompt says nothing at all when no step ran" rather than an exception to it.
 - **The role's shell grant is unchanged**, and `WorkerRoles.json` is untouched. `--verify-cmd` is
   accepted only for a verdict-producing role (today, `review` alone) and refused for a workflow
   template. It is **not** `--verify`, which overrides the *post-exit* verify command a mutating role

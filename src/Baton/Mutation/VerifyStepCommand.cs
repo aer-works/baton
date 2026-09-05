@@ -13,11 +13,11 @@ public sealed record VerifyStepCommand(string CommandLine, IReadOnlyList<string>
 
 /// <summary>
 /// The parse-time gate on <c>--verify-cmd</c> (#1882, spec/baton.md §3): a fixed set of command
-/// SHAPES, refused by name when they do not match. The step runs with no model in the loop and with
-/// the review worktree as its cwd, so "read-only, deterministic, nothing that writes the tree or
-/// calls a vendor CLI" has to be decided here rather than trusted from the brief — the same spirit as
-/// the review role's own shell allowlist (<c>WorkerRoles.json</c>), which this deliberately does not
-/// widen.
+/// SHAPES, refused by name when they do not match — the same spirit as the review role's own shell
+/// allowlist (<c>WorkerRoles.json</c>), which this deliberately does not widen. Read-only and
+/// deterministic are properties of the three allowlisted shapes, not something decided here: what
+/// this gate decides is location, not intent (#1895 retracts the sentence that claimed otherwise;
+/// spec/baton.md §9 is the register for the distinction).
 /// <para>
 /// Three shapes only, from the operator's 2026-09-05 trigger ruling: <c>dotnet build*</c>,
 /// <c>dotnet test*</c>, and <c>python &lt;script under tools/ or benchmarks/&gt;</c> carrying a
@@ -26,8 +26,12 @@ public sealed record VerifyStepCommand(string CommandLine, IReadOnlyList<string>
 /// expected a shell and would otherwise get a literal argument silently.
 /// </para>
 /// <para>
-/// On top of the shape, EVERY remaining argument of every shape has to name something inside the
-/// workspace (<see cref="EscapesWorkspace"/>). Without that, the two arms were asymmetric: a python
+/// On top of the shape, every remaining argument of every shape is checked for the known spellings
+/// of a location outside the workspace — a rooted path, a drive/UNC spelling, or a <c>..</c> segment,
+/// whether it is the whole argument or a value attached after a <c>=</c> or <c>:</c> (#1895) — and refused when it
+/// carries one (<see cref="EscapesWorkspace"/>). A blacklist, not a proof of containment: it is what
+/// the tokens a legitimate command uses allow, since most of them are not paths at all. Without it
+/// the two arms were asymmetric: a python
 /// script path could not escape <c>tools/</c>, while <c>dotnet build ../../elsewhere/Evil.csproj</c>
 /// handed MSBuild an arbitrary project outside the tree under review, and
 /// <c>python tools/x.py --selftest --emit C:\anywhere\out.json</c> handed a script an arbitrary
@@ -46,6 +50,12 @@ public static class VerifyStepCommandParser
 
     /// <summary>The two directories a <c>python</c> verify script may live under — repo-relative, no escape.</summary>
     private static readonly string[] ScriptRoots = ["tools/", "benchmarks/"];
+
+    /// <summary>
+    /// The delimiters a flag can carry its value attached with, both of which the dotnet CLI accepts
+    /// (#1895) — <see cref="EscapesWorkspace"/>'s doc has the reasoning.
+    /// </summary>
+    private static readonly char[] AttachedValueSeparators = ['=', ':'];
 
     /// <summary>
     /// True with a non-null <paramref name="command"/> when <paramref name="rawCommandLine"/> is an
@@ -158,15 +168,39 @@ public static class VerifyStepCommandParser
     }
 
     /// <summary>
-    /// True when an argument names a location outside the workspace. Deliberately narrower than
+    /// True when an argument names a location outside the workspace, either as the whole token or as
+    /// a value attached to a flag with <c>=</c> or <c>:</c> (#1895: <c>--emit=../x</c> and
+    /// <c>-p:OutDir=../x/</c> parsed while the space-separated <c>--emit ../x</c> was refused, which
+    /// made the rule depend on how the operator spelled the flag rather than on where the argument
+    /// pointed). Both delimiters, because the dotnet CLI accepts either (<c>-o:../out</c> is the same
+    /// door as <c>-o=../out</c>), and re-applied to the remainder after each one, so a value carrying
+    /// a delimiter of its own — <c>-p:OutDir=../x</c> — is covered by the same walk.
+    /// </summary>
+    private static bool EscapesWorkspace(string token)
+    {
+        if (NamesLocationOutsideWorkspace(token))
+        {
+            return true;
+        }
+
+        var separator = token.IndexOfAny(AttachedValueSeparators);
+        return separator >= 0
+            && separator + 1 < token.Length
+            && EscapesWorkspace(token[(separator + 1)..]);
+    }
+
+    /// <summary>
+    /// The predicate itself, over one whole token. Deliberately narrower than
     /// <see cref="IsRepoScriptPath"/>, which is a whitelist of one shape; this is a blacklist of the
     /// four ways out of a directory, applied to arguments whose legitimate values include things that
     /// are not paths at all (<c>-p:Configuration=Release</c>, <c>--minimum-expected-tests 1</c>).
     /// A bare <c>:</c> is therefore fine — only a drive- or UNC-rooted spelling is refused — and an
     /// MSBuild-style <c>/p:x=y</c> switch stays usable, since a leading <c>/</c> is read as a root
-    /// only when the token has no <c>:</c> in it or a second separator after it.
+    /// only when the token has no <c>:</c> in it or a second separator after it. That carve-out is
+    /// why <see cref="EscapesWorkspace"/> re-runs this on the post-<c>=</c> value rather than only on
+    /// the token: <c>-p:OutDir=/etc/x</c> is a rooted destination the whole-token read lets through.
     /// </summary>
-    private static bool EscapesWorkspace(string token)
+    private static bool NamesLocationOutsideWorkspace(string token)
     {
         var normalized = token.Replace('\\', '/');
         if (normalized.Length == 0)

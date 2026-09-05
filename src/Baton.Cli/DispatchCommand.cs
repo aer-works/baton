@@ -349,12 +349,10 @@ public static class DispatchCommand
             runOptions, adapters, cancellationToken: cancellationToken, onWorkerStdoutLine: CaptureSessionId)
             .ConfigureAwait(false);
 
-        // #1882: the engine stamps the instruments onto the verdict the worker just wrote -- see
-        // VerifyStep.InjectInstrumentsAsync for why the engine, and not the model, is the writer.
-        // UNCONDITIONAL, including when no verify step ran: that arm removes a model-written
-        // `instruments` instead of writing one, which is the only thing that makes the field a record
-        // rather than a claim on the majority of review lanes (dispatched without --verify-cmd).
-        await StampInstrumentsOnVerdictAsync(options, result, verifyStep).ConfigureAwait(false);
+        // #1882: the engine stamps the instruments onto the verdict the worker just wrote, and does so
+        // UNCONDITIONALLY -- VerdictInstrumentStamp's own doc has the reasoning for both halves. #1895
+        // moved the body out of this file so `baton redispatch` calls the same helper.
+        await VerdictInstrumentStamp.ApplyAsync(options.RoomDirectoryPath, result, verifyStep).ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
         {
@@ -474,67 +472,6 @@ public static class DispatchCommand
             return null;
         }
     }
-
-    /// <summary>
-    /// #1882: makes every <c>verdict.json</c> this dispatch produced say what the ENGINE knows about
-    /// the instruments — the step's rows when one ran, and the key removed when none did. Placed here
-    /// rather than inside the engine's contract check for the same reason
-    /// <see cref="CopyPrimaryOutputToOverride"/> is: the execution-scoped artifact directory is not
-    /// known until the run has produced one.
-    /// <para>
-    /// Every step with an execution is visited, not just the first: a composed template's review phase
-    /// is not necessarily its first step, and the removal arm has to reach a model-written
-    /// <c>instruments</c> wherever a verdict was written. A step whose execution wrote no
-    /// <c>verdict.json</c> — every non-verdict role — is silently skipped, which is why no role check
-    /// is needed here: the file's existence is the population.
-    /// </para>
-    /// </summary>
-    /// <param name="verifyStep">Null when no verify step ran for this dispatch.</param>
-    private static async Task StampInstrumentsOnVerdictAsync(
-        DispatchOptions options, CommandResult result, Baton.Mutation.VerifyStep.Outcome? verifyStep)
-    {
-        foreach (var step in result.State.Steps)
-        {
-            if (step.LatestExecutionId is not { } execId)
-            {
-                continue;
-            }
-
-            var verdictPath = Path.Combine(
-                options.RoomDirectoryPath,
-                Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName,
-                $"execution_{execId}",
-                VerdictOutputName);
-            if (!File.Exists(verdictPath))
-            {
-                continue;
-            }
-
-            // CancellationToken.None: the review is already finished and its outputs are already durable.
-            var stamped = await Baton.Mutation.VerifyStep
-                .InjectInstrumentsAsync(verdictPath, verifyStep?.Instruments, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (stamped)
-            {
-                continue;
-            }
-
-            Console.Error.WriteLine(verifyStep is null
-                ? $"Warning: could not check '{verdictPath}' for a model-written 'instruments' field. No "
-                    + "verify step ran for this dispatch, so any value under that key is the worker's own "
-                    + "claim rather than an engine record."
-                : $"Warning: could not record the verify step's instruments on '{verdictPath}'. The verify "
-                    + $"results themselves are unaffected, at '{verifyStep.ResultsFilePath}'.");
-        }
-    }
-
-    /// <summary>
-    /// The review role's structured output (<c>WorkerRoles.json</c>) — the one file
-    /// <see cref="StampInstrumentsOnVerdictAsync"/> annotates. Named here rather than derived from the
-    /// role's output list because the annotation is specific to the ReviewVerdict schema, not to
-    /// "whatever the first output happens to be called".
-    /// </summary>
-    private const string VerdictOutputName = "verdict.json";
 
     /// <summary>
     /// #1848's admission gate at the one entry point that admits NEW vendor spend from cold. Every

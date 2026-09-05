@@ -235,12 +235,21 @@ public static class RedispatchCommand
         // Register: true -- same rationale as DispatchCommand's own RunOptions construction (spec/baton.md §8, #1657).
         var runOptions = new RunOptions(
             workflowFilePath, bindingsFilePath, options.RoomDirectoryPath, ProjectRootDirectory: workspace, Register: true);
-        return await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var result = await RunCommand.ExecuteAsync(runOptions, adapters, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // #1895: the same stamp `baton dispatch` runs, always on its no-step arm -- this verb runs no
+        // verify step at all. What the removal buys is settled in spec/baton.md §9, under #1882's
+        // `--verify-cmd` contract.
+        await VerdictInstrumentStamp.ApplyAsync(options.RoomDirectoryPath, result, verifyStep: null).ConfigureAwait(false);
+
+        return result;
     }
 
     /// <summary>
     /// The binding-inheritance rule for an unchanged spec: start from the parent's exact entry (grant,
-    /// worktree intent, contract, already-built prompt included) and apply only the axes
+    /// worktree intent, contract, already-built prompt included — minus #1882's verify-results
+    /// paragraph, the one exception, stripped for the reason
+    /// <see cref="RoleDispatch.WithoutVerifyResultsParagraph"/> states) and apply only the axes
     /// <paramref name="options"/> actually set, falling back to the parent's own recorded value for
     /// every axis left null -- adapter, model, effort, workspace, timeout. Public so it is unit-testable
     /// against a hand-built <see cref="WorkerBindingConfigEntry"/> without a room on disk, the same
@@ -298,6 +307,9 @@ public static class RedispatchCommand
             // value across a vendor swap would stream-json a claude/agy worker (or text-mode a non-streaming one).
             // Grant/GrantAuditMode/worktree intent stay inherited: spec/baton.md §2 states why.
             StreamJson = RoleDispatch.StreamsJson(adapter),
+            // #1895: the one thing the inherited prompt does NOT carry across -- RoleDispatch's own
+            // method doc has the reasoning, and spec/baton.md §2 records the exception to "verbatim".
+            PromptTemplate = RoleDispatch.WithoutVerifyResultsParagraph(parentEntry.PromptTemplate),
             // A redispatch is a fresh worker turn, never a continuation of the parent's own session.
             SessionId = null,
             ResumeSession = false,
