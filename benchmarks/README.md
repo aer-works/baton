@@ -19,9 +19,9 @@ steps (`on_frontier` across every vendor, `on_vendor_frontier` within one, the c
 when subscriptions do not trade against each other), and one composite, `utility_lambda_<L>` =
 quality minus L times steps. L is the coefficient to argue about: it is a script argument, it is
 written into the column header, and `--sweep` prints the top rows under several values so the argument
-can be had with the table in front of you. `--check` exits 1 if the committed derived file differs from
-a fresh derivation; nothing runs it yet (#1870 wires it into the gates), so until then it is a hand
-check, not an enforcement.
+can be had with the table in front of you. `--check` exits 1 if one committed derived file differs from
+a fresh derivation. The normal gates run `pixi run deepswe-derived-check`, which checks every dated
+snapshot with a raw input and fails when its derived output is stale or missing.
 
 The file is sorted with `on_vendor_frontier` rows first, then by utility, then by quality — so a row a
 same-vendor sibling dominates (Opus xhigh, 73 at 89 steps, behind Opus high's 73 at 73) sorts below

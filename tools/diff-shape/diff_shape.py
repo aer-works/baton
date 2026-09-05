@@ -38,6 +38,7 @@ PROTECTED_TOOLING_PATHS: tuple[tuple[str, str, str], ...] = (
     ("file", "tools/tool-refresh/refresh.py", "tool-refresh-selftest's body (gates.py OVERLAP)"),
     ("file", "tests/Launcher.Tests.ps1", "launcher-selftest's body -- exercises baton.cmd/baton.ps1 against a mock exe fixture (gates.py OVERLAP)"),
     ("dir", "tools/Baton.VendorProbe/", "vendor-check's actual body, the loud half of the drift grace window (gates.py AFTER_BUILD_FAST); a directory because it is a compiled project"),
+    ("file", "benchmarks/deepswe/derive_scores.py", "the checker and selftest bodies for both deepswe-derived gate members (gates.py OVERLAP)"),
 )
 
 # pixi.toml is protected at LINE level, not whole-file (#1744 narrowing of #1603's original
@@ -758,6 +759,7 @@ def selftest() -> int:
             # excluded as "not enforcement", plus vendor-check's actual body.
             ("s", "tools/fleet-glass/worker.selftest.mjs"),
             ("t", "tools/tool-refresh/refresh.py"),
+            ("u", "benchmarks/deepswe/derive_scores.py"),
             ("v", "tests/Launcher.Tests.ps1"),
             ("w", "tools/Baton.VendorProbe/Program.cs"),
         ]
@@ -1325,7 +1327,7 @@ def selftest() -> int:
         print(f"diff-shape: selftest FAIL -- {'; '.join(failures)}", file=sys.stderr)
         return 1
 
-    print("diff-shape: selftest OK (all 41 discrimination arms passed)")
+    print("diff-shape: selftest OK (all 42 discrimination arms passed)")
     return 0
 
 
