@@ -2506,9 +2506,11 @@ public static class MutationInterface
     }
 
     /// <summary>
-    /// #1556: the one journal line naming why a drained arrest intent recorded nothing -- printed,
-    /// never appended to the event log, the same best-effort diagnostic posture
-    /// <see cref="AppendZeroOutputsTripwireIfAnyAsync"/> already uses for a console-only notice.
+    /// #1556: the stderr line naming why a drained arrest intent recorded nothing, the same
+    /// best-effort diagnostic posture <see cref="AppendZeroOutputsTripwireIfAnyAsync"/> already uses
+    /// for a console-only notice. #1916 fix round 2: the call site below also appends a durable
+    /// <see cref="FlowEvent.CancellationRejected"/> for the same drop, so this line is a supplement
+    /// to that record now, not the sole trace of it.
     /// </summary>
     private static void LogDroppedArrestIntent(ExecutionId executionId, string markedBecause, string droppedBecause)
     {

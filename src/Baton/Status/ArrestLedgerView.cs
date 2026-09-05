@@ -33,10 +33,15 @@ public enum ArrestOutcome
 /// <param name="RequestedBy">
 /// <see cref="CancellationOrigin.Operator"/> or <see cref="CancellationOrigin.HostStop"/>, rendered
 /// lower-case; <c>"operator"</c> for a pre-#1762 line carrying no <see cref="CancellationOrigin"/> at
-/// all (that field's own default) and for both room-event-sourced shapes, which are only ever
-/// written from an operator's own <c>cancel.request</c>. There is no distinct "glass" origin: glass
-/// only ever hands an operator a <c>baton cancel</c> command to copy and run themselves, so every
-/// arrest this ledger can see was, from the engine's perspective, requested by the CLI.
+/// all (that field's own default), for both room-event-sourced shapes, and for a
+/// <see cref="FlowEvent.CancellationRejected"/> with no preceding <see cref="FlowEvent.CancellationRequested"/>
+/// to read an origin off (<see cref="ArrestLedgerProjector.Project"/>'s synthesized-orphan branch) —
+/// every one of these is only ever written from an operator's own <c>cancel.request</c>, since
+/// <see cref="Mutation.InFlightExecutionRegistry.MarkArrestIntent"/> (the only caller that can
+/// produce an orphaned rejection) has exactly one caller, itself the operator's own request. There is
+/// no distinct "glass" origin: glass only ever hands an operator a <c>baton cancel</c> command to
+/// copy and run themselves, so every arrest this ledger can see was, from the engine's perspective,
+/// requested by the CLI.
 /// </param>
 /// <param name="Reason">Populated only for <see cref="ArrestOutcome.Rejected"/>.</param>
 /// <param name="ResolvedAtUtc">Null while <see cref="Outcome"/> is null (still pending).</param>
