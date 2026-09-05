@@ -7,6 +7,33 @@ and `src/Baton.Vendors/CHANGELOG.md`, kept as history. New entries are prepended
 `vX.Y.Z`. See `release-please-config.json`. Everything below this line predates the split: the
 repo's single shared version through `0.14.0`.
 
+## [0.35.0](https://github.com/philipreese/baton/compare/v0.34.0...v0.35.0) (2026-09-05)
+
+
+### Features
+
+* **accounting:** Record issue, PR, review verdict, diff shape and conductor resolutions on cost-ledger rows ([#1913](https://github.com/philipreese/baton/issues/1913)) ([1de43a0](https://github.com/philipreese/baton/commit/1de43a0ce8f2c908006b3c725e2ecd1869dbaddb))
+* **cli:** Record every arrest outcome on the room and write the terminal fact when a worker dies outside baton ([#1916](https://github.com/philipreese/baton/issues/1916)) ([88a97b7](https://github.com/philipreese/baton/commit/88a97b7cf423b1b1b9033973e76588261a382b13))
+* **glass:** Read the daemon's projection file by default and keep the pusher's own derivation as the stale fallback ([#1905](https://github.com/philipreese/baton/issues/1905)) ([517382d](https://github.com/philipreese/baton/commit/517382d4863555c0c83ef504d1da9f05be547db8))
+* **memory:** Add the memory audit verb that inventories Claude memory roots against repository identity ([#1908](https://github.com/philipreese/baton/issues/1908)) ([a94bfdb](https://github.com/philipreese/baton/commit/a94bfdb23ea2b10e9fe2080493a606998c5b1078))
+
+
+### Bug Fixes
+
+* **glass:** Project a Codex execution's live tool calls, turns and billed tokens instead of a zero ([#1907](https://github.com/philipreese/baton/issues/1907)) ([2e140ca](https://github.com/philipreese/baton/commit/2e140ca8df753525232340ab2b785da283173b0f))
+* **review:** Refuse a finding with no status instead of binding it to the enum default ([#1922](https://github.com/philipreese/baton/issues/1922)) ([9649990](https://github.com/philipreese/baton/commit/96499906838e6ab5a9c3e166c575bd1420c186a1))
+* **review:** Stamp instruments on a redispatched review and drop the inherited verify paragraph ([#1906](https://github.com/philipreese/baton/issues/1906)) ([cb6a157](https://github.com/philipreese/baton/commit/cb6a1579d14c84ccdfd4121cd99fb3bb13509e86))
+
+
+### Documentation
+
+* **vendors:** Place agy's model catalogue into the canonical purpose tiers from the 2026-09-05 measurement ([#1925](https://github.com/philipreese/baton/issues/1925)) ([9e47c59](https://github.com/philipreese/baton/commit/9e47c5964c95628d9c50b73779371a4af5e720a0))
+
+
+### Tests
+
+* **cli:** Widen the live-cancel in-flight window so the arrest lands before the step completes ([#1924](https://github.com/philipreese/baton/issues/1924)) ([c2b1f71](https://github.com/philipreese/baton/commit/c2b1f71ecb3515c4e77ff0b199c19a49064027bc))
+
 ## [0.34.0](https://github.com/philipreese/baton/compare/v0.33.0...v0.34.0) (2026-09-05)
 
 
