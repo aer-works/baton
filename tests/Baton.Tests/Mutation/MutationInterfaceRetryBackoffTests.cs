@@ -307,8 +307,8 @@ public class MutationInterfaceRetryBackoffTests
             var reader = new FlowEventLogReader(logPath);
             var dispatcher = new CoreDispatcher(writer, writer);
 
-            // Control: a started execution with no recorded exit is not labelled as a dead
-            // worker unless the shared probe confirms that fact.
+            // A dead PID remains an abandoned, retryable attempt while the recovery policy has
+            // budget; the terminal dead-worker fact belongs to the exhausted counterpart below.
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-7"),
                 roomDirectory,
@@ -321,7 +321,7 @@ public class MutationInterfaceRetryBackoffTests
                 timeProvider: fakeTime,
                 jitterSource: () => 0.0,
                 cancellationToken: TestContext.Current.CancellationToken,
-                workerLivenessProbe: _ => new EngineLivenessResult(EngineLivenessStatus.Alive));
+                workerLivenessProbe: _ => new EngineLivenessResult(EngineLivenessStatus.Dead));
 
             // StepRetryScheduled is appended after the abandonment's ExecutionFailed, so its
             // presence proves both halves of the recovery happened.
@@ -329,7 +329,10 @@ public class MutationInterfaceRetryBackoffTests
             Assert.Equal(execId, retryEvent.ForExecutionId);
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
-            Assert.Contains(events, e => e is FlowEvent.ExecutionFailed f && f.ExecutionId == execId && f.Reason!.Contains("Abandoned"));
+            var abandoned = Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
+            Assert.Equal(execId, abandoned.ExecutionId);
+            Assert.Equal(FailureClassification.Retryable, abandoned.FailureClassification);
+            Assert.Contains("crash recovery", abandoned.Reason, StringComparison.OrdinalIgnoreCase);
 
             await AdvanceUntilPumpCompletesAsync(fakeTime, pumpTask, TimeSpan.FromSeconds(10));
         }
@@ -341,7 +344,7 @@ public class MutationInterfaceRetryBackoffTests
 
 
     [Fact]
-    public async Task Test7_Dead_worker_pid_is_recorded_as_terminal_failure_with_a_fake_probe()
+    public async Task Test7_Dead_worker_pid_is_recorded_as_terminal_failure_when_recovery_is_exhausted()
     {
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
@@ -363,7 +366,7 @@ public class MutationInterfaceRetryBackoffTests
                         [],
                         ["out.txt"],
                         DependsOn: [],
-                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady)),
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 1, Backoff: BackoffPolicy.Steady)),
                 ]);
             var bindings = new Dictionary<string, WorkerBinding>
             {

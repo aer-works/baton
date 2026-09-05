@@ -1304,9 +1304,9 @@ public static class MutationInterface
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
                     // A checkpoint carries the Core started/exited sets but deliberately not PID
-                    // metadata. Recover it only for this terminal-recovery branch, so a later pump
-                    // can name a confirmed-dead worker rather than leave the room looking quietly
-                    // live. This reuses EngineLivenessProbe; it is a journal recovery read, not a
+                    // metadata. Recover it here so the exhausted-recovery arm can name a confirmed
+                    // dead worker rather than leave the room looking quietly live. This reuses
+                    // EngineLivenessProbe; it is a journal recovery read, not a
                     // second PID polling mechanism.
                     if (crashRecovery.ToFinalizeAsAbandoned.Any(executionId => !workerPidByExecutionId.ContainsKey(executionId)))
                     {
@@ -1319,8 +1319,22 @@ public static class MutationInterface
 
                     foreach (var executionId in crashRecovery.ToFinalizeAsAbandoned)
                     {
+                        var stepState = state.Steps.Single(step => step.LatestExecutionId == executionId);
+                        var stepDefinition = snapshot.Steps.Single(step => step.StepId == stepState.StepId);
+                        var recoveryWillRetry = RetryEngine.MayRetry(
+                            stepState with
+                            {
+                                Status = StepStatus.Failed,
+                                ConsecutiveFailureCount = stepState.ConsecutiveFailureCount + 1,
+                                LatestFailureClassification = FailureClassification.Retryable,
+                            },
+                            stepDefinition.RetryPolicy);
+
+                        // The dead-PID terminal fact applies only when the worker is dead and the
+                        // abandoned failure has no recovery path that RetryEngine will retry.
                         var failure = workerPidByExecutionId.TryGetValue(executionId, out var workerPid)
                             && effectiveWorkerLivenessProbe(workerPid).Status == EngineLivenessStatus.Dead
+                            && !recoveryWillRetry
                             ? new FlowEvent.ExecutionFailed(
                                 executionId,
                                 FailureClassification.Permanent,
