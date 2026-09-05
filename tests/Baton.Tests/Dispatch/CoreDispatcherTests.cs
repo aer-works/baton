@@ -443,14 +443,22 @@ public class CoreDispatcherTests
             var losses = events.OfType<FlowEvent.StreamLogLossDeclared>().ToList();
 
             var stdout = losses.Where(l => l.Stream == ExecutionStreamLogger.StdoutStreamName).ToList();
-            Assert.NotEmpty(stdout);
+            // #1888: exactly two, end to end -- the declaration and the terminal re-announcement. The
+            // count is the assertion: `MarkTerminal` is idempotent and the dispatcher calls it from both
+            // the Exited arm and its own finally, so a third here would mean a duplicate on the wire,
+            // and one would mean the terminal channel never fired on a real dispatch (it was pinned at
+            // unit level in StreamLogLossJournalTests and nowhere else).
+            Assert.Equal(2, stdout.Count);
             Assert.All(stdout, l => Assert.Equal(ExecutionId, l.ExecutionId));
             // The literal ExecutionUsageProjector compares the marker channel against -- a different
             // string here would read as a disagreement between the writer's own two announcements.
             Assert.All(stdout, l => Assert.Equal("stream-truncated-by-write-failure", l.Reason));
             Assert.All(stdout, l => Assert.False(l.MarkerLanded));
-            // The terminal re-announcement: the record that the file channel never carried this at all.
-            Assert.Contains(stdout, l => l.MarkerLanded is false);
+            // Both polarities of the flag #1888 added, which is what makes the pair distinguishable on
+            // the wire: MarkerLanded is false on BOTH of these, so asserting it twice would prove
+            // nothing about which event is the terminal record.
+            Assert.Contains(stdout, l => l.TerminalReannouncement is false);
+            Assert.Contains(stdout, l => l.TerminalReannouncement is true);
             Assert.Contains(losses, l => l.Stream == ExecutionStreamLogger.StderrStreamName);
         }
         finally

@@ -226,7 +226,11 @@ public sealed class ExecutionStreamLogger
     /// production caller; what it does with a report, and why that second channel is worth having, are
     /// <c>spec/baton.md</c> §3's. <b>Called while this logger's lock is held</b>, and on whichever thread
     /// declared the loss (the chunk-delivery thread, or the dispatch thread at terminal): a handler must
-    /// enqueue rather than block, and must not re-enter this logger. Null — every caller but the
+    /// return without blocking that thread on I/O, and must not re-enter this logger. #1888: the
+    /// production handler meets that by STARTING an append and not awaiting it, which is only
+    /// non-blocking because <c>IStreamLogLossJournal.AppendAsync</c> requires an implementation to yield
+    /// before doing I/O — that interface's doc is where the guarantee actually lives; this logger
+    /// enforces nothing and merely states what it needs. Null — every caller but the
     /// dispatcher — leaves the marker and the stderr warning as the only channels, unchanged from #1879.
     /// </param>
     public ExecutionStreamLogger(

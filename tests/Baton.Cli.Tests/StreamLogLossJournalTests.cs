@@ -215,6 +215,7 @@ public sealed class StreamLogLossJournalTests
         ExecutionId executionId,
         IReadOnlyList<string>? stdoutLines = null,
         bool marker = false,
+        bool rolloverMarker = false,
         FlowEvent.StreamLogLossDeclared? journalledLoss = null,
         WorkerUsage? arrestedUsage = null)
     {
@@ -243,6 +244,13 @@ public sealed class StreamLogLossJournalTests
         if (marker)
         {
             File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName), []);
+        }
+
+        if (rolloverMarker)
+        {
+            // #1888: #1876's OTHER empty sentinel, the one a stream that rolled twice leaves. Both can
+            // exist at once, which is the case the arms below are about.
+            File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName), []);
         }
 
         if (stdoutLines is not null)
@@ -360,9 +368,11 @@ public sealed class StreamLogLossJournalTests
     [Fact]
     public void Two_channels_that_disagree_are_reported_on_stderr_never_silently_resolved()
     {
-        // Synthetic by construction, and deliberately so -- WarnOnChannelDisagreement's own doc says why
-        // this cannot happen today and is checked anyway. Here: the two reasons differ, so the event
-        // wins AND the mismatch is stated, rather than the loser being dropped in silence.
+        // Synthetic by construction: today's writer only ever journals the write-failure literal, so a
+        // journalled ROLLOVER reason means a hand-edited ledger, a mis-keyed execution id, or a future
+        // third producer -- WarnOnChannelDisagreement's own doc enumerates them, and #1888 corrected
+        // what that doc used to claim was unreachable. Here: the two reasons differ, so the event wins
+        // AND the mismatch is stated, rather than the loser being dropped in silence.
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1885-disagree-{Guid.NewGuid():N}");
         var originalError = Console.Error;
         using var stderr = new StringWriter();
@@ -389,6 +399,91 @@ public sealed class StreamLogLossJournalTests
         finally
         {
             Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void Both_markers_present_with_the_journalled_write_failure_agree_and_print_nothing()
+    {
+        // #1888. The false positive the reorder closes: a long lane that announced BOTH of
+        // spec/baton.md §3's gaps -- the rollover marker and the write-failure marker, the latter also
+        // journalled. Two truthful channels, one fact each -- and while the
+        // rollover marker was read first, the projector compared the rollover reason against the
+        // write-failure event and printed a disagreement that was not one. This arm fails on the
+        // pre-#1888 order in both directions: the warning appears AND the reported reason is rollover.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1888-both-markers-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        using var stderr = new StringWriter();
+        try
+        {
+            Console.SetError(stderr);
+            var executionId = new ExecutionId("exec-1888-both-markers");
+            var view = Project(
+                testRoot,
+                executionId,
+                stdoutLines: [ClaudeAssistantLine, ClaudeTerminalLine],
+                marker: true,
+                rolloverMarker: true,
+                journalledLoss: new FlowEvent.StreamLogLossDeclared(
+                    executionId, ExecutionStreamLogger.StdoutStreamName, WriteFailureReason, 4096, MarkerLanded: true));
+
+            Console.SetError(originalError);
+
+            Assert.Equal(WriteFailureReason, view.BilledReconciliationUnavailable);
+            Assert.Equal(string.Empty, stderr.ToString());
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void Both_markers_and_no_journalled_event_report_the_write_failure_reason()
+    {
+        // The precedence the arm above rests on, pinned on its own so it is not merely a side effect of
+        // an agreement test -- spec/baton.md §3 states this ranking (host obstruction outranks the
+        // expected cost of the retention ceiling), and the ranking is what a file-channel-only reader
+        // sees. Also the control for the reorder: with no event at all, the marker read alone decides.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1888-markers-only-{Guid.NewGuid():N}");
+        try
+        {
+            var view = Project(
+                testRoot,
+                new ExecutionId("exec-1888-markers-only"),
+                stdoutLines: [ClaudeAssistantLine, ClaudeTerminalLine],
+                marker: true,
+                rolloverMarker: true);
+
+            Assert.Equal(WriteFailureReason, view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void The_rollover_marker_alone_still_reports_the_rollover_reason()
+    {
+        // The discriminating control for the two arms above: without this, a reorder that reported
+        // "write-failure" for EVERY truncated stream would pass both of them, and #1876's two reason
+        // strings -- kept apart because their remedies differ -- would have quietly become one.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1888-rollover-only-{Guid.NewGuid():N}");
+        try
+        {
+            var view = Project(
+                testRoot,
+                new ExecutionId("exec-1888-rollover-only"),
+                stdoutLines: [ClaudeAssistantLine, ClaudeTerminalLine],
+                rolloverMarker: true);
+
+            Assert.Equal("stream-truncated-by-rollover", view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }

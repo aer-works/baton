@@ -18,13 +18,14 @@ namespace Baton.Store;
 /// step — e.g. dispatching an <see cref="ExecutionRequest"/> to Core — before the preceding
 /// intent is durable.</item>
 /// </list>
-/// Implements both <see cref="IEventLogWriter"/> (Flow's own events) and
-/// <see cref="ICoreEventLogWriter"/> (Core-originated lifecycle events, M7 Phase 6) over one
+/// Implements <see cref="IEventLogWriter"/> (Flow's own events),
+/// <see cref="ICoreEventLogWriter"/> (Core-originated lifecycle events, M7 Phase 6) and
+/// <see cref="IStreamLogLossJournal"/> (#1888's one-event handle) over one
 /// shared, gated stream — the single physical file the dual-log-ownership decision requires,
 /// with ownership enforced by <see cref="LogEntry"/>'s type split rather than by which writer
 /// interface a caller happens to hold.
 /// </summary>
-public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, IAsyncDisposable
+public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, IStreamLogLossJournal, IAsyncDisposable
 {
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
@@ -118,6 +119,15 @@ public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, I
         ArgumentNullException.ThrowIfNull(flowEvent);
         return AppendEntryAsync(new LogEntry.FlowLogEntry(flowEvent, DateTime.UtcNow), cancellationToken);
     }
+
+    /// <summary>
+    /// #1888: explicit, so the narrow handle exists without adding an overload the general
+    /// <see cref="AppendAsync(FlowEvent, CancellationToken)"/> call sites could bind to by accident.
+    /// Same line, same gate, same fsync — the interface exists to bound the CALLER, not to write
+    /// differently.
+    /// </summary>
+    Task IStreamLogLossJournal.AppendAsync(FlowEvent.StreamLogLossDeclared loss, CancellationToken cancellationToken)
+        => AppendAsync(loss, cancellationToken);
 
     public Task AppendAsync(CoreEvent coreEvent, CancellationToken cancellationToken = default)
     {

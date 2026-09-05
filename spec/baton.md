@@ -2304,11 +2304,24 @@ the event first, and a journalled loss withholds the reconciliation triple exact
 a Σ replayed over a holed stream is a fabricated under-read whether or not the hole was announced on
 disk. When both are present they must agree; a **disagreement is reported on stderr rather than
 resolved in silence**, because two announcements of one fact that differ mean something upstream is
-wrong that picking a winner would hide. The event is emitted by `CoreDispatcher`, never by the stream
+wrong that picking a winner would hide. **Both markers can be on disk at once** — a stream that rolled
+twice *and* lost a chunk the retry buffer could not hold — and a reader that reports one reason must
+therefore rank them: the **write-failure reason wins**, because its remedy is the host obstructing the
+writer while a rollover gap is the expected cost of the retention ceiling above. That ranking is also
+what keeps the agreement rule honest, since the journalled channel only ever carries the write-failure
+literal: ranking rollover first made the one room where both channels are *right* report itself as a
+disagreement (#1888). A rollover marker standing alone against a journalled write-failure loss — the
+write-failure marker refused, the rollover one written — still warns, and correctly: those are two gaps
+rather than two accounts of one, and the file channel is describing a different gap than the writer
+declared. The event is emitted by `CoreDispatcher`, never by the stream
 logger itself — the logger is a core-layer file writer and owns no journal; it reports the latch out in
 primitives and the dispatcher is the only party that names a flow event. It is emitted once when the
 loss is latched and again at terminal if the marker still has not landed, that second event carrying
-`MarkerLanded: false` as the durable record that the file channel never carried this loss at all.
+`MarkerLanded: false` as the durable record that the file channel never carried this loss at all — and
+`TerminalReannouncement: true` to say *which* event it is, because `MarkerLanded: false` does not
+distinguish the two (the first event carries `false` too whenever the marker had not landed yet, and on
+an initialization failure the pair is otherwise identical on the wire). A line written before #1888
+carries no such field, and its absence reads as unknown rather than as the declaration.
 Diagnostic-only in `StateProjector`: durable in the ledger, no `StepState`/`FlowState` consequence.
 Only a `stdout` loss reaches `billedReconciliationUnavailable` — the projector's terminal read and its
 replay both consume `.stdout.log` and nothing else — so a `stderr` loss is durable and correctly

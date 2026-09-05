@@ -366,15 +366,36 @@ public static class ExecutionUsageProjector
     }
 
     /// <summary>
-    /// #1885: <c>spec/baton.md</c> §3's agreement rule, enforced. Not reachable today from one
-    /// execution's own writer — both channels come off the same in-memory latch and carry the same
-    /// literal — so a mismatch means a hand-edited ledger, a mis-keyed execution id, or a future third
-    /// producer. Checked anyway: that is exactly the class of drift no test of the happy path can see.
+    /// #1885: <c>spec/baton.md</c> §3's agreement rule, enforced. The two channels announce one
+    /// write-failure loss off one in-memory latch and carry the same literal, so a mismatch is never
+    /// those two disagreeing about it.
+    /// <para>
+    /// #1888 corrects what this comment used to claim. It said a mismatch was unreachable from one
+    /// execution's own writer, which was false, and the marker-read order was what made it false: with
+    /// rollover checked first, a stream that both double-rolled and lost a chunk announced
+    /// <c>stream-truncated-by-rollover</c> on the file channel against a journalled
+    /// <c>stream-truncated-by-write-failure</c> — one writer, both channels truthful, warning printed.
+    /// <c>TryReadWorkerUsage</c> now reads the write-failure marker first, so that room compares like
+    /// with like and is silent.
+    /// </para>
+    /// <para>
+    /// What stays reachable, and is not a defect: the SAME room with the write-failure marker refused
+    /// (an obstructed output directory) and only the rollover marker on disk. The file channel then
+    /// names the rollover gap while the event names the write-failure one — two gaps, not two accounts
+    /// of one — and the warning fires. Its wording is true of that case: the files may describe a
+    /// different gap than the one the writer declared. Comparing the journalled reason against the SET
+    /// of markers present, rather than against the precedence winner, is what would distinguish it from
+    /// genuine drift; #1888 did not do that, and until something does, the remaining causes of a
+    /// mismatch (hand-edited ledger, mis-keyed execution id, a future third producer) reach the same
+    /// line as that benign one.
+    /// </para>
     /// <para>
     /// Once per execution id per process. This projector re-runs on every <c>fleet_status</c> poll over
     /// an overwhelmingly complete execution set, so an unconditional write would repeat one stale line
     /// at the poll cadence for the life of the daemon — the same reason
-    /// <c>ExecutionStreamLogger.MarkerFailureWarned</c> exists.
+    /// <c>ExecutionStreamLogger.MarkerFailureWarned</c> exists. The dictionary is uncapped and stays so:
+    /// it now admits a reachable case rather than a provably empty one, but it holds one string per
+    /// execution that announced a loss two ways, which is bounded by the room's own execution count.
     /// </para>
     /// </summary>
     private static void WarnOnChannelDisagreement(string executionId, string journalledReason, string? markerReason)
@@ -620,18 +641,23 @@ public static class ExecutionUsageProjector
         // ExecutionStreamLogger.StdoutTruncationMarkerFileName. Here: seeing the marker turns a
         // would-be fabricated under-read into an honest "unknown". Not seeing it is only evidence for
         // streams captured since that landed.
-        if (File.Exists(truncationMarkerPath))
-        {
-            return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByRolloverReason));
-        }
-
-        // #1876: the other announced gap -- same posture as the rollover branch above, deliberately a
+        // #1876: the other announced gap -- same posture as the rollover branch below, deliberately a
         // DIFFERENT reason string. Why the two are kept apart, and why a failure the retry buffer
-        // absorbed writes no marker and so reaches this branch as an ordinary whole stream, is in
+        // absorbed writes no marker and so reaches neither branch as an ordinary whole stream, is in
         // spec/baton.md §3.
+        //
+        // #1888: and it is read FIRST, which matters only when BOTH markers are on disk. This function
+        // reports one reason, and which of the two outranks the other is spec/baton.md §3's ruling --
+        // not restated here, including its second half about what the order costs the agreement check.
+        // Checking rollover first is what #1888 found: see WarnOnChannelDisagreement.
         if (File.Exists(writeFailureMarkerPath))
         {
             return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByWriteFailureReason));
+        }
+
+        if (File.Exists(truncationMarkerPath))
+        {
+            return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByRolloverReason));
         }
 
         string[] rolledLines = [];

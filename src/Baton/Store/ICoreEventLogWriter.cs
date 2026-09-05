@@ -9,13 +9,14 @@ namespace Baton.Store;
 /// mutation logic writes through <see cref="IEventLogWriter"/> instead — separate interfaces are
 /// what enforce, in the type system, which half of the log a given caller may write to.
 /// <para>
-/// One narrow, deliberate breach since #1885: <c>CoreDispatcher</c> also takes an
-/// <see cref="IEventLogWriter"/>, for exactly one event — <c>FlowEvent.StreamLogLossDeclared</c>. The
-/// fact it carries is Core's own (its stream logger lost bytes), but it has to reach
-/// <c>ExecutionUsageProjector</c> through a writer that is not writing into the obstructed execution
-/// output directory, and a reader of the journal is better served by one event type per fact than by a
-/// Core event that duplicates a Flow one. The separation above still holds for every other event, and
-/// the constructor parameter's own doc is where that breach is argued.
+/// One Flow event is written by <c>CoreDispatcher</c> all the same, since #1885:
+/// <c>FlowEvent.StreamLogLossDeclared</c>. The fact it carries is Core's own (its stream logger lost
+/// bytes), but it has to reach <c>ExecutionUsageProjector</c> through a writer that is not writing into
+/// the obstructed execution output directory, and a reader of the journal is better served by one event
+/// type per fact than by a Core event that duplicates a Flow one. That is not a breach of the rule
+/// above: the dispatcher holds <see cref="IStreamLogLossJournal"/>, a third interface admitting exactly
+/// that one event, so "which part of the log may this caller write" stays a compiler question and never
+/// became a doc-comment promise (#1888).
 /// </para>
 /// </summary>
 public interface ICoreEventLogWriter

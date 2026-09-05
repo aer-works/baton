@@ -554,12 +554,25 @@ public abstract record FlowEvent
     /// second event carrying <c>false</c> means and why the fact is a field rather than a suffix on
     /// <paramref name="Reason"/>.
     /// </param>
+    /// <param name="TerminalReannouncement">
+    /// #1888: which of the two emissions this is — <c>false</c> for the declaration, <c>true</c> for the
+    /// terminal re-announcement. Carried because <paramref name="MarkerLanded"/> does not identify
+    /// either one; <c>spec/baton.md</c> §3 is where that is argued.
+    /// <para>
+    /// <c>null</c> means <b>a pre-#1888 writer said nothing</b> — deliberately not <c>false</c>, which
+    /// would assert "this was the declaration" about a line that never carried the fact. Omitted from
+    /// the wire when null (the one <c>WhenWritingNull</c> in this union), so replaying an old journal
+    /// and re-serializing it does not invent a field its writer never had.
+    /// </para>
+    /// </param>
     public sealed record StreamLogLossDeclared(
         ExecutionId ExecutionId,
         string Stream,
         string Reason,
         long? BytesSurrendered = null,
-        bool MarkerLanded = false) : FlowEvent;
+        bool MarkerLanded = false,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        bool? TerminalReannouncement = null) : FlowEvent;
 
     /// <summary>
     /// #1549: an operator's <c>cancel.request</c> actually reached a live, still-registered

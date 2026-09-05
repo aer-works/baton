@@ -473,15 +473,18 @@ internal sealed class StdoutLineBuffer
 /// Core's lifecycle events to the combined log (M7 Phase 6). This is the only place in
 /// <c>Baton</c> that touches <c>Baton.Core</c> directly.
 /// </summary>
-/// <param name="flowEventLogWriter">
-/// #1885: the ONE flow event this dispatcher is allowed to write —
-/// <see cref="FlowEvent.StreamLogLossDeclared"/>, and nothing else. Required rather than optional
+/// <param name="streamLogLossJournal">
+/// #1885: the journal handle for the ONE flow event this dispatcher writes —
+/// <see cref="FlowEvent.StreamLogLossDeclared"/>. #1888 made that a fact about the type rather than a
+/// promise in this comment: the parameter is an <see cref="IStreamLogLossJournal"/>, which admits that
+/// event and no other, so appending anything else here does not compile.
+/// Required rather than optional
 /// precisely because the alternative fails open with plausible output: a caller that forgot to pass one
 /// would still write the marker file on most hosts, so the missing second channel would only ever be
 /// noticed on the host that needed it. <see cref="Store.ICoreEventLogWriter"/>'s own doc states the
-/// caller/half separation this narrowly breaches, and why.
+/// caller/half separation this sits alongside, and why.
 /// </param>
-public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter, IEventLogWriter flowEventLogWriter) : ICoreDispatcher
+public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter, IStreamLogLossJournal streamLogLossJournal) : ICoreDispatcher
 {
     /// <summary>
     /// How many characters of a worker's stderr are retained for
@@ -848,18 +851,21 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter, IEven
         // ceremony: this callback fires on BatonTask's chunk-delivery thread for a mid-run loss and on
         // this method's own thread for the terminal re-announcement, and `pendingLogWrites` is a plain
         // List the Exited arm below also appends to. AppendAsync is started, never awaited, because the
-        // callback runs while ExecutionStreamLogger holds its own lock (see that parameter's doc) --
-        // Task.WhenAll below is what actually waits for these, exactly like the Core events.
+        // callback runs while ExecutionStreamLogger holds its own lock -- and it is IStreamLogLossJournal
+        // .AppendAsync's own "yield before you do I/O" clause, not this call site, that keeps starting it
+        // there from blocking the chunk-delivery thread. Task.WhenAll below is what actually waits for
+        // these, exactly like the Core events.
         var pendingLogWritesLock = new object();
         void JournalStreamLogLoss(ExecutionStreamLogger.StreamLogLoss loss)
         {
-            var append = flowEventLogWriter.AppendAsync(
+            var append = streamLogLossJournal.AppendAsync(
                 new FlowEvent.StreamLogLossDeclared(
                     request.ExecutionId,
                     loss.StreamName,
                     StreamLogLossReason,
                     loss.BytesSurrendered,
-                    loss.MarkerWritten),
+                    loss.MarkerWritten,
+                    loss.TerminalReannouncement),
                 CancellationToken.None);
             lock (pendingLogWritesLock)
             {
