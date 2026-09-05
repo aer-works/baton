@@ -168,6 +168,8 @@ public class FlowEventSerializationTests
         yield return [new FlowEvent.ExecutionProgress(ExecutionId)];
         yield return [new FlowEvent.CancellationDelivered(ExecutionId)];
         yield return [new FlowEvent.CancellationRejected(ExecutionId)];
+        // #1530: Reason is the newest additive member on CancellationRejected.
+        yield return [new FlowEvent.CancellationRejected(ExecutionId, "arrest requested but not yet confirmed settled")];
 
         // #734
         yield return [new FlowEvent.DeliveryPrOpened(123)];
@@ -345,6 +347,48 @@ public class FlowEventSerializationTests
 
         var cancellationRequested = Assert.IsType<FlowEvent.CancellationRequested>(deserialized);
         Assert.Equal(CancellationOrigin.HostStop, cancellationRequested.Origin);
+    }
+
+    private static string LegacyCancellationRejectedJson()
+    {
+        // #1530: Reason is the newest additive member on CancellationRejected -- same durability
+        // claim as LegacyCancellationRequestedJson's own Origin fixture above, mirrored for this field.
+        var current = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.CancellationRejected(ExecutionId, "some reason"),
+            typeof(FlowEvent));
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(current)!.AsObject();
+
+        Assert.True(node.Remove(nameof(FlowEvent.CancellationRejected.Reason)));
+
+        return node.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserializing_legacy_CancellationRejected_without_Reason_property_deserializes_with_null_Reason()
+    {
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(
+            LegacyCancellationRejectedJson(), FlowEventLogJson.Options);
+
+        var cancellationRejected = Assert.IsType<FlowEvent.CancellationRejected>(deserialized);
+        Assert.Equal(ExecutionId, cancellationRejected.ExecutionId);
+        Assert.Null(cancellationRejected.Reason);
+    }
+
+    [Fact]
+    public void Deserializing_current_CancellationRejected_with_Reason_property_sets_Reason()
+    {
+        // The polarity control for the test above: same event shape, Reason present rather than
+        // stripped.
+        var currentJson = JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.CancellationRejected(ExecutionId, "arrest requested but not yet confirmed settled"),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options);
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(currentJson, FlowEventLogJson.Options);
+
+        var cancellationRejected = Assert.IsType<FlowEvent.CancellationRejected>(deserialized);
+        Assert.Equal("arrest requested but not yet confirmed settled", cancellationRejected.Reason);
     }
 
     /// <summary>

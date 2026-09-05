@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Store;
 
 namespace Baton.Cli;
 
@@ -136,7 +138,7 @@ public static class CancelRequestFile
     /// always stamps both fields and so never reaches that branch.
     /// </remarks>
     public static async Task DeleteStalePendingRequestAsync(
-        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default)
+        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default, string? roomLogPath = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = GetPath(roomDirectoryPath);
@@ -148,7 +150,15 @@ public static class CancelRequestFile
         var content = await TryReadAsync(path, cancellationToken).ConfigureAwait(false);
         if (content is not { WrittenAtUtc: { } writtenAtUtc, WriterPid: { } writerPid })
         {
+            // #1530: a request with no WrittenAtUtc recorded has no reliable "requested at" instant —
+            // the file's own mtime is the least-wrong stand-in, same fallback TickAsync's own record
+            // uses for a malformed request it can't otherwise date. Must be read BEFORE the rename
+            // below: a FileInfo built against the post-rename (now-missing) path reports the .NET
+            // "file not found" sentinel, 1601-01-01T00:00:00Z, not the real mtime.
+            var lastWriteUtc = new FileInfo(path).LastWriteTimeUtc;
             RenameBestEffort(path, $"{path}.swept");
+            await TryRecordExpiredAsync(roomLogPath, content?.Target ?? string.Empty, lastWriteUtc, cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -168,6 +178,45 @@ public static class CancelRequestFile
         }
 
         RenameBestEffort(path, $"{path}.swept");
+        await TryRecordExpiredAsync(roomLogPath, content.Target, writtenAtUtc.UtcDateTime, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// #1530: records <see cref="RoomEvent.ArrestRequestExpired"/> — the ledger's fact for a request
+    /// that aged out unserved. Same best-effort shape as <see cref="CancelRequestPoller"/>'s sibling
+    /// <c>TryRecordUnresolvableAsync</c> (that method's own doc has the swallow-and-log reasoning);
+    /// this call site's own twist is timing — it runs at pump start, before the room's own poller
+    /// even exists.
+    /// </summary>
+    private static async Task TryRecordExpiredAsync(
+        string? roomLogPath, string target, DateTime requestedAtUtc, CancellationToken cancellationToken)
+    {
+        if (roomLogPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var roomWriter = new RoomEventLogWriter(roomLogPath);
+            var now = DateTimeOffset.UtcNow;
+            await roomWriter.AppendAsync(
+                    new RoomEvent.ArrestRequestExpired(
+                        target, new DateTimeOffset(DateTime.SpecifyKind(requestedAtUtc, DateTimeKind.Utc)), now),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                Console.Error.WriteLine($"Could not record expired cancel.request to '{roomLogPath}': {ex.Message}");
+            }
+            catch
+            {
+                // F6: swallow broken stderr pipe
+            }
+        }
     }
 
     /// <summary>Fail-closed outcome for unresolvable or undeliverable requests: logs why and records a rejected record with reason in body.</summary>

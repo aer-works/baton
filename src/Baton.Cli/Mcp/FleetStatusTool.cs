@@ -384,11 +384,32 @@ public sealed class FleetStatusTool : IMcpTool
             }
 
             var outcome = WorkflowOutcome.Describe(state);
+            // #1530: same two-log read StatusCommand's own JSON path does -- room.jsonl for the two
+            // rejection shapes with no ExecutionId to key a flow.jsonl fact on, flow.jsonl (via
+            // `entries`, already read above) for every shape that does.
+            IReadOnlyList<ArrestLedgerEntry> arrestLedger;
+            try
+            {
+                var roomLogPath = Path.Combine(roomDir, BatonPaths.RoomLogFileName);
+                var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+                arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+            }
+            catch (FlowEventLogReadException)
+            {
+                // #1916 fix round 2: a room.jsonl line this build's RoomEventLogReader cannot
+                // deserialize (an unknown $type from a version-skew write) used to escape uncaught
+                // this far into the room's projection, so the broad catch below collapsed the WHOLE
+                // row -- steps, status, delivery, ledger -- into {name, path, error}, even though only
+                // the ledger read failed. Degrade just the ledger instead, the same posture
+                // StatusCommand's own text/JSON paths take for this identical read.
+                arrestLedger = [];
+            }
+
             // Explicit for readability -- a null/omitted registry now falls back to this same
             // StandardWorkerUsageParsers.Default internally (#1590), so this argument is redundant
             // rather than load-bearing, but names the parser set the tool's usage figures depend on.
             var view = WorkflowStatusProjector.Project(
-                state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default);
+                state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default, arrestLedger);
             var eventTimestamps = WorkflowStatusProjector.ExtractEventTimestamps(entries);
 
             var steps = new List<FleetStepStatusView>(view.Steps.Count);
@@ -462,7 +483,8 @@ public sealed class FleetStatusTool : IMcpTool
                 // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
                 // which never turns a terminal room into a Running one.
                 TerminalAt: view.TerminalAt,
-                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false));
+                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false),
+                Arrests: view.Arrests);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -738,7 +760,13 @@ public sealed record FleetRoomStatusView(
     // #734: spec/baton.md §6 schema states this field's shape and its absence rule -- see there.
     [property: JsonPropertyName("delivery")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DeliveryStatusView? Delivery = null);
+    DeliveryStatusView? Delivery = null,
+    // #1530: the room-level WorkflowStatusView.Arrests, copied the same way every other
+    // room-level field above is (Rejected/ResolvedBy/TerminalAt) -- absent-safe, so the glass can
+    // render a room with no cancel.request history exactly as it does today.
+    [property: JsonPropertyName("arrests")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ArrestLedgerEntryView>? Arrests = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

@@ -42,6 +42,9 @@ public class RoomEventSerializationTests
         // two rows above cover for Model/Effort.
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant, "operator"),
+        // #1530
+        new RoomEvent.ArrestRequestUnresolvable("latest", "ambiguous — 2 candidates", FixedInstant, FixedInstant),
+        new RoomEvent.ArrestRequestExpired("exec-1", FixedInstant, FixedInstant),
     ];
 
     [Theory]

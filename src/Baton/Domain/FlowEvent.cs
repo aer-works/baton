@@ -597,7 +597,15 @@ public abstract record FlowEvent
     /// <c>latest</c> (no execution ever named) has nothing to key an execution-scoped journal fact
     /// on and stays a file-and-stderr-only rejection, same as before this event existed.
     /// </summary>
-    public sealed record CancellationRejected(ExecutionId ExecutionId) : FlowEvent;
+    /// <param name="Reason">
+    /// #1530: the same reason string <c>CancelRequestFile.Reject</c> writes into the <c>.rejected</c>
+    /// file body — previously this event was content-free, so the room-side arrest ledger
+    /// (<c>Status.ArrestLedgerProjector</c>) had to fall back to the ephemeral file for the "why",
+    /// which the next <c>cancel.request</c> write silently overwrites. Nullable and defaulted per
+    /// this union's own replay rule (<see cref="ExecutionSucceeded.WorkspaceChanged"/>'s remarks): a
+    /// line written before #1530 carries no reason and replays as null.
+    /// </param>
+    public sealed record CancellationRejected(ExecutionId ExecutionId, string? Reason = null) : FlowEvent;
 
     /// <summary>#734: see spec/baton.md §2's "Delivery state facts" for the producer and the no-action rule shared by all four of these cases — not restated per-case here.</summary>
     /// <param name="Branch">The room's own declared branch name, when the step also declared one.</param>

@@ -146,8 +146,14 @@ public sealed class InFlightExecutionRegistry
     /// the successful-delivery half of the same flow. A no-op if this instance was never bound (no
     /// live pump call, e.g. a unit test exercising the poller directly).
     /// </summary>
-    public async Task RecordCancellationRejectedAsync(ExecutionId targetExecutionId, CancellationToken cancellationToken = default)
+    /// <param name="reason">
+    /// #1530: the same string the caller already hands <c>CancelRequestFile.Reject</c>, carried onto
+    /// <see cref="FlowEvent.CancellationRejected"/> so the durable journal — not just the ephemeral
+    /// <c>.rejected</c> file a later <c>cancel.request</c> write can overwrite — records why.
+    /// </param>
+    public async Task RecordCancellationRejectedAsync(ExecutionId targetExecutionId, string reason, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrEmpty(reason);
         IEventLogWriter? eventLogWriter;
         lock (_lock)
         {
@@ -159,7 +165,7 @@ public sealed class InFlightExecutionRegistry
             return;
         }
 
-        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRejected(targetExecutionId), cancellationToken)
+        await eventLogWriter.AppendAsync(new FlowEvent.CancellationRejected(targetExecutionId, reason), cancellationToken)
             .ConfigureAwait(false);
     }
 

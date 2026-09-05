@@ -198,7 +198,56 @@ public sealed record WorkflowStatusView(
     // absent in: spec/baton.md §3.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? TerminalAt = null);
+    string? TerminalAt = null,
+    // #1530: the room-side arrest ledger -- absent (never an empty array) for a room with no
+    // cancel.request in its history, so a consumer can test presence rather than length.
+    [property: JsonPropertyName("arrests")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ArrestLedgerEntryView>? Arrests = null,
+    // #1916 fix round 2: the text-mode reader already has `Arrests: ledger unavailable (<reason>)`
+    // (StatusCommand.PrintArrestLedger) to tell "the read failed" apart from "no cancel.request in
+    // this room's history" -- both render Arrests absent here, so a --json consumer had no way to
+    // make the same distinction. Present only on the read-failure path; a clean empty ledger keeps
+    // this null.
+    [property: JsonPropertyName("arrestLedgerUnavailableReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ArrestLedgerUnavailableReason = null);
+
+/// <summary>
+/// #1530: the wire shape for one <see cref="ArrestLedgerEntry"/> — plain strings throughout, the
+/// same convention every other identifier on <see cref="WorkflowStatusStepView"/> already follows
+/// (<c>Execution</c> is a bare <c>string?</c>, never a raw <see cref="ExecutionId"/>), since this
+/// view is serialized under <see cref="System.Text.Json.JsonSerializerOptions"/> defaults
+/// (<c>StatusCommand</c>'s plain <c>JsonSerializer.Serialize(view)</c> call), not
+/// <see cref="Store.FlowEventLogJson.Options"/>.
+/// </summary>
+public sealed record ArrestLedgerEntryView(
+    [property: JsonPropertyName("target")] string Target,
+    [property: JsonPropertyName("executionId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ExecutionId,
+    // Absent while the request is still pending settlement -- see ArrestLedgerEntry.Outcome's own remarks.
+    [property: JsonPropertyName("outcome")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Outcome,
+    [property: JsonPropertyName("requestedBy")] string RequestedBy,
+    [property: JsonPropertyName("reason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Reason,
+    [property: JsonPropertyName("requestedAt")] string RequestedAt,
+    [property: JsonPropertyName("resolvedAt")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResolvedAt)
+{
+    public static ArrestLedgerEntryView From(ArrestLedgerEntry entry) => new(
+        entry.Target,
+        entry.ExecutionId?.Value,
+        entry.Outcome?.ToString().ToLowerInvariant(),
+        entry.RequestedBy,
+        entry.Reason,
+        entry.RequestedAtUtc.ToString("O"),
+        entry.ResolvedAtUtc?.ToString("O"));
+}
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -229,15 +278,19 @@ public static class WorkflowStatusProjector
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
-        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null) =>
-        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters);
+        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
+        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null,
+        string? arrestLedgerUnavailableReason = null) =>
+        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters, arrestLedger, arrestLedgerUnavailableReason);
 
     public static WorkflowStatusView Project<TParser>(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
-        IReadOnlyDictionary<string, TParser>? adapters = null)
+        IReadOnlyDictionary<string, TParser>? adapters = null,
+        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null,
+        string? arrestLedgerUnavailableReason = null)
         where TParser : IWorkerUsageParser
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -402,9 +455,14 @@ public static class WorkflowStatusProjector
             terminalAt = TerminalInstantResolver.Resolve(entries, snapshot).AtUtc?.ToString("O");
         }
 
+        var arrestViews = arrestLedger is { Count: > 0 }
+            ? arrestLedger.Select(ArrestLedgerEntryView.From).ToList()
+            : null;
+
         return new WorkflowStatusView(
             WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected,
-            ResolvedBy: resolvedBy, TerminalAt: terminalAt);
+            ResolvedBy: resolvedBy, TerminalAt: terminalAt, Arrests: arrestViews,
+            ArrestLedgerUnavailableReason: arrestLedgerUnavailableReason);
     }
 
     /// <summary>

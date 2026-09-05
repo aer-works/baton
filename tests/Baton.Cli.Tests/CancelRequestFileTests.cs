@@ -176,6 +176,42 @@ public class CancelRequestFileTests
         try
         {
             var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            var invocationStartUtc = DateTimeOffset.UtcNow;
+            var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
+            File.WriteAllText(
+                pendingPath,
+                $$"""{"Target":"stale-exec","WriterPid":999999,"WriterProcessStartTimeUtc":"{{writtenAtUtc:O}}","WrittenAtUtc":"{{writtenAtUtc:O}}"}""");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken, roomLogPath);
+
+            Assert.False(File.Exists(pendingPath), "a genuinely stale request must still be swept");
+            Assert.True(File.Exists($"{pendingPath}.swept"));
+
+            // #1530: the swept request is neither delivered nor rejected -- room.jsonl is its only
+            // durable record beyond the renamed .swept sibling.
+            var roomReader = new Baton.Store.RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var expired = Assert.Single(roomEvents.OfType<Baton.Domain.RoomEvent.ArrestRequestExpired>());
+            Assert.Equal("stale-exec", expired.Target);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Polarity control (same shape CancelRequestPollerTests' own room-log-path controls take): omit
+    // roomLogPath, assert silence.
+    [Fact]
+    public async Task DeleteStalePendingRequest_with_no_room_log_path_given_does_not_write_room_jsonl()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
             var invocationStartUtc = DateTimeOffset.UtcNow;
             var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
             File.WriteAllText(
@@ -185,8 +221,8 @@ public class CancelRequestFileTests
             await CancelRequestFile.DeleteStalePendingRequestAsync(
                 roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken);
 
-            Assert.False(File.Exists(pendingPath), "a genuinely stale request must still be swept");
-            Assert.True(File.Exists($"{pendingPath}.swept"));
+            Assert.False(File.Exists(pendingPath));
+            Assert.False(File.Exists(Path.Combine(roomDirectory, "room.jsonl")));
         }
         finally
         {
@@ -244,6 +280,42 @@ public class CancelRequestFileTests
 
             Assert.True(File.Exists(pendingPath), "a request from a still-alive writer must be left for the poller");
             Assert.False(File.Exists($"{pendingPath}.swept"));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// #1530 fix: see <see cref="CancelRequestFile.DeleteStalePendingRequestAsync"/>'s own remarks on
+    /// its malformed-content arm for the mtime-vs-rename ordering bug this pins. A real file on disk
+    /// (not a fabricated timestamp) is required to reproduce it: it is specifically the OS mtime
+    /// lookup racing the rename that regresses.
+    /// </summary>
+    [Fact]
+    public async Task DeleteStalePendingRequest_records_the_real_mtime_for_malformed_content_not_the_missing_file_sentinel()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            var beforeWriteUtc = DateTime.UtcNow;
+            File.WriteAllText(pendingPath, "not valid json");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken, roomLogPath);
+
+            Assert.True(File.Exists($"{pendingPath}.swept"));
+
+            var roomReader = new Baton.Store.RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var expired = Assert.Single(roomEvents.OfType<Baton.Domain.RoomEvent.ArrestRequestExpired>());
+            Assert.True(
+                expired.RequestedAtUtc >= beforeWriteUtc.AddSeconds(-2),
+                $"expected RequestedAtUtc near {beforeWriteUtc:O}, got {expired.RequestedAtUtc:O} -- the missing-file sentinel (1601-01-01) means the mtime was read after the rename");
         }
         finally
         {
