@@ -328,8 +328,8 @@ public sealed record CostLedgerEntry(
     string? RunwayOverrideReason = null,
 
     // #1901 C1: outcome joins captured while their source room/worktree still exists. Review counts
-    // include confirmed findings only; a refuted or unverified suspicion is evidence in verdict.json,
-    // but is not a ledger finding or a reason to spell the derived verdict BLOCK.
+    // include explicitly classified, confirmed findings only; if a finding omits severity or status,
+    // all counts and the derived verdict stay absent rather than inheriting enum defaults.
     [property: JsonPropertyName("verdict")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Verdict = null,

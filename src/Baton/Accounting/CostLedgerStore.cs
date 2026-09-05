@@ -253,7 +253,7 @@ public static class CostLedgerStore
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex IssueReferencePattern = new(
-        @"\bissues?(?:\s*#|/)\s*[1-9]\d*\b",
+        @"(?:\bissues?\b|/issues/)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LabeledHeadPattern = new(

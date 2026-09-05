@@ -512,6 +512,20 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Null(neverGit["exec-implement"].Deletions);
             Assert.Null(neverGit["exec-implement"].TestFilesChanged);
 
+            var timeoutLedgerPath = Path.Combine(room, "timeout-ledger.jsonl");
+            await CostLedgerStore.AppendAsync(
+                [DiffShapeRow("exec-never-git", neverGit["exec-implement"])],
+                timeoutLedgerPath,
+                TestContext.Current.CancellationToken);
+            var timeoutRow = Assert.Single(await File.ReadAllLinesAsync(
+                timeoutLedgerPath,
+                TestContext.Current.CancellationToken));
+            Assert.Contains("\"execution\":\"exec-never-git\"", timeoutRow, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"filesChanged\"", timeoutRow, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"additions\"", timeoutRow, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"deletions\"", timeoutRow, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"testFilesChanged\"", timeoutRow, StringComparison.Ordinal);
+
             var neverGh = await CostLedgerSettlementMetadata.BuildAsync(
                     entries,
                     room,

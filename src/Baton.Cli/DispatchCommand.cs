@@ -103,8 +103,8 @@ public static class DispatchCommand
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
         // #1901 C1: preserve the caller's named branch before an audited role is moved into a detached
-        // worktree. Settle later uses this stable room fact for issue/PR joins; inability to read git is
-        // an optional-metadata absence and never a dispatch refusal.
+        // worktree. Settle uses this room fact only after the delivering workspace has disappeared;
+        // inability to read git is optional-metadata absence and never a dispatch refusal.
         var workspaceBranch = await CostLedgerSettlementMetadata
             .TryReadBranchAsync(workspace, cancellationToken).ConfigureAwait(false);
         if (workspaceBranch is not null)

@@ -1104,6 +1104,7 @@ public sealed class CostLedgerStoreTests
                     [executionId.Value] = new(
                         Issue: "1901",
                         PullRequest: "2001",
+                        DeliverySource: "workspace-head",
                         FilesChanged: 7,
                         Additions: 42,
                         Deletions: 9,
@@ -1113,6 +1114,7 @@ public sealed class CostLedgerStoreTests
 
             Assert.Equal("1901", populated.Issue);
             Assert.Equal("2001", populated.PullRequest);
+            Assert.Equal("workspace-head", populated.DeliverySource);
             Assert.Equal(7, populated.FilesChanged);
             Assert.Equal(42, populated.Additions);
             Assert.Equal(9, populated.Deletions);
@@ -1120,6 +1122,7 @@ public sealed class CostLedgerStoreTests
 
             Assert.Null(absent.Issue);
             Assert.Null(absent.PullRequest);
+            Assert.Null(absent.DeliverySource);
             Assert.Null(absent.FilesChanged);
             Assert.Null(absent.Additions);
             Assert.Null(absent.Deletions);
@@ -1128,6 +1131,7 @@ public sealed class CostLedgerStoreTests
             var populatedJson = JsonSerializer.Serialize(populated);
             Assert.Contains("\"issue\":\"1901\"", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"pr\":\"2001\"", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"deliverySource\":\"workspace-head\"", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"filesChanged\":7", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"additions\":42", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"deletions\":9", populatedJson, StringComparison.Ordinal);
@@ -1136,6 +1140,7 @@ public sealed class CostLedgerStoreTests
             var absentJson = JsonSerializer.Serialize(absent);
             Assert.DoesNotContain("\"issue\"", absentJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"pr\"", absentJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"deliverySource\"", absentJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"filesChanged\"", absentJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"additions\"", absentJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"deletions\"", absentJson, StringComparison.Ordinal);
@@ -1215,6 +1220,7 @@ public sealed class CostLedgerStoreTests
             {
                 "2001",
                 "issue #2001",
+                "issue reference #2001",
                 "refs/heads/abcdef12abcdef12abcdef12abcdef12abcdef12",
             })
             {
