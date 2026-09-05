@@ -259,10 +259,10 @@ public static class CostLedgerStore
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private sealed record ReviewFields(
-        string Verdict,
-        int FindingsHigh,
-        int FindingsMedium,
-        int FindingsLow,
+        string? Verdict,
+        int? FindingsHigh,
+        int? FindingsMedium,
+        int? FindingsLow,
         int? ReviewedPr,
         string? ReviewedHead);
 
@@ -283,14 +283,18 @@ public static class CostLedgerStore
         }
 
         ReviewVerdict? verdict;
+        bool classificationsAreExplicit;
         try
         {
-            if (!ReviewVerdictSchema.TryParse(File.ReadAllBytes(verdictPath), out verdict, out _))
+            var bytes = File.ReadAllBytes(verdictPath);
+            if (!ReviewVerdictSchema.TryParse(bytes, out verdict, out _))
             {
                 return null;
             }
+
+            classificationsAreExplicit = HasExplicitFindingClassifications(bytes);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             return null;
         }
@@ -299,12 +303,40 @@ public static class CostLedgerStore
             .Where(finding => finding.Status == ReviewFindingStatus.Confirmed)
             .ToList();
         return new ReviewFields(
-            confirmed.Count == 0 ? "APPROVE" : "BLOCK",
-            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.High),
-            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Medium),
-            confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Low),
+            classificationsAreExplicit ? confirmed.Count == 0 ? "APPROVE" : "BLOCK" : null,
+            classificationsAreExplicit
+                ? confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.High)
+                : null,
+            classificationsAreExplicit
+                ? confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Medium)
+                : null,
+            classificationsAreExplicit
+                ? confirmed.Count(finding => finding.Severity == ReviewFindingSeverity.Low)
+                : null,
             ParseReviewedPr(verdict.ReviewedRef),
             ParseReviewedHead(verdict.ReviewedRef));
+    }
+
+    private static bool HasExplicitFindingClassifications(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes);
+        var findings = document.RootElement
+            .EnumerateObject()
+            .First(property => property.Name.Equals("findings", StringComparison.OrdinalIgnoreCase))
+            .Value;
+
+        foreach (var finding in findings.EnumerateArray())
+        {
+            var names = finding.EnumerateObject()
+                .Select(property => property.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!names.Contains("severity") || !names.Contains("status"))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static int? ParseReviewedPr(string reviewedRef)

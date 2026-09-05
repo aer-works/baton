@@ -1220,11 +1220,35 @@ public sealed class CostLedgerStoreTests
             {
                 File.WriteAllText(
                     verdictPath,
-                    $"""{ "reviewedRef": "{{refusedReference}}", "findings": [] }""");
+                    JsonSerializer.Serialize(new { reviewedRef = refusedReference, findings = Array.Empty<object>() }));
                 var refused = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
                 Assert.Null(refused.ReviewedPr);
                 Assert.Null(refused.ReviewedHead);
             }
+
+            File.WriteAllText(
+                verdictPath,
+                """
+                {
+                  "reviewedRef": "PR #2001",
+                  "findings": [
+                    {"claim":"missing both classifications"},
+                    {"severity":"low","claim":"missing status"},
+                    {"claim":"missing severity","status":"confirmed"}
+                  ]
+                }
+                """);
+            var unclassified = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+            Assert.Null(unclassified.Verdict);
+            Assert.Null(unclassified.FindingsHigh);
+            Assert.Null(unclassified.FindingsMedium);
+            Assert.Null(unclassified.FindingsLow);
+            Assert.Equal(2001, unclassified.ReviewedPr);
+            var unclassifiedJson = JsonSerializer.Serialize(unclassified);
+            Assert.DoesNotContain("\"verdict\"", unclassifiedJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsHigh\"", unclassifiedJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsMedium\"", unclassifiedJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"findingsLow\"", unclassifiedJson, StringComparison.Ordinal);
 
             FileCleanup.Delete(verdictPath);
             var absent = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
