@@ -188,17 +188,20 @@ public class PumpCheckpointCarryTests
                         new WorkflowId("wf-carry"), roomDirectory, MakeRetryableSnapshot(), FailingBindings(),
                         artifactsRoot, reader, writer, stub,
                         timeProvider: fakeTime, jitterSource: () => 0.0,
-                        cancellationToken: TestContext.Current.CancellationToken)
+                        cancellationToken: TestContext.Current.CancellationToken,
+                        workerLivenessProbe: _ => new EngineLivenessResult(EngineLivenessStatus.Dead))
                     .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
             }
 
-            // Abandoned and exhausted (attempt 2 of 2), never respawned: still exactly the two
-            // accepted requests the two attempts wrote, and no dispatch ever reached Core.
+            // The abandoned second attempt has no retry budget; its fake dead PID therefore writes
+            // the concrete terminal fact rather than the generic abandonment reason. It never
+            // respawns, so the two accepted requests are the two original attempts.
             Assert.Equal(StepStatus.Failed, finalState.Steps.Single().Status);
             var events = await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Equal(2, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
             var abandoned = events.OfType<FlowEvent.ExecutionFailed>().Single(e => e.ExecutionId == attempt2);
-            Assert.Contains("crash recovery", abandoned.Reason, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(FailureClassification.Permanent, abandoned.FailureClassification);
+            Assert.Equal("Worker PID 4242 is no longer alive and no ExecutionExited was recorded.", abandoned.Reason);
             Assert.False(stub.DispatchStarted.TryRead(out _), "recovery re-dispatched the crashed attempt");
         }
         finally
