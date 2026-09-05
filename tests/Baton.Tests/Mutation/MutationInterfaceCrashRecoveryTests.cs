@@ -266,13 +266,43 @@ public class MutationInterfaceCrashRecoveryTests
         }
     }
 
-    [Fact]
-    public async Task StartWorkflowAsync_names_the_recorded_engine_pid_and_its_liveness_when_finalizing_an_orphan()
+    /// <summary>
+    /// Spawns a long-sleeping child, captures its pid/start time while provably alive, then kills it
+    /// -- an OS-confirmed-dead identity rather than a fabricated integer that might coincidentally
+    /// collide with something else running on the host. Mirrors
+    /// <c>Baton.Cli.Tests.TestSupport.ProcessIdentityFixture.DeadProcessIdentity</c> (that fixture
+    /// lives in a sibling test project this one has no reference to, per #843's own reasoning for why
+    /// a genuinely-dead identity beats a guessed one).
+    /// </summary>
+    private static (int Pid, DateTimeOffset StartTime) SpawnAndKillProcess()
     {
-        // #1530: the 2026-09-01 janitor-sweep measurement's complaint was that an abandoned
-        // room's terminal ExecutionFailed said nothing an operator could act on without digging a
-        // PID out by hand. This pins that the SAME EngineLivenessProbe read StatusCommand/
-        // RecordResumeAsync already consult is what names it here, not a new ad-hoc check.
+        var psi = new System.Diagnostics.ProcessStartInfo("ping.exe", "-n 30 127.0.0.1") { CreateNoWindow = true };
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        try
+        {
+            return (process.Id, new DateTimeOffset(process.StartTime).ToUniversalTime());
+        }
+        finally
+        {
+            process.Kill();
+            if (!process.WaitForExit(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException($"killed process {process.Id} did not exit within 10s");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StartWorkflowAsync_names_the_worker_pid_and_the_dead_engine_pid_when_finalizing_an_orphan()
+    {
+        // #1530: the 2026-09-01 janitor-sweep measurement's complaint was that an abandoned room's
+        // terminal ExecutionFailed said nothing an operator could act on without digging a PID out by
+        // hand -- specifically, whether the WORKER (not baton's own pump) was the thing that died.
+        // Both pids here are genuinely dead (spawned and killed), matching the realistic shape: crash
+        // recovery reaches this branch only after a prior engine already released flow.lock without
+        // recording an exit, so pinning the wording against an artificially-still-alive engine (as
+        // the prior version of this test did) canonized a misleading rendering no real crash-recovery
+        // run would ever produce (#1530 review finding, LOW: "engine pid N is alive").
         var snapshot = MakeSnapshot(Step(A, dependsOn: [], maxAttempts: 2));
 
         var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
@@ -283,12 +313,8 @@ public class MutationInterfaceCrashRecoveryTests
             var bindings = MakeBindings();
             var workflowId = new WorkflowId("wf");
 
-            // This test process's OWN pid/start time -- deterministically ALIVE for
-            // EngineLivenessProbe, unlike a fabricated integer whose liveness would be
-            // host-dependent (#843's own reasoning for why a genuinely dead identity is spawned
-            // and killed rather than guessed at, in the sibling ProcessIdentityFixture).
-            var enginePid = Environment.ProcessId;
-            var engineStartTime = new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime();
+            var (enginePid, engineStartTime) = SpawnAndKillProcess();
+            var (workerPid, _) = SpawnAndKillProcess();
 
             var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
@@ -301,9 +327,10 @@ public class MutationInterfaceCrashRecoveryTests
                 new FlowEvent.ExecutionRequestAccepted(request, EnginePid: enginePid, EngineStartTime: engineStartTime),
                 TestContext.Current.CancellationToken);
 
-            // The third crash state: Core recorded the start, but this pump's predecessor died
-            // before an exit was ever recorded — nothing to classify against.
-            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+            // The third crash state: Core recorded the start under the WORKER's own pid, but this
+            // pump's predecessor (the ENGINE) died before an exit was ever recorded — nothing to
+            // classify against.
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: (uint)workerPid), TestContext.Current.CancellationToken);
 
             var stub = new StubCoreDispatcher();
             var retryResult = stub.EnqueueResult(A);
@@ -317,7 +344,12 @@ public class MutationInterfaceCrashRecoveryTests
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var abandoned = Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
             Assert.Equal(executionId, abandoned.ExecutionId);
-            Assert.Contains($"engine pid {enginePid} is alive", abandoned.Reason);
+            // The worker pid is named plainly, with no liveness claim attached: CoreEvent.ExecutionStarted
+            // records no start time, so EngineLivenessProbe (which needs one to rule out pid reuse) is
+            // never run against it -- claiming a liveness verdict this codebase cannot actually check
+            // would be the exact overclaim this fix is trying to avoid.
+            Assert.Contains($"worker pid {workerPid}", abandoned.Reason);
+            Assert.Contains($"engine pid {enginePid} is dead", abandoned.Reason);
         }
         finally
         {

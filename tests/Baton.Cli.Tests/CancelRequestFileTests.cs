@@ -287,6 +287,44 @@ public class CancelRequestFileTests
         }
     }
 
+    /// <summary>
+    /// #1530 fix: the malformed-content arm previously read the file's mtime AFTER renaming it to
+    /// <c>.swept</c>, so <see cref="System.IO.FileInfo"/> saw a missing path and reported .NET's
+    /// "file not found" sentinel, 1601-01-01T00:00:00Z, for every recorded
+    /// <see cref="Baton.Domain.RoomEvent.ArrestRequestExpired.RequestedAtUtc"/> on this branch. A real
+    /// file on disk (not a fabricated timestamp) is required to reproduce the bug: it is specifically
+    /// the OS mtime lookup racing the rename that regresses.
+    /// </summary>
+    [Fact]
+    public async Task DeleteStalePendingRequest_records_the_real_mtime_for_malformed_content_not_the_missing_file_sentinel()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            var beforeWriteUtc = DateTime.UtcNow;
+            File.WriteAllText(pendingPath, "not valid json");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken, roomLogPath);
+
+            Assert.True(File.Exists($"{pendingPath}.swept"));
+
+            var roomReader = new Baton.Store.RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var expired = Assert.Single(roomEvents.OfType<Baton.Domain.RoomEvent.ArrestRequestExpired>());
+            Assert.True(
+                expired.RequestedAtUtc >= beforeWriteUtc.AddSeconds(-2),
+                $"expected RequestedAtUtc near {beforeWriteUtc:O}, got {expired.RequestedAtUtc:O} -- the missing-file sentinel (1601-01-01) means the mtime was read after the rename");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
     [Fact]
     public void Consume_renames_the_file_to_a_consumed_sibling()
     {

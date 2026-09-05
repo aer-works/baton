@@ -120,10 +120,41 @@ public static class StatusCommand
             // #1530: the room-side arrest ledger — room.jsonl for the two rejection shapes that
             // never resolve an ExecutionId, flow.jsonl (via `entries`, already read above; no second
             // ledger read) for every shape that does. See ArrestLedgerProjector's own remarks for why
-            // both logs are read rather than a third, parallel ledger store.
-            var roomLogPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.RoomLogFileName);
-            var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
-            var arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+            // both logs are read rather than a third, parallel ledger store. `baton status` never
+            // read room.jsonl before this feature, so a version-skew corruption there (a RoomEvent
+            // discriminator this build does not know, per RoomEventLogReader's fail-loud replay
+            // contract) must degrade the ledger, not turn a probe that used to succeed into a hard
+            // failure -- the same posture FleetStatusTool's own broad catch already takes for this.
+            IReadOnlyList<ArrestLedgerEntry> arrestLedger;
+            string? arrestLedgerUnavailableReason = null;
+            try
+            {
+                var roomLogPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.RoomLogFileName);
+                var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+                arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+            }
+            catch (FlowEventLogReadException ex)
+            {
+                arrestLedger = [];
+                arrestLedgerUnavailableReason = ex.Message;
+            }
+
+            if (arrestLedgerUnavailableReason is not null)
+            {
+                // Nothing else in this method's --json mode writes to stderr, but stdout is
+                // exclusively the serialized view in that mode (#1356 point 1) -- this is
+                // diagnostic-only, the same channel every other best-effort ledger fault in this
+                // feature already uses (CancelRequestPoller's own tick-fault line).
+                try
+                {
+                    Console.Error.WriteLine(
+                        $"Arrest ledger unavailable for '{options.RoomDirectoryPath}': {arrestLedgerUnavailableReason}");
+                }
+                catch (IOException)
+                {
+                    // F6-equivalent: a broken stderr pipe must not itself fault the probe.
+                }
+            }
 
             if (options.Json)
             {
@@ -137,7 +168,7 @@ public static class StatusCommand
             }
 
             PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath);
-            PrintArrestLedger(output, arrestLedger);
+            PrintArrestLedger(output, arrestLedger, arrestLedgerUnavailableReason);
 
             var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
             var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
@@ -582,8 +613,14 @@ public static class StatusCommand
     /// saw a <c>cancel.request</c>, the same "absent means nothing to say" posture <c>Arrests</c>'
     /// own <c>--json</c> field takes.
     /// </summary>
-    private static void PrintArrestLedger(TextWriter output, IReadOnlyList<ArrestLedgerEntry> arrestLedger)
+    private static void PrintArrestLedger(TextWriter output, IReadOnlyList<ArrestLedgerEntry> arrestLedger, string? unavailableReason = null)
     {
+        if (unavailableReason is not null)
+        {
+            output.WriteLine($"Arrests: ledger unavailable ({unavailableReason})");
+            return;
+        }
+
         if (arrestLedger.Count == 0)
         {
             return;

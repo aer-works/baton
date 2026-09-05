@@ -891,6 +891,176 @@ public class StatusCommandEndToEndTests
         return (snapshotPath, logPath, executionId);
     }
 
+    /// <summary>
+    /// #1530: one fixture room covering every <see cref="Baton.Status.ArrestOutcome"/> shape the
+    /// ledger can render, plus the one shape that produces no <see cref="ArrestOutcome"/> at all
+    /// (still pending) — Delivered, Rejected (both the ordinary request-then-reject pairing and the
+    /// orphan rejection with no preceding <see cref="FlowEvent.CancellationRequested"/>, the
+    /// InFlightExecutionRegistry.RequestCancellationAsync-returned-false shape the ledger used to
+    /// drop silently), Expired (room.jsonl), and the room-event Rejected shape with no ExecutionId
+    /// (ArrestRequestUnresolvable). <see cref="StatusCommand_text_and_json_report_every_arrest_outcome_kind_text"/>
+    /// and its <c>_json</c> sibling both drive this SAME fixture, so the two renderings can never
+    /// silently diverge over which entries exist.
+    /// </summary>
+    private static async Task<string> WriteFullArrestLedgerFixtureAsync(string roomDirectory)
+    {
+        Directory.CreateDirectory(roomDirectory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("arrest-ledger-probe"),
+            1,
+            [new WorkflowStepDefinition(new StepId("implement"), "implement", [], ["out"], [], new RetryPolicy(3))]);
+        var snapshot = SnapshotBinder.Bind(definition);
+        var snapshotPath = Path.Combine(roomDirectory, "snapshot.json");
+        await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
+
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        var deliveredExecutionId = new ExecutionId("exec-delivered");
+        var rejectedExecutionId = new ExecutionId("exec-rejected-paired");
+        var orphanRejectedExecutionId = new ExecutionId("exec-rejected-orphan");
+
+        await using (var writer = new FlowEventLogWriter(logPath))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.CancellationRequested(deliveredExecutionId, CancellationOrigin.Operator),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionCancelled(deliveredExecutionId), TestContext.Current.CancellationToken);
+
+            await writer.AppendAsync(
+                new FlowEvent.CancellationRequested(rejectedExecutionId, CancellationOrigin.Operator),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.CancellationRejected(rejectedExecutionId, "arrest requested but not yet confirmed settled after 5 polls"),
+                TestContext.Current.CancellationToken);
+
+            // The orphan shape: InFlightExecutionRegistry.RequestCancellationAsync returned false (never
+            // registered in-flight), so RecordCancellationRejectedAsync's CancellationRejected is the ONLY
+            // event this lifecycle ever produces -- no preceding CancellationRequested.
+            await writer.AppendAsync(
+                new FlowEvent.CancellationRejected(orphanRejectedExecutionId, "not currently in flight when this cancel.request was checked — too late (it already settled)"),
+                TestContext.Current.CancellationToken);
+        }
+
+        var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+        await using (var roomWriter = new RoomEventLogWriter(roomLogPath))
+        {
+            var t1 = new DateTimeOffset(2026, 9, 1, 10, 0, 0, TimeSpan.Zero);
+            var t2 = new DateTimeOffset(2026, 9, 1, 10, 0, 2, TimeSpan.Zero);
+            await roomWriter.AppendAsync(
+                new RoomEvent.ArrestRequestUnresolvable("latest", "ambiguous — 2 candidates", t1, t2),
+                TestContext.Current.CancellationToken);
+            await roomWriter.AppendAsync(
+                new RoomEvent.ArrestRequestExpired("exec-expired", t1, t2),
+                TestContext.Current.CancellationToken);
+        }
+
+        return roomDirectory;
+    }
+
+    [Fact]
+    public async Task StatusCommand_text_and_json_report_every_arrest_outcome_kind_text()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteFullArrestLedgerFixtureAsync(roomDirectory);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            Assert.Contains("Arrests:", text);
+            Assert.Contains("exec-delivered requested by operator @ ", text);
+            Assert.Contains("— delivered", text);
+            Assert.Contains("exec-rejected-paired requested by operator @ ", text);
+            Assert.Contains("rejected (arrest requested but not yet confirmed settled after 5 polls)", text);
+            // The orphan rejection (no preceding CancellationRequested) must still render, not be
+            // silently dropped -- the exact HIGH finding this fixture exists to close.
+            Assert.Contains("exec-rejected-orphan requested by operator @ ", text);
+            Assert.Contains("rejected (not currently in flight when this cancel.request was checked — too late (it already settled))", text);
+            Assert.Contains("latest requested by operator @ ", text);
+            Assert.Contains("rejected (ambiguous — 2 candidates)", text);
+            Assert.Contains("exec-expired requested by operator @ ", text);
+            Assert.Contains("— expired", text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task StatusCommand_text_and_json_report_every_arrest_outcome_kind_json()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteFullArrestLedgerFixtureAsync(roomDirectory);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory, Json: true), output, TestContext.Current.CancellationToken);
+
+            using var document = JsonDocument.Parse(output.ToString());
+            var arrests = document.RootElement.GetProperty("arrests").EnumerateArray().ToList();
+            Assert.Equal(5, arrests.Count);
+
+            ArrestEntry Find(string target) => arrests
+                .Select(e => new ArrestEntry(
+                    e.GetProperty("target").GetString()!,
+                    e.TryGetProperty("outcome", out var o) ? o.GetString() : null,
+                    e.TryGetProperty("reason", out var r) ? r.GetString() : null))
+                .Single(e => e.Target == target);
+
+            Assert.Equal("delivered", Find("exec-delivered").Outcome);
+            Assert.Equal("rejected", Find("exec-rejected-paired").Outcome);
+            Assert.Equal("arrest requested but not yet confirmed settled after 5 polls", Find("exec-rejected-paired").Reason);
+            Assert.Equal("rejected", Find("exec-rejected-orphan").Outcome);
+            Assert.Equal(
+                "not currently in flight when this cancel.request was checked — too late (it already settled)",
+                Find("exec-rejected-orphan").Reason);
+            Assert.Equal("rejected", Find("latest").Outcome);
+            Assert.Equal("ambiguous — 2 candidates", Find("latest").Reason);
+            Assert.Equal("expired", Find("exec-expired").Outcome);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    private sealed record ArrestEntry(string Target, string? Outcome, string? Reason);
+
+    /// <summary>
+    /// LOW finding: <c>baton status</c> never read <c>room.jsonl</c> before this feature, so an
+    /// unreadable one (version skew — a RoomEvent discriminator this build does not know) must
+    /// degrade the ledger, not turn a probe that used to succeed into a hard failure.
+    /// </summary>
+    [Fact]
+    public async Task StatusCommand_degrades_the_ledger_instead_of_failing_when_room_jsonl_is_unreadable()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        try
+        {
+            await WriteFullArrestLedgerFixtureAsync(roomDirectory);
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            await File.WriteAllTextAsync(
+                roomLogPath, """{"$type":"noSuchDiscriminator","foo":"bar"}""" + "\n", TestContext.Current.CancellationToken);
+
+            var output = new StringWriter();
+            await StatusCommand.ExecuteAsync(new StatusOptions(roomDirectory), output, TestContext.Current.CancellationToken);
+
+            var text = output.ToString();
+            Assert.Contains("Arrests: ledger unavailable", text);
+            Assert.Contains("Workflow status:", text);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<string> WriteThreeStepWorkflowAsync(string directory)
     {
         Directory.CreateDirectory(directory);

@@ -1258,26 +1258,38 @@ public static class MutationInterface
                 // cross-process re-attach capability, not a new mechanism this phase introduces.
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
-                    // #1530: name the confirmed-dead engine in the reason, using the SAME
-                    // EnginePid/EngineStartTime pair and EngineLivenessProbe every other liveness
-                    // read in this codebase consults (StatusCommand.FormatStepStatus,
-                    // RecordResumeAsync's STALLED check above) -- never a second, ad-hoc PID check.
-                    // Reaching this branch at all already proves the prior pump released flow.lock
-                    // without recording an exit (a fresh pump only gets here because the guard was
-                    // free), so the probe's verdict only enriches the sentence; an Unknown reading
-                    // (e.g. a since-recycled pid) must not gate the finalization, which stays
-                    // unconditional exactly as it was before this change — this measurement is the
-                    // one that surfaced a "quiet live room" a person had to dig a PID out of by hand
-                    // to explain (2026-09-01 janitor sweep), so the reason should say it outright.
+                    // #1530: the 2026-09-01 janitor sweep's actual question was "was the WORKER
+                    // killed out from under a still-live pump" -- CoreEvent.ExecutionStarted.Pid is
+                    // the worker's own pid, and is named first since it is the pid that answers that
+                    // question. It carries no recorded start time (CoreEvent.ExecutionStarted's own
+                    // shape), so EngineLivenessProbe -- which needs a start time to rule out pid
+                    // reuse -- is never run against it; naming it plainly, unlabelled, is honest
+                    // where claiming a liveness verdict this codebase cannot actually check would not
+                    // be (claim-scope). The engine pid/liveness clause is the SAME EnginePid/
+                    // EngineStartTime pair and EngineLivenessProbe every other liveness read in this
+                    // codebase consults (StatusCommand.FormatStepStatus, RecordResumeAsync's STALLED
+                    // check above) -- never a second, ad-hoc PID check -- kept as secondary context:
+                    // reaching this branch at all already proves the prior pump released flow.lock
+                    // without recording an exit, so the probe's verdict only enriches the sentence and
+                    // an Unknown reading must not gate the finalization, which stays unconditional
+                    // exactly as it was before this change.
                     var abandonedEvents = await eventLogReader.ReadAllAsync(ioCancellationToken).ConfigureAwait(false);
+                    var abandonedCoreEvents = await eventLogReader.ReadAllCoreEventsAsync(ioCancellationToken).ConfigureAwait(false);
                     foreach (var executionId in crashRecovery.ToFinalizeAsAbandoned)
                     {
                         var accepted = abandonedEvents
                             .OfType<FlowEvent.ExecutionRequestAccepted>()
                             .LastOrDefault(e => e.Request.ExecutionId == executionId);
-                        var pidClause = accepted?.EnginePid is { } enginePid
-                            ? $" (engine pid {enginePid} is {EngineLivenessProbe.Probe(accepted.EnginePid, accepted.EngineStartTime).Status.ToString().ToLowerInvariant()})"
-                            : string.Empty;
+                        var workerPid = abandonedCoreEvents
+                            .OfType<CoreEvent.ExecutionStarted>()
+                            .LastOrDefault(e => e.ExecutionId == executionId)?.Pid;
+                        var enginePidClause = accepted?.EnginePid is { } enginePid
+                            ? $"engine pid {enginePid} is {EngineLivenessProbe.Probe(accepted.EnginePid, accepted.EngineStartTime).Status.ToString().ToLowerInvariant()}"
+                            : null;
+                        var workerPidClause = workerPid is { } pid ? $"worker pid {pid}" : null;
+                        var clauses = new[] { workerPidClause, enginePidClause }.Where(c => c is not null);
+                        var joinedClauses = string.Join("; ", clauses);
+                        var pidClause = joinedClauses.Length > 0 ? $" ({joinedClauses})" : string.Empty;
 
                         await eventLogWriter.AppendAsync(
                                 new FlowEvent.ExecutionFailed(
@@ -2461,9 +2473,17 @@ public static class MutationInterface
             var target = ArrestableExecutions.Find(state, snapshot, executionId);
             if (target is null)
             {
-                LogDroppedArrestIntent(
-                    executionId, reason,
-                    acceptedRequestByExecutionId.ContainsKey(executionId) ? "already settled" : "unknown execution id");
+                var droppedBecause = acceptedRequestByExecutionId.ContainsKey(executionId) ? "already settled" : "unknown execution id";
+                LogDroppedArrestIntent(executionId, reason, droppedBecause);
+
+                // #1530: the "dropped" case above used to be printed and never appended -- this
+                // method's own early `continue` above (state.CancellationRequestedExecutionIds) proves
+                // no CancellationRequested exists yet for this executionId, so this IS the one durable
+                // event this lifecycle will ever produce for it, the same "rejection with nothing
+                // open" shape ArrestLedgerView.Project now synthesizes a single-entry lifecycle for.
+                await inFlightExecutions.RecordCancellationRejectedAsync(
+                        executionId, $"arrest intent dropped ({droppedBecause}; marked because: {reason})", ioCancellationToken)
+                    .ConfigureAwait(false);
                 continue;
             }
 

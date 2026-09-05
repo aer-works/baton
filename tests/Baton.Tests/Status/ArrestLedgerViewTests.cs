@@ -5,8 +5,10 @@ namespace Baton.Tests.Status;
 
 /// <summary>
 /// #1530: <see cref="ArrestLedgerProjector.Project"/> against fabricated flow.jsonl/room.jsonl
-/// entries directly -- <see cref="ArrestLedgerProjector.ProjectFromRoomAsync"/>'s own file-reading
-/// half is exercised indirectly by <c>StatusCommandArrestLedgerEndToEndTests</c>.
+/// entries directly. Both real call sites (<c>Baton.Cli.StatusCommand</c>,
+/// <c>Baton.Cli.Mcp.FleetStatusTool</c>) read their own logs and call this method directly with
+/// readers they already own; the file-reading half of that is exercised end-to-end by
+/// <c>Baton.Cli.Tests.StatusCommandEndToEndTests</c>'s arrest-ledger fixture.
 /// </summary>
 public class ArrestLedgerViewTests
 {

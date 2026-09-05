@@ -61,22 +61,6 @@ public sealed record ArrestLedgerEntry(
 /// </summary>
 public static class ArrestLedgerProjector
 {
-    public static async Task<IReadOnlyList<ArrestLedgerEntry>> ProjectFromRoomAsync(
-        string roomDirectoryPath, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
-
-        var flowLogPath = Path.Combine(roomDirectoryPath, BatonPaths.FlowLogFileName);
-        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
-
-        var flowEntries = await new FlowEventLogReader(flowLogPath)
-            .ReadAllEntriesWithTimestampsAsync(cancellationToken).ConfigureAwait(false);
-        var roomEvents = await new RoomEventLogReader(roomLogPath)
-            .ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
-
-        return Project(flowEntries, roomEvents);
-    }
-
     public static IReadOnlyList<ArrestLedgerEntry> Project(
         IReadOnlyList<LogEntry> flowLogEntries, IReadOnlyList<RoomEvent> roomEvents)
     {
@@ -123,13 +107,33 @@ public static class ArrestLedgerProjector
                     builders[cancelled.ExecutionId] = pending with { Outcome = ArrestOutcome.Delivered, ResolvedAtUtc = timestamp };
                     break;
 
-                case FlowEvent.CancellationRejected rejected when builders.TryGetValue(rejected.ExecutionId, out var pendingRejection):
-                    builders[rejected.ExecutionId] = pendingRejection with
+                case FlowEvent.CancellationRejected rejected:
+                    // #1530 fix: a rejection can land with no preceding CancellationRequested at
+                    // all -- InFlightExecutionRegistry.RequestCancellationAsync returns false (and
+                    // records nothing) for a target that never registered in-flight, so
+                    // RecordCancellationRejectedAsync's CancellationRejected is the ONLY event this
+                    // lifecycle ever produces. Reusing an existing builder when one is already open
+                    // (the bounded-retry-exhausted shape, which DOES resolve through
+                    // MarkArrestIntent/SettleArrestIntentsAsync's own CancellationRequested append
+                    // first) still takes the `TryGetValue` branch; a rejection with nothing open
+                    // synthesizes its own single-entry lifecycle instead of being silently dropped.
+                    if (builders.TryGetValue(rejected.ExecutionId, out var pendingRejection))
                     {
-                        Outcome = ArrestOutcome.Rejected,
-                        Reason = rejected.Reason,
-                        ResolvedAtUtc = timestamp,
-                    };
+                        builders[rejected.ExecutionId] = pendingRejection with
+                        {
+                            Outcome = ArrestOutcome.Rejected,
+                            Reason = rejected.Reason,
+                            ResolvedAtUtc = timestamp,
+                        };
+                    }
+                    else
+                    {
+                        order.Add(rejected.ExecutionId);
+                        builders[rejected.ExecutionId] = (
+                            RequestedBy: "operator", Reason: rejected.Reason, Outcome: ArrestOutcome.Rejected,
+                            RequestedAtUtc: timestamp ?? DateTimeOffset.UnixEpoch, ResolvedAtUtc: timestamp);
+                    }
+
                     break;
             }
         }

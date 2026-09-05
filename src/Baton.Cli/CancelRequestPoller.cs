@@ -227,16 +227,27 @@ public static class CancelRequestPoller
             var arrestedByThisRequest = settleCheckEvents
                 .OfType<FlowEvent.ExecutionCancelled>()
                 .Any(e => e.ExecutionId == targetExecutionId);
+            const string tooLateReason = "not currently in flight when this cancel.request was checked — too late (it already settled)";
             try
             {
                 Console.Error.WriteLine(arrestedByThisRequest
                     ? $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — arrested by this request."
-                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is "
-                        + "not currently in flight — too late (it already settled).");
+                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is {tooLateReason}.");
             }
             catch
             {
                 // F6: swallow broken stderr pipe
+            }
+
+            // #1530: the "too late" rendering above used to land on stderr only -- issue #1530's own
+            // body names this shape explicitly. arrestedByThisRequest needs no separate append here:
+            // that branch's own FlowEvent.ExecutionCancelled already implies an earlier
+            // FlowEvent.CancellationRequested (MutationInterface.SettleArrestIntentsAsync never
+            // appends one without the other), so the ledger already renders it Delivered.
+            if (!arrestedByThisRequest)
+            {
+                await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, tooLateReason, cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             CancelRequestFile.Consume(requestPath);

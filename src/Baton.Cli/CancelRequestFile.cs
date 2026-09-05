@@ -150,12 +150,14 @@ public static class CancelRequestFile
         var content = await TryReadAsync(path, cancellationToken).ConfigureAwait(false);
         if (content is not { WrittenAtUtc: { } writtenAtUtc, WriterPid: { } writerPid })
         {
-            RenameBestEffort(path, $"{path}.swept");
             // #1530: a request with no WrittenAtUtc recorded has no reliable "requested at" instant —
             // the file's own mtime is the least-wrong stand-in, same fallback TickAsync's own record
-            // uses for a malformed request it can't otherwise date.
-            await TryRecordExpiredAsync(
-                    roomLogPath, content?.Target ?? string.Empty, new FileInfo(path).LastWriteTimeUtc, cancellationToken)
+            // uses for a malformed request it can't otherwise date. Must be read BEFORE the rename
+            // below: a FileInfo built against the post-rename (now-missing) path reports the .NET
+            // "file not found" sentinel, 1601-01-01T00:00:00Z, not the real mtime.
+            var lastWriteUtc = new FileInfo(path).LastWriteTimeUtc;
+            RenameBestEffort(path, $"{path}.swept");
+            await TryRecordExpiredAsync(roomLogPath, content?.Target ?? string.Empty, lastWriteUtc, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
