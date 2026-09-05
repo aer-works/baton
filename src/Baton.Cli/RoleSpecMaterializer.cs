@@ -35,7 +35,8 @@ internal static class RoleSpecMaterializer
         int? maxToolStepsOverride,
         long? billedRateLimitOverride,
         string? verifyCommandOverride,
-        bool? expectPrOverride = null)
+        bool? expectPrOverride = null,
+        string? verifyResultsPath = null)
     {
         ValidateAttachments(attachments);
 
@@ -69,7 +70,8 @@ internal static class RoleSpecMaterializer
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
             tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
             billedRateLimitOverride: billedRateLimitOverride,
-            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride);
+            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride,
+            verifyResultsPath: verifyResultsPath);
     }
 
     /// <summary>

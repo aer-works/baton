@@ -15,7 +15,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -70,6 +70,8 @@ public static class DispatchOptionsParser
         int? maxToolSteps = null;
         long? billedRateLimit = null;
         string? verifyCommand = null;
+        var verifyCommands = new List<string>();
+        TimeSpan? verifyTimeout = null;
         bool? expectPr = null;
         string? label = null;
         string? workstream = null;
@@ -148,6 +150,12 @@ public static class DispatchOptionsParser
                     break;
                 case "--verify":
                     verifyCommand = RequireValue(args, ref i, arg);
+                    break;
+                case "--verify-cmd":
+                    verifyCommands.Add(ParseVerifyCommand(RequireValue(args, ref i, arg)));
+                    break;
+                case "--verify-timeout":
+                    verifyTimeout = ParseVerifyTimeout(RequireValue(args, ref i, arg));
                     break;
                 case "--expect-pr":
                     expectPr = ParseExpectPr(RequireValue(args, ref i, arg));
@@ -253,7 +261,54 @@ public static class DispatchOptionsParser
             specText,
             specFromStdin,
             expectPr,
-            continueFromRoomDirectoryPath is null ? null : RoomDirectoryPath.Resolve(continueFromRoomDirectoryPath));
+            continueFromRoomDirectoryPath is null ? null : RoomDirectoryPath.Resolve(continueFromRoomDirectoryPath),
+            verifyCommands.Count > 0 ? verifyCommands : null,
+            verifyTimeout);
+    }
+
+    /// <summary>
+    /// Validates one <c>--verify-cmd</c> value against the shape allowlist (#1882,
+    /// <see cref="Baton.Mutation.VerifyStepCommandParser"/>) and returns it verbatim. Refused at PARSE
+    /// time rather than at run time, and naming the offending command: several of these flags can be
+    /// passed at once, and "one of your verify commands is not allowed" would leave the operator
+    /// guessing which. The stored value is the raw text, not the tokenized argv — the argv is re-derived
+    /// where it is spawned, so bindings.json and the results file both carry what was actually typed.
+    /// </summary>
+    private static string ParseVerifyCommand(string rawValue)
+    {
+        if (!Baton.Mutation.VerifyStepCommandParser.TryParse(rawValue, out _, out var error))
+        {
+            throw new CliArgumentException(
+                $"{error} {Usage}",
+                "pass an allowlisted verify command, e.g. --verify-cmd \"dotnet build -warnaserror\".");
+        }
+
+        return rawValue.Trim();
+    }
+
+    /// <summary>
+    /// Parses <c>--verify-timeout</c>'s minutes value (#1882): a positive whole number, capped by the
+    /// same <see cref="MaxTimeoutMinutes"/> ceiling <see cref="ParseTimeout"/> applies, for the same
+    /// non-interactive-CLI reason — this bound is per verify COMMAND, and the step runs before the
+    /// worker even starts, so a typo'd value strands a lane before it has done anything at all.
+    /// </summary>
+    private static TimeSpan ParseVerifyTimeout(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var minutes) || minutes <= 0)
+        {
+            throw new CliArgumentException(
+                $"'--verify-timeout {rawValue}' is not a positive whole number of minutes. {Usage}",
+                "pass a positive integer, e.g. --verify-timeout 10.");
+        }
+
+        if (minutes > MaxTimeoutMinutes)
+        {
+            throw new CliArgumentException(
+                $"'--verify-timeout {rawValue}' exceeds the {MaxTimeoutMinutes}-minute (24h) ceiling.",
+                $"pass a value at or below {MaxTimeoutMinutes}, e.g. --verify-timeout 10.");
+        }
+
+        return TimeSpan.FromMinutes(minutes);
     }
 
     /// <summary>

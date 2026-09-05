@@ -114,6 +114,21 @@ namespace Baton.Cli;
 /// phrasing — see <see cref="DispatchCommand"/>'s remarks on why that second form is refused rather than
 /// silently only-sometimes honored.
 /// </param>
+/// <param name="VerifyCommands">
+/// The repeatable <c>--verify-cmd</c> flag (#1882) — the allowlisted commands
+/// <see cref="Baton.Mutation.VerifyStepRunner"/> runs (its own doc has when, and why no model is in
+/// the loop; the contract is spec/baton.md §9). Nothing runs unless asked: null or empty means no
+/// verify step at all, which is every dispatch that does not pass the flag. <b>Not the same thing as <c>--verify</c>/<see cref="VerifyCommand"/></b>, which is the
+/// engine's post-exit gate on a mutating role (<c>implement</c>'s <c>verify_pixi_task</c>): that one
+/// runs AFTER a worker exits and decides whether the execution settles; this one runs BEFORE the worker
+/// starts and decides nothing — it is evidence the reviewer reads. Shapes are validated at parse time
+/// by <c>Baton.Mutation.VerifyStepCommandParser</c>; role dispatch only, and refused for a non-review
+/// role and for a workflow template the same way <see cref="TokenBudget"/> is.
+/// </param>
+/// <param name="VerifyTimeout">
+/// The <c>--verify-timeout</c> bound (#1882) on EACH <paramref name="VerifyCommands"/> entry's wall
+/// clock. Null keeps <c>Baton.Mutation.VerifyStepRunner.DefaultTimeout</c> (10 minutes).
+/// </param>
 public sealed record DispatchOptions(
     string Name,
     string? SpecFilePath,
@@ -137,4 +152,6 @@ public sealed record DispatchOptions(
     string? SpecText = null,
     bool SpecFromStdin = false,
     bool? ExpectPr = null,
-    string? ContinueFromRoomDirectoryPath = null);
+    string? ContinueFromRoomDirectoryPath = null,
+    IReadOnlyList<string>? VerifyCommands = null,
+    TimeSpan? VerifyTimeout = null);

@@ -282,6 +282,42 @@ own work looks clean and nothing checked it" — read the field before reporting
 your own workspace (`.baton/verify`, which must be **committed** to take effect), and for the
 `--verify <cmd>` override.
 
+**Giving a review lane real instruments instead of prose (`--verify-cmd`, #1882).** A `review`
+worker's shell grant is a read-only `git`/`gh` allowlist, so every runtime claim it might make ("3765
+passed", "selftest exit 0") otherwise reaches it as prose in a PR body. `baton dispatch review …
+--verify-cmd "<command>"` — repeatable — makes the **engine** run those commands before the worker's
+first turn, with no model involved. Nothing runs unless you pass the flag; a brief never triggers one.
+
+```
+baton dispatch review --spec brief.md --workspace <worktree> \
+  --verify-cmd "dotnet build -warnaserror" \
+  --verify-cmd "dotnet test" \
+  --verify-timeout 10
+```
+
+(The second command's own arguments are yours — a narrowed `dotnet test` naming a filter and a
+minimum expected test count is the usual shape; it is elided above only so this example's flags read
+as `baton dispatch`'s own.)
+
+- **A fixed set of command shapes.** A `dotnet build`; a `dotnet test`; or a `python` script that
+  lives beneath `tools/`/`benchmarks/` *and* carries a `--check…`/`--selftest…` flag. Everything else,
+  shell metacharacters included, is rejected before the room is created.
+  `Mutation.VerifyStepCommandParser` is the grammar; spec/baton.md §9 says why it is drawn this way.
+- Each runs sequentially, wrapped in `python tools/buildlock.py`, with the review workspace as its
+  cwd and `--verify-timeout` minutes (default 10) of wall clock. A timeout kills the process tree and
+  records no exit code.
+- Results land in `<room>/artifacts/verify-results.md` — one section per command with the exact
+  command line, exit code, wall clock and a 200-line output tail. **A failing command is evidence,
+  not a stop signal** (spec/baton.md §9 has the rule; the review prompt states it too).
+- `verdict.json` gains `instruments: [{command, exitCode, wallClockMs}]`, written by the engine from
+  what actually ran, never by the model — so a verdict citing a number absent from the results file
+  is a finding a second reader can raise. Additive and optional: absent without the flag.
+- `steps[].usage.verifyStepMs` / `.verifyResultsBytes` carry the step's cost, on the room's first
+  execution only.
+- **Not `--verify`.** That flag overrides the *post-exit* verify command (a role's `verify_pixi_task`,
+  e.g. `implement`'s) that decides whether a mutating execution settles. `--verify-cmd` runs *before*
+  the worker and decides nothing; it is accepted on `review` only, and refused elsewhere.
+
 Once a room is genuinely done with, `baton room delete <room-dir>` (or its batch form,
 `baton rooms prune --terminal --yes`) actually removes it — the directory, its `room-registry.jsonl`
 line(s), and (best-effort) a deliverables tombstone — refusing a non-terminal room unless `--force`;

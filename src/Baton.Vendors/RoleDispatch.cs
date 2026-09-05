@@ -101,6 +101,12 @@ public static class RoleDispatch
     /// right here as <c>expectPrOverride ?? role.DeliversBranch</c> rather than left null; spec/baton.md
     /// §3's "Post-exit delivery check" entry states why this one resolves early instead of downstream.
     /// </param>
+    /// <param name="verifyResultsPath">
+    /// #1882: where the engine's pre-turn verify step wrote its results, when one ran for this dispatch.
+    /// Non-null adds a single paragraph to the prompt pointing the reviewer at that file and requiring
+    /// its verdict's runtime claims to cite it. Null (every dispatch without <c>--verify-cmd</c>) adds
+    /// nothing at all — the prompt must not mention a file that does not exist.
+    /// </param>
     public static WorkerBindingConfigEntry ToBinding(
         WorkerRole role, string spec, string? adapterOverride = null, string? workerName = null,
         string? workingDirectory = null, string? modelOverride = null, string? effortOverride = null,
@@ -109,7 +115,7 @@ public static class RoleDispatch
         IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
         long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
         long? billedRateLimitOverride = null, string? verifyCommandOverride = null,
-        bool? expectPrOverride = null)
+        bool? expectPrOverride = null, string? verifyResultsPath = null)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(spec);
@@ -182,7 +188,7 @@ public static class RoleDispatch
         return new WorkerBindingConfigEntry(
             Adapter: adapter,
             Contract: contract,
-            PromptTemplate: BuildPrompt(role, spec, outputs, attachments, attachmentsDirectory),
+            PromptTemplate: BuildPrompt(role, spec, outputs, attachments, attachmentsDirectory, verifyResultsPath),
             Timeout: timeoutOverride ?? role.Timeout,
             Model: model,
             PermissionGrant: grant,
@@ -244,7 +250,8 @@ public static class RoleDispatch
         string? modelOverride = null, string? effortOverride = null, string? outputOverride = null,
         TimeSpan? timeoutOverride = null, IReadOnlyList<string>? attachments = null,
         string? attachmentsDirectory = null, long? tokenBudgetOverride = null, int? maxToolStepsOverride = null,
-        long? billedRateLimitOverride = null, string? verifyCommandOverride = null, bool? expectPrOverride = null)
+        long? billedRateLimitOverride = null, string? verifyCommandOverride = null, bool? expectPrOverride = null,
+        string? verifyResultsPath = null)
     {
         ArgumentNullException.ThrowIfNull(role);
 
@@ -254,7 +261,8 @@ public static class RoleDispatch
             timeoutOverride: timeoutOverride, attachments: attachments, attachmentsDirectory: attachmentsDirectory,
             tokenBudgetOverride: tokenBudgetOverride, maxToolStepsOverride: maxToolStepsOverride,
             billedRateLimitOverride: billedRateLimitOverride,
-            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride);
+            verifyCommandOverride: verifyCommandOverride, expectPrOverride: expectPrOverride,
+            verifyResultsPath: verifyResultsPath);
 
         var stepOutputs = binding.Contract.ProducedOutputs.Select(o => o.Name).ToList();
 
@@ -284,7 +292,8 @@ public static class RoleDispatch
     /// </summary>
     private static string BuildPrompt(
         WorkerRole role, string spec, IReadOnlyList<WorkerRoleOutput>? outputs = null,
-        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null)
+        IReadOnlyList<string>? attachments = null, string? attachmentsDirectory = null,
+        string? verifyResultsPath = null)
     {
         var activeOutputs = outputs ?? role.Outputs;
         var instructions = string.Join("\n", activeOutputs.Select(o => $"- {o.Instruction}"));
@@ -302,9 +311,33 @@ public static class RoleDispatch
             promptBuilder.Append($"\n\nAttached files (in {attachmentsDirectory}): {string.Join(", ", fileNames)}");
         }
 
+        // #1882: before the outputs block, because it is context for the review rather than an
+        // instruction about where to write — the reviewer should have read this file before it starts
+        // forming the findings the outputs block asks it to record.
+        if (!string.IsNullOrWhiteSpace(verifyResultsPath))
+        {
+            promptBuilder.Append($"\n\n{VerifyResultsParagraph(verifyResultsPath)}");
+        }
+
         promptBuilder.Append($"\n\nRequired outputs:\n{instructions}\n\n{OneShotContract}");
         return promptBuilder.ToString();
     }
+
+    /// <summary>
+    /// #1882: the one paragraph a review prompt gains when the engine ran a pre-turn verify step. It
+    /// states three things a reviewer would otherwise have to guess: that the file exists and is
+    /// authoritative, that a non-zero exit in it is evidence rather than a reason to stop, and that a
+    /// runtime claim in the verdict must cite it. The last is the point — the failure this replaces is a
+    /// review ending with "nothing was executed here, the PR body's numbers are unverified".
+    /// </summary>
+    private static string VerifyResultsParagraph(string verifyResultsPath) =>
+        $"Before your first turn the engine ran a set of allowlisted commands for you, with no model "
+        + $"involved, and wrote what they did to {verifyResultsPath}. Read that file first: it holds the "
+        + "exact command line, exit code, wall clock and output tail for each one, captured by the "
+        + "engine rather than reported by anybody. A non-zero exit there is evidence for your review, "
+        + "not a reason to stop reviewing. Every runtime claim your verdict makes — a test count, an "
+        + "exit code, whether something builds — must cite that file; if a claim you want to make is "
+        + "not answered there, say it was not measured rather than asserting it.";
 
     // #1095: a dispatched worker runs in a one-shot, non-interactive harness — the turn is never
     // resumed. A sonnet implement worker instead scheduled a background test run, ended its turn to

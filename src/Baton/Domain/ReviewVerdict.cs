@@ -17,10 +17,31 @@ namespace Baton.Domain;
 /// </param>
 /// <param name="Findings">Empty is valid and meaningful: the reviewer looked and found nothing.</param>
 /// <param name="Summary">Optional free-text overall assessment.</param>
+/// <param name="Instruments">
+/// #1882: the deterministic commands the ENGINE ran before the reviewer's first turn, copied onto the
+/// verdict by <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> after the worker wrote it. Additive
+/// and optional: absent on every verdict from a review dispatched without <c>--verify-cmd</c>, and on
+/// every verdict written before this field existed. Never a claim the model makes about itself — the
+/// engine overwrites whatever the model put here, which is what makes "a reviewer cannot claim an
+/// instrument it did not have" true rather than merely asked for.
+/// </param>
 public sealed record ReviewVerdict(
     string ReviewedRef,
     IReadOnlyList<ReviewFinding> Findings,
-    string? Summary = null);
+    string? Summary = null,
+    IReadOnlyList<VerifyInstrument>? Instruments = null);
+
+/// <summary>
+/// One instrument a review's verdict rests on (#1882): the exact command line the engine ran, the
+/// exit code it observed, and how long it took. <see cref="ExitCode"/> is null when the command was
+/// killed at the verify step's wall-clock bound; spec/baton.md §9 states why that is absence rather
+/// than a sentinel value. Deliberately narrower than <c>Mutation.VerifyCommandResult</c>: no output tail (the room's
+/// <c>verify-results.md</c> holds that), so a verdict stays a verdict rather than a second log.
+/// </summary>
+public sealed record VerifyInstrument(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("exitCode")] int? ExitCode,
+    [property: JsonPropertyName("wallClockMs")] long WallClockMs);
 
 /// <summary>One thing a review claims (#732).</summary>
 /// <param name="Claim">The one-line statement of the finding. Required and non-empty.</param>
