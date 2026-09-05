@@ -25,9 +25,43 @@ public sealed class CostLedgerStoreTests
     private const string ClaudeTerminalLine =
         """{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":3,"result":"done","session_id":"s","total_cost_usd":0.0021,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":5,"output_tokens_details":{"thinking_tokens":7}}}""";
 
+    /// <summary>
+    /// The SAME five dimensions as <see cref="ClaudeTerminalLine"/>, reported the way production
+    /// actually reports them — through the whole-tree <c>modelUsage</c> map that
+    /// <c>ClaudeUsageParser</c> PREFERS over the top-level <c>usage</c> object (#1706). Every pricing
+    /// fixture in this file used to be the fallback shape, which is why #1883 review F1 — a whole-tree,
+    /// possibly multi-model sum priced at one requested model's rate — had no test that could see it.
+    /// The top-level object here carries deliberately different (smaller) numbers, so an arm that
+    /// silently read the fallback instead would fail on the figures rather than pass quietly.
+    /// </summary>
+    private const string ClaudeTerminalLineWithModelUsage =
+        """{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":3,"result":"done","session_id":"s","modelUsage":{"claude-opus-5":{"inputTokens":100,"outputTokens":50,"cacheCreationInputTokens":10,"cacheReadInputTokens":5,"thinkingTokens":7}},"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1,"output_tokens_details":{"thinking_tokens":1}}}""";
+
+    /// <summary>The same shape with the tree's usage split across TWO models — an `implement` step whose subagent ran on a cheaper one.</summary>
+    private const string ClaudeTerminalLineWithTwoModelUsage =
+        """{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":3,"result":"done","session_id":"s","modelUsage":{"claude-opus-5":{"inputTokens":100,"outputTokens":50,"cacheCreationInputTokens":10,"cacheReadInputTokens":5,"thinkingTokens":7},"claude-haiku-5":{"inputTokens":900,"outputTokens":400,"cacheCreationInputTokens":0,"cacheReadInputTokens":0,"thinkingTokens":0}}}""";
+
+    /// <summary>One model, and it is NOT the one the step requested — a substitution or a quota-driven downgrade.</summary>
+    private const string ClaudeTerminalLineWithOtherModelUsage =
+        """{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"num_turns":3,"result":"done","session_id":"s","modelUsage":{"claude-haiku-5":{"inputTokens":100,"outputTokens":50,"cacheCreationInputTokens":10,"cacheReadInputTokens":5,"thinkingTokens":7}}}""";
+
+    /// <summary>
+    /// A mid-stream `"type":"assistant"` line carrying the two cache figures
+    /// <c>ClaudeUsageParser.TryParseIncrementalUsage</c> reads. Without one of these in the capture, the
+    /// replay <c>ExecutionUsageProjector</c> runs over the same bytes reads no usage at all and the
+    /// reconciliation triple cannot complete — so a terminal-line-only fixture is not a clean stream,
+    /// it is one whose live half is missing (#1883 review F2).
+    /// </summary>
+    private const string ClaudeAssistantUsageLine =
+        """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":5,"output_tokens":3}}}""";
+
     /// <summary>An agy terminal `result` line, from <c>AgyFinalUsageParsingTests</c>. Note it reports thinking but has no cache-CREATION dimension at all — the asymmetry this file checks.</summary>
     private const string AgyTerminalLine =
         """{"event":"result","result":{"conversation_id":"c","status":"SUCCESS","response":"done","duration_seconds":3.6,"num_turns":1,"usage":{"input_tokens":14407,"output_tokens":1173,"thinking_tokens":992,"cache_read_tokens":40765,"total_tokens":15580}}}""";
+
+    /// <summary>An agy mid-stream DONE `agent_response` step_update, the shape that vendor's incremental parser reads.</summary>
+    private const string AgyStepUpdateUsageLine =
+        """{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","usage":{"input_tokens":14407,"output_tokens":1173,"thinking_tokens":992,"cache_read_tokens":40765,"total_tokens":15580}}}""";
 
     private static ExecutionRequest AcceptedRequest(ExecutionId executionId, string worker, string? adapter, string? model) => new(
         executionId,
@@ -45,13 +79,27 @@ public sealed class CostLedgerStoreTests
     /// <summary>
     /// Writes the captured stdout the projector reads its usage out of, at exactly the path
     /// <see cref="ArtifactManager.ResolveOutputDirectory"/> addresses.
+    /// <para>
+    /// #1883 review F2: a mid-stream usage line is written BEFORE the terminal one by default, because
+    /// that is what a real capture looks like and because `completeness: "complete"` now means the
+    /// terminal read and the replay over the same bytes RECONCILED. A fixture that is one terminal line
+    /// is a stream whose live half is missing, and pinning `complete` against it would pin the label to
+    /// a shape production never produces. <paramref name="liveUsageLine"/> is null for the arms that
+    /// deliberately exercise a stream with no live reading in it.
+    /// </para>
     /// </summary>
-    private static void WriteCapturedStream(string roomDirectoryPath, ExecutionId executionId, string terminalLine, bool truncated = false)
+    private static void WriteCapturedStream(
+        string roomDirectoryPath,
+        ExecutionId executionId,
+        string terminalLine,
+        bool truncated = false,
+        string? liveUsageLine = ClaudeAssistantUsageLine)
     {
         var artifactsRoot = Path.Combine(roomDirectoryPath, ArtifactManager.ArtifactsDirectoryName);
         var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
         Directory.CreateDirectory(outputDirectory);
-        File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), terminalLine + "\n");
+        var stream = liveUsageLine is null ? terminalLine + "\n" : liveUsageLine + "\n" + terminalLine + "\n";
+        File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName), stream);
         if (truncated)
         {
             File.WriteAllText(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutTruncationMarkerFileName), "rolled over");
@@ -134,6 +182,11 @@ public sealed class CostLedgerStoreTests
             Assert.Equal(CostCompleteness.Complete, row.Completeness);
             Assert.Null(row.CompletenessReason);
 
+            // This fixture is the top-level `usage` fallback shape, which names no model at all --
+            // absent, which is what lets it be priced at the requested model's rate.
+            Assert.Null(row.ModelsObserved);
+            Assert.Null(row.EstimateReason);
+
             // The shipped catalog prices nothing citable, so a real row is unpriced rather than
             // borrowing a neighbouring model's number.
             Assert.Null(row.ApiEquivalentUsd);
@@ -149,6 +202,7 @@ public sealed class CostLedgerStoreTests
             Assert.Null(row.PullRequest);
             Assert.Null(row.Attempt);
             Assert.Null(row.Raw);
+            Assert.Null(row.ModelEchoed);
         }
         finally
         {
@@ -163,7 +217,7 @@ public sealed class CostLedgerStoreTests
         try
         {
             var executionId = new ExecutionId("exec-agy");
-            WriteCapturedStream(room, executionId, AgyTerminalLine);
+            WriteCapturedStream(room, executionId, AgyTerminalLine, liveUsageLine: AgyStepUpdateUsageLine);
 
             var row = Assert.Single(CostLedgerStore.BuildEntries(
                 SettledExecution(executionId, "agy", "gemini-3-pro", Start), room, Repository));
@@ -364,6 +418,271 @@ public sealed class CostLedgerStoreTests
             FileCleanup.Delete(ledgerPath);
             DirectoryCleanup.DeleteRecursively(room);
         }
+    }
+
+    [Fact]
+    public void A_whole_tree_total_split_across_two_models_is_refused_rather_than_priced_at_the_requested_ones_rate()
+    {
+        // #1883 review F1, wider form -- CostLedgerStore.Estimate's own doc has the rule and
+        // spec/baton.md §7 has the ruling behind it. What this arm fixes is the shape: a tree whose
+        // subagent ran on a second model, where one rate applied to the total would charge Opus rates
+        // for Haiku tokens.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-two-models");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLineWithTwoModelUsage);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start),
+                room,
+                Repository,
+                TwoRangeCatalog("v1", earlyInputRate: 15)));
+
+            Assert.Equal(new[] { "claude-opus-5", "claude-haiku-5" }, row.ModelsObserved);
+            Assert.Null(row.ApiEquivalentUsd);
+            Assert.Null(row.PlanMeterEstimateUsd);
+            Assert.Equal(EstimateStatus.Unpriced, row.EstimateStatus);
+            Assert.Equal(EstimateStatus.Unpriced, row.PlanMeterEstimateStatus);
+            Assert.Equal("multi-model-usage", row.EstimateReason);
+
+            // The row still carries the tokens -- refusing to PRICE them is not refusing to record
+            // them, and phase B's per-model rows are what will price this attempt.
+            Assert.Equal(1000, row.TokensIn);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void A_whole_tree_total_naming_exactly_the_requested_model_is_still_priced()
+    {
+        // The polarity control for the two arms around it: the refusal above is about ATTRIBUTION, not
+        // about `modelUsage` being present. Without this, a bug that refused every whole-tree reading
+        // would pass both of them -- and it would silently unprice every real claude row.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-one-model");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLineWithModelUsage);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start),
+                room,
+                Repository,
+                TwoRangeCatalog("v1", earlyInputRate: 15)));
+
+            Assert.Equal(new[] { "claude-opus-5" }, row.ModelsObserved);
+            Assert.Null(row.EstimateReason);
+
+            // The figures are `modelUsage`'s, not the deliberately-different top-level ones -- which is
+            // what proves this arm exercised the path production prefers.
+            Assert.Equal(100, row.TokensIn);
+            var expected = ((100 * 15m) + (50 * 75m) + (5 * 1.5m) + (10 * 18.75m) + (7 * 75m)) / 1_000_000m;
+            Assert.Equal(EstimateStatus.Estimated, row.EstimateStatus);
+            Assert.Equal(expected, row.ApiEquivalentUsd);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void A_single_model_that_is_not_the_requested_one_is_refused_rather_than_priced_at_what_was_asked_for()
+    {
+        // The narrow form of F1, and the one that needs only ONE modelUsage entry: a step requested at
+        // claude-opus-5 that the vendor actually served on another model. The catalog below prices
+        // claude-opus-5 and nothing else, so WITHOUT the guard this row is `estimated` at Opus rates
+        // for tokens no Opus call spent -- that is what makes this arm discriminating rather than
+        // merely agreeing with an empty catalog.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-model-mismatch");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLineWithOtherModelUsage);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start),
+                room,
+                Repository,
+                TwoRangeCatalog("v1", earlyInputRate: 15)));
+
+            Assert.Equal(new[] { "claude-haiku-5" }, row.ModelsObserved);
+            Assert.Equal("claude-opus-5", row.Model);
+            Assert.Null(row.ApiEquivalentUsd);
+            Assert.Null(row.PlanMeterEstimateUsd);
+            Assert.Equal(EstimateStatus.Unpriced, row.EstimateStatus);
+            Assert.Equal(EstimateStatus.Unpriced, row.PlanMeterEstimateStatus);
+            Assert.Equal("model-mismatch", row.EstimateReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void An_attempt_whose_usage_was_never_read_carries_no_completeness_label_at_all()
+    {
+        // #1883 review F2, the never-read arm -- CostLedgerStore.ResolveCompleteness has the case.
+        // `capture` is a real step type with no registered usage parser, which is what makes this a
+        // production shape rather than a constructed one.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-no-parser");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "capture", "none", Start), room, Repository));
+
+            Assert.Null(row.Completeness);
+            Assert.Null(row.CompletenessReason);
+            Assert.Null(row.TokensIn);
+            Assert.Null(row.BilledTokens);
+
+            // Absent means absent on the wire too, same doctrine as every token dimension.
+            Assert.DoesNotContain("completeness", JsonSerializer.Serialize(row), StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void An_attempt_killed_before_it_emitted_a_terminal_line_is_partial_not_complete()
+    {
+        // The other half of F2: a worker killed mid-stream leaves an unparseable last line, which the
+        // stream reader reports as `no-terminal-billed-figure` -- a reason that ALSO covers "a complete
+        // stream that carried no billed figure", and nothing downstream can tell the two apart. The
+        // weaker claim is the honest one.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-killed");
+            var artifactsRoot = Path.Combine(room, ArtifactManager.ArtifactsDirectoryName);
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(artifactsRoot, executionId);
+            Directory.CreateDirectory(outputDirectory);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName),
+                ClaudeAssistantUsageLine + "\n" + """{"type":"assistant","message":{"usage":{"input_""" + "\n");
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), room, Repository));
+
+            Assert.Equal(CostCompleteness.Partial, row.Completeness);
+            Assert.Equal("no-terminal-billed-figure", row.CompletenessReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void Every_reason_the_stream_reader_can_emit_makes_a_row_partial()
+    {
+        // #1883 review F3: the store used to restate two of the producer's four reason strings and let
+        // the other two fall through to `complete`. This is the drift check that failure needs -- add a
+        // fifth reason to ExecutionUsageView and it is covered here the moment it is declared, because
+        // the population is the producer's own set rather than a copy of it.
+        Assert.NotEmpty(ExecutionUsageView.KnownUnavailableReasons);
+        foreach (var reason in ExecutionUsageView.KnownUnavailableReasons)
+        {
+            Assert.Equal(CostCompleteness.Partial, CostLedgerStore.ResolveCompleteness(reason, billedTokens: 100));
+            Assert.Equal(CostCompleteness.Partial, CostLedgerStore.ResolveCompleteness(reason, billedTokens: null));
+        }
+
+        // Both polarities of the no-reason case, which is where the third state lives.
+        Assert.Equal(CostCompleteness.Complete, CostLedgerStore.ResolveCompleteness(null, billedTokens: 100));
+        Assert.Null(CostLedgerStore.ResolveCompleteness(null, billedTokens: null));
+    }
+
+    [Fact]
+    public void An_attempt_ending_exactly_on_a_range_boundary_matches_exactly_one_range()
+    {
+        // #1883 review F5. The two arms above bracket the 2026-07-01 boundary without ever landing on
+        // it, and half-open ranges are precisely what a boundary instant tests: `from <= at < to` must
+        // put this attempt in the SECOND range, not both and not the first.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-boundary");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var boundary = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", boundary.AddSeconds(-2)),
+                room,
+                Repository,
+                TwoRangeCatalog("v1", earlyInputRate: 15)));
+
+            Assert.Equal(boundary, row.EndedAt);
+            var expected = ((100 * 30m) + (50 * 75m) + (5 * 1.5m) + (10 * 18.75m) + (7 * 75m)) / 1_000_000m;
+            Assert.Equal(expected, row.ApiEquivalentUsd);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void An_attempt_ending_before_the_earliest_range_is_unpriced_rather_than_priced_at_the_earliest_rate()
+    {
+        // #1883 review F5, the other end: no range covers 2025, and the honest answer is no number --
+        // not the first range's rate extended backwards.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-before-catalog");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", new DateTime(2025, 6, 1, 12, 0, 0, DateTimeKind.Utc)),
+                room,
+                Repository,
+                TwoRangeCatalog("v1", earlyInputRate: 15)));
+
+            Assert.Null(row.ApiEquivalentUsd);
+            Assert.Equal(EstimateStatus.Unpriced, row.EstimateStatus);
+            Assert.Null(row.EstimateReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void A_catalog_parsed_from_json_matches_a_vendor_model_and_dimension_spelled_in_another_case()
+    {
+        // #1883 review F9: PriceCatalog.Default is built OrdinalIgnoreCase, so a parsed catalog that
+        // was not would make the same document behave differently depending on where it came from --
+        // and only the outer level being fixed would leave the two that actually vary in spelling live.
+        var catalog = PriceCatalog.Parse("""
+            {"id":"t","version":"1","vendors":{"Claude":{"Claude-Opus-5":{"Input":[{"effectiveFrom":"2026-01-01T00:00:00Z","usdPerMillion":15,"source":"test"}]}}}}
+            """);
+
+        Assert.Equal(15m, catalog.TryRate("claude", "claude-opus-5", PriceDimension.Input, Start));
+    }
+
+    [Fact]
+    public void A_price_point_with_no_citable_source_is_rejected_rather_than_parsed_with_a_null_one()
+    {
+        // #1883 review F6: PricePoint.Source's own doc states the rule this now enforces. It was prose
+        // only, and nothing on the pricing path reads the field to notice a null one.
+        Assert.Throws<JsonException>(() => PriceCatalog.Parse("""
+            {"id":"t","version":"1","vendors":{"claude":{"claude-opus-5":{"input":[{"effectiveFrom":"2026-01-01T00:00:00Z","usdPerMillion":15}]}}}}
+            """));
+
+        Assert.Throws<JsonException>(() => PlanFactorTable.Parse("""
+            {"id":"t","version":"1","vendors":{"claude":{"unmeasured":false,"dimensionWeights":{"cacheRead":{"factor":0.1}}}}}
+            """));
     }
 
     [Fact]

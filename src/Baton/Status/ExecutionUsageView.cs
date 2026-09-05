@@ -84,7 +84,47 @@ public sealed record ExecutionUsageView(
     /// </summary>
     [property: JsonPropertyName("peakBilledInWindow")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    long? PeakBilledInWindow = null);
+    long? PeakBilledInWindow = null,
+    /// <summary>
+    /// #1883 review F1: <see cref="WorkerUsage.ModelsObserved"/>, carried through verbatim off the same
+    /// terminal reading the six token figures above come from. That field's own doc states what it means
+    /// and what its absence does and does not say.
+    /// </summary>
+    [property: JsonPropertyName("modelsObserved")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? ModelsObserved = null)
+{
+    /// <summary>The capture is provably not the whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>.</summary>
+    public const string StreamTruncatedByRolloverReason = "stream-truncated-by-rollover";
+
+    /// <summary>The rolled-over segment exists but could not be read, so no Σ over the whole stream is possible.</summary>
+    public const string RolloverSegmentUnreadableReason = "rollover-segment-unreadable";
+
+    /// <summary>The replay parsed no usage line carrying a billed component.</summary>
+    public const string NoLiveBilledFigureReason = "no-live-billed-figure";
+
+    /// <summary>
+    /// The terminal line reported no billed component. #1883 review F2: this conflates "a complete
+    /// stream that carried no billed figure" with "the last non-blank line failed to parse" — a worker
+    /// killed mid-stream — and nothing downstream can tell those apart, which is why a consumer must
+    /// treat it as an incomplete capture rather than a complete one.
+    /// </summary>
+    public const string NoTerminalBilledFigureReason = "no-terminal-billed-figure";
+
+    /// <summary>
+    /// Every value <see cref="BilledReconciliationUnavailable"/> can carry, in one place, so a consumer
+    /// mapping them (<c>Accounting.CostLedgerStore</c>) can be tested against the producer's whole
+    /// vocabulary rather than against a restatement of it that goes stale when a reason is added
+    /// (#1883 review F3 — the two strings used to be spelled out a second time in that store).
+    /// </summary>
+    public static IReadOnlySet<string> KnownUnavailableReasons { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        StreamTruncatedByRolloverReason,
+        RolloverSegmentUnreadableReason,
+        NoLiveBilledFigureReason,
+        NoTerminalBilledFigureReason,
+    };
+}
 
 /// <summary>
 /// Builds one <see cref="ExecutionUsageView"/> per <see cref="ExecutionId"/> that has both a recorded
@@ -213,7 +253,9 @@ public static class ExecutionUsageProjector
             if (!reconciled && reading is not null)
             {
                 unavailable = reading.LiveUnavailableReason
-                    ?? (billed is null ? "no-terminal-billed-figure" : "no-live-billed-figure");
+                    ?? (billed is null
+                        ? ExecutionUsageView.NoTerminalBilledFigureReason
+                        : ExecutionUsageView.NoLiveBilledFigureReason);
             }
 
             long? peakBilledInWindow = peakBilledInWindowByExecutionId.TryGetValue(executionId, out var recordedPeak)
@@ -232,7 +274,8 @@ public static class ExecutionUsageProjector
                 reconciled ? liveBilled : null,
                 reconciled ? billed!.Value - liveBilled!.Value : null,
                 unavailable,
-                peakBilledInWindow);
+                peakBilledInWindow,
+                usage?.ModelsObserved);
         }
 
         return result;
@@ -433,7 +476,7 @@ public static class ExecutionUsageProjector
         // streams captured since that landed.
         if (File.Exists(truncationMarkerPath))
         {
-            return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-rollover"));
+            return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByRolloverReason));
         }
 
         string[] rolledLines = [];
@@ -448,7 +491,7 @@ public static class ExecutionUsageProjector
                 // Same posture as the current-file arm above -- except that here the honest response is
                 // to report NO live figure at all rather than a partial one, since a partial Σ over the
                 // tail alone is exactly the fabricated under-read this whole comment exists about.
-                return Memoize(cacheKey, new UsageReading(terminal, null, "rollover-segment-unreadable"));
+                return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.RolloverSegmentUnreadableReason));
             }
         }
 

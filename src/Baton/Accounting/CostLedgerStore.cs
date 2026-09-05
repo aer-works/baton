@@ -42,15 +42,11 @@ public static class CostLedgerStore
     /// </summary>
     private const string LockNamePrefix = "baton-cost-ledger";
 
-    /// <summary>
-    /// The reasons on <c>ExecutionUsageView.BilledReconciliationUnavailable</c> that mean the CAPTURE
-    /// itself is provably incomplete, as opposed to a figure the vendor simply never reported. Only
-    /// these two make a row <see cref="CostCompleteness.Partial"/>: <c>no-live-billed-figure</c> and
-    /// <c>no-terminal-billed-figure</c> describe a complete stream that carried no billed component,
-    /// which is an absent dimension (already spelled by omission), not a truncated attempt.
-    /// </summary>
-    private static readonly HashSet<string> PartialCaptureReasons =
-        new(StringComparer.Ordinal) { "stream-truncated-by-rollover", "rollover-segment-unreadable" };
+    /// <summary><c>estimateReason</c> when the tokens are a sum across more than one model, so no single rate applies to them.</summary>
+    internal const string MultiModelUsageReason = "multi-model-usage";
+
+    /// <summary><c>estimateReason</c> when the breakdown names one model and the binding asked for a different one.</summary>
+    internal const string ModelMismatchReason = "model-mismatch";
 
     /// <summary>
     /// Builds one <see cref="CostLedgerEntry"/> per execution in <paramref name="entries"/> that has
@@ -160,12 +156,11 @@ public static class CostLedgerStore
                 CacheCreation: usage.CacheCreationTokens,
                 Thinking: usage.ThinkingTokens);
 
-            var (apiUsd, apiStatus, planUsd, planStatus) =
-                Estimate(catalog, planFactors, binding.Adapter, binding.Model, tokens, pricedAt);
+            var (apiUsd, apiStatus, planUsd, planStatus, estimateReason) =
+                Estimate(catalog, planFactors, binding.Adapter, binding.Model, tokens, usage.ModelsObserved, pricedAt);
 
-            var partialReason = usage.BilledReconciliationUnavailable is { } reason && PartialCaptureReasons.Contains(reason)
-                ? reason
-                : null;
+            var unavailableReason = usage.BilledReconciliationUnavailable;
+            var completeness = ResolveCompleteness(unavailableReason, usage.BilledTokens);
 
             result.Add(new CostLedgerEntry(
                 SourceKind: CostSourceKind.BatonExecution,
@@ -177,6 +172,7 @@ public static class CostLedgerStore
                 Role: request?.Worker,
                 Adapter: binding.Adapter,
                 Model: binding.Model,
+                ModelsObserved: usage.ModelsObserved,
                 Outcome: outcome,
                 StartedAt: startedAt,
                 EndedAt: endedAt,
@@ -191,12 +187,13 @@ public static class CostLedgerStore
                 LiveBilledTokens: usage.LiveBilledTokens,
                 BilledUnderReadTokens: usage.BilledUnderReadTokens,
                 PeakBilledInWindow: usage.PeakBilledInWindow,
-                Completeness: partialReason is null ? CostCompleteness.Complete : CostCompleteness.Partial,
-                CompletenessReason: partialReason,
+                Completeness: completeness,
+                CompletenessReason: unavailableReason,
                 ApiEquivalentUsd: apiUsd,
                 EstimateStatus: apiStatus,
                 PlanMeterEstimateUsd: planUsd,
                 PlanMeterEstimateStatus: planStatus,
+                EstimateReason: estimateReason,
                 PriceCatalogId: catalog.Id,
                 PriceCatalogVersion: catalog.Version,
                 PlanFactorTableId: planFactors.Id,
@@ -207,20 +204,74 @@ public static class CostLedgerStore
     }
 
     /// <summary>
+    /// How much of an attempt a row accounts for, from the two things the stream reader reports about
+    /// it (#1883 review F2). Three states, and these two arguments decide between them exhaustively:
+    /// <c>ExecutionUsageView</c>'s reconciliation triple is all-present-or-none, so a null
+    /// <paramref name="unavailableReason"/> holds in exactly two cases and
+    /// <paramref name="billedTokens"/> separates them.
+    /// <list type="bullet">
+    /// <item>A reason — ANY of <c>ExecutionUsageView.KnownUnavailableReasons</c> — is
+    /// <see cref="CostCompleteness.Partial"/>. That deliberately includes the two that are not about
+    /// truncation at all: <c>ExecutionUsageView.NoTerminalBilledFigureReason</c> (whose own doc has the
+    /// two cases it conflates) and <c>ExecutionUsageView.NoLiveBilledFigureReason</c>, where the
+    /// terminal line parsed but the replay over the same bytes read no usage line. Neither is provably
+    /// whole, and #1849's own doctrine is that an undecidable case reads as the weaker claim. Mapping
+    /// every reason rather than an enumerated subset is also what stops a reason added to the producer
+    /// from silently landing here as <see cref="CostCompleteness.Complete"/>.</item>
+    /// <item>No reason and a billed figure means reconciled — a terminal line parsed AND the replay
+    /// completed — which is the only <see cref="CostCompleteness.Complete"/>.</item>
+    /// <item>No reason and no billed figure means the usage was never read at all: no parser registered
+    /// for the adapter, or no captured <c>.stdout.log</c>. <see langword="null"/>, i.e. the field is
+    /// ABSENT on the row. Labelling that <c>complete</c> put an attempt carrying no dimensions into the
+    /// same trustworthy set as a fully-captured one, which is the defect this replaces.</item>
+    /// </list>
+    /// </summary>
+    internal static CostCompleteness? ResolveCompleteness(string? unavailableReason, long? billedTokens) =>
+        unavailableReason is not null
+            ? CostCompleteness.Partial
+            : billedTokens is not null
+                ? CostCompleteness.Complete
+                : null;
+
+    /// <summary>
     /// The two labelled estimates and their statuses. The plan-meter half resolves its FACTOR status
     /// first, so an unmeasured vendor reads <c>unmeasured</c> and a live discount window of unknown
     /// size reads <c>unknown</c> — both of which say more than the <c>unpriced</c> an empty catalog
     /// would otherwise flatten them into. There is no 1.0 fallback anywhere in this method: an
     /// unresolvable factor yields no number at all.
+    /// <para>
+    /// <b>#1883 review F1: nothing is priced unless <paramref name="tokens"/> is attributable to
+    /// <paramref name="model"/>.</b> spec/baton.md §7 carries the ruling and what it costs; the
+    /// mechanics are that <paramref name="modelsObserved"/> is the vendor's own breakdown of the very
+    /// figures in <paramref name="tokens"/> (see <see cref="Domain.WorkerUsage.ModelsObserved"/>) while
+    /// <paramref name="model"/> is <see cref="ExecutionBindingResolver"/>'s, i.e. what was ASKED FOR —
+    /// so anything other than "one model, and it is that one" leaves both estimates absent with a
+    /// reason. A <see langword="null"/> <paramref name="modelsObserved"/> is not a refusal: it is the
+    /// no-breakdown-reported case this ledger has always priced.
+    /// </para>
     /// </summary>
-    private static (decimal? ApiUsd, EstimateStatus ApiStatus, decimal? PlanUsd, EstimateStatus PlanStatus) Estimate(
+    private static (decimal? ApiUsd, EstimateStatus ApiStatus, decimal? PlanUsd, EstimateStatus PlanStatus, string? Reason) Estimate(
         PriceCatalog catalog,
         PlanFactorTable planFactors,
         string? adapter,
         string? model,
         TokenDimensions tokens,
+        IReadOnlyList<string>? modelsObserved,
         DateTime at)
     {
+        if (modelsObserved is { Count: > 0 } observed)
+        {
+            if (observed.Count > 1)
+            {
+                return (null, EstimateStatus.Unpriced, null, EstimateStatus.Unpriced, MultiModelUsageReason);
+            }
+
+            if (model is not { Length: > 0 } || !string.Equals(observed[0], model, StringComparison.OrdinalIgnoreCase))
+            {
+                return (null, EstimateStatus.Unpriced, null, EstimateStatus.Unpriced, ModelMismatchReason);
+            }
+        }
+
         var apiUsd = catalog.TryEstimateUsd(adapter, model, tokens, at);
         var apiStatus = apiUsd is null ? EstimateStatus.Unpriced : EstimateStatus.Estimated;
 
@@ -228,9 +279,9 @@ public static class CostLedgerStore
         switch (resolution.Status)
         {
             case PlanFactorStatus.Unmeasured:
-                return (apiUsd, apiStatus, null, EstimateStatus.Unmeasured);
+                return (apiUsd, apiStatus, null, EstimateStatus.Unmeasured, null);
             case PlanFactorStatus.Unknown:
-                return (apiUsd, apiStatus, null, EstimateStatus.Unknown);
+                return (apiUsd, apiStatus, null, EstimateStatus.Unknown, null);
         }
 
         decimal weighted = 0m;
@@ -239,7 +290,7 @@ public static class CostLedgerStore
         {
             if (catalog.TryRate(adapter, model, dimension, at) is not { } rate)
             {
-                return (apiUsd, apiStatus, null, EstimateStatus.Unpriced);
+                return (apiUsd, apiStatus, null, EstimateStatus.Unpriced, null);
             }
 
             var weight = resolution.Weights.TryGetValue(dimension, out var w) ? w : 1m;
@@ -248,8 +299,8 @@ public static class CostLedgerStore
         }
 
         return priced
-            ? (apiUsd, apiStatus, weighted * resolution.DiscountMultiplier, EstimateStatus.Estimated)
-            : (apiUsd, apiStatus, null, EstimateStatus.Unpriced);
+            ? (apiUsd, apiStatus, weighted * resolution.DiscountMultiplier, EstimateStatus.Estimated, null)
+            : (apiUsd, apiStatus, null, EstimateStatus.Unpriced, null);
     }
 
     /// <summary>

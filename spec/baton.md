@@ -2160,7 +2160,8 @@ where `ExecutionUsageView` is
 { "wallClockMs": number, "tokensIn"?: number, "tokensOut"?: number, "turns"?: number,
   "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number,
   "billedTokens"?: number, "liveBilledTokens"?: number, "billedUnderReadTokens"?: number,
-  "billedReconciliationUnavailable"?: string }
+  "billedReconciliationUnavailable"?: string, "peakBilledInWindow"?: number,
+  "modelsObserved"?: string[] }
 ```
 (`src/Baton/Status/ExecutionUsageView.cs` declares the C# record; `WorkflowStatusView.cs` projects it). `wallClockMs` is
 always present when the object is present at all — derived from recorded start/exit timestamps. The
@@ -2201,7 +2202,14 @@ An earlier revision of this contract was prose only, and the code did serve that
 obeying the register was handed a partial answer in precisely the case the guard exists to flag, which
 is why the rule is now enforced in the projector and pinned in both polarities by
 `ExecutionUsageProjectorTests`. The permitted reason values, and when the reason itself is absent, are
-on `ExecutionUsageView.BilledReconciliationUnavailable`.
+on `ExecutionUsageView.BilledReconciliationUnavailable`, which since #1883 declares them as constants
+the projector emits and the cost ledger maps — one vocabulary, not a copy of one.
+
+**`modelsObserved` (#1883) discloses the attribution the six figures above already depended on** — which
+models the whole-tree read summed over, rather than only the total. `WorkerUsage.ModelsObserved` defines
+the field, including what its absence does and does not say; §7's cost ledger is the consumer whose
+behaviour turns on it. `peakBilledInWindow` (#1709) was already on the record and missing from the shape
+above; both are listed now.
 
 One of them is worth a ruling rather than a field doc, because the bound behind it reads like a
 guarantee and is not. **`ExecutionStreamLogger`'s 8 MiB-plus-one-rollover ceiling is a RETENTION bound,
@@ -3400,7 +3408,7 @@ restated here. Cite the ruling above — "accumulation from lane logs is attribu
 reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
 second one.
 
-### The cost ledger (#1849) — phase A, PR #1883 (open)
+### The cost ledger (#1849) — phase A, shipped (#1883)
 
 The burn ledger above stays exactly what it is: the per-execution source, keyed by machine, pruned by
 nothing. The **cost ledger** consumes it and adds three things it does not have — a *repository* key,
@@ -3418,8 +3426,9 @@ primitives the burn ledger reads — `CostLedgerStore`'s own remarks state what 
 a second reader. A retry or redispatch mints a fresh
 `ExecutionId`, so it is a fresh row with no extra machinery; a cancellation, failure, arrest or
 indeterminate settle is a row carrying that outcome, from the same closed token set
-`QuotaLedgerEntry.Outcome` documents; a provably-truncated capture is a row with `completeness:
-"partial"` and the reason string `ExecutionUsageView.BilledReconciliationUnavailable` already emits.
+`QuotaLedgerEntry.Outcome` documents; a capture the stream reader could not establish as whole is a row
+with `completeness: "partial"` and the reason string `ExecutionUsageView.BilledReconciliationUnavailable`
+already emits.
 `AppendAsync` skips an execution id the file already holds — its own doc comment states against which
 repeated-settle shapes, and what inflated totals that skip is buying, not restated here.
 
@@ -3432,12 +3441,15 @@ repeated-settle shapes, and what inflated totals that skip is buying, not restat
 | `sourceKind` | Closed set: `baton-execution` (the only writer today), `claude-code-session`, `codex-session`, `antigravity-session` reserved for phase C. Makes "Baton-only rows" a filter, not an inference. |
 | `repository` | `RepositoryIdentity.Value` — see below. |
 | `room`, `workflow`, `step`, `execution`, `role` | Identity, off the accepted `ExecutionRequest`. `role` is Baton's worker name; Baton has no second role concept. |
-| `adapter`, `model`, `outcome`, `startedAt`, `endedAt` | Route and lifecycle. |
+| `adapter`, `model`, `outcome`, `startedAt`, `endedAt` | Route and lifecycle. **`model` is the model the step was REQUESTED at** (`ExecutionBindingResolver`, i.e. the accepted request plus any `StepRebound`), never the model the CLI echoed back — a substitution or a quota-driven downgrade is invisible in it, so grouping rows by `model` groups by intent, not by what ran. |
+| `modelsObserved` | The models this row's token dimensions were summed ACROSS, off the vendor's own per-model breakdown (§3). Absent = the vendor reported no breakdown, which is *unknown*, never *one model*. |
+| `modelEchoed` | **Reserved, no phase-A writer** — the model as the CLI itself echoed it, which is the one `model` is not. Named now so phase C fills it rather than inventing a competitor. |
 | `tokensIn`, `tokensOut`, `cacheRead`, `cacheCreation`, `thinking`, `turns`, `wallClockMs` | The dimensions `QuotaLedgerEntry` carries, same names and same nullability. Cache-read is first-class here, never folded into a billed figure. |
 | `billedTokens`, `liveBilledTokens`, `billedUnderReadTokens`, `peakBilledInWindow` | #1706/#1709's vendor-derived figures, carried through under the names `ExecutionUsageView` already defines. |
-| `completeness`, `completenessReason` | `complete` / `partial` plus the stream reader's own reason string. |
+| `completeness`, `completenessReason` | `complete` / `partial` / **absent**, plus the stream reader's own reason string. `complete` requires a terminal line to have parsed AND the replay over the same bytes to have reconciled against it (§3's #1706 triple present) — it is *not* the default. **Every** value of `billedReconciliationUnavailable` maps to `partial` — including the two that describe no truncation at all, whose ambiguity `ExecutionUsageView`'s reason constants state — because an undecidable case takes the weaker label. **Absent** is the third state, for an attempt whose usage was never read (no parser registered for its adapter, no captured `.stdout.log`): neither label is true of a row nothing was read for, and calling it `complete` is what put an empty row in #1848's trustworthy set. `CostLedgerStore.ResolveCompleteness` is the one decision point. |
 | `apiEquivalentUsd`, `estimateStatus` | List-price estimate and its status (`estimated` / `unpriced`). |
 | `planMeterEstimateUsd`, `planMeterEstimateStatus` | Plan-meter estimate and its status (`estimated` / `unpriced` / `unknown` / `unmeasured`). |
+| `estimateReason` | Why BOTH estimates are `unpriced` for a reason other than a missing rate: `multi-model-usage` or `model-mismatch` (below). Absent when pricing was attempted at all — absent never means *priced*. |
 | `priceCatalogId`, `priceCatalogVersion`, `planFactorTableId`, `planFactorTableVersion` | The four provenance stamps that make an estimate reproducible. |
 | `attempt`, `effort`, `issue`, `pr`, `parentRoom`, `workstream`, `raw` | **Reserved, no phase-A writer** — none is derivable from the events a settle has in hand. Named now so a later phase fills a reserved field rather than inventing a competing one. |
 
@@ -3445,7 +3457,20 @@ repeated-settle shapes, and what inflated totals that skip is buying, not restat
 (vendor → model → dimension → effective ranges, each with a source); `planMeterEstimateUsd` re-weights
 the same dimensions through `PlanFactorTable`. An unknown model is `unpriced` on both and **never
 borrows a neighbouring model's price**; a reported dimension with no rate in force makes the whole
-estimate unpriced rather than a smaller number. The plan-factor table resolves to one of three states
+estimate unpriced rather than a smaller number.
+
+**A price can be borrowed on the token side as well as the rate side, and #1883 closes that half.** An
+earlier revision of the sentence above was true of the catalog lookup and false of the token
+attribution: claude's terminal figures are a *whole-tree* sum across every model the execution's
+subagents used, while `model` is only what the step requested, so one rate applied to that sum prices
+another model's tokens at the requested model's rate. Phase A therefore **prices only when
+`modelsObserved` is absent, or names exactly the requested `model`**. More than one model is
+`unpriced` with `estimateReason: "multi-model-usage"`; a single model that is not the requested one is
+`unpriced` with `"model-mismatch"` — the "unpriced beats guessed" ruling applied to attribution rather
+than only to rates. Expect `model-mismatch` to be the common case once prices are seeded, because a
+requested `claude-opus-5` and an echoed `claude-opus-5-20260101` are different strings: that is a
+disclosure of what Baton does not know, not a regression. Pricing each model's own share at its own
+rate needs per-model token dimensions on the row, which is **phase B's** schema, not phase A's. The plan-factor table resolves to one of three states
 and **has no 1.0 fallback anywhere**: a live promotional window whose percent nobody has measured
 resolves `unknown`, and a vendor whose meter has never been measured resolves `unmeasured`.
 `PlanFactorStatus`'s own remarks state what a 1.0 default would produce instead, and why that is the

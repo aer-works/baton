@@ -22,10 +22,14 @@ public enum PlanFactorStatus
     Unmeasured,
 }
 
-/// <summary>A per-dimension weighting applied to a plan-meter estimate, with its provenance.</summary>
+/// <summary>
+/// A per-dimension weighting applied to a plan-meter estimate, with its provenance. <c>source</c> is
+/// <c>[JsonRequired]</c> for the reason <see cref="PricePoint.Source"/> states — the "no citable source,
+/// no entry" rule is a check here rather than a sentence (#1883 review F6).
+/// </summary>
 public sealed record PlanDimensionWeight(
     [property: JsonPropertyName("factor")] decimal Factor,
-    [property: JsonPropertyName("source")] string Source);
+    [property: JsonPropertyName("source")][property: JsonRequired] string Source);
 
 /// <summary>
 /// A promotional or otherwise time-bounded adjustment to one model's plan-meter cost.
@@ -35,7 +39,7 @@ public sealed record PlanDimensionWeight(
 public sealed record PlanDiscountWindow(
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("effectiveFrom")] DateTime EffectiveFrom,
-    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("source")][property: JsonRequired] string Source,
     [property: JsonPropertyName("effectiveTo")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTime? EffectiveTo = null,

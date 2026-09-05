@@ -20,11 +20,14 @@ public enum PriceDimension
 /// <param name="Source">
 /// Where this number came from, in enough detail for a later reader to re-check it. A catalog entry
 /// with no citable source does not belong here at all — see <see cref="PriceCatalog"/>'s remarks.
+/// <c>[JsonRequired]</c> is what enforces that on a parsed catalog rather than leaving it to the prose
+/// (#1883 review F6): without it a <c>"source"</c>-less entry deserialized to a null this non-nullable
+/// property claims cannot happen, and nothing on the pricing path ever reads it to notice.
 /// </param>
 public sealed record PricePoint(
     [property: JsonPropertyName("effectiveFrom")] DateTime EffectiveFrom,
     [property: JsonPropertyName("usdPerMillion")] decimal UsdPerMillion,
-    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("source")][property: JsonRequired] string Source,
     [property: JsonPropertyName("effectiveTo")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTime? EffectiveTo = null);
@@ -77,14 +80,45 @@ public sealed record PriceCatalog(
     /// Parses a catalog from JSON — the seam that lets a test build a catalog with two effective
     /// ranges (and a later, edited version of the same catalog) without editing the shipped one.
     /// Throws <see cref="JsonException"/> on malformed input: a catalog that cannot be read is a
-    /// programming error at its call site, not something to degrade past silently.
+    /// programming error at its call site, not something to degrade past silently — including an entry
+    /// with no <c>source</c>, which <see cref="PricePoint.Source"/>'s own doc explains.
+    /// <para>
+    /// #1883 review F9: every one of the three dictionary levels is rebuilt case-insensitively.
+    /// <see cref="Default"/> is built with <see cref="StringComparer.OrdinalIgnoreCase"/>, so without
+    /// this a catalog loaded from JSON would miss a vendor, model or dimension the shipped one would
+    /// have matched — the same document behaving differently depending on where it came from. Rebuilding
+    /// only the outer level would leave that live at the level that actually varies in spelling.
+    /// </para>
     /// </summary>
     public static PriceCatalog Parse(string json)
     {
         ArgumentException.ThrowIfNullOrEmpty(json);
-        return JsonSerializer.Deserialize<PriceCatalog>(json)
+        var parsed = JsonSerializer.Deserialize<PriceCatalog>(json)
             ?? throw new JsonException("A price catalog document deserialized to null.");
+
+        var vendors = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<PricePoint>>>>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var (vendor, models) in parsed.Vendors)
+        {
+            var byModel = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<PricePoint>>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (model, dimensions) in models ?? EmptyModels)
+            {
+                byModel[model] = dimensions is null
+                    ? EmptyDimensions
+                    : new Dictionary<string, IReadOnlyList<PricePoint>>(dimensions, StringComparer.OrdinalIgnoreCase);
+            }
+
+            vendors[vendor] = byModel;
+        }
+
+        return parsed with { Vendors = vendors };
     }
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<PricePoint>>> EmptyModels =
+        new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<PricePoint>>>(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<PricePoint>> EmptyDimensions =
+        new Dictionary<string, IReadOnlyList<PricePoint>>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The USD-per-million rate in force for <paramref name="vendor"/>/<paramref name="model"/>'s

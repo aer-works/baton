@@ -84,7 +84,14 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
             // thinkingTokens) still gets it from the top level instead of losing it, and a capture
             // predating the field (or a vendor build that stops emitting it) still yields every figure
             // it always did.
-            TryReadModelUsageTotals(root, ref tokensIn, ref tokensOut, ref cacheReadTokens, ref cacheCreationTokens, ref thinkingTokens);
+            // #1883 review F1: the map's KEYS survive the sum now. Discarding them is what let a
+            // whole-tree, possibly multi-model total be priced at one requested model's rate.
+            IReadOnlyList<string>? modelsObserved = null;
+            if (TryReadModelUsageTotals(root, ref tokensIn, ref tokensOut, ref cacheReadTokens, ref cacheCreationTokens, ref thinkingTokens, out var observed))
+            {
+                modelsObserved = observed;
+            }
+
             if (root.TryGetProperty("usage", out var usageProp) && usageProp.ValueKind == JsonValueKind.Object)
             {
                 if (tokensIn is null && usageProp.TryGetProperty("input_tokens", out var inProp) && inProp.TryGetInt64(out var inTokens))
@@ -129,7 +136,8 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 return false;
             }
 
-            usage = new WorkerUsage(tokensIn, tokensOut, turns, cacheReadTokens, cacheCreationTokens, thinkingTokens);
+            usage = new WorkerUsage(
+                tokensIn, tokensOut, turns, cacheReadTokens, cacheCreationTokens, thinkingTokens, ModelsObserved: modelsObserved);
             return true;
         }
         catch (JsonException)
@@ -149,6 +157,14 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
     /// argument untouched — when there is no <c>modelUsage</c> object, or when it is present but no
     /// entry yielded a single figure, so the caller's top-level fallback is reached on a shape this
     /// could not read rather than on one it read as all-zero.
+    /// <para>
+    /// #1883 review F1: <paramref name="modelsObserved"/> reports WHICH models the returned totals were
+    /// summed across — every object-valued key of the map, in file order. It is populated only on the
+    /// <see langword="true"/> return, i.e. exactly when these totals are the whole-tree figure; on a
+    /// <see langword="false"/> return the caller falls back to the single-model top-level object and
+    /// there is no model name to report. <see cref="WorkerUsage.ModelsObserved"/> is where the keys land
+    /// and why they now have to survive the sum.
+    /// </para>
     /// </summary>
     private static bool TryReadModelUsageTotals(
         JsonElement root,
@@ -156,13 +172,16 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
         ref long? tokensOut,
         ref long? cacheReadTokens,
         ref long? cacheCreationTokens,
-        ref long? thinkingTokens)
+        ref long? thinkingTokens,
+        out IReadOnlyList<string>? modelsObserved)
     {
+        modelsObserved = null;
         if (!root.TryGetProperty("modelUsage", out var modelUsage) || modelUsage.ValueKind != JsonValueKind.Object)
         {
             return false;
         }
 
+        var names = new List<string>();
         long? summedIn = null;
         long? summedOut = null;
         long? summedCacheRead = null;
@@ -175,6 +194,7 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
                 continue;
             }
 
+            names.Add(model.Name);
             Accumulate(model.Value, "inputTokens", ref summedIn);
             Accumulate(model.Value, "outputTokens", ref summedOut);
             Accumulate(model.Value, "cacheReadInputTokens", ref summedCacheRead);
@@ -192,6 +212,7 @@ public sealed class ClaudeUsageParser : IWorkerUsageParser
         cacheReadTokens = summedCacheRead;
         cacheCreationTokens = summedCacheCreation;
         thinkingTokens = summedThinking;
+        modelsObserved = names;
         return true;
 
         static void Accumulate(JsonElement model, string propertyName, ref long? running)

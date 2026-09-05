@@ -31,7 +31,12 @@ public enum EstimateStatus
     /// <summary>A number was produced from the cited catalog/factor-table version.</summary>
     [JsonStringEnumMemberName("estimated")] Estimated,
 
-    /// <summary>The catalog has no price for this model (or for a dimension this usage reports). Never borrowed from a neighbouring model.</summary>
+    /// <summary>
+    /// No number was produced, and none was guessed at. Either the catalog has no price for this model
+    /// (or for a dimension this usage reports), or the tokens could not be ATTRIBUTED to the model whose
+    /// rate would have been applied — <see cref="CostLedgerEntry.EstimateReason"/> says which. Never
+    /// borrowed from a neighbouring model, on either the rate side or the token side.
+    /// </summary>
     [JsonStringEnumMemberName("unpriced")] Unpriced,
 
     /// <summary>A factor that applies here exists but has no measured value — see <see cref="PlanFactorStatus.Unknown"/>.</summary>
@@ -41,14 +46,29 @@ public enum EstimateStatus
     [JsonStringEnumMemberName("unmeasured")] Unmeasured,
 }
 
-/// <summary>How much of the attempt this row actually accounts for.</summary>
+/// <summary>
+/// How much of the attempt this row actually accounts for. <b>Two labels and an absence</b>: the field
+/// itself is omitted for an attempt nothing was read for, which is neither of them (#1883 review F2).
+/// <see cref="CostLedgerStore.ResolveCompleteness"/> is the single place that decides between the three
+/// and states the case for each.
+/// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter<CostCompleteness>))]
 public enum CostCompleteness
 {
-    /// <summary>The whole stream was readable; the token dimensions present are the whole attempt's.</summary>
+    /// <summary>
+    /// The stream was read end to end: a terminal line parsed AND the replay over the same bytes
+    /// reconciled against it (<c>ExecutionUsageView</c>'s #1706 triple is present). The token
+    /// dimensions on this row are the whole attempt's.
+    /// </summary>
     [JsonStringEnumMemberName("complete")] Complete,
 
-    /// <summary>Some of the attempt's usage is provably not in this row — <see cref="CostLedgerEntry.CompletenessReason"/> says which.</summary>
+    /// <summary>
+    /// The reader could not establish that this row holds the whole attempt's usage —
+    /// <see cref="CostLedgerEntry.CompletenessReason"/> carries the stream reader's own reason. Read
+    /// this as "not provably whole" rather than "provably truncated":
+    /// <see cref="CostLedgerStore.ResolveCompleteness"/> states which reasons land here and why every
+    /// one of them does.
+    /// </summary>
     [JsonStringEnumMemberName("partial")] Partial,
 }
 
@@ -68,8 +88,8 @@ public enum CostCompleteness
 /// </para>
 /// <para>
 /// <b>Fields reserved with no phase-A writer.</b> <see cref="Effort"/>, <see cref="Issue"/>,
-/// <see cref="PullRequest"/>, <see cref="ParentRoom"/>, <see cref="Workstream"/> and
-/// <see cref="Raw"/> are named here but never populated by <see cref="CostLedgerStore.BuildEntries"/>:
+/// <see cref="PullRequest"/>, <see cref="ParentRoom"/>, <see cref="Workstream"/>,
+/// <see cref="ModelEchoed"/> and <see cref="Raw"/> are named here but never populated by <see cref="CostLedgerStore.BuildEntries"/>:
 /// none of them is derivable from the events a settle already has in hand, and #1849's telemetry
 /// checklist wants the NAME pinned now so a later phase fills a reserved field rather than inventing
 /// a competing one. Absent for the same reason every other unavailable dimension is absent.
@@ -124,9 +144,37 @@ public sealed record CostLedgerEntry(
     [property: JsonPropertyName("adapter")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Adapter = null,
+    /// <summary>
+    /// The model this attempt was REQUESTED at — the accepted <c>ExecutionRequest.Model</c> (plus any
+    /// <c>StepRebound</c> override), as <c>ExecutionBindingResolver</c> resolves it. <b>Not the model
+    /// the vendor CLI echoed back</b>, which Baton does not record anywhere yet: a substitution or a
+    /// quota-driven downgrade is invisible here, so grouping rows by this field groups by intent, not
+    /// by what ran (#1883 review F4). <see cref="ModelEchoed"/> is the reserved name for the other one.
+    /// </summary>
     [property: JsonPropertyName("model")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Model = null,
+    /// <summary>
+    /// <b>Reserved, no phase-A writer.</b> The model as the vendor CLI itself echoed it (claude's
+    /// <c>system:init</c> line), which is what #1849's telemetry checklist asks for and what
+    /// <see cref="Model"/> above is not. Named now so phase C fills a reserved field rather than
+    /// inventing a competitor. <see cref="ModelsObserved"/> is a different fact and not a substitute:
+    /// it names every model the whole execution TREE billed against, where this names the one the main
+    /// conversation ran on.
+    /// </summary>
+    [property: JsonPropertyName("modelEchoed")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ModelEchoed = null,
+    /// <summary>
+    /// The models this row's token dimensions were summed ACROSS, off the vendor's own per-model
+    /// breakdown (claude's terminal <c>modelUsage</c> keys — one entry per model the whole execution
+    /// tree used, subagents included). Absent when the vendor reported no breakdown at all, which is
+    /// "unknown", never "exactly one model". Pricing is refused unless this is absent or names exactly
+    /// the requested <see cref="Model"/> — see <see cref="EstimateReason"/>.
+    /// </summary>
+    [property: JsonPropertyName("modelsObserved")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? ModelsObserved = null,
     [property: JsonPropertyName("effort")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Effort = null,
@@ -193,10 +241,11 @@ public sealed record CostLedgerEntry(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     CostCompleteness? Completeness = null,
     /// <summary>
-    /// Why <see cref="Completeness"/> is <see cref="CostCompleteness.Partial"/> — the same strings
-    /// <c>ExecutionUsageView.BilledReconciliationUnavailable</c> already emits
-    /// (<c>stream-truncated-by-rollover</c>, <c>rollover-segment-unreadable</c>), carried through
-    /// verbatim rather than re-spelled.
+    /// Why <see cref="Completeness"/> is <see cref="CostCompleteness.Partial"/> — whichever string
+    /// <c>ExecutionUsageView.BilledReconciliationUnavailable</c> emitted, carried through verbatim
+    /// rather than re-spelled. The vocabulary is that field's own
+    /// (<c>ExecutionUsageView.KnownUnavailableReasons</c>); every one of its values makes a row partial,
+    /// so a reason added there cannot silently land here as <see cref="CostCompleteness.Complete"/>.
     /// </summary>
     [property: JsonPropertyName("completenessReason")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -217,6 +266,18 @@ public sealed record CostLedgerEntry(
     decimal? PlanMeterEstimateUsd = null,
     [property: JsonPropertyName("planMeterEstimateStatus")]
     EstimateStatus PlanMeterEstimateStatus = EstimateStatus.Unpriced,
+    /// <summary>
+    /// Why BOTH estimates above are <see cref="EstimateStatus.Unpriced"/> for a reason other than a
+    /// missing rate — one of <c>multi-model-usage</c> (<see cref="ModelsObserved"/> names more than one
+    /// model, so the tokens are a sum no single rate applies to) or <c>model-mismatch</c> (it names one
+    /// model, and it is not the requested <see cref="Model"/> whose rate would have been used). Absent
+    /// whenever pricing was attempted, including when it was attempted and the catalog simply had no
+    /// rate: absence here means "the tokens were attributable", never "priced". Per-model rows, which
+    /// would let a multi-model tree be priced rather than refused, are phase B's.
+    /// </summary>
+    [property: JsonPropertyName("estimateReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? EstimateReason = null,
 
     // The four provenance stamps that make an estimate reproducible -- PriceCatalog's own remarks state
     // the guarantee they buy, which is #1849's acceptance criterion "price-catalog changes do not

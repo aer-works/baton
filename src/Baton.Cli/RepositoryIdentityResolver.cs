@@ -110,7 +110,27 @@ internal static class RepositoryIdentityResolver
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
             var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // #1883 review F11: `using` disposes the HANDLE without ending the child, so a git that
+                // outran the probe timeout would outlive this call. Kill the tree -- git shells out to
+                // its own helpers (credential, ssh) -- then report "no identity" as the catch below does.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)
+                {
+                    // Already exited between the timeout and the kill, or the OS refused: nothing left to do.
+                }
+
+                throw;
+            }
+
             var stdout = await stdoutTask.ConfigureAwait(false);
             _ = await stderrTask.ConfigureAwait(false);
 
