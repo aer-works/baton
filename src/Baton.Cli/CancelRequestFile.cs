@@ -180,11 +180,11 @@ public static class CancelRequestFile
     }
 
     /// <summary>
-    /// #1530: best-effort append of <see cref="RoomEvent.ArrestRequestExpired"/> to <c>room.jsonl</c>,
-    /// the ledger's record of a request that aged out unserved — same best-effort shape and reasoning
-    /// as <see cref="CancelRequestPoller"/>'s sibling <c>TryRecordUnresolvableAsync</c> (that method's
-    /// own doc has the "why never allowed to fail this call" detail); this call site's own twist is
-    /// timing — it runs at pump start, before the room's own poller even exists.
+    /// #1530: records <see cref="RoomEvent.ArrestRequestExpired"/> — the ledger's fact for a request
+    /// that aged out unserved. Same best-effort shape as <see cref="CancelRequestPoller"/>'s sibling
+    /// <c>TryRecordUnresolvableAsync</c> (that method's own doc has the swallow-and-log reasoning);
+    /// this call site's own twist is timing — it runs at pump start, before the room's own poller
+    /// even exists.
     /// </summary>
     private static async Task TryRecordExpiredAsync(
         string? roomLogPath, string target, DateTime requestedAtUtc, CancellationToken cancellationToken)
