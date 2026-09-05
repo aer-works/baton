@@ -82,9 +82,9 @@ public sealed class ClaudeUsageSlashCommandSource : IVendorUsageSource
     /// names.
     /// </para>
     /// <para>
-    /// <b>Reset instant.</b> claude's own format has no year, 12-hour time with no space before
-    /// am/pm, and an IANA zone id in parens (<c>"Sep 7, 5:59am (America/New_York)"</c>) — not ISO
-    /// 8601. <see cref="TryParseResetInstant"/> resolves it against <paramref name="harvestedAt"/>'s
+    /// <b>Reset instant.</b> claude's own format has no year, 12-hour time with optional minutes
+    /// (#1898) and no space before am/pm, and an IANA zone id in parens
+    /// (<c>"Sep 7, 5:59am (America/New_York)"</c>) — not ISO 8601. <see cref="TryParseResetInstant"/> resolves it against <paramref name="harvestedAt"/>'s
     /// year (rolling to next year when the parsed instant would otherwise land more than three days in
     /// the past, since every observed reset is near-future); a failed parse leaves
     /// <see cref="VendorUsageWindow.ResetsAt"/> null while <see cref="VendorUsageWindow.RawLine"/>
@@ -148,7 +148,7 @@ public sealed class ClaudeUsageSlashCommandSource : IVendorUsageSource
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex ResetInstantPattern = new(
-        @"^(?<month>[A-Za-z]{3})\s+(?<day>\d{1,2}),\s*(?<hour>\d{1,2}):(?<minute>\d{2})(?<ampm>am|pm)\s*\((?<tz>[^)]+)\)$",
+        @"^(?<month>[A-Za-z]{3})\s+(?<day>\d{1,2}),\s*(?<hour>\d{1,2})(?::(?<minute>\d{2}))?(?<ampm>am|pm)\s*\((?<tz>[^)]+)\)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly Dictionary<string, int> MonthAbbreviations = new(StringComparer.OrdinalIgnoreCase)
@@ -183,7 +183,9 @@ public sealed class ClaudeUsageSlashCommandSource : IVendorUsageSource
             hour += 12;
         }
 
-        var minute = int.Parse(match.Groups["minute"].Value, CultureInfo.InvariantCulture);
+        var minute = match.Groups["minute"].Value.Length == 0
+            ? 0
+            : int.Parse(match.Groups["minute"].Value, CultureInfo.InvariantCulture);
 
         TimeZoneInfo tz;
         try

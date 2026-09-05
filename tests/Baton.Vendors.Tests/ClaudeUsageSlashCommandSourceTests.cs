@@ -55,6 +55,35 @@ public sealed class ClaudeUsageSlashCommandSourceTests
         Assert.Contains("does not include other devices or claude.ai.", snapshot.Caveat);
     }
 
+    [Theory]
+    [InlineData("6am", 7, 10, 0)]
+    [InlineData("12am", 7, 4, 0)]
+    [InlineData("12pm", 7, 16, 0)]
+    [InlineData("11:59pm", 8, 3, 59)]
+    public void Parse_ResetTime_ResolvesInNamedZone(string time, int utcDay, int utcHour, int minute)
+    {
+        var line = $"Current week (all models): 19% used · resets Sep 7, {time} (America/New_York)";
+
+        var window = Assert.Single(ClaudeUsageSlashCommandSource.Parse(line, HarvestedAt).Windows);
+
+        // New York is UTC-4: 12am is local 00:00; 12pm is local 12:00.
+        Assert.Equal(new DateTimeOffset(2026, 9, utcDay, utcHour, minute, 0, TimeSpan.Zero), window.ResetsAt);
+        Assert.Equal(line, window.RawLine);
+    }
+
+    [Theory]
+    [InlineData("6 am")]
+    [InlineData("6:am")]
+    public void Parse_MalformedResetTime_LeavesResetsAtNull(string time)
+    {
+        var line = $"Current week (all models): 19% used · resets Sep 7, {time} (America/New_York)";
+
+        var window = Assert.Single(ClaudeUsageSlashCommandSource.Parse(line, HarvestedAt).Windows);
+
+        Assert.Null(window.ResetsAt);
+        Assert.Equal(line, window.RawLine);
+    }
+
     [Fact]
     public void Parse_ResetsAtResolvesToNearFutureInstant_NotPastYear()
     {
