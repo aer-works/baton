@@ -256,13 +256,17 @@ restating it below: `CapturedResponse` admits either `--accept-capture` or `--re
 step `Succeeded`; `ContractFailure` admits only `--reject --reason <text>`, recording a rejection and
 leaving the step resolved-but-`Failed`; `VerifyFailed`/`ExecutionArrested` admit only
 `--close --reason <text>` (see spec/baton.md §3 for why those two never admit the other verbs),
-settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. Of
+settling the step resolved-but-`Failed` through the identical room fact `--reject` uses. A `--reject`
+is **terminal** since #1877 — it forecloses retry rather than leaving the step retry-eligible, so
+redoing the work is a fresh `baton dispatch`/`baton redispatch`, never a re-run of the same room; a
+step already rejected under the pre-#1877 rule and still dangling is closable with
+`--close --reason <text>`, which is how an existing stuck room settles. Of
 those two, `VerifyFailed` carries the failing member(s)' own
 output on `steps[].verifyTail`, bounded — `spec/baton.md` §3 is the canonical account of the field
 and its whole-stream fallback. See `docs/dispatch.md`'s "Roles" section for exactly which outputs a
 capture can and can't ever resolve into. `baton resolve` never re-drives the DAG itself, either way —
 in a multi-step lane, check its stdout / the returned `state` for whether the room reached Terminal; if
-not (a downstream step just became deliverable, or a rejected step still has retry budget), re-run
+not (a downstream step just became deliverable — never a rejected step, which is terminal), re-run
 `baton run --room-dir <room-dir>` — except on a room left `Paused`, where `baton decide` is the verb
 that moves it and `baton run` cannot. `baton resolve` names whichever of the two applies on its own
 stdout; follow that rather than the general rule (spec/baton.md §3).

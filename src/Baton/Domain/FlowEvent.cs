@@ -212,10 +212,21 @@ public abstract record FlowEvent
     /// </summary>
     /// <param name="ForExecutionId">
     /// The execution whose retry obligation this forecloses. Guards the apply the same way
-    /// <see cref="ExecutionCancelled"/>'s own retry-field clear already does (#1605): projected only
-    /// when it still matches <see cref="Projection.ProjectionCheckpointState.RetryScheduledForExecutionIdByStepId"/>'s
+    /// <see cref="ExecutionCancelled"/>'s own retry-field clear already does (#1605), through two arms
+    /// that together mean "this event names the obligation the step carries NOW":
+    /// <list type="bullet">
+    /// <item>it matches <see cref="Projection.ProjectionCheckpointState.RetryScheduledForExecutionIdByStepId"/>'s
     /// recorded value for <see cref="StepId"/> — a retry already re-scheduled for a NEWER execution of
-    /// the same step must survive this event.
+    /// the same step must survive this event; or</item>
+    /// <item>#1877: NOTHING is scheduled for the step and it names
+    /// <see cref="Projection.ProjectionCheckpointState.LatestExecutionIdByStepId"/> — a step with no
+    /// scheduled retry has no obligation a newer execution could own, which is what lets an
+    /// administrative foreclosure (<c>baton resolve --close</c> against an already-rejected capture)
+    /// apply.</item>
+    /// </list>
+    /// A stale name no-ops under both arms: a newer execution moves
+    /// <c>LatestExecutionIdByStepId</c> past it, and a retry scheduled for a newer execution fails the
+    /// first arm.
     /// </param>
     /// <param name="Reason">Why the retry was foreclosed — a diagnostic, never parsed back.</param>
     /// <param name="ForeclosedBy">

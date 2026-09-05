@@ -230,6 +230,102 @@ public class ResolveRejectTerminalCloseEndToEndTests
     }
 
     /// <summary>
+    /// The other side of the widened <c>--close</c> admission, pinned because it is one predicate
+    /// clause away from admitting: an ACCEPTED capture is not a dangling rejection.
+    /// <see cref="ResolveCommand.IsDanglingRejected"/>'s <c>Status: Failed</c> clause and its
+    /// <c>Accepted: false</c> read both have to hold for this to keep refusing — drop either and
+    /// <c>--close</c> would foreclose a step whose work actually shipped.
+    /// </summary>
+    [Fact]
+    public async Task Closing_an_accepted_capture_refuses()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"resolve-1877-close-accepted-{Guid.NewGuid():N}");
+        try
+        {
+            var (_, executionId) = await SeedIndeterminateRoomAsync(roomDirectory, writeCapturedResponse: true);
+
+            var accept = ResolveOptionsParser.Parse([roomDirectory, "--execution", executionId.Value, "--accept-capture"]);
+            var accepted = await ResolveCommand.ExecuteAsync(accept, TestContext.Current.CancellationToken);
+            // Read first: the step really is Succeeded, so the refusal below is about the accept, not
+            // about a fixture that never resolved at all.
+            Assert.Equal(StepStatus.Succeeded, Assert.Single(accepted.State.Steps).Status);
+
+            var options = ResolveOptionsParser.Parse(
+                [roomDirectory, "--execution", executionId.Value, "--close", "--reason", "closing work that shipped"]);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => ResolveCommand.ExecuteAsync(options, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no unresolved indeterminate capture", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Room-level <c>--close</c> while an execution is still LIVE: refused, with the original
+    /// "refuses to guess" message. The #1877 dangling-rejection search runs on exactly the same
+    /// zero-candidate path this room takes, so without this arm a search that stopped checking
+    /// <see cref="StepStatus"/> would silently start settling rooms with a worker still running in
+    /// them.
+    /// </summary>
+    [Fact]
+    public async Task Room_level_close_while_an_execution_is_live_refuses()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"resolve-1877-close-live-{Guid.NewGuid():N}");
+        try
+        {
+            var (snapshot, _) = await SeedLiveRoomAsync(roomDirectory);
+            var events = await new FlowEventLogReader(Path.Combine(roomDirectory, BatonPaths.FlowLogFileName))
+                .ReadAllAsync(TestContext.Current.CancellationToken);
+            // Control arm, read first: the step really is Running, so the refusal is about liveness.
+            Assert.Equal(StepStatus.Running, Assert.Single(StateProjector.Project(events, snapshot).Steps).Status);
+
+            var options = ResolveOptionsParser.Parse([roomDirectory, "--close", "--reason", "closing a live room"]);
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(
+                () => ResolveCommand.ExecuteAsync(options, TestContext.Current.CancellationToken));
+
+            Assert.Contains("no unresolved indeterminate capture to resolve", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("refuses to guess", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The same room as <see cref="SeedIndeterminateRoomAsync"/> stopped one event in: a worker
+    /// accepted and started, nothing settled — the step reads <c>Running</c>.
+    /// </summary>
+    private static async Task<(WorkflowDefinitionSnapshot Snapshot, ExecutionId ExecutionId)> SeedLiveRoomAsync(
+        string roomDirectory)
+    {
+        Directory.CreateDirectory(roomDirectory);
+        var definition = new WorkflowDefinition(
+            new WorkflowTemplateId("dispatch-fact-check"), 1,
+            [new WorkflowStepDefinition(new StepId("fact-check"), "fact-check", [], [OutputName], [], new RetryPolicy(3))]);
+        var snapshot = SnapshotBinder.Bind(definition);
+        await SnapshotBinder.PersistAsync(
+            snapshot, Path.Combine(roomDirectory, BatonPaths.SnapshotFileName), TestContext.Current.CancellationToken);
+
+        var executionId = new ExecutionId($"exec-{Guid.NewGuid():N}");
+        await using (var writer = new FlowEventLogWriter(Path.Combine(roomDirectory, BatonPaths.FlowLogFileName)))
+        {
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
+                    executionId, new WorkflowId("dispatch-fact-check"), new StepId("fact-check"), "fact-check", [], [],
+                    TimeSpan.FromMinutes(20), [], new Dictionary<StepId, ExecutionId>())),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new CoreEvent.ExecutionStarted(executionId, Pid: 28620), TestContext.Current.CancellationToken);
+        }
+
+        return (snapshot, executionId);
+    }
+
+    /// <summary>
     /// The evidence room's journal shape, sanitized and rebuilt event-for-event: a request accepted,
     /// a worker that started and exited 0, an <see cref="FlowEvent.ExecutionIndeterminate"/> carrying
     /// a captured response for the declared output it never wrote, and the

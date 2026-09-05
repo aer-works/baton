@@ -316,13 +316,11 @@ public static class StateProjector
                 // (`step.RetryNotBefore is not null` / MayRetry), so a half-applied foreclosure can
                 // neither terminate nor retry.
                 //
-                // #1877: the guard is "this event names the retry obligation this step carries NOW",
-                // and a step with no scheduled retry at all has no obligation a newer execution could
-                // own — so an administrative foreclosure (`baton resolve --close` against an already
-                // rejected capture, Mutation.MutationInterface.RecordCaptureResolutionAsync) applies
-                // when it names the step's LATEST execution and nothing is scheduled. A stale name
-                // still no-ops both ways: a newer execution moves LatestExecutionIdByStepId past it,
-                // and a scheduled retry for a newer execution fails the first arm.
+                // #1877: a second arm for the administrative foreclosure `baton resolve --close`
+                // records against an already-rejected capture
+                // (Mutation.MutationInterface.RecordCaptureResolutionAsync), which has no scheduled
+                // retry to name. FlowEvent.StepRetryForeclosed.ForExecutionId's own remarks are the
+                // register for both arms and for why a stale name no-ops under either.
                 var scheduledForStep = state.RetryScheduledForExecutionIdByStepId.TryGetValue(foreclosed.StepId, out var scheduledExecutionId)
                     ? scheduledExecutionId
                     : (ExecutionId?)null;

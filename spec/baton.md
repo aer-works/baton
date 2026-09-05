@@ -824,8 +824,9 @@ judgement after inspecting the workspace) from `VerifyFailed`/`Arrested` (which 
 (`WorkflowOutcomeAndExitCodeTests.An_IndeterminateReason_without_the_flag_describes_as_Failed_not_Indeterminate`
 is the discriminating control for that claim). A `ContractFailure` step is never automatically retried
 either: re-running blind on a potentially mutated workspace is refused the same way, via the one
-`IndeterminateAwaitingResolution` arm — and a `--reject` of it stays retry-foreclosed afterward too
-(F8, below), unlike a rejected `CapturedResponse`. `baton settle` (S2, tracked on #1586) is expected to
+`IndeterminateAwaitingResolution` arm — and a `--reject` of it stays retry-foreclosed afterward, the
+same as a rejected `CapturedResponse` since the #1877 ruling below made rejection terminal for every
+producer. `baton settle` (S2, tracked on #1586) is expected to
 be able to settle a room *to* `Indeterminate` for the worktree-fingerprint shape; until it lands, that
 fifth source is reachable only by a test fabricating a `terminal.json`/status-view shape directly.
 
@@ -2095,9 +2096,10 @@ Specifically it is the **last** transition into `WorkflowStatus.Terminal`, not t
 and not `flow.jsonl`'s mtime. Both of those move when anything is appended after a run ended — a
 `captureResolved` settlement, a late Core lifecycle line, a copy that touches the file — and a grace
 window keyed on a value a later append can move is the defect this closes, not a smaller version of
-it. Last rather than first because terminality is not monotone: `baton resolve --reject` re-admits a
-step to `RetryEngine.MayRetry`'s ordinary predicate and a fresh `executionRequestAccepted` reopens a
-foreclosed or indeterminate one, so a room can end, be re-driven, and end again.
+it. Last rather than first because terminality is not monotone: a fresh `executionRequestAccepted`
+reopens a foreclosed or indeterminate step, so a room can end, be re-driven, and end again. (`baton
+resolve --reject` used to be a second way in — it left a rejected `CapturedResponse` retry-eligible.
+Since #1877 it does not; the conclusion rests on the dispatch clause alone.)
 
 **What a restart may assume, and what it may not.** A room whose `flow.jsonl` carries no terminal
 event **is not terminal** — that is the whole of the crash-window rule, and nothing may synthesise an

@@ -920,6 +920,53 @@ public class StateProjectorTests
         Assert.Equal(WorkflowStatus.Running, state.Status);
     }
 
+    // #1877: the second apply arm -- an administrative foreclosure naming the step's LATEST execution
+    // when NOTHING is scheduled for it. Both fixtures below deliberately carry no StepRetryScheduled,
+    // which is what makes them discriminate: every fixture above reaches the pre-existing
+    // "matches the scheduled retry" arm instead, so reverting the new arm leaves all of them green.
+
+    [Fact]
+    public void StepRetryForeclosed_applies_with_no_scheduled_retry_when_it_names_the_steps_latest_execution()
+    {
+        var executionId = new ExecutionId("exec-1");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(executionId, Architect)),
+            new FlowEvent.ExecutionFailed(executionId, FailureClassification.Permanent, "rejected by conductor"),
+            // No StepRetryScheduled anywhere: the only arm that can apply this is the #1877 one.
+            new FlowEvent.StepRetryForeclosed(Architect, executionId, "already rejected", ForeclosedBy: "resolve --close"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        var architect = StepFor(state, Architect);
+        Assert.True(architect.RetryForeclosed);
+        Assert.Null(architect.RetryNotBefore);
+        Assert.Null(architect.RetryDelayMs);
+        Assert.Null(architect.RetryScheduledForExecutionId);
+    }
+
+    [Fact]
+    public void StepRetryForeclosed_with_no_scheduled_retry_is_a_noop_when_it_names_a_stale_execution()
+    {
+        // Polarity partner: identical no-schedule shape, one execution newer. The step's latest
+        // execution has moved past the name this event carries, so neither arm may apply it --
+        // otherwise a foreclosure could reach back over a re-drive that already reopened the step.
+        var staleExecutionId = new ExecutionId("exec-1");
+        var currentExecutionId = new ExecutionId("exec-2");
+        var events = new FlowEvent[]
+        {
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(staleExecutionId, Architect)),
+            new FlowEvent.ExecutionFailed(staleExecutionId, FailureClassification.Permanent, "rejected by conductor"),
+            new FlowEvent.ExecutionRequestAccepted(MakeRequest(currentExecutionId, Architect)),
+            new FlowEvent.StepRetryForeclosed(Architect, staleExecutionId, "stale foreclosure", ForeclosedBy: "resolve --close"),
+        };
+
+        var state = StateProjector.Project(events, TwoStepSnapshot());
+
+        Assert.False(StepFor(state, Architect).RetryForeclosed);
+    }
+
     // #1608: FlowEvent.ExecutionIndeterminate / FlowEvent.CaptureResolved -- the two-predicate
     // model's disagreement case and its own resolution verb's room fact.
 

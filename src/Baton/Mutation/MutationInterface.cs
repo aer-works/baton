@@ -282,7 +282,8 @@ public static class MutationInterface
         // N3 (#1664 re-review): a null IndeterminateProducer on a step that IS awaiting resolution and
         // DOES carry a captured response file is the legacy pre-#1593 shape — the same fallback
         // RedispatchCommand.cs already applies to a pre-field terminal.json — not "a producer no verb
-        // admits". ProjectionCheckpointStore's Version bump (checkpoint.Version < 4) means this can now
+        // admits". ProjectionCheckpointStore's Version gate (checkpoint.Version <
+        // ProjectionCheckpoint.CurrentVersion, the single spelling of the current version) means this can now
         // only be reached via a full replay off an old flow.jsonl that genuinely predates the field, so
         // treating it as CapturedResponse is a correct read of the journal, not a workaround for a stale
         // checkpoint.
