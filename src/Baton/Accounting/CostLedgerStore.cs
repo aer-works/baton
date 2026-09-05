@@ -243,7 +243,19 @@ public static class CostLedgerStore
     private const string VerdictOutputName = "verdict.json";
 
     private static readonly Regex ReviewedPrPattern = new(
-        @"(?:https://github\.com/[\w.-]+/[\w.-]+/pull/|\bPR\s*#?|#)(?<number>\d+)",
+        @"(?:\bpull/|\bPR\s*#)\s*(?<number>[1-9]\d*)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex HashReferencePattern = new(
+        @"(?<!\w)#(?<number>[1-9]\d*)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex IssueReferencePattern = new(
+        @"\bissues?(?:\s*#|/)\s*[1-9]\d*\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex LabeledHeadPattern = new(
+        @"(?:@|\bhead\s*[:=])\s*(?<sha>[0-9a-f]{40})(?=$|[\s,;])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private sealed record ReviewFields(
@@ -298,13 +310,21 @@ public static class CostLedgerStore
     private static int? ParseReviewedPr(string reviewedRef)
     {
         var trimmed = reviewedRef.Trim();
-        if (int.TryParse(trimmed.TrimStart('#'), out var bareNumber))
+        var match = ReviewedPrPattern.Match(trimmed);
+        if (!match.Success)
         {
-            return bareNumber;
+            if (IssueReferencePattern.IsMatch(trimmed))
+            {
+                return null;
+            }
+
+            match = HashReferencePattern.Match(trimmed);
         }
 
-        var match = ReviewedPrPattern.Match(trimmed);
-        return match.Success && int.TryParse(match.Groups["number"].Value, out var number) ? number : null;
+        return match.Success
+            && int.TryParse(match.Groups["number"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var number)
+                ? number
+                : null;
     }
 
     private static string? ParseReviewedHead(string reviewedRef)
@@ -315,34 +335,12 @@ public static class CostLedgerStore
             return trimmed;
         }
 
-        var at = trimmed.LastIndexOf('@');
-        if (at >= 0)
-        {
-            var candidate = trimmed[(at + 1)..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-            if (candidate is not null && IsHexSha(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        var headMarker = trimmed.IndexOf("head", StringComparison.OrdinalIgnoreCase);
-        if (headMarker >= 0)
-        {
-            var candidate = trimmed[(headMarker + "head".Length)..]
-                .TrimStart(' ', ':', '=')
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault();
-            if (candidate is not null && IsHexSha(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
+        var match = LabeledHeadPattern.Match(trimmed);
+        return match.Success ? match.Groups["sha"].Value : null;
     }
 
     private static bool IsHexSha(string value) =>
-        value.Length is >= 7 and <= 40
+        value.Length == 40
         && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
 
     /// <summary>

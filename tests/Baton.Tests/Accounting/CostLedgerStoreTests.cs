@@ -1162,7 +1162,7 @@ public sealed class CostLedgerStoreTests
                 verdictPath,
                 """
                 {
-                  "reviewedRef": "PR #2001 @ abcdef1234567890",
+                  "reviewedRef": "PR #2001 @ abcdef12abcdef12abcdef12abcdef12abcdef12",
                   "findings": [
                     {"severity":"high","claim":"confirmed high","status":"confirmed"},
                     {"severity":"medium","claim":"refuted medium","status":"refuted"},
@@ -1180,7 +1180,7 @@ public sealed class CostLedgerStoreTests
             Assert.Equal(0, populated.FindingsMedium);
             Assert.Equal(1, populated.FindingsLow);
             Assert.Equal(2001, populated.ReviewedPr);
-            Assert.Equal("abcdef1234567890", populated.ReviewedHead);
+            Assert.Equal("abcdef12abcdef12abcdef12abcdef12abcdef12", populated.ReviewedHead);
 
             var populatedJson = JsonSerializer.Serialize(populated);
             Assert.Contains("\"verdict\":\"BLOCK\"", populatedJson, StringComparison.Ordinal);
@@ -1188,13 +1188,13 @@ public sealed class CostLedgerStoreTests
             Assert.Contains("\"findingsMedium\":0", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"findingsLow\":1", populatedJson, StringComparison.Ordinal);
             Assert.Contains("\"reviewedPr\":2001", populatedJson, StringComparison.Ordinal);
-            Assert.Contains("\"reviewedHead\":\"abcdef1234567890\"", populatedJson, StringComparison.Ordinal);
+            Assert.Contains("\"reviewedHead\":\"abcdef12abcdef12abcdef12abcdef12abcdef12\"", populatedJson, StringComparison.Ordinal);
 
             File.WriteAllText(
                 verdictPath,
                 """
                 {
-                  "reviewedRef": "abcdef1234567890",
+                  "reviewedRef": "abcdef12abcdef12abcdef12abcdef12abcdef12",
                   "findings": []
                 }
                 """);
@@ -1204,12 +1204,27 @@ public sealed class CostLedgerStoreTests
             Assert.Equal(0, approved.FindingsMedium);
             Assert.Equal(0, approved.FindingsLow);
             Assert.Null(approved.ReviewedPr);
-            Assert.Equal("abcdef1234567890", approved.ReviewedHead);
+            Assert.Equal("abcdef12abcdef12abcdef12abcdef12abcdef12", approved.ReviewedHead);
 
             var approvedJson = JsonSerializer.Serialize(approved);
             Assert.Contains("\"verdict\":\"APPROVE\"", approvedJson, StringComparison.Ordinal);
             Assert.Contains("\"findingsHigh\":0", approvedJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"reviewedPr\"", approvedJson, StringComparison.Ordinal);
+
+            foreach (var refusedReference in new[]
+            {
+                "2001",
+                "issue #2001",
+                "refs/heads/abcdef12abcdef12abcdef12abcdef12abcdef12",
+            })
+            {
+                File.WriteAllText(
+                    verdictPath,
+                    $"""{ "reviewedRef": "{{refusedReference}}", "findings": [] }""");
+                var refused = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
+                Assert.Null(refused.ReviewedPr);
+                Assert.Null(refused.ReviewedHead);
+            }
 
             FileCleanup.Delete(verdictPath);
             var absent = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
