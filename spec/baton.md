@@ -2878,14 +2878,48 @@ definition has no exit event yet and needs every line scanned, not just the last
   `{ "toolCalls"?: number, "billedTokens"?: number, "billedIsFloor"?: true, "turns"?: number,
     "contextTokens"?: number, "cacheReadTokens"?: number, "lastActivityAt"?: string }`.
 
-  `toolCalls` counts `tool_use` blocks in claude's `assistant` stream events and DONE/`tool`
-  `step_update` heartbeats in agy's — both shapes measured (docs/vendor-capabilities.md's
-  `#1559`/`#1088` rows, `tests/Baton.Cli.Tests/RunCommandEchoTests.cs`,
-  `AgyWorkerAdapter.TryParseProgressEvent`'s own doc comment). This is two different things under
-  one field name, disclosed rather than left to be inferred: claude counts tool *requests*, agy
-  counts DONE tool *steps*. Both are whole-tree, including subagent turns — claude's `assistant`
-  events for a subagent carry `parent_tool_use_id` but are never filtered out, deliberately (the
-  mirror image of `billedTokens`'s own subagent completeness below).
+  `toolCalls` counts `tool_use` blocks in claude's `assistant` stream events, DONE/`tool`
+  `step_update` heartbeats in agy's, and (#1886) `item.started` events carrying a tool item type in
+  codex's — claude's and agy's shapes measured (docs/vendor-capabilities.md's `#1559`/`#1088` rows,
+  `tests/Baton.Cli.Tests/RunCommandEchoTests.cs`, `AgyWorkerAdapter.TryParseProgressEvent`'s own doc
+  comment). **Scope of the codex measurement, stated because the set is wider than the evidence:**
+  `Baton.Status.CodexUsageParser.TryParseToolName` is the canonical home of WHICH item types count;
+  the default `file` source reads it directly, while `pusher.py`'s stale-fallback derivation
+  deliberately RESTATES the set (and the `turn.completed` usage arithmetic) in Python, because that
+  reader cannot call into the engine and the fallback still runs whenever the daemon's file is stale
+  or absent (#1557 PR-B2's `derive_snapshot_and_timelines` removal condition) — so dropping the copy
+  in favour of absent-not-zero would take codex's live block off the glass on every such cycle,
+  which is #1886's own symptom; the copy is pinned to the parser by the shared fixture below and is
+  deleted with the rest of the derive block by PR-C. The real capture both are pinned against
+  (`tests/Baton.Cli.Tests/Fixtures/codex-live-stream.jsonl`) carries only `mcp_tool_call`
+  items, so the other members of that set are inherited from the parser, not measured by #1886's own
+  evidence. This is three different things under one field name, disclosed rather than left to be
+  inferred: claude counts tool *requests*, agy counts DONE tool *steps*, codex counts *started*
+  items (its `item.completed` twin is deliberately not counted — every started item also completes,
+  and counting both doubles). Both claude's and agy's are whole-tree, including subagent turns —
+  claude's `assistant` events for a subagent carry `parent_tool_use_id` but are never filtered out,
+  deliberately (the mirror image of `billedTokens`'s own subagent completeness below).
+
+  **#1886, the absent-not-zero rule made structural on the derive side.** Every field here has always
+  been "absent, never a substituted zero" (restated at the end of this entry), but `toolCalls` alone
+  was exempt in practice: `pusher.py`'s `extract_live_counts` returned it unconditionally and
+  `live_telemetry_for_room` pre-seeded its running count at 0, so a stream envelope that reader did
+  not know rendered on the glass as a measured `0 calls`. Both halves are now gated on the batch
+  having matched a KNOWN envelope — a zero from that reader means "a stream it understands, which has
+  so far called no tool", and a shape it does not know reports nothing at all. The daemon's own
+  projection has the same property by construction (no parser resolved for the room's adapter tag
+  means no count fields at all, `FleetProjectionWriter.GetOrCreateLiveState`).
+
+  **The two sides are NOT symmetric about when the count first appears, and a reader will otherwise
+  assume they are.** The daemon keys on the room's ADAPTER TAG, so a resolved parser emits
+  `toolCalls: 0` on the very first tick, before a line has been read; the derive path keys on
+  per-batch ENVELOPE EVIDENCE, so it emits nothing until some line actually matches. For a Running
+  room whose `.stdout.log` exists but has yielded no complete line yet (empty, or the first line
+  still mid-flush) the daemon therefore says `0` where the derive path says nothing — a seconds-wide
+  window that closes on the first recognized line. `--compare-projection` treats a
+  present-on-one-side field as a hard difference with no tolerance, so it can flake red inside that
+  window; that is the honest reading of two readers with different evidence, not a defect to
+  suppress with an exclusion.
 
   **Live tokens, both vendors (#1682).** The original ruling — "token counts are deliberately never
   emitted… an absent field is honest, a summed one would re-count each turn's whole context" — was
@@ -2918,6 +2952,22 @@ definition has no exit event yet and needs every line scanned, not just the last
   cache-creation figure, so there is no comparable trio to build `contextTokens`/`cacheReadTokens`
   from on that vendor — a claude-only measurement stays a claude-only pair of fields. Every field
   here is absent, never a substituted zero, when a batch's lines don't carry what is needed.
+
+  **Live tokens on codex (#1886).** `turn.completed.usage` — one usage object per completed turn, and
+  `Baton.Status.CodexUsageParser` is the canonical statement of its arithmetic, including that this
+  vendor reports `input_tokens` INCLUSIVE of `cached_input_tokens` (so the fresh-input component is
+  the floored remainder, keeping Baton's additive dimensions disjoint). `billedTokens` is fresh input
+  + `output_tokens` + `cache_write_input_tokens`, the same three components `TokenBudgetMonitor` sums
+  off that parser's readings; `reasoning_output_tokens` is read by nothing, the same
+  breakdown-already-inside-output exclusion the other two vendors get. This vendor reports its real
+  input and output figures, so — unlike claude — `billedIsFloor` is absent and the number is a
+  measurement. `contextTokens`/`cacheReadTokens` ARE available here (this pair is no longer
+  claude-only): the level is fresh input + cached + cache write, with `cacheReadTokens` the cached
+  component alone, replaced per turn and never summed. **`turns` is structurally sparse on this
+  vendor and is not comparable to claude's**: codex emits one `turn.completed` per agent turn, so a
+  single turn can sit behind hundreds of tool calls (the #1886 evidence room read 266 tool calls
+  against 1 turn), where claude's per-message counting tracks tool calls closely. A codex lane
+  reading `1 turn · 266 calls` beside a claude lane's `93 turns · 93 calls` is both readers working.
 
   `lastActivityAt` is the stdout log's own last-write instant (a real filesystem fact, not `now()`),
   quantized to a ~90s bucket before it enters the pushed payload (2026-09-01 review finding) — see

@@ -1,0 +1,261 @@
+{"type":"thread.started","thread_id":"01a07000-803c-79c1-b644-2021173a5627"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"failed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_run_command"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_run_command","status":"completed","aggregated_output":"[trimmed for fixture size]"}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"turn.completed","usage":{"input_tokens":127806,"cached_input_tokens":126720,"cache_write_input_tokens":0,"output_tokens":689,"reasoning_output_tokens":130}}

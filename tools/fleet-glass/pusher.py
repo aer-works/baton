@@ -226,8 +226,8 @@ DEFAULT_LOCK_FILE = HERE / "pusher.lock"
 FLEET_GLASS_PROJECTION_SOURCE_ENV = "FLEET_GLASS_PROJECTION_SOURCE"
 PROJECTION_SOURCE_DEFAULT = "file"
 
-# #1557 plan §5 (load-bearing: no scheduled task runs `baton daemon` today, so this fallback is the
-# steady-state path, not an edge case): the file is treated as stale -- and the cycle falls back to
+# #1557 plan §5: the `baton-daemon` scheduled task writes the file every cycle, so the fallback fires
+# only when that task is down or behind: the file is treated as stale -- and the cycle falls back to
 # `derive_snapshot_and_timelines` -- once it is older than 3 of the pusher's own coalescing windows
 # (900s), or when it is absent/unreadable/malformed.
 PROJECTION_STALE_AFTER_S = 900
@@ -589,11 +589,47 @@ def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
     return complete.split("\n"), offset + consumed
 
 
+# #1886: the three stream envelopes this file can read, by their own discriminator. Recognition is
+# keyed on the ENVELOPE, never on whether a tool call or a usage figure was found on the line -- a
+# claude stream's opening batch of `type: "system"` init lines has honestly counted zero tool calls,
+# while a batch of an envelope none of these sets matches has counted nothing at all, and the two must
+# not both read as `toolCalls: 0` (spec/baton.md §6's absent-never-a-substituted-zero rule for
+# `rooms[].live`). agy is keyed off its own top-level `event` string instead, below.
+_CLAUDE_STREAM_TYPES = frozenset({"assistant", "user", "system", "result"})
+_CODEX_STREAM_TYPES = frozenset({
+    "thread.started", "turn.started", "turn.completed", "turn.failed",
+    "item.started", "item.updated", "item.completed",
+})
+# The SAME item types `Baton.Status.CodexUsageParser.TryParseToolName` gates on -- one tool step per
+# `item.started` carrying one of them, so this file and the engine count the same events.
+#
+# THIS SET IS A SECOND COPY OF THE ENGINE'S, DELIBERATELY, AND ONLY THE FALLBACK READS IT.
+# `CodexUsageParser` is the ONE arithmetic: the canonical statement of which item types are a tool
+# step and of how `turn.completed.usage` becomes billed/context figures. This restatement exists
+# because a Python reader cannot call into it, and because -- as of #1557 PR-B2 -- everything below
+# runs ONLY on a cycle where the daemon's projection file is absent or stale, or where an operator
+# has pinned `FLEET_GLASS_PROJECTION_SOURCE=derive`. On the default `file` path the daemon's own
+# `CodexUsageParser` reading is what reaches the glass and none of this executes.
+# The condition that deletes this copy outright, and why it cannot be deleted today, is
+# `derive_snapshot_and_timelines`'s own REMOVAL CONDITION (PR-C) -- `extract_live_counts` is named
+# there as group-(b). Why the duplication is accepted rather than dropped in favour of
+# absent-not-zero: spec/baton.md §6's `rooms[].live` entry, not restated here.
+_CODEX_TOOL_ITEM_TYPES = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
+
+
 def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -> dict:
-    """A tool-call COUNT, plus live token/turn fields for BOTH vendors (#1682 -- agy's `step_update`
-    usage was found live during that issue's own evidence gathering; the prior "agy has no usage to
-    read" claim recorded here was wrong and is corrected in this same change), tolerant of a torn
-    last line (the file is still being written) and of both vendors' stream envelopes:
+    """THE FALLBACK READER (#1557 PR-B2). Reached only from `attach_live_telemetry`, i.e. only on a
+    cycle where the daemon's projection file was absent or stale, or where an operator pinned
+    `FLEET_GLASS_PROJECTION_SOURCE=derive`; on the default `file` path the daemon's own C# readers
+    (`TokenBudgetMonitor` over the vendor's `IWorkerUsageParser`) produce every field below and none
+    of this runs. `derive_snapshot_and_timelines`'s REMOVAL CONDITION names this function as part of
+    the group-(b) block that comes out with PR-C, and why that is not satisfiable yet.
+
+    A tool-call COUNT, plus live token/turn fields for ALL THREE vendors (#1682 -- agy's
+    `step_update` usage was found live during that issue's own evidence gathering; the prior "agy has
+    no usage to read" claim recorded here was wrong and is corrected in this same change; #1886 added
+    codex), tolerant of a torn last line (the file is still being written) and of every vendor's
+    stream envelope:
       - claude: `type`-keyed; a completed `assistant` message's `message.content` array carries a
         `{"type": "tool_use", ...}` block per tool call -- shape measured against real #1559
         capture fixtures (tests/Baton.Cli.Tests/RunCommandEchoTests.cs). The SAME `assistant`
@@ -609,10 +645,16 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
         `state: "DONE"` and `step_type: "agent_response"` carries its own `usage` object
         (`input_tokens`/`output_tokens`) -- measured live against a real #1682 evidence capture
         (`dispatch-implement-38c24d11`).
+      - codex (#1886): `type`-keyed on a dotted event name; an `item.started` whose `item.type` is one
+        of `_CODEX_TOOL_ITEM_TYPES` is one tool step, and a `turn.completed` carries the turn's own
+        `usage`. Both shapes are the engine's -- `Baton.Status.CodexUsageParser` is the canonical
+        statement of each, including that codex reports `input_tokens` INCLUSIVE of
+        `cached_input_tokens` (so the fresh-input component here is the non-cached remainder, floored
+        at 0). Shape measured against a real capture, `tests/Baton.Cli.Tests/Fixtures/codex-live-stream.jsonl`.
     A line that fails to parse as JSON is skipped, not an error -- the vendor CLI may have flushed
     a partial line at the exact moment this read caught the file mid-write.
 
-    Returns `{"toolCalls": int}` always, plus:
+    Returns, when at least one line matched a KNOWN envelope, `{"toolCalls": int}`, plus:
       - `"billedTokens"`: present only if at least one usage-bearing line in THIS batch reported
         one -- the SUM over the batch (additive: the caller accumulates this across every batch it
         has ever read for the execution, spec/baton.md §6), the same quantity the engine's own
@@ -633,11 +675,19 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
       - `"context"`: `{"contextTokens": int, "cacheReadTokens": int}` from the LATEST claude
         `assistant` line in this batch that reports all three of `input_tokens`/
         `cache_read_input_tokens`/`cache_creation_input_tokens` together -- a LEVEL (the caller
-        replaces, never sums, its own running value), claude-only (agy's step_update usage carries
-        no cache-creation figure to build a comparable trio from, docs/vendor-capabilities.md).
+        replaces, never sums, its own running value). NOT available on agy, whose step_update usage
+        carries no cache-creation figure to build a comparable trio from
+        (docs/vendor-capabilities.md); available on codex off `turn.completed.usage`, see below.
         Absent when no line in the batch reports the full trio: never a partial or fabricated
         figure, and never built from `input_tokens` alone (summing that across turns would
         re-count each turn's whole repeated context -- the trap this field exists to avoid).
+        On codex the trio comes off `turn.completed.usage` instead and is built by the SAME rule
+        `TokenBudgetMonitor` applies to that parser's readings: any of the three components present
+        yields a level, the absent ones contributing nothing.
+
+    #1886: `toolCalls` itself is ABSENT -- not 0 -- when NO line in the batch matched any of the three
+    envelopes above, so that a zero here can only ever mean a stream this reader understands. The rule
+    and the failure behind it are spec/baton.md §6's `rooms[].live` entry, not restated.
 
     `seen_message_ids` (#1686 review F6): claude can split one API response's usage across several
     consecutive `assistant` events sharing the SAME `message.id` and an IDENTICAL `message.usage`
@@ -655,6 +705,7 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
     usage_seen = False
     billed_is_floor = False
     context = None
+    envelope_seen = False
     if seen_message_ids is None:
         seen_message_ids = set()
     for raw_line in lines:
@@ -668,7 +719,12 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
         if not isinstance(evt, dict):
             continue
 
-        if evt.get("type") == "assistant":
+        event_type = evt.get("type")
+        if event_type in _CLAUDE_STREAM_TYPES or event_type in _CODEX_STREAM_TYPES \
+                or isinstance(evt.get("event"), str):
+            envelope_seen = True
+
+        if event_type == "assistant":
             message = evt.get("message")
             content = message.get("content") if isinstance(message, dict) else None
             if isinstance(content, list):
@@ -742,6 +798,57 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
                             billed_tokens += (out if numeric(out) else 0) + (in_tok if numeric(in_tok) else 0)
                             turns += 1
                             usage_seen = True
+        elif event_type == "item.started":
+            # #1886: one tool step per started tool item -- the same unit
+            # `CodexUsageParser.CountToolSteps` accumulates for the engine's arrest cap, so the glass
+            # and the cap can never disagree about how busy a codex lane is. `item.completed` is
+            # deliberately NOT counted; the register above names the double it avoids.
+            # FALLBACK ONLY, and a restatement of the parser's arithmetic rather than a second
+            # authority for it -- `_CODEX_TOOL_ITEM_TYPES` above carries both halves of that.
+            item = evt.get("item")
+            if isinstance(item, dict) and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
+                tool_calls += 1
+        elif event_type == "turn.completed":
+            # #1886: codex reports one usage object per COMPLETED TURN, and `input_tokens` already
+            # includes `cached_input_tokens` -- CodexUsageParser is the canonical statement of both,
+            # and of why the fresh-input component is the floored remainder rather than the raw field.
+            # FALLBACK ONLY, same as the `item.started` arm above: on the default `file` source it is
+            # that parser's own reading, not this block's, that reaches the glass.
+            # Note the turn count is structurally sparse on this vendor next to claude's: one
+            # `turn.completed` can sit behind hundreds of tool calls.
+            usage = evt.get("usage")
+            if isinstance(usage, dict):
+                numeric = lambda v: isinstance(v, int) and not isinstance(v, bool)
+                total_in = usage.get("input_tokens")
+                cached_in = usage.get("cached_input_tokens")
+                cache_write = usage.get("cache_write_input_tokens")
+                out = usage.get("output_tokens")
+                fresh_in = None
+                if numeric(total_in):
+                    fresh_in = max(0, total_in - cached_in) if numeric(cached_in) else total_in
+                # The SAME billed components TokenBudgetMonitor sums off this parser's readings:
+                # fresh input + output + cache write. `reasoning_output_tokens` is read by nothing --
+                # a breakdown already inside `output_tokens`, the same exclusion both other vendors get.
+                if fresh_in is not None or numeric(out) or numeric(cache_write):
+                    billed_tokens += (fresh_in or 0) + (out if numeric(out) else 0) \
+                        + (cache_write if numeric(cache_write) else 0)
+                    turns += 1
+                    usage_seen = True
+                if fresh_in is not None or numeric(cached_in) or numeric(cache_write):
+                    context = {
+                        "contextTokens": (fresh_in or 0) + (cached_in if numeric(cached_in) else 0)
+                        + (cache_write if numeric(cache_write) else 0),
+                    }
+                    # Absent, never a substituted 0, when the line carried no cache-read figure --
+                    # matching TokenBudgetMonitor, whose CacheReadLevelTokens is simply the latest
+                    # reading's own (nullable) field and is omitted from the projection when null.
+                    if numeric(cached_in):
+                        context["cacheReadTokens"] = cached_in
+
+    if not envelope_seen:
+        # #1886: no known envelope in this batch -- report nothing rather than a zero that would read
+        # as a count it never took. See this function's own docstring.
+        return {}
 
     result = {"toolCalls": tool_calls}
     if usage_seen:
@@ -763,7 +870,13 @@ def _apply_live_delta(state: dict, delta: dict) -> None:
     latest LEVEL seen -- only overwritten when the batch actually reports one, so an empty or tool-only
     batch never blanks out a level that was already known."""
     counts = state["counts"]
-    counts["toolCalls"] = counts.get("toolCalls", 0) + delta.get("toolCalls", 0)
+    # #1886: gated on PRESENCE, and the state seeds `counts` empty rather than at `{"toolCalls": 0}`.
+    # Both halves are needed together: a delta that omits the field cannot un-fabricate a zero the
+    # seed already put there. Once any batch has reported a count, later count-free batches of a
+    # known envelope keep adding 0 to it, so a lane that has genuinely stopped calling tools still
+    # reads its accumulated total rather than going absent again.
+    if "toolCalls" in delta:
+        counts["toolCalls"] = counts.get("toolCalls", 0) + delta["toolCalls"]
     if "billedTokens" in delta:
         counts["billedTokens"] = counts.get("billedTokens", 0) + delta["billedTokens"]
         counts["turns"] = counts.get("turns", 0) + delta["turns"]
@@ -1310,7 +1423,9 @@ def live_telemetry_for_room(room: dict, live_cache: dict | None = None,
 
     key = f"{room_path}::{execution_id}"
     state = live_cache.setdefault(key, {
-        "stdout_offset": 0, "rollover_offset": 0, "counts": {"toolCalls": 0}, "context": None,
+        # #1886: `counts` seeds EMPTY -- see `_apply_live_delta`'s own note. A pre-seeded
+        # `{"toolCalls": 0}` here is what made an unreadable stream shape render as a measured zero.
+        "stdout_offset": 0, "rollover_offset": 0, "counts": {}, "context": None,
         # #1686 review F6: persists across every batch read for this execution -- a message.id read in
         # an earlier cycle's batch must still dedupe a repeat that shows up in a LATER cycle's batch.
         "seen_message_ids": set(),
@@ -1560,10 +1675,10 @@ def derive_snapshot_and_timelines(dll: str, roots: list, terminal_timeline_cache
       2. the projection file carries per-room `timelines`.
     (2) is not satisfiable today and is not a nicety: `timelines` for a non-terminal room needs a
     `room_detail` call per cycle, which is this subprocess, so PR-C cannot delete this path while
-    the file omits them -- see the `timelines` gap issue named in PR-B2's body. Note (1) is also
-    unsatisfiable until `baton daemon` is actually scheduled on the operator's machine (plan §6): no
-    scheduled task runs it today, so the fallback below is the steady state, not an edge case, and
-    the log line it emits every cycle is the honest signal of that.
+    the file omits them -- see the `timelines` gap issue named in PR-B2's body. (1) is measurable
+    now that the `baton-daemon` scheduled task runs on the operator's machine (#1905 made the file
+    the default on that basis): the fallback below is the edge case, and the log line it emits on
+    a stale cycle is the honest signal that the daemon is down or behind.
 
     Returns (the rooms JSON exactly as fleet_status produced it, {room_path: [timeline entries]}
     for every room with one) -- ONE dotnet-mcp process for both, reused across every room_detail
@@ -4770,6 +4885,71 @@ def _selftest() -> int:
           extract_live_counts([
               json.dumps({"type": "result", "usage": {"output_tokens": 999, "input_tokens": 999}})
           ]) == {"toolCalls": 0})
+
+    # -- #1886: the codex envelope. The SAME sanitized capture the engine-side arm reads
+    # (FleetProjectionWriterTests.RunningRoom_CodexAdapter_ProjectsLiveToolCallsTurnsAndBilledTokens),
+    # so the two arithmetics are pinned against one stream rather than two hand-written fixtures that
+    # can drift apart -- the shared-fixture discipline `_selftest_claude_billing_gate` already uses.
+    codex_fixture = (Path(__file__).resolve().parent.parent.parent
+                     / "tests" / "Baton.Cli.Tests" / "Fixtures" / "codex-live-stream.jsonl")
+    codex_lines = codex_fixture.read_text(encoding="utf-8").splitlines()
+    codex_counts = extract_live_counts(codex_lines)
+    check("#1886: the real codex capture's mcp_tool_call items are COUNTED, not read as 0 -- the "
+          "reported symptom (`0 calls` beside a stream carrying hundreds)",
+          codex_counts.get("toolCalls") == 128)
+    check("#1886: codex billedTokens matches the engine's own arithmetic off the same turn.completed "
+          "-- fresh input (127,806 - 126,720) + output 689 + cache write 0, reasoning excluded",
+          codex_counts.get("billedTokens") == 1_775)
+    check("#1886: one turn.completed is one turn (structurally sparse on this vendor -- a single turn "
+          "can sit behind hundreds of tool calls, unlike claude's per-message turns)",
+          codex_counts.get("turns") == 1)
+    check("#1886: codex context level is input + cache write, and cacheReadTokens is the cached "
+          "component alone -- the LEVEL TokenBudgetMonitor reports, never a sum across turns",
+          codex_counts.get("context") == {"contextTokens": 127_806, "cacheReadTokens": 126_720})
+    check("#1886 POLARITY: billedIsFloor is ABSENT on codex, not merely false -- without this arm a "
+          "rule that marked every batch a floor would pass every check above",
+          "billedIsFloor" not in codex_counts)
+    check("#1886: an item.completed is not counted a second time -- only item.started is a tool step, "
+          "the same unit CodexUsageParser.CountToolSteps accumulates",
+          extract_live_counts([
+              json.dumps({"type": "item.started", "item": {"type": "mcp_tool_call", "tool": "t"}}),
+              json.dumps({"type": "item.completed", "item": {"type": "mcp_tool_call", "tool": "t"}}),
+          ]).get("toolCalls") == 1)
+    check("#1886: a codex item type that is not a tool (agent_message) is not a tool step",
+          extract_live_counts([
+              json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}}),
+          ]).get("toolCalls") == 0)
+    # The absent-vs-real-zero boundary on the FALLBACK reader, the Python twin of the two daemon arms
+    # RunningRoom_CodexAdapter_ToolItemsWithoutCompletedTurn_OmitsUsageFields /
+    # RunningRoom_CodexAdapter_NoToolItems_ReportsRealZeroToolCalls. Both compare the WHOLE returned
+    # dict rather than checking three keys `not in` it: that pins the absence of every other field at
+    # once, so a future arm that starts fabricating (say) a `turns: 0` cannot slip past.
+    check("#1886: a codex stream with tool items but NO turn.completed reports the tool count and "
+          "NOTHING else -- no usage line has been read, and a substituted 0 for billedTokens/turns/"
+          "context would read on the glass as a lane that has burned nothing",
+          json.loads(codex_lines[-1])["type"] == "turn.completed"  # the slice below is meaningless without this
+          and extract_live_counts(codex_lines[:-1]) == {"toolCalls": 128})
+    check("#1886 POLARITY: a codex stream carrying neither a tool item nor a completed turn reports a "
+          "REAL 0 -- the envelope is understood, the count was actually taken. One condition from the "
+          "unknown-envelope arm below, which reports {} instead.",
+          extract_live_counts([
+              json.dumps({"type": "thread.started", "thread_id": "th_1"}),
+              json.dumps({"type": "turn.started"}),
+          ]) == {"toolCalls": 0})
+    # The absent-not-zero half. Red before the #1886 fix: `extract_live_counts` returned
+    # `{"toolCalls": 0}` unconditionally, and `live_telemetry_for_room` pre-seeded the same 0, so an
+    # unreadable envelope reported a count it had never taken.
+    check("#1886: a batch matching NO known envelope reports toolCalls ABSENT, never 0 -- a zero from "
+          "this function has to mean a stream it understands that has called no tool",
+          extract_live_counts([json.dumps({"kind": "some-future-vendor-event", "n": 3})]) == {})
+    check("#1886 POLARITY: a KNOWN envelope with no tool call in it still reports a real 0 -- a claude "
+          "stream's opening `system` init line has honestly counted none, and must not go absent",
+          extract_live_counts([json.dumps({"type": "system", "subtype": "init"})]) == {"toolCalls": 0})
+    check("#1886: _apply_live_delta gates on PRESENCE -- an unknown-envelope batch leaves the running "
+          "counts untouched rather than seeding a 0 into them",
+          (lambda state: (_apply_live_delta(state, extract_live_counts(
+              [json.dumps({"kind": "some-future-vendor-event"})])), state["counts"])[-1])(
+              {"counts": {}, "context": None}) == {})
 
     # #1686 review F6 -- extract_live_counts's own docstring above has the measured shape this
     # reproduces; dedupe by message.id closes it.
