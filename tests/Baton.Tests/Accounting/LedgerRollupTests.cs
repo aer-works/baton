@@ -184,13 +184,74 @@ public sealed class LedgerRollupTests
         Assert.Equal(Ledger.Sum(r => r.CacheCreationTokens ?? 0), rollup.Total.CacheCreationTokens!.Value);
         Assert.Equal(Ledger.Sum(r => r.ApiEquivalentUsd ?? 0m), rollup.Total.ApiEquivalentUsd!.Value);
 
-        // The unpriced row is IN the attempt count and disclosed beside the money, never dropped.
-        Assert.Equal(5, rollup.Total.ApiEquivalentPriced);
-        Assert.Equal(1, rollup.Total.ApiEquivalentUnpriced);
-        Assert.Equal(rollup.Total.Attempts, rollup.Total.ApiEquivalentPriced + rollup.Total.ApiEquivalentUnpriced);
-        Assert.Equal(2, rollup.Total.PlanMeterUnpriced);
+        // The unpriced row is IN the attempt count and disclosed beside the money, never dropped --
+        // the identity this test's name promises: what fed the sum plus what did not IS the attempts.
+        Assert.Equal(5, rollup.Total.ReportedBy.ApiEquivalentUsd);
+        Assert.Equal(1, rollup.Total.ApiEquivalentByStatus.Unpriced);
+        Assert.Equal(
+            rollup.Total.Attempts,
+            rollup.Total.ReportedBy.ApiEquivalentUsd + rollup.Total.ApiEquivalentByStatus.Unpriced);
         Assert.Equal(1, rollup.Total.Partial);
         Assert.Equal(1, rollup.Total.Unread);
+    }
+
+    /// <summary>
+    /// #1893 review M2: the four <see cref="EstimateStatus"/> states are counted BY NAME, never
+    /// collapsed into "has a dollar figure / does not". The discriminating pair is on the plan-meter
+    /// half of this fixture, where two rows carry no figure for two different recorded reasons — agy's
+    /// meter has never been measured, codex's had no rate — which the old single <c>unpriced</c> count
+    /// reported as <c>2</c>.
+    /// </summary>
+    [Fact]
+    public void Attempts_with_no_estimate_are_counted_under_the_status_the_row_actually_recorded()
+    {
+        var rollup = LedgerRollup.Build(Ledger, new LedgerQuery());
+
+        Assert.Equal(1, rollup.Total.PlanMeterByStatus.Unmeasured);
+        Assert.Equal(1, rollup.Total.PlanMeterByStatus.Unpriced);
+        Assert.Equal(0, rollup.Total.PlanMeterByStatus.Unknown);
+        Assert.Equal(4, rollup.Total.PlanMeterByStatus.Estimated);
+
+        // The API-equivalent half is the other polarity: the SAME rows, and only codex is unpriced
+        // there, so a count copied from the plan-meter half would fail here.
+        Assert.Equal(5, rollup.Total.ApiEquivalentByStatus.Estimated);
+        Assert.Equal(1, rollup.Total.ApiEquivalentByStatus.Unpriced);
+        Assert.Equal(0, rollup.Total.ApiEquivalentByStatus.Unmeasured);
+
+        // Closed enum, so the four states account for every attempt -- no row falls out of the disclosure.
+        foreach (var counts in new[] { rollup.Total.ApiEquivalentByStatus, rollup.Total.PlanMeterByStatus })
+        {
+            Assert.Equal(
+                rollup.Total.Attempts,
+                counts.Estimated + counts.Unpriced + counts.Unknown + counts.Unmeasured);
+        }
+    }
+
+    /// <summary>
+    /// #1893 review M1: a cross-vendor token sum that only SOME rows fed says so — see
+    /// <see cref="LedgerReportedBy"/> for the reading that prevents. Two rows and one dimension is the
+    /// smallest fixture that shows both polarities at once: the total discloses (1 contributor, 2
+    /// attempts) while neither vendor subtotal is partial (claude's 1 of 1, agy's 0 of 1 with no sum).
+    /// </summary>
+    [Fact]
+    public void A_total_only_some_rows_fed_discloses_how_many_did()
+    {
+        var rollup = LedgerRollup.Build([Claude1, Agy], new LedgerQuery());
+
+        Assert.Equal(2, rollup.Total.Attempts);
+        Assert.Equal(10L, rollup.Total.CacheCreationTokens!.Value);
+        Assert.Equal(1, rollup.Total.ReportedBy.CacheCreationTokens);
+
+        // The control: a dimension every row DID report carries no such gap, so the disclosure is
+        // about this dimension rather than about the total generally.
+        Assert.Equal(2, rollup.Total.ReportedBy.TokensIn);
+
+        var claude = rollup.Vendors.Single(v => v.Vendor == "claude");
+        Assert.Equal(claude.Attempts, claude.ReportedBy.CacheCreationTokens);
+
+        var agy = rollup.Vendors.Single(v => v.Vendor == "agy");
+        Assert.Null(agy.CacheCreationTokens);
+        Assert.Equal(0, agy.ReportedBy.CacheCreationTokens);
     }
 
     /// <summary>
@@ -207,7 +268,7 @@ public sealed class LedgerRollupTests
         Assert.Null(agy.CacheCreationTokens);
         Assert.Equal(40L, agy.CacheReadTokens!.Value);
         Assert.Null(agy.PlanMeterEstimateUsd);
-        Assert.Equal(1, agy.PlanMeterUnpriced);
+        Assert.Equal(1, agy.PlanMeterByStatus.Unmeasured);
     }
 
     [Fact]

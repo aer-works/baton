@@ -140,8 +140,12 @@ public sealed record LedgerQuery(
     /// A <c>Kind.Unspecified</c> instant is read as UTC, not as local time: every instant this ledger
     /// writes is <c>WriterUtcTimestamp</c>, and a JSON round-trip is the one place the kind can be
     /// lost. Guessing "local" there would shift a whole window by the machine's offset.
+    /// <para>
+    /// Visible to <see cref="LedgerRollup"/> so the ORDERING uses the same normalisation as the
+    /// selection: two answers about the same instant, derived twice, are free to disagree.
+    /// </para>
     /// </summary>
-    private static DateTime ToUtc(DateTime value) => value.Kind switch
+    internal static DateTime ToUtc(DateTime value) => value.Kind switch
     {
         DateTimeKind.Utc => value,
         DateTimeKind.Local => value.ToUniversalTime(),

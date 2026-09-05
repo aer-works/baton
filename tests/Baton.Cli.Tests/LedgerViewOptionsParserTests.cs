@@ -33,19 +33,34 @@ public sealed class LedgerViewOptionsParserTests
     }
 
     /// <summary>
-    /// The date shorthand is the operator's LOCAL midnight, converted to UTC — the assertion is against
-    /// the conversion rather than a fixed instant, because the machine's offset is not the test's to
-    /// pick, and hard-coding one would make this pass only in one timezone.
+    /// The date shorthand is the operator's LOCAL midnight, converted to UTC — asserted against a
+    /// FIXED non-zero zone the test injects, not against the machine's (#1893 review M3). Writing the
+    /// expectation as <c>SpecifyKind(…, Local).ToUniversalTime()</c> would restate the implementation's
+    /// own expression, and on a UTC+0 runner that expression cannot tell <c>Local</c> from <c>Utc</c> —
+    /// which is the whole claim the shorthand makes.
     /// </summary>
     [Fact]
     public void A_bare_date_is_local_midnight_and_an_ISO_instant_is_taken_as_written()
     {
-        var shorthand = LedgerViewOptionsParser.ParseInstant("2026-09-04", "--since");
-        Assert.Equal(
-            DateTime.SpecifyKind(new DateTime(2026, 9, 4, 0, 0, 0), DateTimeKind.Local).ToUniversalTime(),
-            shorthand);
+        var kathmandu = TimeZoneInfo.CreateCustomTimeZone(
+            "baton-test-+0545", TimeSpan.FromMinutes(345), "UTC+05:45", "UTC+05:45");
 
-        Assert.Equal(new DateTime(2026, 9, 4, 14, 0, 0, DateTimeKind.Utc), LedgerViewOptionsParser.ParseInstant("2026-09-04T14:00:00Z", "--since"));
+        // Midnight on the 4th THERE is 18:15 UTC on the 3rd. A UTC reading would say 2026-09-04T00:00Z.
+        Assert.Equal(
+            new DateTime(2026, 9, 3, 18, 15, 0, DateTimeKind.Utc),
+            LedgerViewOptionsParser.ParseInstant("2026-09-04", "--since", kathmandu));
+
+        // The other polarity, over the same zone: an instant that says which frame it is in is taken
+        // as written, so the injected zone must NOT move it.
+        Assert.Equal(
+            new DateTime(2026, 9, 4, 14, 0, 0, DateTimeKind.Utc),
+            LedgerViewOptionsParser.ParseInstant("2026-09-04T14:00:00Z", "--since", kathmandu));
+
+        // The production default is still the machine's own zone.
+        Assert.Equal(
+            LedgerViewOptionsParser.ParseInstant("2026-09-04", "--since", TimeZoneInfo.Local),
+            LedgerViewOptionsParser.ParseInstant("2026-09-04", "--since"));
+
         Assert.Equal(new DateTime(2026, 9, 4, 12, 0, 0, DateTimeKind.Utc), LedgerViewOptionsParser.ParseInstant("2026-09-04T14:00:00+02:00", "--since"));
     }
 

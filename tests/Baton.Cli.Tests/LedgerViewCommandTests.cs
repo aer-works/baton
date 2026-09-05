@@ -57,7 +57,33 @@ public sealed class LedgerViewCommandTests : IDisposable
 
         // The unpriced codex row is counted as an attempt and disclosed as unpriced, not as $0.
         Assert.Contains("codex -- 1 attempt(s)", text, StringComparison.Ordinal);
-        Assert.Contains("API-equivalent estimate: - (priced: 0, unpriced: 1)", text, StringComparison.Ordinal);
+        Assert.Contains(
+            "API-equivalent estimate: - (summed from 0 of 1 attempt(s); unpriced: 1)", text, StringComparison.Ordinal);
+
+        // ...and agy's plan meter says what the ROW says -- never measured for this vendor -- rather
+        // than borrowing codex's word for a missing rate.
+        Assert.Contains(
+            "plan-meter estimate: - (summed from 0 of 1 attempt(s); unmeasured: 1)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("unmeasured: 1, unpriced", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1893 review M1, at the surface an operator reads: the all-vendor cache-creation figure is
+    /// claude's and codex's rows only — agy reports no such dimension — and the line above it says so.
+    /// The control is the per-vendor blocks, where every attempt fed every dimension it reported, so
+    /// none of them carries the line: a disclosure printed unconditionally would fail here.
+    /// </summary>
+    [Fact]
+    public async Task The_all_vendor_line_discloses_a_token_total_only_some_attempts_fed()
+    {
+        var text = await RunAsync("--format", "text");
+
+        var total = text.IndexOf("all vendors --", StringComparison.Ordinal);
+        var disclosure = text.IndexOf(
+            "partial -- summed from SOME of the attempts only: cache-creation 5 of 6", StringComparison.Ordinal);
+
+        Assert.True(disclosure > total, text);
+        Assert.Equal(1, text.Split("partial -- summed from SOME").Length - 1);
     }
 
     [Fact]
@@ -178,14 +204,27 @@ public sealed class LedgerViewCommandTests : IDisposable
     /// The guard the CSV export cannot supply for itself: a field added to (or renamed on)
     /// <see cref="CostLedgerEntry"/> — phase C fills six reserved ones — must appear as a column, and a
     /// column with no field behind it would export empty forever. Discovered by reflection, never listed.
+    /// <para>
+    /// <b>Fail-closed on the attribute itself</b> (#1893 review L4): filtering out the properties that
+    /// lack <c>[JsonPropertyName]</c> would let a phase-C field added without one serialize under its
+    /// default name, never reach <see cref="LedgerCsv.Columns"/>, and vanish from the export with this
+    /// test still green. Every public instance property must carry it.
+    /// </para>
     /// </summary>
     [Fact]
     public void Csv_columns_are_exactly_the_ledger_records_own_field_names()
     {
-        var recordFields = typeof(CostLedgerEntry)
+        var properties = typeof(CostLedgerEntry)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Select(p => p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name)
-            .Where(name => name is not null)
+            .ToList();
+
+        Assert.Empty(
+            properties
+                .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() is null)
+                .Select(p => p.Name));
+
+        var recordFields = properties
+            .Select(p => p.GetCustomAttribute<JsonPropertyNameAttribute>()!.Name)
             .ToHashSet(StringComparer.Ordinal);
 
         Assert.NotEmpty(recordFields);
@@ -221,6 +260,17 @@ public sealed class LedgerViewCommandTests : IDisposable
         Assert.Equal(
             roomView.RootElement.GetProperty("total").GetProperty("attempts").GetInt32(),
             fromRoom.Length);
+
+        // ...and the same room in the other casing is the same room (#1893 review L1): the argument
+        // above is already canonical, so only this arm exercises the CLI's own Resolve -> RecordKey
+        // chain and the case-insensitive comparer behind it. An ordinal comparison anywhere along it
+        // answers "no rows here", which the NotEmpty above would then catch.
+        using var otherCasing = JsonDocument.Parse(
+            await RunAsync(_roomB.ToUpperInvariant(), "--format", "json", "--drill"));
+        Assert.Equal(
+            fromRoom,
+            otherCasing.RootElement.GetProperty("rows").EnumerateArray()
+                .Select(r => r.GetProperty("execution").GetString()).ToArray());
     }
 
     /// <summary>

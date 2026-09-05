@@ -171,11 +171,6 @@ public sealed record RepositoryIdentity
     }
 
     /// <summary>
-    /// A readable, filesystem-safe prefix of <paramref name="value"/> plus a 12-hex-character SHA-256
-    /// digest of the WHOLE value. The digest is what guarantees injectivity: <c>github.com/a/b</c> and
-    /// <c>github.com/a:b</c> sanitize to the same prefix and must not share a ledger file.
-    /// </summary>
-    /// <summary>
     /// The filename stem a given canonical <see cref="Value"/> is stored under — the same derivation
     /// <see cref="FileSlug"/> uses, exposed for the one caller that has an identity STRING and no
     /// repository to probe: <c>baton ledger --repo-identity &lt;key&gt;</c>, naming a repository other
@@ -192,6 +187,11 @@ public sealed record RepositoryIdentity
         return BuildFileSlug(canonicalValue);
     }
 
+    /// <summary>
+    /// A readable, filesystem-safe prefix of <paramref name="value"/> plus a 12-hex-character SHA-256
+    /// digest of the WHOLE value. The digest is what guarantees injectivity: <c>github.com/a/b</c> and
+    /// <c>github.com/a:b</c> sanitize to the same prefix and must not share a ledger file.
+    /// </summary>
     private static string BuildFileSlug(string value)
     {
         var builder = new StringBuilder(value.Length);

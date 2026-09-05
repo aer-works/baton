@@ -3,6 +3,51 @@ using System.Text.Json.Serialization;
 namespace Baton.Accounting;
 
 /// <summary>
+/// How many of a subtotal's attempts actually reported each summed dimension — the disclosure that
+/// keeps a PARTIAL sum from reading as a complete one (#1893 review M1).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Absence is all-or-nothing only within a vendor, and not even always there: claude reports
+/// cache-creation and agy does not, so the ALL-VENDOR <c>cacheCreation</c> total is claude's rows
+/// alone, printed in the same shape as a figure every row contributed to. A count beside each
+/// dimension is what tells those apart, exactly as <see cref="LedgerSubtotal.ApiEquivalentByStatus"/>
+/// does for the money.
+/// </para>
+/// <para>
+/// A count of <c>0</c> means the dimension is ABSENT from the subtotal (its sum is
+/// <see langword="null"/>); a count equal to <see cref="LedgerSubtotal.Attempts"/> means every attempt
+/// contributed. Anything between the two is a partial sum.
+/// </para>
+/// </remarks>
+public sealed record LedgerReportedBy(
+    [property: JsonPropertyName("tokensIn")] int TokensIn,
+    [property: JsonPropertyName("tokensOut")] int TokensOut,
+    [property: JsonPropertyName("cacheRead")] int CacheReadTokens,
+    [property: JsonPropertyName("cacheCreation")] int CacheCreationTokens,
+    [property: JsonPropertyName("thinking")] int ThinkingTokens,
+    [property: JsonPropertyName("apiEquivalentUsd")] int ApiEquivalentUsd,
+    [property: JsonPropertyName("planMeterEstimateUsd")] int PlanMeterEstimateUsd);
+
+/// <summary>
+/// A subtotal's attempts counted by the row's OWN <see cref="EstimateStatus"/> — one count per state,
+/// never a bucket named after one state while holding three (#1893 review M2).
+/// </summary>
+/// <remarks>
+/// The four counts sum to <see cref="LedgerSubtotal.Attempts"/> by construction: the enum is closed and
+/// every row carries exactly one of its values. Derived from the recorded status rather than from
+/// "is the dollar figure null", because those answer different questions — <i>why</i> there is no
+/// number versus <i>how many rows fed</i> the one there is, which is
+/// <see cref="LedgerReportedBy"/>'s job. Collapsing them is what made an agy row whose plan meter has
+/// never been MEASURED print as <c>unpriced</c>.
+/// </remarks>
+public sealed record LedgerEstimateStatusCounts(
+    [property: JsonPropertyName("estimated")] int Estimated,
+    [property: JsonPropertyName("unpriced")] int Unpriced,
+    [property: JsonPropertyName("unknown")] int Unknown,
+    [property: JsonPropertyName("unmeasured")] int Unmeasured);
+
+/// <summary>
 /// One vendor's — or, with a <see langword="null"/> <see cref="Vendor"/>, the whole selection's —
 /// arithmetic over a set of cost-ledger rows (#1849 phase B).
 /// </summary>
@@ -19,9 +64,11 @@ namespace Baton.Accounting;
 /// is what those group under, so "we do not know which vendor" is never silently merged into a named one.
 /// </param>
 /// <param name="Attempts">
-/// Rows in this subtotal — <b>every</b> row, priced or not. An unpriced row is counted here and
-/// disclosed in <see cref="ApiEquivalentUnpriced"/>; it is never dropped to make a cost total look
-/// tidy. <see cref="ApiEquivalentPriced"/> + <see cref="ApiEquivalentUnpriced"/> equals this, always.
+/// Rows in this subtotal — <b>every</b> row, priced or not. A row that produced no estimate is counted
+/// here and disclosed in <see cref="ApiEquivalentByStatus"/> under the reason it produced none; it is
+/// never dropped to make a cost total look tidy. The four counts in
+/// <see cref="ApiEquivalentByStatus"/> sum to this, always, and so do
+/// <see cref="PlanMeterByStatus"/>'s.
 /// </param>
 /// <param name="Partial">
 /// How many of <paramref name="Attempts"/> carry <see cref="CostCompleteness.Partial"/> — i.e. the
@@ -62,18 +109,19 @@ public sealed record LedgerSubtotal(
     [property: JsonPropertyName("apiEquivalentUsd")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     decimal? ApiEquivalentUsd,
-    [property: JsonPropertyName("apiEquivalentPriced")]
-    int ApiEquivalentPriced,
-    [property: JsonPropertyName("apiEquivalentUnpriced")]
-    int ApiEquivalentUnpriced,
     /// <summary>Sum of the rows that HAVE a plan-meter estimate. Also an estimate; also never a quota reading.</summary>
     [property: JsonPropertyName("planMeterEstimateUsd")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     decimal? PlanMeterEstimateUsd,
-    [property: JsonPropertyName("planMeterPriced")]
-    int PlanMeterPriced,
-    [property: JsonPropertyName("planMeterUnpriced")]
-    int PlanMeterUnpriced);
+    /// <summary>How many attempts fed each sum above — see <see cref="LedgerReportedBy"/> for why a sum without it can mislead.</summary>
+    [property: JsonPropertyName("reportedBy")]
+    LedgerReportedBy ReportedBy,
+    /// <summary>The attempts by <see cref="CostLedgerEntry.EstimateStatus"/>, the API-equivalent half.</summary>
+    [property: JsonPropertyName("apiEquivalentByStatus")]
+    LedgerEstimateStatusCounts ApiEquivalentByStatus,
+    /// <summary>The attempts by <see cref="CostLedgerEntry.PlanMeterEstimateStatus"/> — where <c>unmeasured</c> (agy) and <c>unpriced</c> (a missing rate) are different answers.</summary>
+    [property: JsonPropertyName("planMeterByStatus")]
+    LedgerEstimateStatusCounts PlanMeterByStatus);
 
 /// <summary>
 /// <b>The one accounting projection</b> (#1849 phase B, operator ruling 2026-09-05): the arithmetic
@@ -87,6 +135,9 @@ public sealed record LedgerSubtotal(
 /// <b><see cref="Total"/> is computed over the rows, never by adding <see cref="Vendors"/> up.</b>
 /// Summing subtotals would have to invent an answer for "absent in one vendor, present in another",
 /// and the two arithmetics would then be free to drift — the exact thing this type exists to prevent.
+/// Row-summing does not invent one, but it does return a PARTIAL one, which is why every subtotal
+/// carries <see cref="LedgerSubtotal.ReportedBy"/>: a cross-vendor token total is only as complete as
+/// the count beside it says (#1893 review M1).
 /// </para>
 /// <para>
 /// <b>Determinism is a promise of this type, not of its callers</b> (#1849's acceptance criterion:
@@ -153,8 +204,12 @@ public sealed record LedgerRollup(
             }
         }
 
+        // Ordered on the SAME normalisation the window filters on (LedgerQuery.ToUtc): a row whose
+        // endedAt deserialised as Kind.Local would otherwise be selected by its UTC instant and placed
+        // by its wall clock. DateTime.MaxValue is a sentinel, not an instant, so it skips the
+        // conversion rather than being shifted by an offset.
         var ordered = matched
-            .OrderBy(m => m.Entry.EndedAt ?? DateTime.MaxValue)
+            .OrderBy(m => m.Entry.EndedAt is { } endedAt ? LedgerQuery.ToUtc(endedAt) : DateTime.MaxValue)
             .ThenBy(m => m.Entry.Execution ?? string.Empty, StringComparer.Ordinal)
             .ThenBy(m => m.FileOrder)
             .Select(m => m.Entry)
@@ -194,11 +249,30 @@ public sealed record LedgerRollup(
             CacheCreationTokens: SumPresent(rows, r => r.CacheCreationTokens),
             ThinkingTokens: SumPresent(rows, r => r.ThinkingTokens),
             ApiEquivalentUsd: SumPresent(rows, r => r.ApiEquivalentUsd),
-            ApiEquivalentPriced: rows.Count(r => r.ApiEquivalentUsd is not null),
-            ApiEquivalentUnpriced: rows.Count(r => r.ApiEquivalentUsd is null),
             PlanMeterEstimateUsd: SumPresent(rows, r => r.PlanMeterEstimateUsd),
-            PlanMeterPriced: rows.Count(r => r.PlanMeterEstimateUsd is not null),
-            PlanMeterUnpriced: rows.Count(r => r.PlanMeterEstimateUsd is null));
+            ReportedBy: new LedgerReportedBy(
+                TokensIn: rows.Count(r => r.TokensIn is not null),
+                TokensOut: rows.Count(r => r.TokensOut is not null),
+                CacheReadTokens: rows.Count(r => r.CacheReadTokens is not null),
+                CacheCreationTokens: rows.Count(r => r.CacheCreationTokens is not null),
+                ThinkingTokens: rows.Count(r => r.ThinkingTokens is not null),
+                ApiEquivalentUsd: rows.Count(r => r.ApiEquivalentUsd is not null),
+                PlanMeterEstimateUsd: rows.Count(r => r.PlanMeterEstimateUsd is not null)),
+            ApiEquivalentByStatus: CountByStatus(rows, r => r.EstimateStatus),
+            PlanMeterByStatus: CountByStatus(rows, r => r.PlanMeterEstimateStatus));
+
+    /// <summary>
+    /// One count per <see cref="EstimateStatus"/> value, from the row's own recorded status — never
+    /// inferred from whether the dollar figure is <see langword="null"/>, which cannot tell
+    /// <c>unpriced</c>, <c>unknown</c> and <c>unmeasured</c> apart.
+    /// </summary>
+    private static LedgerEstimateStatusCounts CountByStatus(
+        IReadOnlyList<CostLedgerEntry> rows, Func<CostLedgerEntry, EstimateStatus> select) =>
+        new(
+            Estimated: rows.Count(r => select(r) == EstimateStatus.Estimated),
+            Unpriced: rows.Count(r => select(r) == EstimateStatus.Unpriced),
+            Unknown: rows.Count(r => select(r) == EstimateStatus.Unknown),
+            Unmeasured: rows.Count(r => select(r) == EstimateStatus.Unmeasured));
 
     /// <summary>Sum over the rows that HAVE the value, or <see langword="null"/> when none does — see the type remarks for why that is not zero.</summary>
     private static long? SumPresent(IReadOnlyList<CostLedgerEntry> rows, Func<CostLedgerEntry, long?> select)

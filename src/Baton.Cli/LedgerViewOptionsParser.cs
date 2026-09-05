@@ -185,14 +185,25 @@ public static class LedgerViewOptionsParser
     /// an offsetless timestamp as local. The ledger records UTC, so both land in the same frame here
     /// rather than at each comparison.
     /// </summary>
-    internal static DateTime ParseInstant(string value, string optionName)
+    /// <param name="zone">
+    /// Which zone "local midnight" is in. <see langword="null"/> — the production default — is the
+    /// machine's. Injectable ONLY so a test can assert the shorthand against a fixed non-zero offset:
+    /// an expectation written as <c>SpecifyKind(…, Local).ToUniversalTime()</c> is this method's own
+    /// expression, and at UTC+0 it cannot tell <c>Local</c> from <c>Utc</c> (#1893 review M3).
+    /// </param>
+    internal static DateTime ParseInstant(string value, string optionName, TimeZoneInfo? zone = null)
     {
         var trimmed = value.Trim();
 
         if (DateTime.TryParseExact(
                 trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
         {
-            return DateTime.SpecifyKind(date, DateTimeKind.Local).ToUniversalTime();
+            // Subtracting the offset rather than TimeZoneInfo.ConvertTimeToUtc: that throws on a local
+            // time a DST transition skipped, and refusing "--since 2018-11-04" in Sao Paulo would be a
+            // worse answer than the standard-offset reading GetUtcOffset gives -- which is also what
+            // DateTime.ToUniversalTime does, so the machine-zone default is unchanged.
+            var local = zone ?? TimeZoneInfo.Local;
+            return DateTime.SpecifyKind(date - local.GetUtcOffset(date), DateTimeKind.Utc);
         }
 
         if (DateTimeOffset.TryParse(

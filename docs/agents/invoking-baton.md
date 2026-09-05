@@ -349,7 +349,8 @@ names are the ledger record's own (`spec/baton.md` §7 has the schema; `rows` is
 exclusive, and an attempt with no recorded `endedAt` is excluded and counted as `undatedExcluded`
 rather than assumed into the window. Every dollar figure is a labelled **estimate** — never an
 invoice, subscription spend, or a quota reading — and an attempt whose cost could not be estimated is
-still counted as an attempt and reported as unpriced, never as `0`. Pass `--help` for the rest —
+still counted as an attempt and reported under the reason it produced none, never as `0`. Pass
+`--help` for the rest —
 including the warning about this verb's `--rebuild` form, which maintains an entirely separate file
 (`spec/baton.md` §7's burn ledger) and leaves these rows alone.
 

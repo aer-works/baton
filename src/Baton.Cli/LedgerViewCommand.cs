@@ -228,14 +228,67 @@ public static class LedgerViewCommand
                 + $"in {Tokens(subtotal.TokensIn)}, out {Tokens(subtotal.TokensOut)}, "
                 + $"cache-read {Tokens(subtotal.CacheReadTokens)}, cache-creation {Tokens(subtotal.CacheCreationTokens)}, "
                 + $"thinking {Tokens(subtotal.ThinkingTokens)}");
+        var partial = PartialDimensions(subtotal);
+        if (partial is not null)
+        {
+            Write(output, $"  partial -- summed from SOME of the attempts only: {partial}");
+        }
+
         Write(
             output,
             $"  API-equivalent estimate: {Money(subtotal.ApiEquivalentUsd)} "
-                + $"(priced: {Number(subtotal.ApiEquivalentPriced)}, unpriced: {Number(subtotal.ApiEquivalentUnpriced)})");
+                + Contributors(subtotal.ReportedBy.ApiEquivalentUsd, subtotal.Attempts, subtotal.ApiEquivalentByStatus));
         Write(
             output,
             $"  plan-meter estimate: {Money(subtotal.PlanMeterEstimateUsd)} "
-                + $"(priced: {Number(subtotal.PlanMeterPriced)}, unpriced: {Number(subtotal.PlanMeterUnpriced)})");
+                + Contributors(subtotal.ReportedBy.PlanMeterEstimateUsd, subtotal.Attempts, subtotal.PlanMeterByStatus));
+    }
+
+    /// <summary>
+    /// The token dimensions SOME but not all of the attempts reported, "n of m" each — the all-vendor
+    /// line is where this bites, since a dimension only claude reports is a claude-only sum printed in
+    /// the same shape as one every row fed (#1893 review M1). A dimension NO attempt reported is absent
+    /// rather than partial and is already printed as <c>-</c> above; one every attempt reported needs no
+    /// disclosure at all, so both are left out here.
+    /// </summary>
+    private static string? PartialDimensions(LedgerSubtotal subtotal)
+    {
+        (string Name, int Count)[] dimensions =
+        [
+            ("in", subtotal.ReportedBy.TokensIn),
+            ("out", subtotal.ReportedBy.TokensOut),
+            ("cache-read", subtotal.ReportedBy.CacheReadTokens),
+            ("cache-creation", subtotal.ReportedBy.CacheCreationTokens),
+            ("thinking", subtotal.ReportedBy.ThinkingTokens),
+        ];
+
+        var partial = dimensions
+            .Where(d => d.Count > 0 && d.Count < subtotal.Attempts)
+            .Select(d => $"{d.Name} {Number(d.Count)} of {Number(subtotal.Attempts)}")
+            .ToList();
+
+        return partial.Count == 0 ? null : string.Join(", ", partial);
+    }
+
+    /// <summary>
+    /// How many attempts fed a money figure, then why the rest did not — <b>by the row's own recorded
+    /// status name</b>, so agy's never-measured plan meter says <c>unmeasured</c> rather than being
+    /// filed under <c>unpriced</c> with three other states (#1893 review M2). A state no attempt is in
+    /// is omitted rather than printed as a zero.
+    /// </summary>
+    private static string Contributors(int reportedBy, int attempts, LedgerEstimateStatusCounts byStatus)
+    {
+        (string Name, int Count)[] states =
+        [
+            ("estimated", byStatus.Estimated),
+            ("unpriced", byStatus.Unpriced),
+            ("unknown", byStatus.Unknown),
+            ("unmeasured", byStatus.Unmeasured),
+        ];
+
+        var reasons = states.Where(s => s.Count > 0).Select(s => $"{s.Name}: {Number(s.Count)}").ToList();
+        return $"(summed from {Number(reportedBy)} of {Number(attempts)} attempt(s)"
+            + (reasons.Count > 0 ? $"; {string.Join(", ", reasons)})" : ")");
     }
 
     private static string DescribeRow(CostLedgerEntry row)

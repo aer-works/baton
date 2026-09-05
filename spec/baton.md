@@ -3690,10 +3690,16 @@ its own remarks state the three sort keys and why the third is not redundant.
 it, `rows` present only with `--drill` (absent, not empty, so "not asked for" and "none matched" stay
 distinguishable). `--format csv` writes the rows only, header = the record's field names,
 LF-terminated, and that column set is pinned against the record by test rather than by review.
-A subtotal keeps the row-level doctrine through the addition: a token
-dimension **no** row reported is absent rather than `0` (agy reports no cache-creation at all), and an
-unpriced row is counted in `attempts` and disclosed as `unpriced: N` rather than dropped or summed as
-zero. Per-model token dimensions — the schema change that would let a multi-model tree be priced
+A subtotal keeps the row-level doctrine through the addition, and **discloses what its own arithmetic
+cannot preserve**: a token dimension **no** row reported is absent rather than `0` (agy reports no
+cache-creation at all); a dimension only *some* of the attempts reported is a partial sum, and
+`reportedBy` carries one contributor count per dimension so that a total cannot be read as more
+complete than it is (`LedgerReportedBy`'s remarks state the reading it prevents). A row that produced
+no estimate
+is counted in `attempts` and disclosed under **its own recorded status name** —
+`apiEquivalentByStatus`/`planMeterByStatus` carry one count per `EstimateStatus` value, so agy's
+never-measured plan meter reads `unmeasured` and a missing rate reads `unpriced`, rather than three
+states sharing one bucket named after one of them. Per-model token dimensions — the schema change that would let a multi-model tree be priced
 instead of refused — remain phase B's *unshipped* half; nothing above depends on them.
 
 **Phase plan.** A is the record, the catalog, the factor table, the identity key and the settle-time
