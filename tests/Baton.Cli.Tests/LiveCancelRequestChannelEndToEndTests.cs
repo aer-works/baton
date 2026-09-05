@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using Baton.Cli.Tests.TestSupport;
@@ -41,6 +42,31 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
 
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(30);
 
+    // #1914: the in-flight window this test's whole premise rests on. The arrest can only be observed
+    // if step `a` is STILL RUNNING when `baton cancel` fails the guard, writes cancel.request, and the
+    // pump's own poller next ticks (CancelRequestPoller.DefaultPollInterval, 2s). The pre-#1914 budget
+    // was a ~5s step, which left ~2s of margin over a quiet-box cancel latency (a cold `dotnet exec` of
+    // the CLI) -- and none at all on a loaded one, so the step completed first, the run exited
+    // Succeeded, and the CancellationRequested assertion below failed against a journal that legitimately
+    // had nothing to arrest. MEASURED: at a ~3s step this test fails 3/3 on that exact assertion; at ~1s
+    // it fails earlier still, on the fall-through message, because `cancel` then wins flow.lock outright.
+    // 60s is not a tuned margin, it is an unreachable one -- the step cannot end on its own, so the ONLY
+    // thing that ends this run is a real cancellation, and the only failure mode left is the bounded
+    // run-exit wait above, which says so explicitly rather than surfacing a bare cancellation.
+    private static readonly string[] UncancellableSleepArgv = ["ping", "-n", "61", "127.0.0.1"];
+
+    // Deliberately above UncancellableSleepArgv's own duration, so a failed arrest surfaces as the
+    // bounded wait timing out rather than racing the worker-binding timeout into a second red shape.
+    private static readonly TimeSpan SleepBindingTimeout = TimeSpan.FromMinutes(2);
+
+    // The redispatch arm reruns the parent's binding uncancelled and asserts it settles Terminal, so it
+    // must actually finish. RedispatchCommand re-reads bindings.json from the parent room at execute
+    // time, which is what lets this test swap the unreachable sleep above for a step that returns at
+    // once, instead of paying its duration a second time.
+    private static readonly string[] ImmediateArgv = ["ping", "-n", "1", "127.0.0.1"];
+
+    private static readonly TimeSpan ImmediateBindingTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Baton_cancel_against_a_live_pump_arrests_it_to_Terminal_and_redispatch_is_then_accepted()
     {
@@ -55,7 +81,8 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
             // writes them there, but `baton run` (used directly here, not through dispatch) does not,
             // so this test must put them there itself for the redispatch step below to find them.
             var workflowFilePath = await WriteOneSleepingStepWorkflowAsync(roomDirectory);
-            var bindingsFilePath = await WriteOneSleepingStepBindingsAsync(roomDirectory);
+            var bindingsFilePath = await WriteOneSleepingStepBindingsAsync(
+                roomDirectory, UncancellableSleepArgv, SleepBindingTimeout);
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
 
             runProcess = StartBatonProcess("run", workflowFilePath, "--bindings", bindingsFilePath, "--room-dir", roomDirectory);
@@ -74,7 +101,19 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
 
             using var runExitTimeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             runExitTimeout.CancelAfter(WaitTimeout);
-            await runProcess.WaitForExitAsync(runExitTimeout.Token);
+            try
+            {
+                await runProcess.WaitForExitAsync(runExitTimeout.Token);
+            }
+            catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
+            {
+                // #1914: this wait is the sole remaining signal that the arrest failed, now that the step
+                // can no longer end on its own -- so it has to say so. A bare OperationCanceledException
+                // names nothing it was waiting for; this mirrors WaitForConditionAsync's own message.
+                Assert.Fail(
+                    $"Timed out after {WaitTimeout} waiting for the arrested pump to exit — the arrest did "
+                    + "not land, and the sleeping step cannot end on its own.");
+            }
 
             var reader = new FlowEventLogReader(logPath);
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
@@ -97,6 +136,10 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
                 File.Exists(terminalSentinelPath),
                 "expected the real Program.cs exit path to write terminal.json for the cancellation-settled run");
 
+            // The parent's own run is over and its pump has exited, so swapping the binding here changes
+            // nothing that was asserted above -- it only spares the redispatch arm the unreachable sleep.
+            await WriteOneSleepingStepBindingsAsync(roomDirectory, ImmediateArgv, ImmediateBindingTimeout);
+
             var childRoom = Path.Combine(testRoot, "child");
             var redispatchOptions = new RedispatchOptions(roomDirectory, childRoom);
             var redispatchResult = await RedispatchCommand.ExecuteAsync(
@@ -105,8 +148,40 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
         }
         finally
         {
+            // #1914: the sleeping step is now unreachably long, so a pump that failed to be arrested no
+            // longer dies on its own within this test's lifetime. Disposing the Process object does not
+            // kill it -- without this, an assertion failure would leak a live pump and its `ping` child
+            // for the remaining ~60s, holding the room open against the cleanup below and seeding
+            // flakiness in whatever runs next.
+            KillIfStillRunning(runProcess);
             runProcess?.Dispose();
             DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    private static void KillIfStillRunning(Process? process)
+    {
+        if (process is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit((int)WaitTimeout.TotalMilliseconds);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or AggregateException)
+        {
+            // Best-effort by construction, and deliberately swallowed: this runs in a finally, so a
+            // cleanup fault that escaped would REPLACE the assertion failure it exists to survive.
+            // Reachable shapes: already reaped between the HasExited probe and the kill
+            // (InvalidOperationException), access denied or a process already terminating
+            // (Win32Exception), and a partial tree-kill (AggregateException).
+            Console.Error.WriteLine($"cleanup: could not kill the run process tree: {ex.Message}");
         }
     }
 
@@ -175,23 +250,25 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
         return path;
     }
 
-    private static async Task<string> WriteOneSleepingStepBindingsAsync(string directory)
+    /// <summary>
+    /// Writes the room's single-worker bindings.json. Called twice (#1914): once with
+    /// <see cref="UncancellableSleepArgv"/> for the arrest arm, then again with
+    /// <see cref="ImmediateArgv"/> before the redispatch arm re-reads it. `ping` rather than `timeout`
+    /// is the portable headless Windows-sleep idiom -- `timeout` needs a console and fails without one.
+    /// CommandWorkerAdapter (production's "command" adapter) takes argv directly, no shell --
+    /// Architecture Rule 1.
+    /// </summary>
+    private static async Task<string> WriteOneSleepingStepBindingsAsync(
+        string directory, IReadOnlyList<string> argv, TimeSpan timeout)
     {
         Directory.CreateDirectory(directory);
-        // ~5s: long enough to still be Running by the time the cancel process runs and the pump's own
-        // poller (2s cadence) next ticks, short enough to keep this test's own wall-clock small. A
-        // portable Windows-sleep idiom (`ping`, since `timeout` needs a console and fails headless);
-        // the redispatch assertion below reruns this exact command uncancelled, so it must actually
-        // finish quickly. CommandWorkerAdapter (production's "command" adapter) takes argv directly,
-        // no shell -- Architecture Rule 1.
-        var argv = new[] { "ping", "-n", "6", "127.0.0.1" };
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(
                 "command",
                 new WorkerContract("a", [], [new ProducedOutput("out")], []),
                 JsonSerializer.Serialize(argv),
-                TimeSpan.FromSeconds(30)),
+                timeout),
         };
 
         var path = Path.Combine(directory, "bindings.json");
