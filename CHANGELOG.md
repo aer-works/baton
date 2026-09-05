@@ -7,6 +7,42 @@ and `src/Baton.Vendors/CHANGELOG.md`, kept as history. New entries are prepended
 `vX.Y.Z`. See `release-please-config.json`. Everything below this line predates the split: the
 repo's single shared version through `0.14.0`.
 
+## [0.33.0](https://github.com/philipreese/baton/compare/v0.32.0...v0.33.0) (2026-09-05)
+
+
+### Features
+
+* **adapters:** Add the probe-backed Codex execution substrate ([#1862](https://github.com/philipreese/baton/issues/1862)) ([426cd43](https://github.com/philipreese/baton/commit/426cd4348b6a872ce4af0225e8a650bbd6f59560))
+* **adapters:** enforce Codex role grants through app-server ([#1871](https://github.com/philipreese/baton/issues/1871)) ([d00406a](https://github.com/philipreese/baton/commit/d00406ad69ca6e33069f7ca9c01eacb8cd374d76))
+* **glass:** Project each vendor's own usage counters as advisory runway ([#1869](https://github.com/philipreese/baton/issues/1869)) ([8c724b9](https://github.com/philipreese/baton/commit/8c724b9c1ad444c929a5adb111d63e5edf60bbb3))
+
+
+### Bug Fixes
+
+* **adapters:** Park a claude weekly-limit 429 on the result event instead of failing the lane ([#1860](https://github.com/philipreese/baton/issues/1860)) ([176e6e1](https://github.com/philipreese/baton/commit/176e6e1a8d5e1f92eb7cad4b7b87f9e16e362a1e))
+* **ci:** skip closed PR diff-shape events ([#1855](https://github.com/philipreese/baton/issues/1855)) ([01ce0a4](https://github.com/philipreese/baton/commit/01ce0a4aa5bb5718f5b46a6637dd4c957b1d97e9))
+* **codex:** Derive the capability text and effort table from the recorded model catalog ([#1880](https://github.com/philipreese/baton/issues/1880)) ([067c8de](https://github.com/philipreese/baton/commit/067c8dea4f5b1ee9f19400ee0a8da6a872ccfa92))
+* **resolve:** Close a rejected capture terminally instead of leaving the workflow running ([#1881](https://github.com/philipreese/baton/issues/1881)) ([7a8c8b7](https://github.com/philipreese/baton/commit/7a8c8b7ed8f53f33f0cd5cabd38666d310482878))
+* **usage:** Keep buffered stream chunks and in-memory token totals across a transient log write failure ([#1879](https://github.com/philipreese/baton/issues/1879)) ([cc16507](https://github.com/philipreese/baton/commit/cc16507d9b8c5bdfa2d19c892a332ea045aa5c45))
+
+
+### Documentation
+
+* **benchmarks:** Derive sortable scores and Pareto frontiers from the DeepSWE snapshot with a tunable steps penalty ([#1868](https://github.com/philipreese/baton/issues/1868)) ([b8243b6](https://github.com/philipreese/baton/commit/b8243b6756c485b08c6ce0abb705ed3bf897aba4))
+* **benchmarks:** Index the snapshots and record the operator's cast of vendors and models ([#1865](https://github.com/philipreese/baton/issues/1865)) ([da39b67](https://github.com/philipreese/baton/commit/da39b675bc6290fb00c600859e07f6342d1c5b69))
+* **vendor:** Re-probe claude 2.1.258 and record the six re-established findings ([#1859](https://github.com/philipreese/baton/issues/1859)) ([8069880](https://github.com/philipreese/baton/commit/8069880e030e26102e3daf24fd6a5595fe5cd006))
+
+
+### Tests
+
+* Remove the Unix-only test arms left dead by the Windows-only CI matrix ([#1873](https://github.com/philipreese/baton/issues/1873)) ([262ef81](https://github.com/philipreese/baton/commit/262ef813e06116a05c482ea1eb30dfdb21536e3f))
+
+
+### Miscellaneous
+
+* **gates:** reject stale DeepSWE derived scores ([#1874](https://github.com/philipreese/baton/issues/1874)) ([1b7c7ab](https://github.com/philipreese/baton/commit/1b7c7ab109a5c610950253841be03a8694a4098b))
+* **vendors:** Move the frontier and standard tiers to Opus (high / medium) until the codex adapter lands ([#1866](https://github.com/philipreese/baton/issues/1866)) ([d45c21d](https://github.com/philipreese/baton/commit/d45c21d05ba7855dcfdb59ca0646596d31b204ac))
+
 ## [0.32.0](https://github.com/philipreese/baton/compare/v0.31.1...v0.32.0) (2026-09-04)
 
 
