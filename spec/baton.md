@@ -2214,6 +2214,43 @@ landed carries no such record and still reports a figure. Not reachable on today
 room measured ~9 MB, one rolled room in 127), which is why this is a bound to know about rather than a
 live wrong number.
 
+**A second, unrelated way the capture can stop being the whole stream, and the one place a promise had
+to become a mechanism (#1876).** A chunk whose write fails — on Windows, most often a sharing conflict
+with a reader, an AV hold, or a delete-pending handle — is now **held and retried with the next
+successful write, in arrival order**, rather than skipped. It has to be: the pre-#1876 logger printed
+"Continuing to retry on subsequent chunks" while retrying only the *sink*, so the failed chunk's bytes
+left a silent interior hole in a file a reconciler later summed over, and a vendor's terminal usage
+record is the last chunk of the stream — exactly the one with no successor to carry it. `MarkTerminal`
+drains the queue before latching, because that is the last chance those bytes get.
+
+The queue is **bounded** (`ExecutionStreamLogger.DefaultMaxPendingBytes`, 4 MiB — the constant is the
+value, never restated here) because the obstruction can also be permanent, and an unbounded retry queue
+on a multi-hour lane ends the dispatch rather than degrading it. Past the bound, or still queued at
+terminal, the bytes are surrendered — and *that* is what gets announced, with its own warning and its
+own marker file, distinct from the rollover marker. So there are two announced gaps and two reason
+strings, `stream-truncated-by-rollover` and `stream-truncated-by-write-failure`, kept apart because
+their remedies are: a rollover gap is at the head of the retained window and is the expected cost of
+the ceiling above, while a write-failure gap is at an unknown offset and means the host obstructed the
+writer.
+
+**A failure the buffer absorbed gets no reason string at all**, and that silence is the contract rather
+than an omission: nothing was lost, so the triple is PRESENT, and this field's whole job is to explain
+the triple's *absence*. Whether retries happened is an operator-facing fact carried by the warning on
+stderr, not a property of the reconciliation. This is the lower-level attempt record #1849's ledger
+consumes: the ledger is handed a stream that is either whole or self-declared incomplete, and is never
+made responsible for detecting a hole in one.
+
+**Scoping what this does and does not recover, because the room that prompted #1876 recovers nothing.**
+In `codex-1870-patch-sol-high-20260904-01` the missing token dimensions were not lost to the write
+failure at all: that room's stream genuinely rolled three times (its `.stdout.log.truncated` marker is
+real), and separately it carried **no usage-bearing record to lose** — codex reports usage only on a
+`turn.completed` event, and the arrest at tool step 41 preempted the turn, which is why the journalled
+`ExecutionArrested.Usage` is all-null while `ToolStepCount` is 41 and `LastToolNames` is populated (the
+same parser, over the same bytes, in memory as they arrived). Reconciliation already consumes the
+vendor's events from memory as they arrive; that path was not the defect. **On codex, an arrested
+attempt has no token figure to report** — recorded here rather than in `docs/vendor-doc-audit.md`
+because that register has no codex section at all yet; opening one is worth its own change.
+
 **Not all fields are addends — on claude, `thinkingTokens` is a breakdown of `tokensOut`, not a
 sibling count; on agy, the containment relationship is unmeasured.** Measured (#1569): on claude,
 `thinkingTokens` is reached by descending *into* `usage.output_tokens_details`, an object nested inside

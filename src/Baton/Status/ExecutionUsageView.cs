@@ -66,6 +66,9 @@ public sealed record ExecutionUsageView(
     /// #1706 review M3: why the reconciliation triple above is absent, when it is absent for a reason a
     /// consumer can act on. One of <c>stream-truncated-by-rollover</c> (the capture is provably not the
     /// whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>),
+    /// <c>stream-truncated-by-write-failure</c> (#1876 — provably not the whole stream for the other
+    /// reason: the host obstructed the writer past its retry buffer,
+    /// <see cref="Dispatch.ExecutionStreamLogger.StdoutWriteFailureMarkerFileName"/>),
     /// <c>rollover-segment-unreadable</c>, <c>no-live-billed-figure</c> (the replay parsed no usage line
     /// carrying a billed component) or <c>no-terminal-billed-figure</c> (the terminal line reported
     /// none). Absent — like the triple itself — when the execution simply has no captured stream at
@@ -372,6 +375,7 @@ public static class ExecutionUsageProjector
 
         var rolloverPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutRolloverFileName);
         var truncationMarkerPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+        var writeFailureMarkerPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName);
 
         // #1706 review L3: see UsageReading's own doc. Stat both stream files before reading either --
         // a completed execution's pair is byte-identical poll to poll, and re-parsing megabytes of JSON
@@ -381,7 +385,13 @@ public static class ExecutionUsageProjector
         // comment below -- so keying on `adapter` alone would let two calls that pass different
         // `adapters` registries for the same stream collide and serve each other's reading.
         var replayParser = StandardWorkerUsageParsers.Default.TryGetValue(adapterName, out var liveParser) ? liveParser : adapter;
-        var cacheKey = BuildReadingCacheKey(stdoutPath, rolloverPath, adapterName, adapter, replayParser);
+        // #1876: the marker paths join the key because the write-failure marker can appear while the
+        // stream files' own (length, last-write) pair does not move -- the whole point of that marker is
+        // that bytes went MISSING -- so a memo keyed on the bytes alone would keep serving a reading
+        // taken before the writer admitted the gap. The rollover marker is redundant here (a rollover
+        // always moves both files) and is included anyway rather than relying on that coincidence.
+        var cacheKey = BuildReadingCacheKey(
+            stdoutPath, rolloverPath, truncationMarkerPath, writeFailureMarkerPath, adapterName, adapter, replayParser);
         if (cacheKey is not null && ReadingCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -434,6 +444,20 @@ public static class ExecutionUsageProjector
         if (File.Exists(truncationMarkerPath))
         {
             return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-rollover"));
+        }
+
+        // #1876: the other announced gap. Same posture as the rollover marker above and for the same
+        // reason -- a Σ over a stream with a hole in it is a fabricated under-read -- but a DIFFERENT
+        // reason string, because the two gaps are not the same fact: a rollover gap is at the head of
+        // the retained window and is the expected cost of an 8 MiB bound, while a write-failure gap is
+        // at an unknown offset and means the host obstructed the writer (a sharing conflict, an AV
+        // hold, a full disk) for longer than its retry buffer could cover. The transient failure this
+        // marker does NOT get written for -- one the buffer absorbed -- deliberately produces no reason
+        // string at all: nothing was lost, so the triple is PRESENT and this field's contract is that
+        // it explains the triple's absence.
+        if (File.Exists(writeFailureMarkerPath))
+        {
+            return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-write-failure"));
         }
 
         string[] rolledLines = [];
@@ -492,6 +516,8 @@ public static class ExecutionUsageProjector
     private static string? BuildReadingCacheKey(
         string stdoutPath,
         string rolloverPath,
+        string truncationMarkerPath,
+        string writeFailureMarkerPath,
         string adapterName,
         IWorkerUsageParser adapter,
         IWorkerUsageParser replayParser)
@@ -503,12 +529,16 @@ public static class ExecutionUsageProjector
             var rolledPart = rolled.Exists
                 ? $"{rolled.Length}:{rolled.LastWriteTimeUtc.Ticks}"
                 : "none";
+            // #1876: presence only -- both markers are empty by design, so there is nothing else about
+            // them to key on, and their appearance is the whole state change.
+            var markersPart = $"{(File.Exists(truncationMarkerPath) ? 'r' : '-')}{(File.Exists(writeFailureMarkerPath) ? 'w' : '-')}";
             return string.Join(
                 '|',
                 stdoutPath,
                 current.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 current.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 rolledPart,
+                markersPart,
                 adapterName,
                 adapter.GetType().FullName ?? adapter.GetType().Name,
                 replayParser.GetType().FullName ?? replayParser.GetType().Name);

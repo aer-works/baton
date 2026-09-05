@@ -560,7 +560,8 @@ public sealed class ExecutionUsageProjectorTests
         string adapter,
         IReadOnlyList<string> currentLines,
         IReadOnlyList<string>? rolledLines = null,
-        bool truncatedByRollover = false)
+        bool truncatedByRollover = false,
+        bool truncatedByWriteFailure = false)
     {
         var executionId = new ExecutionId("exec-1706");
         var start = DateTime.UtcNow;
@@ -584,6 +585,13 @@ public sealed class ExecutionUsageProjectorTests
             // What ExecutionStreamLogger itself writes on the roll that DESTROYS a segment -- an empty
             // sentinel, its existence the whole payload.
             File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName), []);
+        }
+
+        if (truncatedByWriteFailure)
+        {
+            // #1876: the other empty sentinel -- what the logger writes when its retry buffer overflows
+            // or is still full at terminal.
+            File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName), []);
         }
 
         File.WriteAllLines(Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName), currentLines);
@@ -809,6 +817,39 @@ public sealed class ExecutionUsageProjectorTests
             Assert.Null(view.BilledTokens);
             Assert.Null(view.LiveBilledTokens);
             Assert.Null(view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_write_failure_gap_reports_its_OWN_reason_not_the_rollover_one()
+    {
+        // #1876. The two gaps are different facts with different remedies -- a rollover gap sits at the
+        // head of the retained window and is the expected cost of the 8 MiB bound, a write-failure gap
+        // sits at an unknown offset and means the host obstructed the writer. Reporting the rollover
+        // reason for both would send an operator to the retention bound for a problem that is a sharing
+        // conflict. The terminal figures are still withheld either way, for the same reason.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1876-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(
+                testRoot,
+                "claude",
+                [ClaudeAssistantLine("msg_2", 500), ClaudeTerminalLine],
+                truncatedByWriteFailure: true);
+
+            Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+
+            // Polarity, and the half #1876 exists to protect: the terminal line's own dimensions are
+            // still reported. A gap withholds the RECONCILIATION, never the reading itself.
+            Assert.Equal(1000, view.TokensIn);
+            Assert.Equal(500, view.TokensOut);
         }
         finally
         {
