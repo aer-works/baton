@@ -1,0 +1,33 @@
+# fleet-glass
+
+The outbound half of Fleet Glass: `pusher.py` reads a projection of the local room fleet and PUTs it
+into the Cloudflare KV mailbox `worker.js` serves to `glass.html`. Everything the payload contains,
+the write budget, the secret gate, and the page's own rendering rules are specified in
+`spec/baton.md` §6 — this file is a pointer, not a second copy.
+
+## Where the fleet snapshot comes from (#1557)
+
+Two sources, selected by the `FLEET_GLASS_PROJECTION_SOURCE` environment variable. Order per cycle:
+
+1. **`file` (the default).** Read `BatonPaths.FleetProjectionFile` (`~/.baton/fleet/projection.json`,
+   or `$BATON_HOME/fleet/projection.json`), which `baton daemon`'s `FleetProjectionWriter` rewrites
+   roughly every 30s. Used whenever the file is present, well-formed, and younger than
+   `PROJECTION_STALE_AFTER_S` (900s). No subprocess is spawned. `rooms[].live`, `rooms[].pruned` and
+   `vendors` are taken from the file verbatim — the pusher never recomputes them.
+2. **`derive` (the fallback).** Spawn `dotnet Baton.Cli.dll mcp` and build the snapshot here, exactly
+   as the pusher always did. Runs when the file is absent, unreadable, malformed or stale — that
+   cycle's pushed body then carries a `staleness` object and `glass.html` shows a banner — or when an
+   operator pins `FLEET_GLASS_PROJECTION_SOURCE=derive`. **Kept for one release**; the condition for
+   deleting it is recorded on `derive_snapshot_and_timelines`'s docstring in `pusher.py`.
+
+Any other value of the variable resolves to the default rather than raising. One known difference
+between the two sources: `timelines` is empty under `file`, because the daemon does not write per-room
+timeline entries yet (#1902). `pusher.py --selftest` asserts it is the *only* difference.
+
+## Checks
+
+- `pixi run fleet-glass-pusher-selftest` — `python tools/fleet-glass/pusher.py --selftest`. Pure
+  Python, no network, no vendor, no `~/.baton` read.
+- `pixi run fleet-glass-worker-selftest` — `node tools/fleet-glass/worker.selftest.mjs`.
+- `python tools/fleet-glass/pusher.py --compare-projection` — runs both sources once against the
+  **live** fleet and diffs them room by room. Needs a running daemon and a built CLI; not a CI check.

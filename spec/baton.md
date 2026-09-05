@@ -3049,11 +3049,12 @@ the STDOUT block on a Running room's detail card; the timeline separately collap
 event breaks the run) — pure client-side rendering, no projection change.
 
 **PR-B1 (#1557) gives `pusher.py` a second, opt-in source for the SAME body it has always derived
-itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env, default `derive` — a deployed pusher's behavior
-is unchanged until an operator flips it) switches `main()`'s loop to `json.load`
+itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env; **`file` is the default as of PR-B2 below** — PR-B1 shipped
+it as opt-in, with `derive` as the default) switches `main()`'s loop to `json.load`
 `BatonPaths.FleetProjectionFile` instead of spawning `dotnet mcp` and running its own
 `attach_live_telemetry`/`attach_pruned_info`; `derive` keeps doing exactly what it always has. This
-PR deletes nothing from the `derive` path — that is PR-B2, gated on `compare-projection` reading
+PR deletes nothing from the `derive` path — PR-C does that under its removal condition; PR-B2's
+default switch is gated on `compare-projection` reading
 green on ≥ 3 settled rooms plus every static field on every room (#1807; `compare_projection`'s own
 `_MIN_SETTLED_ROOMS_FOR_GREEN` in `pusher.py`, so "green on 0" can't pass). Because no scheduled task runs `baton daemon` today, the fallback
 below is load-bearing from day one, not a defensive edge case: a file older than 3 coalescing
@@ -3086,6 +3087,29 @@ A clean diff still is not enough on its own to gate PR-B2 if it happened to run 
 settled rooms — the `_MIN_SETTLED_ROOMS_FOR_GREEN` floor above exists so "green because nothing live
 was actually checked" can't pass. See `_compare_volatile_live`/`_room_is_settled` in `pusher.py` for
 the mechanics.
+
+**PR-B2 (#1557) makes `file` the default source.** Source order per cycle: read
+`BatonPaths.FleetProjectionFile`; use it when present, well-formed and fresher than
+`PROJECTION_STALE_AFTER_S` (900s); otherwise fall back to `derive_snapshot_and_timelines` for that
+one cycle and carry `staleness` on the pushed body, exactly as PR-B1 defined.
+`FLEET_GLASS_PROJECTION_SOURCE=derive` pins the pre-PR-B2 always-derive behavior for one release;
+an unrecognized value resolves to the default rather than raising. The `derive` path is **kept**,
+not deleted — PR-C deletes it, under the removal condition recorded on
+`derive_snapshot_and_timelines`'s own docstring (canonical; not restated here). Two consequences
+this section states rather than leaves to be discovered:
+- **`rooms[].live`/`rooms[].pruned`/`vendors` come from the file verbatim in `file` mode** — never
+  recomputed by `pusher.py`, which is the per-cycle duplicate work the switch exists to remove
+  (#1886 is the standing reason a second arithmetic is not merely redundant but can be *wrong*).
+- **`timelines` is the one field the file cannot supply yet**, so `file` mode pushes `timelines: {}`
+  until `FleetProjectionWriter` writes per-room timeline entries (#1902). This is also what blocks
+  PR-C: a non-terminal room's timeline needs a `room_detail` call per cycle, i.e. the very `dotnet
+  mcp` spawn PR-C exists to delete. `glass.html` accumulates timelines in `localStorage` across
+  pushes, so entries already seen persist; a room first seen after the cutover shows none.
+`pusher.py --selftest` carries the acceptance instrument — `snapshot_identity_diffs` compares the
+finished pushed snapshot from both sources over one frozen fixture and asserts `timelines` is the
+only difference, with a planted-difference control on each side. It is a different instrument from
+`--compare-projection` above (frozen fixture vs. two live samples, whole snapshot vs. one room);
+that function's own comment says why both exist.
 
 **Board + detail-pane IA (#1678, operator ruling 2026-09-02, Combo C+E).** `glass.html`'s Fleet tab
 is a three-column state board — Needs You (the conductor pinned first, then Stalled + Indeterminate

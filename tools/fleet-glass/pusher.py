@@ -171,12 +171,18 @@ false-positive match does not self-heal when the offending pattern is later narr
 such an item, delete its (room, artifact) entry from push_state_file, or touch the artifact so its
 hash changes.
 
-PROJECTION FILE READ PATH (#1557 PR-B1)
--------------------------------------------
-Two sources for the fleet snapshot, selected by FLEET_GLASS_PROJECTION_SOURCE (`derive` default,
-`file` = the daemon's projection file); the switch, the staleness rule, and the compare command are
-specified once in spec/baton.md §6 (the "PR-B1 … second, opt-in source" passage) -- `read_projection_file` and
-`compare_projection` carry the mechanics, not a second statement of the rule.
+PROJECTION FILE READ PATH (#1557 PR-B1, defaulted on by PR-B2)
+--------------------------------------------------------------
+Two sources for the fleet snapshot, selected by FLEET_GLASS_PROJECTION_SOURCE. Source order as of
+PR-B2: `file` (the daemon's own projection file) is the DEFAULT and is used whenever the file is
+present and fresher than PROJECTION_STALE_AFTER_S; otherwise this cycle falls back to
+`derive_snapshot_and_timelines` (the `dotnet mcp` spawn) and the pushed body carries `staleness`.
+`FLEET_GLASS_PROJECTION_SOURCE=derive` pins the pre-PR-B2 always-derive behavior. The switch, the
+staleness rule, and the compare command are specified once in spec/baton.md §6 (the "PR-B1 … second,
+opt-in source" passage and PR-B2's default flip beneath it) -- `read_projection_file` and
+`compare_projection` carry the mechanics, not a second statement of the rule;
+`derive_snapshot_and_timelines`'s own docstring carries the condition under which that path is
+deleted (PR-C).
 
 Usage: python pusher.py [--once] [--selftest] [--compare-projection]
 Writes pusher.log (rotating-ish: truncated at 1MB) next to this script.
@@ -211,11 +217,14 @@ DEFAULT_BUDGET_STATE_FILE = HERE / "write-budget.local.json"  # F4 (2026-09-02 r
                                                                 # spec/baton.md §6.
 DEFAULT_LOCK_FILE = HERE / "pusher.lock"
 
-# #1557 PR-B1: FLEET_GLASS_PROJECTION_SOURCE=file switches main()'s loop to read the daemon's own
-# BatonPaths.FleetProjectionFile instead of deriving via `dotnet mcp` -- default "derive" so nothing
-# changes for a deployed pusher until an operator flips it (plan §4/item 1). Any other value is
-# treated as "derive" (fail toward the always-worked path, not a crash on a typo).
+# #1557 PR-B1 added FLEET_GLASS_PROJECTION_SOURCE=file as an opt-in second source; PR-B2 makes
+# `file` the DEFAULT -- main()'s loop reads the daemon's own BatonPaths.FleetProjectionFile and only
+# spawns `dotnet mcp` when that file is absent or stale (PROJECTION_STALE_AFTER_S below).
+# `FLEET_GLASS_PROJECTION_SOURCE=derive` pins the old always-derive behavior for one release, for an
+# operator who needs to rule the file out while diagnosing. Any other value is treated as
+# `PROJECTION_SOURCE_DEFAULT` rather than raising on a typo'd env var.
 FLEET_GLASS_PROJECTION_SOURCE_ENV = "FLEET_GLASS_PROJECTION_SOURCE"
+PROJECTION_SOURCE_DEFAULT = "file"
 
 # #1557 plan §5 (load-bearing: no scheduled task runs `baton daemon` today, so this fallback is the
 # steady-state path, not an edge case): the file is treated as stale -- and the cycle falls back to
@@ -1540,7 +1549,23 @@ def resolve_room_timeline(room_path: str, is_terminal: bool, cache: dict, fetch_
 
 
 def derive_snapshot_and_timelines(dll: str, roots: list, terminal_timeline_cache: dict | None = None) -> tuple[str, dict]:
-    """Returns (the rooms JSON exactly as fleet_status produced it, {room_path: [timeline entries]}
+    """THE DOTNET-SPAWN PATH. As of #1557 PR-B2 this is no longer the default source -- `file` is
+    (`PROJECTION_SOURCE_DEFAULT`), and this runs only on a cycle where the projection file is
+    absent or stale, or when an operator has pinned `FLEET_GLASS_PROJECTION_SOURCE=derive`.
+
+    REMOVAL CONDITION (PR-C, which closes #1557): this function, and the group-(b) projection block
+    it feeds (`extract_live_counts` through `attach_pruned_info`), come out once BOTH hold --
+      1. one full release has run with `file` in effect and NO
+         "projection file stale or absent ... falling back to derive" line in pusher.log, and
+      2. the projection file carries per-room `timelines`.
+    (2) is not satisfiable today and is not a nicety: `timelines` for a non-terminal room needs a
+    `room_detail` call per cycle, which is this subprocess, so PR-C cannot delete this path while
+    the file omits them -- see the `timelines` gap issue named in PR-B2's body. Note (1) is also
+    unsatisfiable until `baton daemon` is actually scheduled on the operator's machine (plan §6): no
+    scheduled task runs it today, so the fallback below is the steady state, not an edge case, and
+    the log line it emits every cycle is the honest signal of that.
+
+    Returns (the rooms JSON exactly as fleet_status produced it, {room_path: [timeline entries]}
     for every room with one) -- ONE dotnet-mcp process for both, reused across every room_detail
     call in this cycle (module docstring's "THE TIMELINE HALF"): spawning a fresh `dotnet` per room
     would multiply the exact per-cycle subprocess cost the daemon-owns-the-projection design (#1502
@@ -1619,17 +1644,28 @@ def derive_snapshot_and_timelines(dll: str, roots: list, terminal_timeline_cache
     return text, timelines
 
 
-_NEWEST_TIMESTAMP_SKIP_KEYS = frozenset({"exhaustedUntil"})
+_NEWEST_TIMESTAMP_SKIP_KEYS = frozenset({"exhaustedUntil", "live", "pruned"})
 
 
 def newest_timestamp(node, _skip_keys: frozenset = _NEWEST_TIMESTAMP_SKIP_KEYS) -> str:
     """Max ISO-8601-looking string anywhere in the room object -- shape-agnostic on purpose,
     so a fleet_status field rename degrades to 'room has no timestamp' (kept), never a crash.
 
-    `exhaustedUntil` (#1551) is excluded by key, the one deliberate exception to "shape-agnostic":
+    `exhaustedUntil` (#1551) is excluded by key, the first deliberate exception to "shape-agnostic":
     it's a vendor-quota park's reset instant, a FUTURE timestamp by construction while parked.
     Folding it into this scan would make an abandoned parked room's "newest timestamp" always
-    outrun drop_stale_rooms' cutoff below -- a room nobody is watching would never age out."""
+    outrun drop_stale_rooms' cutoff below -- a room nobody is watching would never age out.
+
+    `live`/`pruned` (whole subtrees) are excluded for a different reason: to keep the two projection
+    sources' staleness decisions IDENTICAL (#1557 PR-B2). In `derive` mode these blocks do not exist
+    yet when drop_stale_rooms runs -- `attach_live_telemetry`/`attach_pruned_info` are called
+    afterwards, deliberately, so that `lastActivityAt`/`prunedAt` (real file mtimes, not step
+    timestamps) "play no part in the staleness decision at all" (those functions' own docs). In
+    `file` mode the daemon has already embedded them, so without this skip the same room would be
+    scanned differently by source: one whose newest STEP timestamp is past the cutoff but whose
+    stdout was touched recently would be dropped under `derive` and kept under `file`. Skipping the
+    subtree here restores by exemption what derive mode gets by construction, in the one place both
+    sources share."""
     best = ""
     if isinstance(node, dict):
         for k, v in node.items():
@@ -1855,6 +1891,41 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
     if vendors is not None:
         wrapped["vendors"] = vendors
     return wrapped
+
+
+def assemble_wrapped(room_list, underhood, timelines, stale_hidden_count,
+                     conductor=None, staleness=None, vendors=None):
+    """main()'s post-source tail, in ONE place so both projection sources reach the pushed body
+    through the same code: hot/archive split, timeline filtering, then `build_wrapped`. Returns
+    `(wrapped, hot_rooms, hot_paths, terminal_total, terminal_archive, warn_line)` -- `warn_line`
+    is `nonterminal_warn_line`'s own return, logged by the caller rather than here so this stays
+    side-effect-free and callable from `--selftest`.
+
+    #1557 PR-B2: extracted so the byte-identity selftest arm can push the SAME fixture through
+    both the `derive` and the `file` source and compare the finished snapshots, not just the room
+    dicts -- `timelines`/`terminal_total`/`stale_hidden_count`/`staleness` are top-level fields
+    that never pass through `_diff_room`'s room-level comparison, and `timelines` is exactly where
+    the two sources are known to differ today (that function's own comment)."""
+    hot_rooms, terminal_archive, terminal_total = split_hot_and_archive(room_list or [])
+    non_terminal_count = len(room_list or []) - terminal_total
+    warn_line = nonterminal_warn_line(non_terminal_count)
+    hot_paths = {r.get("path") for r in hot_rooms if isinstance(r, dict)}
+    wrapped = build_wrapped(
+        hot_rooms,
+        underhood,
+        {p: t for p, t in (timelines or {}).items() if p in hot_paths},
+        stale_hidden_count,
+        terminal_total=terminal_total,
+        terminal_archive=terminal_archive,
+        conductor=conductor,
+        staleness=staleness,
+        vendors=vendors)
+    return wrapped, hot_rooms, hot_paths, terminal_total, terminal_archive, warn_line
+
+
+def snapshot_post_body(wrapped: dict, derived_at: str | None) -> str:
+    """Final wire serialization shared by main() and the frozen projection identity arm."""
+    return json.dumps({**wrapped, "derived_at": derived_at})
 
 
 def snapshot_hash(wrapped: dict) -> str:
@@ -3210,6 +3281,55 @@ def _normalize_room_for_compare(room: dict) -> dict:
     return normalized
 
 
+# #1557 PR-B2's own acceptance instrument, distinct from `_diff_room` above. `_diff_room` compares
+# ONE ROOM between two LIVE samples taken ~30s apart, so it has to tolerate every field that can
+# honestly move in between. This one compares the FINISHED PUSHED SNAPSHOT (including the
+# `snapshot_post_body` serialization) over ONE FROZEN FIXTURE -- nothing is moving, so nothing volatile
+# is tolerated, and the top-level keys `_diff_room` never sees (`timelines`, `stale_hidden_count`,
+# `terminal_total`, `terminal_archive`, `underhood`, `conductor`, `vendors`, `staleness`) are in
+# scope. Only two exclusions, both named:
+#   - `rooms[].live.lastActivityAt` -- a 90s-quantized bucket off the same mtime, sampled at two
+#     different instants (same reason `_normalize_room_for_compare` excludes it).
+#   - `_COMPARE_SHAPE_ONLY_KEYS` -- `processAlive`/`stdout_last_write_ago_sec`/`elapsed`, which the
+#     derive path has never emitted at all, so there is nothing on that side to compare against.
+_SNAPSHOT_IDENTITY_EXCLUSIONS = ("rooms[].live.lastActivityAt", *sorted(_COMPARE_SHAPE_ONLY_KEYS))
+
+
+def _identity_normalize_room(room: dict) -> dict:
+    """`_normalize_room_for_compare`'s frozen-fixture sibling: strips ONLY the two exclusions named
+    on `_SNAPSHOT_IDENTITY_EXCLUSIONS`, never the volatile-live fields that function drops -- over a
+    fixture that is not moving, a `billedTokens`/`toolCalls`/`stdoutTail` difference is a real
+    derivation difference, and tolerating it here would make the identity arm unable to see the one
+    class of bug it exists for."""
+    if not isinstance(room, dict):
+        return room
+    normalized = {k: v for k, v in room.items() if k not in _COMPARE_SHAPE_ONLY_KEYS}
+    live = normalized.get("live")
+    if isinstance(live, dict):
+        live = {k: v for k, v in live.items() if k != "lastActivityAt"}
+        normalized["live"] = live
+    return normalized
+
+
+def snapshot_identity_diffs(derive_wrapped: dict, file_wrapped: dict) -> list[str]:
+    """Sorted top-level keys of the pushed snapshot that differ between the two projection sources,
+    after `_SNAPSHOT_IDENTITY_EXCLUSIONS`. `[]` means the two sources produced the same pushed body.
+    `["derived_at", "timelines"]` names the intentional source-dependent differences: file mode
+    preserves the daemon timestamp, while derive mints a new one; the daemon also carries no
+    per-room timelines yet (see `derive_snapshot_and_timelines`'s removal condition)."""
+    def prepare(wrapped: dict) -> dict:
+        prepared = dict(wrapped)
+        for key in ("rooms", "terminal_archive"):
+            value = prepared.get(key)
+            if isinstance(value, list):
+                prepared[key] = [_identity_normalize_room(r) for r in value]
+        return prepared
+
+    d_prepared, f_prepared = prepare(derive_wrapped), prepare(file_wrapped)
+    return sorted(key for key in set(d_prepared) | set(f_prepared)
+                  if _canonical(d_prepared.get(key)) != _canonical(f_prepared.get(key)))
+
+
 def _compare_last_activity(path: str, derive_room: dict, file_room: dict) -> list[str]:
     """`rooms[].live.lastActivityAt` is excluded from strict equality (plan §4/item 3): both paths
     bucket the SAME underlying `.stdout.log` mtime (`LAST_ACTIVITY_BUCKET_SECONDS`=90s) but sample
@@ -3498,12 +3618,16 @@ def compare_projection(dll: str, roots: list) -> int:
 def main() -> None:
     cfg = json.loads((HERE / "pusher.config.json").read_text(encoding="utf-8"))
     once = "--once" in sys.argv
-    # #1557 PR-B1: unrecognized values fail toward "derive" (the always-worked path) rather than
-    # raising on a typo'd env var.
-    projection_source = os.environ.get(FLEET_GLASS_PROJECTION_SOURCE_ENV, "derive")
+    # #1557 PR-B2: unrecognized values fail toward PROJECTION_SOURCE_DEFAULT rather than raising on
+    # a typo'd env var. Note the fail-toward target is now `file`, i.e. the default, not "the path
+    # that always worked" -- the per-cycle staleness fallback below is what keeps that safe.
+    projection_source = os.environ.get(FLEET_GLASS_PROJECTION_SOURCE_ENV, PROJECTION_SOURCE_DEFAULT)
     if projection_source not in ("file", "derive"):
-        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}={projection_source!r} not recognized -- using 'derive'")
-        projection_source = "derive"
+        log(f"{FLEET_GLASS_PROJECTION_SOURCE_ENV}={projection_source!r} not recognized -- "
+            f"using {PROJECTION_SOURCE_DEFAULT!r}")
+        projection_source = PROJECTION_SOURCE_DEFAULT
+    log(f"projection source: {projection_source} "
+        f"({FLEET_GLASS_PROJECTION_SOURCE_ENV}={os.environ.get(FLEET_GLASS_PROJECTION_SOURCE_ENV, '<unset>')})")
     interval = cfg.get("interval_seconds", 25)
     min_push_interval_s = cfg.get("min_push_interval_s", DEFAULT_MIN_PUSH_INTERVAL_S)
     lock_path = Path(cfg["lock_file"]).expanduser() if cfg.get("lock_file") else DEFAULT_LOCK_FILE
@@ -3592,7 +3716,18 @@ def main() -> None:
                             "rooms": projection_data.get("rooms", []),
                             **({"vendors": projection_data["vendors"]} if "vendors" in projection_data else {}),
                         })
-                        timelines = {}
+                        # #1557 PR-B2 item 3: `timelines` comes from the file WHEN PRESENT -- never
+                        # re-derived here, which would mean a `room_detail` call per non-terminal
+                        # room and so the very `dotnet mcp` spawn this source exists to remove. The
+                        # daemon does not write them yet (FleetProjectionWriter carries no timeline
+                        # field), so today this resolves to {} on every file-mode cycle: a
+                        # named, intentional difference between the two sources' pushed snapshots
+                        # (`_selftest`'s byte-identity arm names it alongside `derived_at`, and
+                        # `derive_snapshot_and_timelines`'s removal condition is gated on it).
+                        # What an operator actually sees while that holds -- and why it is bounded
+                        # -- is spec/baton.md §6's PR-B2 paragraph, not restated here. #1902.
+                        raw_timelines = projection_data.get("timelines")
+                        timelines = raw_timelines if isinstance(raw_timelines, dict) else {}
                         last_derived_at = projection_data.get("derived_at")
                         used_file_this_cycle = True
                     else:
@@ -3656,22 +3791,12 @@ def main() -> None:
                 # #1656: split BEFORE building the wrapped body, and filter `timelines` to
                 # `hot_paths` (not the wider `surviving_paths`) -- spec/baton.md §6, "Paging and the
                 # terminal hot-set cap".
-                hot_rooms, terminal_archive, terminal_total = split_hot_and_archive(room_list or [])
-                non_terminal_count = len(room_list or []) - terminal_total
-                warn_line = nonterminal_warn_line(non_terminal_count)
+                wrapped, hot_rooms, hot_paths, terminal_total, terminal_archive, warn_line = \
+                    assemble_wrapped(room_list, gather_underhood(cfg), timelines, stale_hidden_count,
+                                     conductor=conductor_info, staleness=staleness,
+                                     vendors=vendors_list)
                 if warn_line:
                     log(warn_line)
-                hot_paths = {r.get("path") for r in hot_rooms if isinstance(r, dict)}
-                wrapped = build_wrapped(
-                    hot_rooms,
-                    gather_underhood(cfg),
-                    {p: t for p, t in timelines.items() if p in hot_paths},
-                    stale_hidden_count,
-                    terminal_total=terminal_total,
-                    terminal_archive=terminal_archive,
-                    conductor=conductor_info,
-                    staleness=staleness,
-                    vendors=vendors_list)
                 # record-once-ok: #1690 spec/baton.md
                 # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
                 # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
@@ -3702,7 +3827,7 @@ def main() -> None:
                             pusher=pusher_notice,
                             staleness=staleness,
                             vendors=vendors_list)
-                        post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
+                        post_body = snapshot_post_body(notice_wrapped, last_derived_at)
                         # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
                         # response after a committed KV put is indistinguishable, from the client, from
                         # a failure, so the only safe posture for a hard external cap is to over-charge
@@ -3751,7 +3876,7 @@ def main() -> None:
                         # derived_at rides the ACTUAL posted body but is excluded from current_hash
                         # (computed above from the quantized copy of `wrapped`) -- it must never make
                         # the change-gate think an otherwise-unchanged snapshot changed.
-                        post_body = json.dumps({**wrapped, "derived_at": last_derived_at})
+                        post_body = snapshot_post_body(wrapped, last_derived_at)
                         # F3(b): charge before the POST, same reasoning as the exhaustion-notice
                         # branch above. push_snapshot_and_record's own POST-then-record-hash ordering
                         # is unchanged -- only the ledger charge has moved ahead of the POST.
@@ -6062,6 +6187,159 @@ def _selftest() -> int:
         check("read_projection_file: an absent file falls back to derive with daemon_derived_at=None",
               data is None and staleness is not None and staleness["stale"] is True
               and staleness["daemon_derived_at"] is None)
+
+    # -- #1557 PR-B2 ACCEPTANCE: the pushed snapshot is identical across both projection sources
+    # over one frozen fixture, or every difference is named. Runs the pusher's OWN derivation
+    # (`attach_live_telemetry`/`attach_pruned_info`) and the file read over the SAME room tree, then
+    # pushes both through main()'s `assemble_wrapped` AND `snapshot_post_body`, then diffs with
+    # `snapshot_identity_diffs` -- see that function for the two exclusions and why this is a
+    # different instrument from `_diff_room` above.
+    #
+    # SCOPE, stated rather than implied: the base per-room fields (`name`/`path`/`state`/`steps`/…)
+    # are shared between the two arms by construction. Both sources get them from the SAME C#
+    # projector -- the daemon calls `FleetStatusTool`'s room processing in-process, the derive path
+    # reaches the same code over MCP -- so re-deriving them twice here would measure nothing. What
+    # this arm measures is the `live` block (Python `extract_live_counts` vs. C#
+    # `TokenBudgetMonitor`/`StdoutTailRenderer`) and the snapshot assembly around it.
+    # No vendors or non-empty pruned block is exercised by this fixture.
+    # The cross-process half is `--compare-projection`'s job.
+    #
+    # The file arm's `live` values are HAND-DERIVED from the fixture lines below, not transcribed
+    # from a run of the derive path: `billedTokens` 1200 and `billedIsFloor` True come from the
+    # shared cross-language fixture's own `expectedBilledTokens`/`expectedBilledIsFloor` for this
+    # exact case (read above -- the engine is the oracle, not this file); `turns` 2 is the two
+    # DISTINCT message ids across three lines (#1686 dedup); `contextTokens` 702 is the newest usage
+    # line's own level (input 2 + cache_creation 700 + cache_read 0), NOT a sum across lines;
+    # `cacheReadTokens` 0 and `toolCalls` 0 are the fixture's own zeros (no cache_read, no tool_use
+    # block). A derive-side change to any of those reds this arm.
+    with tempfile.TemporaryDirectory() as ident_tmp:
+        ident_root = Path(ident_tmp)
+        ident_gate_case = None
+        if gate_path.is_file():
+            ident_gate_case = next((c for c in json.loads(gate_path.read_text(encoding="utf-8"))["cases"]
+                                    if c["name"].startswith("a repeated message.id")), None)
+        check("#1557 PR-B2 identity arm: the shared billing-gate fixture supplies its stdout lines "
+              "(the arm's independent oracle for billedTokens/billedIsFloor)",
+              ident_gate_case is not None)
+        if ident_gate_case is not None:
+            ident_run_room = ident_root / "room-run"
+            (ident_run_room / "artifacts" / "execution_e1").mkdir(parents=True)
+            (ident_run_room / "artifacts" / "execution_e1" / ".stdout.log").write_text(
+                "\n".join(ident_gate_case["lines"]) + "\n", encoding="utf-8")
+            ident_done_room = ident_root / "room-done"
+            ident_done_room.mkdir()
+            (ident_done_room / "terminal.json").write_text("{}", encoding="utf-8")
+
+            ident_base = [
+                {"name": "room-run", "path": str(ident_run_room), "state": "Running", "role": "worker",
+                 "steps": [{"id": "s1", "state": "Running", "execution": "e1",
+                            "timestamp": "2026-09-05T00:00:00Z"}]},
+                {"name": "room-done", "path": str(ident_done_room), "state": "Succeeded", "role": "worker",
+                 "steps": [{"id": "s1", "state": "Succeeded", "timestamp": "2026-09-05T00:00:00Z"}]},
+            ]
+            ident_underhood = [{"k": "v"}]
+            # What `derive_snapshot_and_timelines` would return from its per-room `room_detail`
+            # calls -- the file has no counterpart, which is the whole point of the exclusion below.
+            ident_timelines = {str(ident_run_room): [{"type": "executionStarted",
+                                                       "timestamp": "2026-09-05T00:00:00Z"}]}
+
+            derive_rooms = json.loads(json.dumps(ident_base))
+            attach_live_telemetry(derive_rooms, {}, [])
+            attach_pruned_info(derive_rooms, {})
+            derive_derived_at = datetime.now(timezone.utc).isoformat()
+            derive_wrapped, _, _, _, _, _ = assemble_wrapped(
+                derive_rooms, ident_underhood, ident_timelines, 0)
+            derive_post_body = json.loads(snapshot_post_body(derive_wrapped, derive_derived_at))
+            # A distinct, fresh daemon sample makes the source-dependent timestamp difference
+            # deterministic, even on clocks whose resolution could make two now() calls equal.
+            file_derived_at = (datetime.fromisoformat(derive_derived_at) - timedelta(seconds=30)).isoformat()
+
+            file_rooms = json.loads(json.dumps(ident_base))
+            file_rooms[0]["live"] = {
+                "toolCalls": 0, "billedTokens": ident_gate_case["expectedBilledTokens"],
+                "turns": 2, "billedIsFloor": ident_gate_case["expectedBilledIsFloor"],
+                "contextTokens": 702, "cacheReadTokens": 0,
+                # Quantized off the same mtime the derive arm reads; excluded from the diff either
+                # way (`_SNAPSHOT_IDENTITY_EXCLUSIONS`), present so the field's absence on one side
+                # is not what makes the arm pass.
+                "lastActivityAt": _quantized_activity_iso(
+                    (ident_run_room / "artifacts" / "execution_e1" / ".stdout.log").stat().st_mtime),
+            }
+            # The three daemon-only fields (`_COMPARE_SHAPE_ONLY_KEYS`) ride the file side alone --
+            # excluded by name, and present here so the exclusion is actually exercised.
+            file_rooms[0].update({"processAlive": "alive", "stdout_last_write_ago_sec": 1.0, "elapsed": 12.0})
+            ident_projection = ident_root / "projection.json"
+            ident_projection.write_text(json.dumps({
+                "derived_at": file_derived_at,
+                "rooms": file_rooms,
+            }), encoding="utf-8")
+            ident_data, ident_staleness = read_projection_file(ident_projection, time.time())
+            check("#1557 PR-B2 identity arm: the fixture projection file reads fresh (no fallback)",
+                  ident_data is not None and ident_staleness is None)
+            file_timelines = ident_data.get("timelines") if isinstance(ident_data, dict) else None
+            file_wrapped, _, _, _, _, _ = assemble_wrapped(
+                ident_data["rooms"], ident_underhood,
+                file_timelines if isinstance(file_timelines, dict) else {}, 0)
+
+            file_post_body = json.loads(snapshot_post_body(file_wrapped, ident_data["derived_at"]))
+            identity_diffs = snapshot_identity_diffs(derive_post_body, file_post_body)
+            check("#1557 PR-B2 acceptance: the full posted bodies differ only in source-dependent "
+                  "`derived_at` and missing file `timelines`. "
+                  f"Actual diff: {identity_diffs}",
+                  identity_diffs == ["derived_at", "timelines"])
+            check("#1557 PR-B2 acceptance: each posted body carries its source's derived_at",
+                  derive_post_body["derived_at"] == derive_derived_at
+                  and file_post_body["derived_at"] == file_derived_at)
+            check("#1557 PR-B2 acceptance: and the `timelines` difference is exactly 'derive has "
+                  "entries, file has none' -- not two different sets of entries",
+                  derive_wrapped["timelines"] == ident_timelines and file_wrapped["timelines"] == {})
+
+            # CONTROL, read before trusting the green above: the comparator must RED on a real
+            # derivation difference. Without this the arm certifies the harness, not the change.
+            control_rooms = json.loads(json.dumps(ident_data["rooms"]))
+            control_rooms[0]["live"]["billedTokens"] = ident_gate_case["expectedBilledTokens"] + 1
+            control_wrapped, _, _, _, _, _ = assemble_wrapped(control_rooms, ident_underhood, {}, 0)
+            control_post_body = json.loads(snapshot_post_body(control_wrapped, ident_data["derived_at"]))
+            check("(control) #1557 PR-B2 acceptance: a one-token `live.billedTokens` difference on "
+                  "the file side IS reported -- the identity arm above discriminates, it is not "
+                  "green because everything volatile was excluded",
+                  "rooms" in snapshot_identity_diffs(derive_post_body, control_post_body))
+            # -- #1557 PR-B2 found-while-fixing: drop_stale_rooms runs on the room list BEFORE the
+            # live/pruned attach, so in `derive` mode `newest_timestamp` never sees those blocks --
+            # `attach_live_telemetry`'s own doc calls that deliberate. In `file` mode the daemon has
+            # already embedded them, which silently put two real mtimes into the staleness scan and
+            # made the two sources drop DIFFERENT rooms. Fixed by adding `live`/`pruned` to
+            # `_NEWEST_TIMESTAMP_SKIP_KEYS`; this arm is what sees it, since the identity arm above
+            # calls assemble_wrapped directly and never runs the filter.
+            stale_step_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            aged_base = {"name": "room-aged", "path": str(ident_run_room), "state": "Running",
+                         "steps": [{"id": "s1", "state": "Running", "execution": "e1",
+                                    "timestamp": stale_step_ts}]}
+            aged_derive_body = json.dumps({"rooms": [json.loads(json.dumps(aged_base))]})
+            aged_file_room = json.loads(json.dumps(aged_base))
+            aged_file_room["live"] = {"toolCalls": 0,
+                                      "lastActivityAt": datetime.now(timezone.utc).isoformat()}
+            aged_file_room["pruned"] = {"count": 1,
+                                        "prunedAt": datetime.now(timezone.utc).isoformat()}
+            aged_file_body = json.dumps({"rooms": [aged_file_room]})
+            derive_kept, derive_hidden = drop_stale_rooms(aged_derive_body, 3)
+            file_kept, file_hidden = drop_stale_rooms(aged_file_body, 3)
+            check("#1557 PR-B2: a room aged past the cutoff but carrying a FRESH live.lastActivityAt/"
+                  "pruned.prunedAt is dropped by BOTH sources -- the file's embedded live/pruned "
+                  "blocks must not enter the staleness scan the derive path never shows them to",
+                  json.loads(derive_kept)["rooms"] == [] and json.loads(file_kept)["rooms"] == []
+                  and derive_hidden == 1 and file_hidden == 1)
+            check("(control) #1557 PR-B2: the same room with a RECENT step timestamp is kept by both "
+                  "sources -- the arm above is not green because drop_stale_rooms drops everything",
+                  all(len(json.loads(drop_stale_rooms(json.dumps({"rooms": [dict(
+                          r, steps=[{"id": "s1", "state": "Running", "execution": "e1",
+                                     "timestamp": datetime.now(timezone.utc).isoformat()}])]}), 3)[0])["rooms"]) == 1
+                      for r in (json.loads(json.dumps(aged_base)), aged_file_room)))
+
+            control_top = dict(file_post_body, stale_hidden_count=1)
+            check("(control) #1557 PR-B2 acceptance: a TOP-LEVEL field difference is reported too "
+                  "-- `_diff_room` never sees these, which is why this arm exists alongside it",
+                  "stale_hidden_count" in snapshot_identity_diffs(derive_post_body, control_top))
 
     identical_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
                          "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:00:00+00:00"}}
