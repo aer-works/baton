@@ -24,5 +24,7 @@ if (-not (Test-Path -LiteralPath $exePath)) {
     exit 1
 }
 
+# #1897: PowerShell 5.1 wraps a redirected native stderr line as a terminating NativeCommandError under Stop, so invoke the native target under Continue.
+$ErrorActionPreference = "Continue"
 & $exePath @args
 exit $LASTEXITCODE

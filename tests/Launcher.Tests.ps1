@@ -48,7 +48,7 @@ function ConvertTo-CommandLineArg([string]$arg) {
 # exits with $exitCode. Compiled with the legacy csc.exe rather than `dotnet publish`/`dotnet build`
 # -- a few hundred milliseconds, and it doesn't compete for the lock `dotnet build` takes (see
 # tools/gates/gates.py's OVERLAP/BUILD_PHASE split for why that matters here).
-function New-MockBatonExe([string]$outDir, [string]$label, [int]$exitCode) {
+function New-MockBatonExe([string]$outDir, [string]$label, [int]$exitCode, [string]$stderrLine = "") {
     [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
     $cscCandidates = @(
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -64,7 +64,12 @@ function New-MockBatonExe([string]$outDir, [string]$label, [int]$exitCode) {
     $lines = @(
         'class MockBaton {',
         '    static int Main(string[] args) {',
-        ('        System.Console.WriteLine("' + $label + ' " + string.Join(" ", args));'),
+        ('        System.Console.WriteLine("' + $label + ' " + string.Join(" ", args));')
+    )
+    if ($stderrLine) {
+        $lines += ('        System.Console.Error.WriteLine("' + $stderrLine + '");')
+    }
+    $lines += @(
         ('        return ' + $exitCode + ';'),
         '    }',
         '}'
@@ -196,11 +201,46 @@ try {
         throw "Assertion failed: baton.cmd still ran the OLD target after the pointer flip. Got:`n$out5"
     }
 
-    # 6. Neither task-registering script calls New-ScheduledTaskSettingsSet with a parameter name
+    # 6. Redirected native stderr preserves the target exit code (#1897).
+    Write-Host "Test 6: Redirected native stderr preserves the target exit code..."
+    $stderrZeroSha = "stderr_zero_sha_1897"
+    $stderrZeroDir = Join-Path $toolsDir $stderrZeroSha
+    [System.IO.Directory]::CreateDirectory($stderrZeroDir) | Out-Null
+    Set-Content -LiteralPath $currentFile -Value "$stderrZeroSha`r`n"
+    $stderrZeroLine = "mock-stderr-zero"
+    New-MockBatonExe -outDir $stderrZeroDir -label "mock-stderr-zero" -exitCode 0 -stderrLine $stderrZeroLine | Out-Null
+
+    $ps1LauncherEscaped = $ps1Launcher.Replace("'", "''")
+    $allStreamsZero = Join-Path $tempDir "ps1_all_streams_zero.txt"
+    $allStreamsZeroEscaped = $allStreamsZero.Replace("'", "''")
+    $allStreamsZeroCommand = "& { & '$ps1LauncherEscaped' *> '$allStreamsZeroEscaped'; exit `$LASTEXITCODE }"
+    & powershell.exe -NoProfile -Command $allStreamsZeroCommand
+    $stderrZeroExitCode = $LASTEXITCODE
+    Assert-Equal 0 $stderrZeroExitCode "baton.ps1 exit code with redirected native stderr"
+    $allStreamsZeroContents = Get-Content -LiteralPath $allStreamsZero -Raw
+    Assert-Contains $allStreamsZeroContents $stderrZeroLine "baton.ps1 redirects native stderr with all streams"
+
+    $stderrThreeSha = "stderr_three_sha_1897"
+    $stderrThreeDir = Join-Path $toolsDir $stderrThreeSha
+    [System.IO.Directory]::CreateDirectory($stderrThreeDir) | Out-Null
+    Set-Content -LiteralPath $currentFile -Value "$stderrThreeSha`r`n"
+    $stderrThreeLine = "mock-stderr-three"
+    New-MockBatonExe -outDir $stderrThreeDir -label "mock-stderr-three" -exitCode 3 -stderrLine $stderrThreeLine | Out-Null
+
+    $allStreamsThree = Join-Path $tempDir "ps1_all_streams_three.txt"
+    $allStreamsThreeEscaped = $allStreamsThree.Replace("'", "''")
+    $allStreamsThreeCommand = "& { & '$ps1LauncherEscaped' *> '$allStreamsThreeEscaped'; exit `$LASTEXITCODE }"
+    & powershell.exe -NoProfile -Command $allStreamsThreeCommand
+    $stderrThreeExitCode = $LASTEXITCODE
+    Assert-Equal 3 $stderrThreeExitCode "baton.ps1 nonzero exit code with redirected native stderr"
+    $allStreamsThreeContents = Get-Content -LiteralPath $allStreamsThree -Raw
+    Assert-Contains $allStreamsThreeContents $stderrThreeLine "baton.ps1 redirects native stderr for a nonzero exit"
+
+    # 7. Neither task-registering script calls New-ScheduledTaskSettingsSet with a parameter name
     # that cmdlet doesn't actually have (#1770: -DisallowStartIfOnBatteries/-StopIfGoingOnBatteries
     # don't exist on it and blew up the register call with NamedParameterNotFound before either
     # script reached Register-ScheduledTask). Both scripts carried the same bug, so both are checked.
-    Write-Host "Test 6: task-registering scripts only pass real New-ScheduledTaskSettingsSet parameters..."
+    Write-Host "Test 7: task-registering scripts only pass real New-ScheduledTaskSettingsSet parameters..."
     $realParams = (Get-Command New-ScheduledTaskSettingsSet).Parameters.Keys
     $taskScripts = @(
         [System.IO.Path]::Combine($repoRoot, "tools", "tool-refresh", "register-daemon-task.ps1"),
