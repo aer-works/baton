@@ -3053,7 +3053,8 @@ itself.** `FLEET_GLASS_PROJECTION_SOURCE=file` (env; **`file` is the default as 
 it as opt-in, with `derive` as the default) switches `main()`'s loop to `json.load`
 `BatonPaths.FleetProjectionFile` instead of spawning `dotnet mcp` and running its own
 `attach_live_telemetry`/`attach_pruned_info`; `derive` keeps doing exactly what it always has. This
-PR deletes nothing from the `derive` path — that is PR-B2, gated on `compare-projection` reading
+PR deletes nothing from the `derive` path — PR-C does that under its removal condition; PR-B2's
+default switch is gated on `compare-projection` reading
 green on ≥ 3 settled rooms plus every static field on every room (#1807; `compare_projection`'s own
 `_MIN_SETTLED_ROOMS_FOR_GREEN` in `pusher.py`, so "green on 0" can't pass). Because no scheduled task runs `baton daemon` today, the fallback
 below is load-bearing from day one, not a defensive edge case: a file older than 3 coalescing

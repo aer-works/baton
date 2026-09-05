@@ -1923,6 +1923,11 @@ def assemble_wrapped(room_list, underhood, timelines, stale_hidden_count,
     return wrapped, hot_rooms, hot_paths, terminal_total, terminal_archive, warn_line
 
 
+def snapshot_post_body(wrapped: dict, derived_at: str | None) -> str:
+    """Final wire serialization shared by main() and the frozen projection identity arm."""
+    return json.dumps({**wrapped, "derived_at": derived_at})
+
+
 def snapshot_hash(wrapped: dict) -> str:
     """Stable hash of the wrapped {rooms, underhood} body -- sort_keys so the hash does not depend
     on dict insertion order upstream, independent of the (unsorted) exact string actually POSTed."""
@@ -3278,8 +3283,8 @@ def _normalize_room_for_compare(room: dict) -> dict:
 
 # #1557 PR-B2's own acceptance instrument, distinct from `_diff_room` above. `_diff_room` compares
 # ONE ROOM between two LIVE samples taken ~30s apart, so it has to tolerate every field that can
-# honestly move in between. This one compares the FINISHED PUSHED SNAPSHOT (`assemble_wrapped`'s
-# output) produced by each source over ONE FROZEN FIXTURE -- nothing is moving, so nothing volatile
+# honestly move in between. This one compares the FINISHED PUSHED SNAPSHOT (including the
+# `snapshot_post_body` serialization) over ONE FROZEN FIXTURE -- nothing is moving, so nothing volatile
 # is tolerated, and the top-level keys `_diff_room` never sees (`timelines`, `stale_hidden_count`,
 # `terminal_total`, `terminal_archive`, `underhood`, `conductor`, `vendors`, `staleness`) are in
 # scope. Only two exclusions, both named:
@@ -3309,9 +3314,9 @@ def _identity_normalize_room(room: dict) -> dict:
 def snapshot_identity_diffs(derive_wrapped: dict, file_wrapped: dict) -> list[str]:
     """Sorted top-level keys of the pushed snapshot that differ between the two projection sources,
     after `_SNAPSHOT_IDENTITY_EXCLUSIONS`. `[]` means the two sources produced the same pushed body.
-    `["timelines"]` is the one difference PR-B2 ships knowingly -- the daemon's projection file
-    carries no per-room timeline entries yet, so `file` mode pushes `timelines: {}` (see the
-    file-mode branch in `main()` and `derive_snapshot_and_timelines`'s removal condition)."""
+    `["derived_at", "timelines"]` names the intentional source-dependent differences: file mode
+    preserves the daemon timestamp, while derive mints a new one; the daemon also carries no
+    per-room timelines yet (see `derive_snapshot_and_timelines`'s removal condition)."""
     def prepare(wrapped: dict) -> dict:
         prepared = dict(wrapped)
         for key in ("rooms", "terminal_archive"):
@@ -3715,9 +3720,9 @@ def main() -> None:
                         # re-derived here, which would mean a `room_detail` call per non-terminal
                         # room and so the very `dotnet mcp` spawn this source exists to remove. The
                         # daemon does not write them yet (FleetProjectionWriter carries no timeline
-                        # field), so today this resolves to {} on every file-mode cycle: the one
+                        # field), so today this resolves to {} on every file-mode cycle: a
                         # named, intentional difference between the two sources' pushed snapshots
-                        # (`_selftest`'s byte-identity arm asserts it is the ONLY one, and
+                        # (`_selftest`'s byte-identity arm names it alongside `derived_at`, and
                         # `derive_snapshot_and_timelines`'s removal condition is gated on it).
                         # What an operator actually sees while that holds -- and why it is bounded
                         # -- is spec/baton.md §6's PR-B2 paragraph, not restated here. #1902.
@@ -3822,7 +3827,7 @@ def main() -> None:
                             pusher=pusher_notice,
                             staleness=staleness,
                             vendors=vendors_list)
-                        post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
+                        post_body = snapshot_post_body(notice_wrapped, last_derived_at)
                         # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
                         # response after a committed KV put is indistinguishable, from the client, from
                         # a failure, so the only safe posture for a hard external cap is to over-charge
@@ -3871,7 +3876,7 @@ def main() -> None:
                         # derived_at rides the ACTUAL posted body but is excluded from current_hash
                         # (computed above from the quantized copy of `wrapped`) -- it must never make
                         # the change-gate think an otherwise-unchanged snapshot changed.
-                        post_body = json.dumps({**wrapped, "derived_at": last_derived_at})
+                        post_body = snapshot_post_body(wrapped, last_derived_at)
                         # F3(b): charge before the POST, same reasoning as the exhaustion-notice
                         # branch above. push_snapshot_and_record's own POST-then-record-hash ordering
                         # is unchanged -- only the ledger charge has moved ahead of the POST.
@@ -6186,7 +6191,7 @@ def _selftest() -> int:
     # -- #1557 PR-B2 ACCEPTANCE: the pushed snapshot is identical across both projection sources
     # over one frozen fixture, or every difference is named. Runs the pusher's OWN derivation
     # (`attach_live_telemetry`/`attach_pruned_info`) and the file read over the SAME room tree, then
-    # pushes both through the SAME `assemble_wrapped` main() uses and diffs the finished bodies with
+    # pushes both through main()'s `assemble_wrapped` AND `snapshot_post_body`, then diffs with
     # `snapshot_identity_diffs` -- see that function for the two exclusions and why this is a
     # different instrument from `_diff_room` above.
     #
@@ -6194,9 +6199,10 @@ def _selftest() -> int:
     # are shared between the two arms by construction. Both sources get them from the SAME C#
     # projector -- the daemon calls `FleetStatusTool`'s room processing in-process, the derive path
     # reaches the same code over MCP -- so re-deriving them twice here would measure nothing. What
-    # this arm measures is the part that genuinely has two implementations: the `live`/`pruned`
-    # blocks (Python `extract_live_counts` vs. C# `TokenBudgetMonitor`/`StdoutTailRenderer`) and the
-    # snapshot assembly around them. The cross-process half is `--compare-projection`'s job.
+    # this arm measures is the `live` block (Python `extract_live_counts` vs. C#
+    # `TokenBudgetMonitor`/`StdoutTailRenderer`) and the snapshot assembly around it.
+    # No vendors or non-empty pruned block is exercised by this fixture.
+    # The cross-process half is `--compare-projection`'s job.
     #
     # The file arm's `live` values are HAND-DERIVED from the fixture lines below, not transcribed
     # from a run of the derive path: `billedTokens` 1200 and `billedIsFloor` True come from the
@@ -6240,8 +6246,13 @@ def _selftest() -> int:
             derive_rooms = json.loads(json.dumps(ident_base))
             attach_live_telemetry(derive_rooms, {}, [])
             attach_pruned_info(derive_rooms, {})
+            derive_derived_at = datetime.now(timezone.utc).isoformat()
             derive_wrapped, _, _, _, _, _ = assemble_wrapped(
                 derive_rooms, ident_underhood, ident_timelines, 0)
+            derive_post_body = json.loads(snapshot_post_body(derive_wrapped, derive_derived_at))
+            # A distinct, fresh daemon sample makes the source-dependent timestamp difference
+            # deterministic, even on clocks whose resolution could make two now() calls equal.
+            file_derived_at = (datetime.fromisoformat(derive_derived_at) - timedelta(seconds=30)).isoformat()
 
             file_rooms = json.loads(json.dumps(ident_base))
             file_rooms[0]["live"] = {
@@ -6259,7 +6270,7 @@ def _selftest() -> int:
             file_rooms[0].update({"processAlive": "alive", "stdout_last_write_ago_sec": 1.0, "elapsed": 12.0})
             ident_projection = ident_root / "projection.json"
             ident_projection.write_text(json.dumps({
-                "derived_at": datetime.now(timezone.utc).isoformat(),
+                "derived_at": file_derived_at,
                 "rooms": file_rooms,
             }), encoding="utf-8")
             ident_data, ident_staleness = read_projection_file(ident_projection, time.time())
@@ -6270,12 +6281,15 @@ def _selftest() -> int:
                 ident_data["rooms"], ident_underhood,
                 file_timelines if isinstance(file_timelines, dict) else {}, 0)
 
-            identity_diffs = snapshot_identity_diffs(derive_wrapped, file_wrapped)
-            check("#1557 PR-B2 acceptance: the pushed snapshot is identical across both projection "
-                  "sources except `timelines`, the ONE intentional difference (the projection file "
-                  "carries no per-room timeline entries yet -- see derive_snapshot_and_timelines's "
-                  f"removal condition). Actual diff: {identity_diffs}",
-                  identity_diffs == ["timelines"])
+            file_post_body = json.loads(snapshot_post_body(file_wrapped, ident_data["derived_at"]))
+            identity_diffs = snapshot_identity_diffs(derive_post_body, file_post_body)
+            check("#1557 PR-B2 acceptance: the full posted bodies differ only in source-dependent "
+                  "`derived_at` and missing file `timelines`. "
+                  f"Actual diff: {identity_diffs}",
+                  identity_diffs == ["derived_at", "timelines"])
+            check("#1557 PR-B2 acceptance: each posted body carries its source's derived_at",
+                  derive_post_body["derived_at"] == derive_derived_at
+                  and file_post_body["derived_at"] == file_derived_at)
             check("#1557 PR-B2 acceptance: and the `timelines` difference is exactly 'derive has "
                   "entries, file has none' -- not two different sets of entries",
                   derive_wrapped["timelines"] == ident_timelines and file_wrapped["timelines"] == {})
@@ -6285,10 +6299,11 @@ def _selftest() -> int:
             control_rooms = json.loads(json.dumps(ident_data["rooms"]))
             control_rooms[0]["live"]["billedTokens"] = ident_gate_case["expectedBilledTokens"] + 1
             control_wrapped, _, _, _, _, _ = assemble_wrapped(control_rooms, ident_underhood, {}, 0)
+            control_post_body = json.loads(snapshot_post_body(control_wrapped, ident_data["derived_at"]))
             check("(control) #1557 PR-B2 acceptance: a one-token `live.billedTokens` difference on "
                   "the file side IS reported -- the identity arm above discriminates, it is not "
                   "green because everything volatile was excluded",
-                  "rooms" in snapshot_identity_diffs(derive_wrapped, control_wrapped))
+                  "rooms" in snapshot_identity_diffs(derive_post_body, control_post_body))
             # -- #1557 PR-B2 found-while-fixing: drop_stale_rooms runs on the room list BEFORE the
             # live/pruned attach, so in `derive` mode `newest_timestamp` never sees those blocks --
             # `attach_live_telemetry`'s own doc calls that deliberate. In `file` mode the daemon has
@@ -6321,10 +6336,10 @@ def _selftest() -> int:
                                      "timestamp": datetime.now(timezone.utc).isoformat()}])]}), 3)[0])["rooms"]) == 1
                       for r in (json.loads(json.dumps(aged_base)), aged_file_room)))
 
-            control_top = dict(file_wrapped, stale_hidden_count=1)
+            control_top = dict(file_post_body, stale_hidden_count=1)
             check("(control) #1557 PR-B2 acceptance: a TOP-LEVEL field difference is reported too "
                   "-- `_diff_room` never sees these, which is why this arm exists alongside it",
-                  "stale_hidden_count" in snapshot_identity_diffs(derive_wrapped, control_top))
+                  "stale_hidden_count" in snapshot_identity_diffs(derive_post_body, control_top))
 
     identical_derive = {"name": "room-a", "path": "C:\\rooms\\room-a", "state": "Running",
                          "live": {"toolCalls": 3, "lastActivityAt": "2026-09-03T12:00:00+00:00"}}
