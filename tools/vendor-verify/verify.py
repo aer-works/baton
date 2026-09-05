@@ -3907,29 +3907,35 @@ def _classify_agy_tools(tools, tool_lists):
        "asserts that every tool name reported by agy tools is classified into exactly one of "
        "ReadTools / WriteTools / ShellTools / NetworkTools / SubagentAndTaskTools in AgyWorkerAdapter.cs (#623)",
        sentinel=True)
-def _agy_tools_classified():
+def _agy_tools_classified(catalogue=None, tool_lists=None):
     """Reads agy's live tool catalogue via `agy tools` and asserts that every reported tool is
     classified into exactly one list in AgyWorkerAdapter.cs.
 
     Under `--dangerously-skip-permissions`, the PreToolUse hook reading AER_HOOK_DENIED_TOOLS is the
     only thing withholding a declined category, so an unclassified tool name is an ungated hole.
     """
-    tool_lists = load_agy_adapter_tool_lists()
+    if tool_lists is None:
+        tool_lists = load_agy_adapter_tool_lists()
     if not tool_lists:
         return FAIL, "could not parse tool-name lists from AgyWorkerAdapter.cs"
 
-    # Discriminating control: a fixture catalogue with one unknown tool name MUST fail classification
-    control_unclassified, _ = _classify_agy_tools(["view_file", "__unknown_test_tool__"], tool_lists)
-    if "__unknown_test_tool__" not in control_unclassified:
-        return INCONCLUSIVE, "discriminating control failed: fixture catalogue with unknown tool name was not rejected"
+    if catalogue is not None:
+        found = set(catalogue)
+    else:
+        # Discriminating control: a fixture catalogue with one unknown tool name MUST fail classification
+        control_status, control_msg = _agy_tools_classified(
+            ["view_file", "__unknown_test_tool__"], tool_lists=tool_lists
+        )
+        if control_status != FAIL or "__unknown_test_tool__" not in control_msg:
+            return INCONCLUSIVE, "discriminating control failed: fixture catalogue with unknown tool name was not rejected"
 
-    rc, out, err = run_bare(["agy", "tools"])
-    if rc != 0:
-        return INCONCLUSIVE, f"agy tools exited {rc} -- {(err or out).strip()[:200]}"
+        rc, out, err = run_bare(["agy", "tools"])
+        if rc != 0:
+            return INCONCLUSIVE, f"agy tools exited {rc} -- {(err or out).strip()[:200]}"
 
-    found = {tok for ln in out.splitlines() for tok in ln.split("\t", 1)[0].split() if tok and not tok.startswith("#")}
-    if not found:
-        return INCONCLUSIVE, "agy tools returned no tool names in output"
+        found = {tok for ln in out.splitlines() for tok in ln.split("\t", 1)[0].split() if tok and not tok.startswith("#")}
+        if not found:
+            return INCONCLUSIVE, "agy tools returned no tool names in output"
 
     unclassified, multiply_classified = _classify_agy_tools(found, tool_lists)
     if unclassified or multiply_classified:
@@ -4135,15 +4141,22 @@ def main() -> int:
                 "run_command", "manage_task", "invoke_subagent", "define_subagent", "manage_subagents",
                 "search_web", "read_url_content", "browser_click", "browser_navigate",
             ]
-            unclass, mult = _classify_agy_tools(fixture_known, tool_lists)
-            if unclass or mult:
-                print(f"selftest FAIL: known tools failed classification: unclass={unclass}, mult={mult}", file=sys.stderr)
+            st, msg = _agy_tools_classified(fixture_known, tool_lists=tool_lists)
+            if st != PASS:
+                print(f"selftest FAIL: known tools failed classification: {st} -- {msg}", file=sys.stderr)
                 return 1
 
             fixture_unknown = ["view_file", "__unknown_test_tool__"]
-            unclass_unk, _ = _classify_agy_tools(fixture_unknown, tool_lists)
-            if "__unknown_test_tool__" not in unclass_unk:
-                print("selftest FAIL: unknown tool in fixture was not caught as unclassified", file=sys.stderr)
+            st_unk, msg_unk = _agy_tools_classified(fixture_unknown, tool_lists=tool_lists)
+            if st_unk != FAIL or "__unknown_test_tool__" not in msg_unk:
+                print(f"selftest FAIL: unknown tool in fixture was not caught as unclassified: {st_unk} -- {msg_unk}", file=sys.stderr)
+                return 1
+
+            duplicate_lists = {k: list(v) for k, v in tool_lists.items()}
+            duplicate_lists["ReadTools"].append("run_command")
+            st_dup, msg_dup = _agy_tools_classified(fixture_known, tool_lists=duplicate_lists)
+            if st_dup != FAIL or "multiply classified" not in msg_dup:
+                print(f"selftest FAIL: duplicate tool was not caught as multiply classified: {st_dup} -- {msg_dup}", file=sys.stderr)
                 return 1
 
             print("verify.py selftest: PASS")
