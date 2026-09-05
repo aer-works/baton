@@ -299,12 +299,11 @@ public class CapturedWorkerStreamTests
                 1,
                 [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
-            // A base64-encoded PowerShell command, not an inline literal: C# has no octal escapes, so
-            // spelling the ESC byte in the command line risks an embedded NUL that truncates the
-            // spawned command line and leaves no stream file written at all.
+            // A base64-encoded PowerShell command: it carries the ESC byte as [char]27 inside the
+            // encoded script, so no escape sequence has to survive cmd's command-line parsing.
             const string cmdLine = "powershell -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAoAFsAYwBoAGEAcgBdADIANwAgACsAIAAnAFsAMwAxAG0AUgBlAGQAJwAgACsAIABbAGMAaABhAHIAXQAyADcAIAArACAAJwBbADAAbQAnACkA & echo Red > %BATON_OUTPUT_DIR%\\out.txt";
 
-            // #945: this budget only bounds how long the test waits for a trivial echo/printf, never
+            // #945: this budget only bounds how long the test waits for a trivial echo, never
             // a behaviour this test verifies (round-trip byte capture + render escaping) -- unlike a
             // wait this repo's v-and-v gate rightly protects, widening it trades no coverage away.
             // Measured before widening, not guessed: the real subprocess itself completes in ~200ms

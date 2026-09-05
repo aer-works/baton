@@ -414,7 +414,7 @@ public class MemoryProposalApplierTests : IDisposable
 
     /// <summary>
     /// Covers the file half of <c>ResolveIfReparsePoint</c>'s <c>isDirectory ? Directory... :
-    /// File...</c> branch, which the directory tests above leave unexercised. A file symlink is
+    /// File...</c> branch, which the directory tests above leave unexercised. A file symlink
     /// needs admin or Developer Mode on Windows, so this skips rather than fakes where it cannot be
     /// created. That is a host-capability guard, not a platform one: it runs wherever symlink
     /// creation is permitted and asserts nothing about which OS is underneath.

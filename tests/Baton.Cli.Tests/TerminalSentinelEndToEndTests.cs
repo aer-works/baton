@@ -389,9 +389,9 @@ public class TerminalSentinelEndToEndTests
         //
         // #816's measured mechanism reproduces the "already open, empty" ledger deterministically:
         // holding an Append handle on flow.jsonl from THIS process (same technique
-        // DecideCommandEndToEndTests uses for FlowJournalHeldException). Windows-only in practice --
-        // see that exception type's own doc for why -- so this arm is gated the same way its sibling
-        // tests already are.
+        // DecideCommandEndToEndTests uses for FlowJournalHeldException). The block is a Windows
+        // FileShare fact -- see that exception type's own doc for why -- which is the only platform
+        // this suite runs on, so the arm is unconditional.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-run-proc-emptyledger-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try

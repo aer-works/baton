@@ -1323,8 +1323,8 @@ public class ClaudeWorkerAdapterTests
 
     /// <summary>
     /// #1834's measurement: comparison is case-insensitive on Windows (matching claude's own
-    /// filesystem-backed refusal there) and Windows-only -- a case variant is a different, case-sensitive
-    /// file name elsewhere, so this is skipped rather than asserted false on Unix.
+    /// filesystem-backed refusal there). A case variant would be a different, case-sensitive file name
+    /// on other filesystems; this suite runs only on Windows, so the refusal is asserted unconditionally.
     /// </summary>
     [Fact]
     public void HasSensitiveOutputPathComponent_refuses_a_windows_case_variant()
