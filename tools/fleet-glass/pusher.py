@@ -602,11 +602,30 @@ _CODEX_STREAM_TYPES = frozenset({
 })
 # The SAME item types `Baton.Status.CodexUsageParser.TryParseToolName` gates on -- one tool step per
 # `item.started` carrying one of them, so this file and the engine count the same events.
+#
+# THIS SET IS A SECOND COPY OF THE ENGINE'S, DELIBERATELY, AND ONLY THE FALLBACK READS IT.
+# `CodexUsageParser` is the ONE arithmetic: the canonical statement of which item types are a tool
+# step and of how `turn.completed.usage` becomes billed/context figures. This restatement exists
+# because a Python reader cannot call into it, and because -- as of #1557 PR-B2 -- everything below
+# runs ONLY on a cycle where the daemon's projection file is absent or stale, or where an operator
+# has pinned `FLEET_GLASS_PROJECTION_SOURCE=derive`. On the default `file` path the daemon's own
+# `CodexUsageParser` reading is what reaches the glass and none of this executes.
+# The condition that deletes this copy outright, and why it cannot be deleted today, is
+# `derive_snapshot_and_timelines`'s own REMOVAL CONDITION (PR-C) -- `extract_live_counts` is named
+# there as group-(b). Why the duplication is accepted rather than dropped in favour of
+# absent-not-zero: spec/baton.md §6's `rooms[].live` entry, not restated here.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
 
 
 def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -> dict:
-    """A tool-call COUNT, plus live token/turn fields for ALL THREE vendors (#1682 -- agy's
+    """THE FALLBACK READER (#1557 PR-B2). Reached only from `attach_live_telemetry`, i.e. only on a
+    cycle where the daemon's projection file was absent or stale, or where an operator pinned
+    `FLEET_GLASS_PROJECTION_SOURCE=derive`; on the default `file` path the daemon's own C# readers
+    (`TokenBudgetMonitor` over the vendor's `IWorkerUsageParser`) produce every field below and none
+    of this runs. `derive_snapshot_and_timelines`'s REMOVAL CONDITION names this function as part of
+    the group-(b) block that comes out with PR-C, and why that is not satisfiable yet.
+
+    A tool-call COUNT, plus live token/turn fields for ALL THREE vendors (#1682 -- agy's
     `step_update` usage was found live during that issue's own evidence gathering; the prior "agy has
     no usage to read" claim recorded here was wrong and is corrected in this same change; #1886 added
     codex), tolerant of a torn last line (the file is still being written) and of every vendor's
@@ -784,6 +803,8 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
             # `CodexUsageParser.CountToolSteps` accumulates for the engine's arrest cap, so the glass
             # and the cap can never disagree about how busy a codex lane is. `item.completed` is
             # deliberately NOT counted; the register above names the double it avoids.
+            # FALLBACK ONLY, and a restatement of the parser's arithmetic rather than a second
+            # authority for it -- `_CODEX_TOOL_ITEM_TYPES` above carries both halves of that.
             item = evt.get("item")
             if isinstance(item, dict) and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
                 tool_calls += 1
@@ -791,6 +812,8 @@ def extract_live_counts(lines: list[str], seen_message_ids: set | None = None) -
             # #1886: codex reports one usage object per COMPLETED TURN, and `input_tokens` already
             # includes `cached_input_tokens` -- CodexUsageParser is the canonical statement of both,
             # and of why the fresh-input component is the floored remainder rather than the raw field.
+            # FALLBACK ONLY, same as the `item.started` arm above: on the default `file` source it is
+            # that parser's own reading, not this block's, that reaches the glass.
             # Note the turn count is structurally sparse on this vendor next to claude's: one
             # `turn.completed` can sit behind hundreds of tool calls.
             usage = evt.get("usage")
@@ -4896,6 +4919,23 @@ def _selftest() -> int:
           extract_live_counts([
               json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}}),
           ]).get("toolCalls") == 0)
+    # The absent-vs-real-zero boundary on the FALLBACK reader, the Python twin of the two daemon arms
+    # RunningRoom_CodexAdapter_ToolItemsWithoutCompletedTurn_OmitsUsageFields /
+    # RunningRoom_CodexAdapter_NoToolItems_ReportsRealZeroToolCalls. Both compare the WHOLE returned
+    # dict rather than checking three keys `not in` it: that pins the absence of every other field at
+    # once, so a future arm that starts fabricating (say) a `turns: 0` cannot slip past.
+    check("#1886: a codex stream with tool items but NO turn.completed reports the tool count and "
+          "NOTHING else -- no usage line has been read, and a substituted 0 for billedTokens/turns/"
+          "context would read on the glass as a lane that has burned nothing",
+          json.loads(codex_lines[-1])["type"] == "turn.completed"  # the slice below is meaningless without this
+          and extract_live_counts(codex_lines[:-1]) == {"toolCalls": 128})
+    check("#1886 POLARITY: a codex stream carrying neither a tool item nor a completed turn reports a "
+          "REAL 0 -- the envelope is understood, the count was actually taken. One condition from the "
+          "unknown-envelope arm below, which reports {} instead.",
+          extract_live_counts([
+              json.dumps({"type": "thread.started", "thread_id": "th_1"}),
+              json.dumps({"type": "turn.started"}),
+          ]) == {"toolCalls": 0})
     # The absent-not-zero half. Red before the #1886 fix: `extract_live_counts` returned
     # `{"toolCalls": 0}` unconditionally, and `live_telemetry_for_room` pre-seeded the same 0, so an
     # unreadable envelope reported a count it had never taken.

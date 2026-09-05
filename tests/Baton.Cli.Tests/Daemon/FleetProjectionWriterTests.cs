@@ -335,7 +335,85 @@ public sealed class FleetProjectionWriterTests : IDisposable
     }
 
     /// <summary>
-    /// #1886 polarity arm, one condition from the test above: an adapter tag
+    /// #1886 (PR review, MEDIUM): the ABSENT-versus-REAL-ZERO boundary for a codex stream that has
+    /// started tool items but has NOT yet completed a turn — the ordinary shape of a lane while it is
+    /// still working, and the one the fixture's own trailing <c>turn.completed</c> hides. The same
+    /// fixture minus its last line: <c>toolCalls</c> is a real, measured 128, while
+    /// <c>billedTokens</c>/<c>turns</c>/<c>contextTokens</c>/<c>cacheReadTokens</c> are ABSENT — no
+    /// usage line has been read, and a substituted 0 on any of them would render on the glass as a
+    /// lane that has burned nothing (spec/baton.md §6's <c>rooms[].live</c> absent-never-zero rule).
+    /// Asserting <c>toolCalls == 128</c> rather than merely present is the discriminating half: a
+    /// present-but-wrong count is the drift this pins against.
+    /// </summary>
+    [Fact]
+    public async Task RunningRoom_CodexAdapter_ToolItemsWithoutCompletedTurn_OmitsUsageFields()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var fixtureLines = await File.ReadAllLinesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex-live-stream.jsonl"),
+            TestContext.Current.CancellationToken);
+        // Built from the ONE shared fixture rather than a second file, so the oracle cannot drift:
+        // its last line is the stream's only turn.completed, and dropping it is exactly the
+        // "still running, no turn resolved yet" state.
+        Assert.Contains("\"type\":\"turn.completed\"", fixtureLines[^1]);
+        var stdoutContent = string.Join("\n", fixtureLines[..^1]) + "\n";
+        Assert.DoesNotContain("\"type\":\"turn.completed\"", stdoutContent);
+        var (_, _) = await CreateRunningRoomAsync("codex-midturn-room", liveIdentity, stdoutContent, adapter: "codex");
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.Equal(128, live["toolCalls"]!.GetValue<int>());
+        Assert.False(live.ContainsKey("billedTokens"));
+        Assert.False(live.ContainsKey("billedIsFloor"));
+        Assert.False(live.ContainsKey("turns"));
+        Assert.False(live.ContainsKey("contextTokens"));
+        Assert.False(live.ContainsKey("cacheReadTokens"));
+    }
+
+    /// <summary>
+    /// #1886 (PR review, MEDIUM): the other side of that boundary — a RESOLVED codex parser reaching
+    /// a genuine zero. The stream carries only codex envelopes that are neither a tool item nor a
+    /// completed turn, so <c>toolCalls</c> is <c>0</c> — a count actually taken — while every usage
+    /// field stays absent.
+    /// <para>
+    /// Its whole value is the contrast with <see cref="RunningRoom_UnknownAdapter_OmitsLiveCountFields"/>:
+    /// the two are one condition apart (does the adapter tag resolve a parser) with opposite
+    /// expectations for <c>toolCalls</c> — resolved-and-idle is <c>0</c>, unresolved is ABSENT. Neither
+    /// arm alone can tell the two apart, which is the confusion #1886 was filed about.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task RunningRoom_CodexAdapter_NoToolItems_ReportsRealZeroToolCalls()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var stdoutContent =
+            """{"type":"thread.started","thread_id":"th_1"}""" + "\n"
+            + """{"type":"turn.started"}""" + "\n";
+        var (_, _) = await CreateRunningRoomAsync("codex-idle-room", liveIdentity, stdoutContent, adapter: "codex");
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.Equal(0, live["toolCalls"]!.GetValue<int>());
+        Assert.False(live.ContainsKey("billedTokens"));
+        Assert.False(live.ContainsKey("turns"));
+        Assert.False(live.ContainsKey("contextTokens"));
+        Assert.False(live.ContainsKey("cacheReadTokens"));
+    }
+
+    /// <summary>
+    /// #1886 polarity arm, one condition from
+    /// <see cref="RunningRoom_CodexAdapter_NoToolItems_ReportsRealZeroToolCalls"/> above (same idle
+    /// stream, only the adapter tag differs): an adapter tag
     /// <c>StandardWorkerUsageParsers.Default</c> has no parser for leaves <c>Monitor</c> null, and the
     /// live block then carries NO count fields at all — not a zero. Without this arm, a "fix" that made
     /// the writer emit <c>toolCalls: 0</c> whenever no parser resolved would pass the codex arm above
