@@ -189,6 +189,24 @@ public static class BatonPaths
     public const string QuotaLedgerFileName = "quota-ledger.jsonl";
 
     /// <summary>
+    /// <c>{Root}/ledger/&lt;repository-slug&gt;.jsonl</c> — the repository-keyed cost ledger (#1849,
+    /// spec/baton.md §7). One file per canonical repository identity, so every worktree of one
+    /// repository appends to one ledger; see <c>Baton.Accounting.CostLedgerStore</c> for what a row
+    /// holds and <c>Baton.Accounting.RepositoryIdentity.FileSlug</c> for why the key is slugged rather
+    /// than used verbatim as a filename. Distinct from <see cref="QuotaLedgerFile"/>, which stays the
+    /// per-execution burn source this ledger consumes.
+    /// </summary>
+    /// <param name="repositorySlug"><c>RepositoryIdentity.FileSlug</c> — never a raw identity or a checkout path.</param>
+    public static string CostLedgerFile(string repositorySlug)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(repositorySlug);
+        return Path.Combine(Root, CostLedgerDirectoryName, $"{repositorySlug}.jsonl");
+    }
+
+    /// <summary>Directory name <see cref="CostLedgerFile"/> lives under, relative to a root.</summary>
+    public const string CostLedgerDirectoryName = "ledger";
+
+    /// <summary>
     /// <c>{Root}/fleet/projection.json</c> — the daemon-written fleet projection file (#1557,
     /// spec/baton.md §7's fourth kept responsibility): the same <c>fleet_status</c> room array
     /// (spec/baton.md §6) plus per-room <c>live</c>/<c>pruned</c> and the top-level <c>derived_at</c>,

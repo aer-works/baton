@@ -3400,6 +3400,85 @@ restated here. Cite the ruling above — "accumulation from lane logs is attribu
 reset-time source of truth" — rather than restating it: this is that doctrine's burn half, not a
 second one.
 
+### The cost ledger (#1849) — phase A shipped
+
+The burn ledger above stays exactly what it is: the per-execution source, keyed by machine, pruned by
+nothing. The **cost ledger** consumes it and adds three things it does not have — a *repository* key,
+*versioned price provenance*, and durability past the vendors' own history windows. Append-only JSONL
+at `BatonPaths.CostLedgerFile(slug)` (`{BatonPaths.Root}/ledger/<repository-slug>.jsonl`), one file per
+canonical repository identity, guarded by the same `MutexGuardedFileLock` primitive under its own lock
+name. Written at the same settle site as `quota-ledger.jsonl` (`Program.cs`'s terminal-sentinel write),
+from the same `terminalEntries` already in hand, in its own `try`/`catch` so neither ledger's failure
+loses the other's. Fails open identically: logged on stderr, never a reason a settled run reports as
+failed.
+
+**One row per settled execution attempt.** `CostLedgerStore.BuildEntries` reuses
+`ExecutionUsageProjector.BuildByExecutionId` and `ExecutionBindingResolver.Resolve` — the same two
+primitives the burn ledger reads — `CostLedgerStore`'s own remarks state what sharing them buys over
+a second reader. A retry or redispatch mints a fresh
+`ExecutionId`, so it is a fresh row with no extra machinery; a cancellation, failure, arrest or
+indeterminate settle is a row carrying that outcome, from the same closed token set
+`QuotaLedgerEntry.Outcome` documents; a provably-truncated capture is a row with `completeness:
+"partial"` and the reason string `ExecutionUsageView.BilledReconciliationUnavailable` already emits.
+`AppendAsync` skips an execution id the file already holds — its own doc comment states against which
+repeated-settle shapes, and what inflated totals that skip is buying, not restated here.
+
+**Schema** (JSON names exactly; every field except `sourceKind`, `estimateStatus` and
+`planMeterEstimateStatus` is independently absent when unavailable — omitted, never zero, never
+`null`):
+
+| Field | Meaning |
+|---|---|
+| `sourceKind` | Closed set: `baton-execution` (the only writer today), `claude-code-session`, `codex-session`, `antigravity-session` reserved for phase C. Makes "Baton-only rows" a filter, not an inference. |
+| `repository` | `RepositoryIdentity.Value` — see below. |
+| `room`, `workflow`, `step`, `execution`, `role` | Identity, off the accepted `ExecutionRequest`. `role` is Baton's worker name; Baton has no second role concept. |
+| `adapter`, `model`, `outcome`, `startedAt`, `endedAt` | Route and lifecycle. |
+| `tokensIn`, `tokensOut`, `cacheRead`, `cacheCreation`, `thinking`, `turns`, `wallClockMs` | The dimensions `QuotaLedgerEntry` carries, same names and same nullability. Cache-read is first-class here, never folded into a billed figure. |
+| `billedTokens`, `liveBilledTokens`, `billedUnderReadTokens`, `peakBilledInWindow` | #1706/#1709's vendor-derived figures, carried through under the names `ExecutionUsageView` already defines. |
+| `completeness`, `completenessReason` | `complete` / `partial` plus the stream reader's own reason string. |
+| `apiEquivalentUsd`, `estimateStatus` | List-price estimate and its status (`estimated` / `unpriced`). |
+| `planMeterEstimateUsd`, `planMeterEstimateStatus` | Plan-meter estimate and its status (`estimated` / `unpriced` / `unknown` / `unmeasured`). |
+| `priceCatalogId`, `priceCatalogVersion`, `planFactorTableId`, `planFactorTableVersion` | The four provenance stamps that make an estimate reproducible. |
+| `attempt`, `effort`, `issue`, `pr`, `parentRoom`, `workstream`, `raw` | **Reserved, no phase-A writer** — none is derivable from the events a settle has in hand. Named now so a later phase fills a reserved field rather than inventing a competing one. |
+
+**Two estimates, both labelled, neither an invoice.** `apiEquivalentUsd` comes from `PriceCatalog`
+(vendor → model → dimension → effective ranges, each with a source); `planMeterEstimateUsd` re-weights
+the same dimensions through `PlanFactorTable`. An unknown model is `unpriced` on both and **never
+borrows a neighbouring model's price**; a reported dimension with no rate in force makes the whole
+estimate unpriced rather than a smaller number. The plan-factor table resolves to one of three states
+and **has no 1.0 fallback anywhere**: a live promotional window whose percent nobody has measured
+resolves `unknown`, and a vendor whose meter has never been measured resolves `unmeasured`.
+`PlanFactorStatus`'s own remarks state what a 1.0 default would produce instead, and why that is the
+failure this design is shaped around. Nothing on a row says invoice, quota, or spend.
+
+**The shipped catalog prices nothing, and that is a finding rather than an omission.** `PriceCatalog`'s
+own remarks record what was searched for and not found here, name the one candidate source, and state
+the arithmetic that would have to be invented to use it.
+The issue's own "unpriced beats guessed" ruling therefore leaves `apiEquivalentUsd` absent on every
+phase-A row, until prices with real sources are added there. What phase A ships is the
+schema, the version stamp and the reproducibility guarantee. The **plan-factor table is seeded**,
+because its three facts are operator-supplied and citable: Anthropic
+cache-read weighting 0.10 ("operator measurement 2026-09-04, unverified"), a Sonnet 5 window to
+2026-09-18 with its percent deliberately absent, and agy marked unmeasured.
+
+**Canonical repository identity.** `RepositoryIdentity` (`src/Baton/Accounting/RepositoryIdentity.cs`)
+is the one derivation, and #1852 reuses it rather than growing a second: the normalized `origin` remote
+(`host/owner/repo`, case-folded, `.git` stripped, every https/ssh/scp/trailing-slash spelling
+converging) when there is one, else the git **common** directory. Both are shared by every worktree of
+one repository, which a checkout path is not — that is the whole point of the key. `Value` is what a
+row records; `FileSlug` is the on-disk spelling, a sanitized prefix plus a digest of `Value`, because
+sanitizing alone would let two distinct identities share one ledger file. The engine stays git-agnostic:
+this type is pure string work, and `Baton.Cli.RepositoryIdentityResolver` is the probe that runs git and
+resolves to nothing rather than throwing.
+
+**Phase plan.** A is the record, the catalog, the factor table, the identity key and the settle-time
+writer. **B** is the CLI views — room and fleet, time-range and facet filters, JSON/CSV export. **C** is
+the import of the vendors' own native session logs under the three reserved `sourceKind` values (and is
+where `raw` gets a writer, since only a whole session log carries the vendor's fields verbatim). **D**
+is backfill of retained rooms plus compaction, at the 90-day window the native-retention survey on
+#1849 settles on. Nothing in B–D requires a schema migration: the source-kind label and the repository
+key exist from day one.
+
 ---
 
 ## §8 Multi-project room registry
