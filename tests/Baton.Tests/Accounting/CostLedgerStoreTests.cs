@@ -3,6 +3,7 @@ using Baton.Accounting;
 using Baton.Artifacts;
 using Baton.Dispatch;
 using Baton.Domain;
+using Baton.Mutation;
 using Baton.Status;
 
 namespace Baton.Tests.Accounting;
@@ -892,5 +893,53 @@ public sealed class CostLedgerStoreTests
             "\"sourceKind\":\"claude-code-session\"",
             JsonSerializer.Serialize(new CostLedgerEntry(CostSourceKind.ClaudeCodeSession)),
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1882's two non-token dimensions reach the ledger row, and are absent — not zero — on a room
+    /// that ran no verify step. Both polarities in one arm on purpose: a copy that hard-coded zero, or
+    /// one that dropped the fields entirely, would pass a present-only test. The projector owns the
+    /// attribution; what this pins is that <c>BuildEntries</c> carries it through rather than
+    /// recomputing or discarding it.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void The_verify_step_figures_reach_the_row_when_a_step_ran_and_are_absent_when_none_did(bool verifyStepRan)
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-verify-step");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+
+            if (verifyStepRan)
+            {
+                var artifactsRoot = Path.Combine(room, ArtifactManager.ArtifactsDirectoryName);
+                Directory.CreateDirectory(artifactsRoot);
+                File.WriteAllText(
+                    Path.Combine(artifactsRoot, VerifyStepReport.SidecarFileName),
+                    VerifyStepReport.SerializeSidecar(new VerifyStepReport.Sidecar(
+                        TotalWallClockMs: 91002,
+                        ResultsBytes: 4321,
+                        Commands: [new VerifyInstrument("dotnet test", 0, 91002)])));
+            }
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), room, Repository));
+
+            Assert.Equal(verifyStepRan ? 91002L : null, row.VerifyStepMs);
+            Assert.Equal(verifyStepRan ? 4321L : null, row.VerifyResultsBytes);
+
+            // Absent on the wire, never a zero a reader would mistake for a measured figure.
+            var json = JsonSerializer.Serialize(row);
+            Assert.Equal(verifyStepRan, json.Contains("\"verifyStepMs\":91002", StringComparison.Ordinal));
+            Assert.Equal(verifyStepRan, json.Contains("\"verifyResultsBytes\":4321", StringComparison.Ordinal));
+            Assert.DoesNotContain("\"verifyStepMs\":0", json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
     }
 }

@@ -183,6 +183,10 @@ public static class CostLedgerStore
                 ThinkingTokens: usage.ThinkingTokens,
                 Turns: usage.Turns,
                 WallClockMs: usage.WallClockMs,
+                // #1882: carried through as the projector attributed them -- one execution's row gets
+                // both, every other row gets neither. No arithmetic here on purpose.
+                VerifyStepMs: usage.VerifyStepMs,
+                VerifyResultsBytes: usage.VerifyResultsBytes,
                 BilledTokens: usage.BilledTokens,
                 LiveBilledTokens: usage.LiveBilledTokens,
                 BilledUnderReadTokens: usage.BilledUnderReadTokens,

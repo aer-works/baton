@@ -218,6 +218,21 @@ public sealed record CostLedgerEntry(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     long? WallClockMs = null,
 
+    /// <summary>
+    /// #1882's two non-token dimensions, carried through from <c>ExecutionUsageView</c> under the same
+    /// names: the wall clock of the room's zero-token pre-turn verify step, and the size of the
+    /// <c>verify-results.md</c> the reviewer then reads. Neither is a token figure and neither enters
+    /// any estimate — a row carrying them is not priced differently. Which execution they land on, and
+    /// why they are present together or not at all, is <c>ExecutionUsageView.VerifyStepMs</c>'s
+    /// contract (spec/baton.md §3), not restated here.
+    /// </summary>
+    [property: JsonPropertyName("verifyStepMs")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? VerifyStepMs = null,
+    [property: JsonPropertyName("verifyResultsBytes")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? VerifyResultsBytes = null,
+
     // The vendor-derived billed figures ExecutionUsageView already owns the definitions of -- carried
     // through under the same names rather than recomputed, so #1706's reconciliation triple means one
     // thing in both files.
