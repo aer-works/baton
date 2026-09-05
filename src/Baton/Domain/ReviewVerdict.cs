@@ -127,16 +127,18 @@ public sealed record VerifyInstrument(
 /// </param>
 /// <param name="Claim">The one-line statement of the finding. Required and non-empty.</param>
 /// <param name="Status">
-/// Whether the claim is confirmed. Still non-nullable, so a finding written with no <c>status</c>
-/// binds to the enum's default exactly as <paramref name="Severity"/> used to — the same hazard,
-/// deferred to #1919 rather than widened into this change.
+/// How far the reviewer verified the claim. <b>Nullable so that ABSENT is distinguishable from
+/// <c>confirmed</c></b> (#1919), for the same reason <paramref name="Severity"/> is: the default of
+/// this value type is <see cref="ReviewFindingStatus.Confirmed"/>, so a finding written with no
+/// <c>status</c> silently arrived as reproduced-and-proven, the one status that tells a reader the
+/// claim was checked. <see cref="ReviewVerdictSchema.TryParse"/> refuses that document too.
 /// </param>
 /// <param name="Anchor">Where in the reviewed code the claim points, when it points anywhere.</param>
 /// <param name="Detail">Free-text elaboration — evidence, reproduction, reasoning.</param>
 public sealed record ReviewFinding(
     ReviewFindingSeverity? Severity,
     string Claim,
-    ReviewFindingStatus Status,
+    ReviewFindingStatus? Status,
     ReviewFindingAnchor? Anchor = null,
     string? Detail = null);
 
@@ -256,6 +258,15 @@ public static class ReviewVerdictSchema
             if (finding.Severity is null)
             {
                 error = $"findings[{i}].severity must be one of high, medium or low.";
+                return false;
+            }
+
+            // Status has the identical hazard: default(ReviewFindingStatus) = Confirmed, so a finding
+            // nobody checked would read as reproduced-and-proven against the code -- the one status
+            // that tells a reader the claim was verified (#1919).
+            if (finding.Status is null)
+            {
+                error = $"findings[{i}].status must be one of confirmed, refuted or unverified.";
                 return false;
             }
 
