@@ -285,7 +285,7 @@ public class MutationInterfaceCrashRecoveryTests
         finally
         {
             process.Kill();
-            if (!process.WaitForExit(TimeSpan.FromSeconds(10)))
+            if (!process.WaitForExit(TimeSpan.FromSeconds(10))) // wait-ok: bounding a post-Kill() exit, expected in milliseconds (#1804)
             {
                 throw new TimeoutException($"killed process {process.Id} did not exit within 10s");
             }
@@ -344,10 +344,8 @@ public class MutationInterfaceCrashRecoveryTests
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var abandoned = Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
             Assert.Equal(executionId, abandoned.ExecutionId);
-            // The worker pid is named plainly, with no liveness claim attached: CoreEvent.ExecutionStarted
-            // records no start time, so EngineLivenessProbe (which needs one to rule out pid reuse) is
-            // never run against it -- claiming a liveness verdict this codebase cannot actually check
-            // would be the exact overclaim this fix is trying to avoid.
+            // The worker pid is named with no liveness claim attached -- see
+            // MutationInterface.StartWorkflowAsync's "Abandoned during crash recovery" append for why.
             Assert.Contains($"worker pid {workerPid}", abandoned.Reason);
             Assert.Contains($"engine pid {enginePid} is dead", abandoned.Reason);
         }

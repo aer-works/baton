@@ -288,12 +288,10 @@ public class CancelRequestFileTests
     }
 
     /// <summary>
-    /// #1530 fix: the malformed-content arm previously read the file's mtime AFTER renaming it to
-    /// <c>.swept</c>, so <see cref="System.IO.FileInfo"/> saw a missing path and reported .NET's
-    /// "file not found" sentinel, 1601-01-01T00:00:00Z, for every recorded
-    /// <see cref="Baton.Domain.RoomEvent.ArrestRequestExpired.RequestedAtUtc"/> on this branch. A real
-    /// file on disk (not a fabricated timestamp) is required to reproduce the bug: it is specifically
-    /// the OS mtime lookup racing the rename that regresses.
+    /// #1530 fix: see <see cref="CancelRequestFile.DeleteStalePendingRequestAsync"/>'s own remarks on
+    /// its malformed-content arm for the mtime-vs-rename ordering bug this pins. A real file on disk
+    /// (not a fabricated timestamp) is required to reproduce it: it is specifically the OS mtime
+    /// lookup racing the rename that regresses.
     /// </summary>
     [Fact]
     public async Task DeleteStalePendingRequest_records_the_real_mtime_for_malformed_content_not_the_missing_file_sentinel()

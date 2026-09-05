@@ -932,9 +932,8 @@ public class StatusCommandEndToEndTests
                 new FlowEvent.CancellationRejected(rejectedExecutionId, "arrest requested but not yet confirmed settled after 5 polls"),
                 TestContext.Current.CancellationToken);
 
-            // The orphan shape: InFlightExecutionRegistry.RequestCancellationAsync returned false (never
-            // registered in-flight), so RecordCancellationRejectedAsync's CancellationRejected is the ONLY
-            // event this lifecycle ever produces -- no preceding CancellationRequested.
+            // The orphan shape ArrestLedgerProjector.Project's own remarks on its CancellationRejected
+            // case describe: no preceding CancellationRequested at all.
             await writer.AppendAsync(
                 new FlowEvent.CancellationRejected(orphanRejectedExecutionId, "not currently in flight when this cancel.request was checked — too late (it already settled)"),
                 TestContext.Current.CancellationToken);
@@ -1032,9 +1031,9 @@ public class StatusCommandEndToEndTests
     private sealed record ArrestEntry(string Target, string? Outcome, string? Reason);
 
     /// <summary>
-    /// LOW finding: <c>baton status</c> never read <c>room.jsonl</c> before this feature, so an
-    /// unreadable one (version skew — a RoomEvent discriminator this build does not know) must
-    /// degrade the ledger, not turn a probe that used to succeed into a hard failure.
+    /// LOW finding: pins the degrade behaviour <see cref="StatusCommand.ExecuteAsync"/>'s own remarks
+    /// on its room.jsonl read describe (version skew — a RoomEvent discriminator this build does not
+    /// know).
     /// </summary>
     [Fact]
     public async Task StatusCommand_degrades_the_ledger_instead_of_failing_when_room_jsonl_is_unreadable()
