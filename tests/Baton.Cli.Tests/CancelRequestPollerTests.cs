@@ -96,18 +96,20 @@ public class CancelRequestPollerTests
         try
         {
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
-            // Settled execution in log (Succeeded):
-            await using (var writer = new FlowEventLogWriter(logPath))
-            {
-                var execId = new ExecutionId("exec-settled");
-                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
-                await writer.AppendAsync(new FlowEvent.ExecutionSucceeded(execId), TestContext.Current.CancellationToken);
-            }
+            var execId = new ExecutionId("exec-settled");
+            // Kept open for the whole test (not disposed before TickAsync) so the registry bound to it
+            // below can actually append the durable rejection the assertions at the bottom pin.
+            await using var writer = new FlowEventLogWriter(logPath);
+            await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
+            await writer.AppendAsync(new FlowEvent.ExecutionSucceeded(execId), TestContext.Current.CancellationToken);
 
             await CancelRequestFile.WriteAsync(roomDirectory, "exec-settled", TestContext.Current.CancellationToken);
 
-            // An empty registry: not in flight, but also no longer projecting Running -> genuinely settled.
+            // Not in flight, but also no longer projecting Running -> genuinely settled. Bound so the
+            // #1916 fix round 2 durable CancellationRejected append below is reachable -- an unbound
+            // registry would silently no-op it (InFlightExecutionRegistry.RecordCancellationRejectedAsync).
             var registry = new InFlightExecutionRegistry();
+            registry.Bind(writer);
 
             await CancelRequestPoller.TickAsync(
                 roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken);
@@ -115,9 +117,65 @@ public class CancelRequestPollerTests
             var requestPath = CancelRequestFile.GetPath(roomDirectory);
             Assert.False(File.Exists(requestPath), "expected the request to be consumed, not left pending");
             Assert.True(File.Exists($"{requestPath}.consumed"));
+
+            var reader = new FlowEventLogReader(logPath);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
+            Assert.Equal(execId, cancellationRejected.ExecutionId);
+            Assert.Contains("too late (it already settled)", cancellationRejected.Reason, StringComparison.Ordinal);
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1916 fix round 2 / polarity control for the test above: this target was never accepted by
+    // this room AT ALL (a typo'd or stale literal id) -- "too late (it already settled)" is a false
+    // claim for it, since no real execution ever existed to settle. It must land on room.jsonl's
+    // ArrestRequestUnresolvable instead, the same durable home the malformed-content/ambiguous-'latest'
+    // rejections already use for a shape with nothing real to key a flow.jsonl fact on.
+    [Fact]
+    public async Task A_request_naming_an_execution_id_never_accepted_by_this_room_is_unresolvable_not_too_late()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        var originalError = Console.Error;
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            await File.WriteAllTextAsync(logPath, string.Empty, TestContext.Current.CancellationToken);
+
+            await CancelRequestFile.WriteAsync(roomDirectory, "never-accepted", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken, roomLogPath);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            Assert.False(File.Exists(requestPath), "expected the request to be consumed, not left pending");
+            Assert.True(File.Exists($"{requestPath}.consumed"));
+            Assert.DoesNotContain("too late", stderr.ToString(), StringComparison.Ordinal);
+            Assert.Contains("no accepted request named this execution", stderr.ToString(), StringComparison.Ordinal);
+
+            var reader = new FlowEventLogReader(logPath);
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRejected);
+
+            var roomReader = new RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var unresolvable = Assert.Single(roomEvents.OfType<RoomEvent.ArrestRequestUnresolvable>());
+            Assert.Equal("never-accepted", unresolvable.Target);
+            Assert.Contains("no accepted request named this execution", unresolvable.Reason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
             DirectoryCleanup.DeleteRecursively(roomDirectory);
         }
     }

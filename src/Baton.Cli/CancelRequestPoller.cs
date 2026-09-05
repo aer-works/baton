@@ -227,27 +227,53 @@ public static class CancelRequestPoller
             var arrestedByThisRequest = settleCheckEvents
                 .OfType<FlowEvent.ExecutionCancelled>()
                 .Any(e => e.ExecutionId == targetExecutionId);
+
+            // #1916 fix round 2: "too late (it already settled)" asserts a real execution existed and
+            // finished -- true only if some ExecutionRequestAccepted ever named targetExecutionId. A
+            // typo'd or stale literal id (this branch takes any non-'latest' Target as-is, unvalidated,
+            // per this method's own top) never was one, so it gets ArrestRequestUnresolvable's honest
+            // "never existed" reason instead of a false "it settled" — the same distinction
+            // MutationInterface.SettleArrestIntentsAsync already draws between "already settled" and
+            // "unknown execution id" for the pump-side drop this poller's mark can also produce.
+            var everAccepted = settleCheckEvents
+                .OfType<FlowEvent.ExecutionRequestAccepted>()
+                .Any(e => e.Request.ExecutionId == targetExecutionId);
             const string tooLateReason = "not currently in flight when this cancel.request was checked — too late (it already settled)";
+            const string unresolvableReason = "no accepted request named this execution";
+            var rejectionReason = everAccepted ? tooLateReason : unresolvableReason;
             try
             {
                 Console.Error.WriteLine(arrestedByThisRequest
                     ? $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}' — arrested by this request."
-                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is {tooLateReason}.");
+                    : $"cancel.request against '{roomDirectoryPath}' named execution '{targetExecutionId.Value}', which is {rejectionReason}.");
             }
             catch
             {
                 // F6: swallow broken stderr pipe
             }
 
-            // #1530: the "too late" rendering above used to land on stderr only -- issue #1530's own
-            // body names this shape explicitly. arrestedByThisRequest needs no separate append here:
-            // that branch's own FlowEvent.ExecutionCancelled already implies an earlier
+            // #1530: the "too late"/unresolvable rendering above used to land on stderr only -- issue
+            // #1530's own body names this shape explicitly. arrestedByThisRequest needs no separate
+            // append here: that branch's own FlowEvent.ExecutionCancelled already implies an earlier
             // FlowEvent.CancellationRequested (MutationInterface.SettleArrestIntentsAsync never
             // appends one without the other), so the ledger already renders it Delivered.
             if (!arrestedByThisRequest)
             {
-                await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, tooLateReason, cancellationToken)
-                    .ConfigureAwait(false);
+                if (everAccepted)
+                {
+                    await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, tooLateReason, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    // Never a real ExecutionId this room ever accepted, so there is nothing to key a
+                    // FlowEvent.CancellationRejected on -- room.jsonl is its durable home instead, the
+                    // same one the malformed-content/ambiguous-'latest' rejections above use.
+                    await TryRecordUnresolvableAsync(
+                            roomLogPath, content.Target, unresolvableReason,
+                            content.WrittenAtUtc?.UtcDateTime ?? lastWriteUtc, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             CancelRequestFile.Consume(requestPath);
