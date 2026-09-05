@@ -12,19 +12,27 @@ What each column is for, and why a ratio alone misleads, is written once in benc
 
 Usage:
     python benchmarks/deepswe/derive_scores.py benchmarks/deepswe/2026-09-04 [--lambda 0.10] [--sweep | --check]
+    python benchmarks/deepswe/derive_scores.py [--check-all | --selftest]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 RAW = "selected-configurations.csv"
 OUT = "derived-scores.csv"
 DEFAULT_LAMBDA = 0.10
 SWEEP = (0.0, 0.05, 0.10, 0.20, 0.40)
+DEEPSWE_ROOT = Path(__file__).resolve().parent
+
+
+def snapshot_dirs(root: Path = DEEPSWE_ROOT) -> list[Path]:
+    return sorted(path for path in root.iterdir() if path.is_dir() and (path / RAW).is_file())
 
 
 def load(date_dir: Path) -> list[dict]:
@@ -74,23 +82,11 @@ def sweep(rows: list[dict], top: int = 6) -> None:
             print(f"  {r['_q'] - lam * r['_s']:6.1f}  {r['model']:18s} {r['effort']:6s} q={r['_q']:3d} steps={r['_s']:3d}")
 
 
-def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("date_dir", type=Path)
-    ap.add_argument("--lambda", dest="lam", type=float, default=DEFAULT_LAMBDA)
-    ap.add_argument("--sweep", action="store_true", help="print top rows across several lambdas; write nothing")
-    ap.add_argument("--check", action="store_true", help="exit 1 if the committed derived file differs from a fresh derivation")
-    a = ap.parse_args(argv)
-
-    rows = load(a.date_dir)
-    if a.sweep:
-        sweep(rows)
-        return 0
-
-    derived = derive(rows, a.lam)
+def write_or_check(date_dir: Path, lam: float, check: bool) -> int:
+    derived = derive(load(date_dir), lam)
     fields = list(derived[0].keys())
-    target = a.date_dir / OUT
-    if a.check:
+    target = date_dir / OUT
+    if check:
         import io
 
         buf = io.StringIO()
@@ -113,8 +109,87 @@ def main(argv: list[str]) -> int:
         w = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         w.writeheader()
         w.writerows(derived)
-    print(f"derive_scores: wrote {target} ({len(derived)} rows, lambda={a.lam:.2f})")
+    print(f"derive_scores: wrote {target} ({len(derived)} rows, lambda={lam:.2f})")
     return 0
+
+
+def selftest() -> int:
+    sources = [path for path in snapshot_dirs() if (path / OUT).is_file()]
+    if not sources:
+        print("derive_scores selftest: FAIL (no snapshot with raw and derived inputs)", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_root = Path(temp_dir) / "deepswe"
+        scratch_root.mkdir()
+        for source in sources:
+            shutil.copytree(source, scratch_root / source.name)
+
+        # Exercise the exact aggregate entry point wired into the gates, not merely its helper.
+        if main(["--check-all"], deepswe_root=scratch_root) != 0:
+            print("derive_scores selftest: FAIL (clean scratch snapshots were rejected)", file=sys.stderr)
+            return 1
+
+        target = scratch_root / sources[-1].name / OUT
+        with target.open(encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            fields = reader.fieldnames
+            rows = list(reader)
+        if not fields or not rows:
+            print("derive_scores selftest: FAIL (scratch derived file is empty)", file=sys.stderr)
+            return 1
+
+        rows[0][fields[-1]] = "sabotaged"
+        with target.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+
+        if main(["--check-all"], deepswe_root=scratch_root) != 1:
+            print("derive_scores selftest: FAIL (edited scratch snapshot was accepted)", file=sys.stderr)
+            return 1
+
+        shutil.copy2(sources[-1] / OUT, target)
+        target.unlink()
+        if main(["--check-all"], deepswe_root=scratch_root) != 1:
+            print("derive_scores selftest: FAIL (missing derived snapshot was accepted)", file=sys.stderr)
+            return 1
+
+    print("derive_scores selftest: pass")
+    return 0
+
+
+def main(argv: list[str], deepswe_root: Path = DEEPSWE_ROOT) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("date_dir", type=Path, nargs="?")
+    ap.add_argument("--lambda", dest="lam", type=float, default=DEFAULT_LAMBDA)
+    ap.add_argument("--sweep", action="store_true", help="print top rows across several lambdas; write nothing")
+    ap.add_argument("--check", action="store_true", help="exit 1 if the committed derived file differs from a fresh derivation")
+    modes = ap.add_mutually_exclusive_group()
+    modes.add_argument("--check-all", action="store_true", help="check every snapshot directory containing a raw input")
+    modes.add_argument("--selftest", action="store_true", help="prove check mode rejects drift in a scratch snapshot")
+    a = ap.parse_args(argv)
+
+    if (a.check_all or a.selftest) and (a.date_dir is not None or a.sweep or a.check):
+        ap.error("--check-all and --selftest cannot be combined with date_dir, --sweep, or --check")
+    if a.selftest:
+        return selftest()
+    if a.check_all:
+        snapshots = snapshot_dirs(deepswe_root)
+        if not snapshots:
+            print("derive_scores: no snapshot directories with raw inputs", file=sys.stderr)
+            return 1
+        failed = False
+        for path in snapshots:
+            if write_or_check(path, a.lam, check=True) != 0:
+                failed = True
+        return 1 if failed else 0
+    if a.date_dir is None:
+        ap.error("date_dir is required unless --check-all or --selftest is used")
+    if a.sweep:
+        sweep(load(a.date_dir))
+        return 0
+    return write_or_check(a.date_dir, a.lam, a.check)
 
 
 if __name__ == "__main__":
