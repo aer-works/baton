@@ -75,6 +75,10 @@ public static class DaemonHost
         // daemon responsibility, outbound-only (no listener added).
         builder.Services.AddHostedService<FleetProjectionWriter>();
 
+        // #1391: per-vendor /usage harvester -- cadence-gated, outbound-only, persists to
+        // BatonPaths.VendorUsageSnapshotFile for FleetProjectionWriter/FleetStatusTool to read back.
+        builder.Services.AddHostedService<VendorUsageHarvester>();
+
         // #734: gh-backed delivery poll (branch/PR -> checks -> merged), spec/baton.md §7's fifth
         // kept daemon responsibility, outbound-only (reads GitHub via gh, writes flow.jsonl, never
         // acts on what it observes).

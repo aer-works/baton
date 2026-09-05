@@ -122,7 +122,13 @@ public sealed class FleetStatusTool : IMcpTool
             }
         }
 
-        var json = JsonSerializer.Serialize(results, SerializerOptions);
+        // #1391: vendors[] rides the same call as an advisory sibling of rooms[] -- never a second
+        // harvest, never a live vendor spawn from this read-only tool. Reads whatever the daemon's
+        // VendorUsageHarvester last persisted; absent entirely until a harvest has run at least once.
+        var liveLanesByVendor = VendorUsageProjectionReader.CountLiveLanesByVendor(results);
+        var vendors = VendorUsageProjectionReader.ReadAll(liveLanesByVendor);
+
+        var json = JsonSerializer.Serialize(new FleetStatusResponse(results, vendors), SerializerOptions);
         return new McpToolCallResult(json);
     }
 

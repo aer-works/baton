@@ -66,7 +66,7 @@ public sealed class FleetStatusToolTests : IDisposable
             var result = await tool.CallAsync(Parse($$"""{ "roots": ["{{escapedExtraRoot}}"] }"""), TestContext.Current.CancellationToken);
 
             Assert.False(result.IsError);
-            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
             Assert.NotNull(rooms);
             Assert.Equal(2, rooms!.Count);
 
@@ -108,7 +108,7 @@ public sealed class FleetStatusToolTests : IDisposable
             var result = await tool.CallAsync(Parse($$"""{ "roots": ["{{escapedSlugDir}}"] }"""), TestContext.Current.CancellationToken);
 
             Assert.False(result.IsError);
-            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
             Assert.NotNull(rooms);
             Assert.Single(rooms!);
         }
@@ -138,7 +138,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("terminal-room", singleRoom.Name);
@@ -182,7 +182,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.NotNull(singleRoom.Delivery);
         Assert.Equal(99, singleRoom.Delivery!.Pr);
@@ -203,7 +203,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var tool = new FleetStatusTool();
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.Null(Assert.Single(rooms!).Delivery);
     }
 
@@ -226,7 +226,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Indeterminate", singleRoom.State);
     }
@@ -269,7 +269,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("active-room", singleRoom.Name);
@@ -325,7 +325,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
         Assert.True(singleStep.RetryEligible);
@@ -371,7 +371,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
         Assert.Equal(resetInstant.ToString("O"), singleStep.ExhaustedUntil);
@@ -431,7 +431,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-rev-3", singleStep.Execution);
@@ -468,7 +468,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("Failed", singleStep.State);
         // One consecutive failure recorded -> this failed execution WAS attempt 1, out of 3 allowed.
@@ -507,7 +507,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("Permanent", singleStep.FailureKind);
         Assert.False(singleStep.RetryEligible);
@@ -545,7 +545,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-retrying-2", singleStep.Execution);
@@ -573,7 +573,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal(2, singleStep.Attempt);
         Assert.Equal(3, singleStep.MaxAttempts);
@@ -606,7 +606,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleStep = Assert.Single(Assert.Single(rooms!).Steps!);
         Assert.Equal("ExhaustedUntil", singleStep.FailureKind);
         Assert.Equal(resetInstant.ToString("O"), singleStep.ExhaustedUntil);
@@ -657,7 +657,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         // #1513: superseding the pre-#1513 expectation here (room-level State stayed "Running", with
@@ -718,7 +718,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         // #1513 polarity: a genuinely alive engine must never trip the Stalled downgrade.
@@ -784,7 +784,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.NotEqual("Running", singleRoom.State);
@@ -869,7 +869,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
@@ -934,7 +934,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
@@ -988,7 +988,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         var singleStep = Assert.Single(singleRoom.Steps!);
@@ -1047,7 +1047,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         Assert.Equal(2, rooms!.Count);
 
@@ -1098,7 +1098,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
 
         var closed = rooms!.First(r => r.Name == "closed-room");
@@ -1159,7 +1159,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("room-act", singleRoom.Name);
@@ -1218,7 +1218,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Equal("architect", singleRoom.Role);
@@ -1286,7 +1286,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Equal("architect", singleRoom.Role);
@@ -1353,7 +1353,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Equal("architect", singleRoom.Role);
@@ -1402,7 +1402,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Null(singleRoom.Role);
@@ -1471,7 +1471,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Null(singleRoom.Error);
@@ -1535,7 +1535,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Running", singleRoom.State);
         Assert.Null(singleRoom.Error);
@@ -1561,7 +1561,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         Assert.Equal(2, rooms!.Count);
 
@@ -1588,7 +1588,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = tool.Call(Parse("{}"));
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("sync-room", singleRoom.Name);
@@ -1622,7 +1622,7 @@ public sealed class FleetStatusToolTests : IDisposable
             var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
             Assert.False(result.IsError);
-            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
             Assert.NotNull(rooms);
             var found = Assert.Single(rooms!, r => r.Name == "registry-only-room");
             Assert.Equal("Succeeded", found.State);
@@ -1660,7 +1660,7 @@ public sealed class FleetStatusToolTests : IDisposable
             var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
             Assert.False(result.IsError);
-            var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+            var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
             Assert.NotNull(rooms);
             Assert.DoesNotContain(rooms!, r => r.Name == "gone-room");
             Assert.Contains(rooms!, r => r.Name == "healthy-registry-room");
@@ -1690,7 +1690,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("scanned-room", singleRoom.Name);
@@ -1718,7 +1718,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.NotNull(rooms);
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("scanned-room", singleRoom.Name);
@@ -1752,7 +1752,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Equal("env-snapshot lane", singleRoom.Label);
@@ -1798,7 +1798,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Null(singleRoom.Role);
@@ -1829,7 +1829,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Null(singleRoom.Label);
@@ -1852,7 +1852,7 @@ public sealed class FleetStatusToolTests : IDisposable
         // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
         // the real wire text is the thing a JsonIgnore regression would actually change.
         Assert.DoesNotContain("\"label\"", result.Text);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.Null(Assert.Single(rooms!).Label);
     }
 
@@ -1883,7 +1883,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Equal("w1619", singleRoom.Workstream);
@@ -1906,7 +1906,7 @@ public sealed class FleetStatusToolTests : IDisposable
         // Asserts on the actual MCP payload (result.Text), not a re-serialized deserialized copy --
         // the real wire text is the thing a JsonIgnore regression would actually change.
         Assert.DoesNotContain("\"workstream\"", result.Text);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         Assert.Null(Assert.Single(rooms!).Workstream);
     }
 
@@ -1930,7 +1930,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
         Assert.Equal("exec-parent-1", singleRoom.ParentExecutionId);
@@ -1953,7 +1953,7 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.False(result.IsError);
         Assert.DoesNotContain("\"parentRoomPath\"", result.Text);
         Assert.DoesNotContain("\"parentExecutionId\"", result.Text);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Null(singleRoom.ParentRoomPath);
         Assert.Null(singleRoom.ParentExecutionId);
@@ -1986,7 +1986,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
         Assert.Equal("exec-parent-1", singleRoom.ParentExecutionId);
@@ -2018,7 +2018,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("Succeeded", singleRoom.State);
         Assert.Null(singleRoom.ParentRoomPath);
@@ -2048,7 +2048,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal(parentRoomPath, singleRoom.ParentRoomPath);
         Assert.Equal("exec-parent-2", singleRoom.ParentExecutionId);
@@ -2084,7 +2084,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.Equal("w1619", singleRoom.Workstream);
     }
@@ -2125,7 +2125,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("""{ "include_terminal": false }"""), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var singleRoom = Assert.Single(rooms!);
         Assert.DoesNotContain(singleRoom.Steps ?? [], s => s.State == "Running");
         Assert.Equal("env-snapshot lane", singleRoom.Label);
@@ -2220,7 +2220,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
         var ended = Assert.Single(rooms!);
         Assert.Equal("Succeeded", ended.State);
         Assert.Equal(endedAt, DateTime.Parse(ended.TerminalAt!, null, System.Globalization.DateTimeStyles.RoundtripKind));
@@ -2252,7 +2252,7 @@ public sealed class FleetStatusToolTests : IDisposable
         var result = await tool.CallAsync(Parse("{\"include_terminal\": true}"), TestContext.Current.CancellationToken);
 
         Assert.False(result.IsError);
-        var rooms = JsonSerializer.Deserialize<List<FleetRoomStatusView>>(result.Text);
+        var rooms = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!.Rooms;
 
         Assert.NotNull(rooms);
         var legacy = rooms!.First(r => r.Name == "legacy-sentinel-room");
@@ -2285,4 +2285,45 @@ public sealed class FleetStatusToolTests : IDisposable
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
+
+    /// <summary>
+    /// Issue #1391 fast-path test: a persisted claude snapshot with NO live rooms at all projects a
+    /// <c>vendors[]</c> entry with <c>liveLanes: 0</c> -- proving the block is not gated on a room
+    /// existing, unlike every field ABOVE this one in the shape that reads a Running room's own
+    /// bindings.
+    /// </summary>
+    [Fact]
+    public async Task CallAsync_PersistedSnapshotNoLiveRooms_ProjectsVendorsEntryWithZeroLiveLanes()
+    {
+        var snapshot = new VendorUsageSnapshot(
+            "agy",
+            new DateTimeOffset(2026, 8, 28, 20, 0, 0, TimeSpan.Zero),
+            Caveat: null,
+            // Name carries the sense of the number (#1869 review) -- agy's own "Remaining" survives
+            // only in rawLine, which the projection passes through verbatim.
+            [new VendorUsageWindow("Gemini Models · Weekly Limit", 28, new DateTimeOffset(2026, 8, 29, 19, 34, 12, TimeSpan.Zero), "Gemini Models\tWeekly Limit Remaining\t72%\t2026-08-29T19:34:12Z")]);
+        var snapshotPath = BatonPaths.VendorUsageSnapshotFile("agy");
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshotPath)!);
+        await File.WriteAllTextAsync(snapshotPath, JsonSerializer.Serialize(snapshot), TestContext.Current.CancellationToken);
+
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        var response = JsonSerializer.Deserialize<FleetStatusResponse>(result.Text)!;
+        Assert.Empty(response.Rooms);
+        var agyEntry = Assert.Single(response.Vendors!);
+        Assert.Equal("agy", agyEntry.Adapter);
+        Assert.Equal(0, agyEntry.LiveLanes);
+        Assert.Equal(28, agyEntry.Windows[0].PercentUsed);
+    }
+
+    /// <summary>No snapshot has ever been harvested -- `vendors` absent, never an empty array.</summary>
+    [Fact]
+    public async Task CallAsync_NoHarvestedSnapshot_OmitsVendorsKey()
+    {
+        var tool = new FleetStatusTool();
+        var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("\"vendors\"", result.Text);
+    }
 }

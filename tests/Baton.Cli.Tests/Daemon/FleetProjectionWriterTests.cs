@@ -419,4 +419,51 @@ public sealed class FleetProjectionWriterTests : IDisposable
 
         return (room, execId);
     }
+
+    /// <summary>
+    /// Issue #1391 round-trip: a persisted claude snapshot plus one Running claude-bound room projects
+    /// as one <c>vendors[]</c> entry with <c>liveLanes: 1</c> -- the same file
+    /// <see cref="Baton.Cli.Daemon.VendorUsageHarvester"/> writes, read back through
+    /// <see cref="Baton.Cli.Mcp.VendorUsageProjectionReader"/>.
+    /// </summary>
+    [Fact]
+    public async Task BuildProjectionJson_PersistedClaudeSnapshotPlusRunningRoom_ProjectsVendorsEntry()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        await CreateRunningRoomAsync("vendors-block-room", liveIdentity);
+
+        var snapshot = new VendorUsageSnapshot(
+            "claude",
+            new DateTimeOffset(2026, 9, 4, 18, 0, 0, TimeSpan.Zero),
+            "Approximate, based on local sessions on this machine — does not include other devices or claude.ai.",
+            [new VendorUsageWindow("session", 8, new DateTimeOffset(2026, 9, 4, 21, 19, 0, TimeSpan.Zero), "Current session: 8% used")]);
+        var snapshotPath = BatonPaths.VendorUsageSnapshotFile("claude");
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshotPath)!);
+        await File.WriteAllTextAsync(snapshotPath, JsonSerializer.Serialize(snapshot), TestContext.Current.CancellationToken);
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var vendorsArray = root["vendors"]!.AsArray();
+        var claudeEntry = Assert.Single(vendorsArray)!.AsObject();
+
+        Assert.Equal("claude", claudeEntry["adapter"]!.GetValue<string>());
+        Assert.Equal(1, claudeEntry["liveLanes"]!.GetValue<int>());
+        var window = Assert.Single(claudeEntry["windows"]!.AsArray())!.AsObject();
+        Assert.Equal("session", window["name"]!.GetValue<string>());
+        Assert.Equal(8, window["percentUsed"]!.GetValue<int>());
+    }
+
+    /// <summary>No snapshot has ever been harvested -- `vendors` is absent entirely, never an empty
+    /// array, matching every other optional field's omit-when-absent convention on this shape.</summary>
+    [Fact]
+    public async Task BuildProjectionJson_NoHarvestedSnapshot_OmitsVendorsKey()
+    {
+        var writer = new FleetProjectionWriter();
+        var json = await writer.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        Assert.False(root.ContainsKey("vendors"));
+    }
 }

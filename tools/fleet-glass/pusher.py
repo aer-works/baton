@@ -1816,7 +1816,7 @@ SNAPSHOT_HASH_KEY = "__snapshot_hash__"
 def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
                    terminal_total: int = 0, terminal_archive: list | None = None,
                    conductor: dict | None = None, pusher: dict | None = None,
-                   staleness: dict | None = None) -> dict:
+                   staleness: dict | None = None, vendors: list | None = None) -> dict:
     """The exact snapshot body main() pushes. One home so the leak selftest exercises the real push
     path's construction, not a hand-rebuilt copy that could drift from it (PR #1508 review).
 
@@ -1836,7 +1836,10 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
 
     `staleness` (#1557 PR-B1) is `read_projection_file`'s own return value, forwarded verbatim
     (spec/baton.md §6, the PR-B1 passage) -- absent on every ordinary push, same optional-field
-    convention as `pusher` above."""
+    convention as `pusher` above.
+
+    `vendors` (#1391) is the fleet projection's own `vendors[]` block, forwarded verbatim -- absent
+    whenever nothing has ever been harvested, same optional-field convention as the three above."""
     wrapped = {"rooms": room_list,
                "underhood": underhood,
                "timelines": timelines,
@@ -1849,6 +1852,8 @@ def build_wrapped(room_list, underhood, timelines, stale_hidden_count,
         wrapped["pusher"] = pusher
     if staleness is not None:
         wrapped["staleness"] = staleness
+    if vendors is not None:
+        wrapped["vendors"] = vendors
     return wrapped
 
 
@@ -3577,7 +3582,16 @@ def main() -> None:
                     projection_data, staleness = read_projection_file(
                         resolve_projection_file_path(), time.time())
                     if projection_data is not None:
-                        body = json.dumps(projection_data.get("rooms", []))
+                        # #1391: keep `vendors` alongside `rooms` rather than re-serializing just the
+                        # room list. Both paths emit {"rooms": [...], "vendors"?: [...]} as of #1391
+                        # (PR #1869) -- before it the derive path produced a bare room array and this
+                        # branch threw `vendors` away. The migration itself is recorded on
+                        # FleetStatusResponse's own doc comment in
+                        # src/Baton.Cli/Mcp/VendorUsageProjectionReader.cs, not restated here.
+                        body = json.dumps({
+                            "rooms": projection_data.get("rooms", []),
+                            **({"vendors": projection_data["vendors"]} if "vendors" in projection_data else {}),
+                        })
                         timelines = {}
                         last_derived_at = projection_data.get("derived_at")
                         used_file_this_cycle = True
@@ -3592,6 +3606,9 @@ def main() -> None:
                 body, stale_hidden_count = drop_stale_rooms(body, cfg.get("max_age_days", 3))
                 rooms = json.loads(body)
                 raw_room_list = rooms if isinstance(rooms, list) else rooms.get("rooms")
+                # #1391: advisory per-vendor usage runway, riding alongside rooms -- absent whenever
+                # nothing has been harvested yet, same optional convention as `conductor`/`staleness`.
+                vendors_list = None if isinstance(rooms, list) else rooms.get("vendors")
                 conductor_info = None
                 filtered_room_list = []
                 for r in (raw_room_list or []):
@@ -3653,7 +3670,8 @@ def main() -> None:
                     terminal_total=terminal_total,
                     terminal_archive=terminal_archive,
                     conductor=conductor_info,
-                    staleness=staleness)
+                    staleness=staleness,
+                    vendors=vendors_list)
                 # record-once-ok: #1690 spec/baton.md
                 # #1690 item 3: the change-gate hashes a QUANTIZED copy (telemetry churn collapsed to
                 # a 300s bucket) -- `wrapped` itself, posted verbatim below, always carries the exact
@@ -3682,7 +3700,8 @@ def main() -> None:
                             stale_hidden_count, terminal_total=terminal_total,
                             terminal_archive=terminal_archive, conductor=conductor_info,
                             pusher=pusher_notice,
-                            staleness=staleness)
+                            staleness=staleness,
+                            vendors=vendors_list)
                         post_body = json.dumps({**notice_wrapped, "derived_at": last_derived_at})
                         # F3(b) (2026-09-02 review): charge the ledger BEFORE the POST -- a lost
                         # response after a committed KV put is indistinguishable, from the client, from
@@ -5649,6 +5668,15 @@ def _selftest() -> int:
     check("build_wrapped carries the pusher block through to the snapshot, absent-safe otherwise",
           wrapped_with_pusher.get("pusher") == {"writeBudgetExhaustedUntil": "2026-09-03T00:00:00+00:00"}
           and "pusher" not in build_wrapped([], [], {}, 0))
+
+    # -- #1391: per-vendor usage runway rides `vendors[]`, absent-safe like conductor/pusher above --
+    vendors_obj = [{"adapter": "claude", "harvestedAt": "2026-09-04T18:00:00+00:00",
+                     "windows": [{"name": "session", "percentUsed": 8, "rawLine": "Current session: 8% used"}],
+                     "liveLanes": 1}]
+    wrapped_with_vendors = build_wrapped([], [], {}, 0, vendors=vendors_obj)
+    check("build_wrapped carries the vendors block through to the snapshot, absent-safe otherwise",
+          wrapped_with_vendors.get("vendors") == vendors_obj
+          and "vendors" not in build_wrapped([], [], {}, 0))
 
     check("next_utc_midnight_iso names the NEXT 00:00 UTC, not the current day's",
           next_utc_midnight_iso(datetime(2026, 9, 2, 16, 50, tzinfo=timezone.utc).timestamp())

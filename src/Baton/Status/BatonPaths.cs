@@ -221,6 +221,18 @@ public static class BatonPaths
     /// <summary>Directory name <see cref="SecretPatternsFile"/> lives under, relative to a root — the pusher's own <c>tools/fleet-glass</c> convention.</summary>
     public const string SecretPatternsDirectoryName = "fleet-glass";
 
+    /// <summary>
+    /// <c>{Root}/fleet-glass/usage.&lt;vendor&gt;.json</c> — #1391's per-vendor harvested usage
+    /// snapshot, one file per adapter name (<c>claude</c>, <c>agy</c>), written atomically by the
+    /// daemon's usage harvester after every successful <c>/usage</c> read. Lives beside
+    /// <see cref="SecretPatternsFile"/> under the same <see cref="SecretPatternsDirectoryName"/>
+    /// rather than a new directory — both are machine-local Fleet Glass state, never checked in. A
+    /// daemon restart reads the last-written file back so the projection shows the last reading with
+    /// its own age rather than going blank until the next harvest fires.
+    /// </summary>
+    public static string VendorUsageSnapshotFile(string vendor) =>
+        Path.Combine(Root, SecretPatternsDirectoryName, $"usage.{vendor}.json");
+
     /// <summary>Filename of <see cref="SecretPatternsFile"/> relative to <see cref="SecretPatternsDirectoryName"/>.</summary>
     public const string SecretPatternsFileName = "secretpatterns.local.txt";
 
