@@ -7,6 +7,29 @@ and `src/Baton.Vendors/CHANGELOG.md`, kept as history. New entries are prepended
 `vX.Y.Z`. See `release-please-config.json`. Everything below this line predates the split: the
 repo's single shared version through `0.14.0`.
 
+## [0.34.0](https://github.com/philipreese/baton/compare/v0.33.0...v0.34.0) (2026-09-05)
+
+
+### Features
+
+* **accounting:** Add the ledger verb with per-vendor rollups, time filters and JSON/CSV export ([#1893](https://github.com/philipreese/baton/issues/1893)) ([0be9e84](https://github.com/philipreese/baton/commit/0be9e84bf3367d64bc28b9866e869f266854521b))
+* **accounting:** Append a labelled two-estimate cost ledger row per settled execution attempt ([#1883](https://github.com/philipreese/baton/issues/1883)) ([98dc364](https://github.com/philipreese/baton/commit/98dc364f101ea6cbf58567964f40a705c4699d8d))
+* **dispatch:** Hold new dispatches when the vendor's runway is short, with an audited override ([#1894](https://github.com/philipreese/baton/issues/1894)) ([a9f4d99](https://github.com/philipreese/baton/commit/a9f4d999892edd5bfa838365d83f8618e0fc13ac))
+* **glass:** Show per-vendor burn rate and minutes to exhaustion from the usage projection ([#1891](https://github.com/philipreese/baton/issues/1891)) ([678f44e](https://github.com/philipreese/baton/commit/678f44ef52351e559809ccb960ee4e9d711410d5))
+* **review:** Run allowlisted verify commands before the reviewer's first turn and attach the results ([#1889](https://github.com/philipreese/baton/issues/1889)) ([0a61197](https://github.com/philipreese/baton/commit/0a6119750463ebd86a0fde38bfef1c3b0f825390))
+* **usage:** Journal a declared stream-log loss so the reason survives a refused marker ([#1888](https://github.com/philipreese/baton/issues/1888)) ([074942d](https://github.com/philipreese/baton/commit/074942dc2c0f79558fee619ad2430956a74df4d7))
+
+
+### Bug Fixes
+
+* **launcher:** Run baton.exe outside ErrorActionPreference Stop so a stderr line cannot kill the daemon task ([#1899](https://github.com/philipreese/baton/issues/1899)) ([5f098c7](https://github.com/philipreese/baton/commit/5f098c7180ff26ecd2a54ba44d66da32ad11029d))
+* **usage:** Accept an on-the-hour reset time in the claude usage harvest ([#1900](https://github.com/philipreese/baton/issues/1900)) ([278ff78](https://github.com/philipreese/baton/commit/278ff78798243cc7f29f00f523625016a4b63a7c))
+
+
+### Code Refactoring
+
+* **store:** Extract a generic JSON-lines ledger shared by the burn and cost ledgers ([#1892](https://github.com/philipreese/baton/issues/1892)) ([99a9171](https://github.com/philipreese/baton/commit/99a9171b722ee9d4fd74c060ff205dceee8ac823))
+
 ## [0.33.0](https://github.com/philipreese/baton/compare/v0.32.0...v0.33.0) (2026-09-05)
 
 
