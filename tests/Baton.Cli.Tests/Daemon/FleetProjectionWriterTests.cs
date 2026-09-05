@@ -286,6 +286,90 @@ public sealed class FleetProjectionWriterTests : IDisposable
     }
 
     /// <summary>
+    /// #1886: a codex execution's live block, read off a real captured stream
+    /// (<c>Fixtures/codex-live-stream.jsonl</c> — a contiguous 261-line prefix of
+    /// <c>dispatch-implement-72f3ea9d</c>'s own <c>.stdout.log</c>, with each item's
+    /// <c>aggregated_output</c>/<c>text</c> body replaced by a placeholder for fixture size; every
+    /// field either parser reads is verbatim, and the file's own real <c>turn.completed</c> is
+    /// appended last).
+    /// <para>
+    /// A REGRESSION PIN, not the verification of a fix: <c>StandardWorkerUsageParsers.Default</c>
+    /// already carries <c>["codex"]</c> (#1862) and <see cref="Baton.Mutation.TokenBudgetMonitor"/> is
+    /// vendor-agnostic, so the daemon projection was never the reader that fed #1886's zero —
+    /// <c>pusher.py</c>'s derive path was, and that is where that issue's fix lives. What this pins is
+    /// that dropping the adapter tag from the registry (or renaming it) would silently take the whole
+    /// live block away from this vendor again, which is invisible without an arm that names the tag.
+    /// Its polarity partner is <see cref="RunningRoom_UnknownAdapter_OmitsLiveCountFields"/> below:
+    /// one condition apart (does the tag resolve a parser), opposite expectations.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task RunningRoom_CodexAdapter_ProjectsLiveToolCallsTurnsAndBilledTokens()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var stdoutContent = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex-live-stream.jsonl"),
+            TestContext.Current.CancellationToken);
+        var (_, _) = await CreateRunningRoomAsync("codex-room", liveIdentity, stdoutContent, adapter: "codex");
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        // 128 `item.started` lines carrying a tool item type, counted in the fixture itself.
+        Assert.Equal(128, live["toolCalls"]!.GetValue<int>());
+        // The fixture's one turn.completed: input 127,806 (inclusive of 126,720 cached) + cache write 0
+        // + output 689 -> fresh input 1,086, billed 1,086 + 689 + 0. reasoning_output_tokens (130) is a
+        // breakdown already inside output_tokens and is read by nothing.
+        Assert.Equal(1_775, live["billedTokens"]!.GetValue<long>());
+        Assert.Equal(1, live["turns"]!.GetValue<int>());
+        Assert.Equal(127_806, live["contextTokens"]!.GetValue<long>());
+        Assert.Equal(126_720, live["cacheReadTokens"]!.GetValue<long>());
+        // Absent, not merely false -- spec/baton.md §6's `rooms[].live` entry has why this vendor's
+        // figure carries no floor marker.
+        Assert.False(live.ContainsKey("billedIsFloor"));
+        Assert.True(live.ContainsKey("lastActivityAt"));
+    }
+
+    /// <summary>
+    /// #1886 polarity arm, one condition from the test above: an adapter tag
+    /// <c>StandardWorkerUsageParsers.Default</c> has no parser for leaves <c>Monitor</c> null, and the
+    /// live block then carries NO count fields at all — not a zero. Without this arm, a "fix" that made
+    /// the writer emit <c>toolCalls: 0</c> whenever no parser resolved would pass the codex arm above
+    /// and reintroduce exactly the zero #1886 is about. <c>lastActivityAt</c> stays present because it
+    /// is the stream file's own mtime, which needs no parser (and is why #1886's "lastActivityAt may be
+    /// keyed off a claude-only item type" hypothesis was false on both readers).
+    /// </summary>
+    [Fact]
+    public async Task RunningRoom_UnknownAdapter_OmitsLiveCountFields()
+    {
+        var liveIdentity = (Environment.ProcessId, new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime());
+        var stdoutContent = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex-live-stream.jsonl"),
+            TestContext.Current.CancellationToken);
+        Assert.False(StandardWorkerUsageParsers.Default.ContainsKey("not-a-vendor"));
+        var (_, _) = await CreateRunningRoomAsync(
+            "unknown-adapter-room", liveIdentity, stdoutContent, adapter: "not-a-vendor");
+
+        var projectionWriter = new FleetProjectionWriter();
+        var json = await projectionWriter.BuildProjectionJsonAsync(TestContext.Current.CancellationToken);
+
+        var root = JsonNode.Parse(json)!.AsObject();
+        var roomNode = Assert.Single(root["rooms"]!.AsArray())!.AsObject();
+        var live = roomNode["live"]!.AsObject();
+
+        Assert.False(live.ContainsKey("toolCalls"));
+        Assert.False(live.ContainsKey("billedTokens"));
+        Assert.False(live.ContainsKey("turns"));
+        Assert.False(live.ContainsKey("contextTokens"));
+        Assert.False(live.ContainsKey("cacheReadTokens"));
+        Assert.True(live.ContainsKey("lastActivityAt"));
+    }
+
+    /// <summary>
     /// #1557 PR-A2: end-to-end wiring for <c>live.stdoutTail</c> — <see cref="StdoutTailRendererTests"/>
     /// pins the renderer's own output against pusher.py; this pins that
     /// <see cref="FleetProjectionWriter"/> actually calls it with the room's real stdout path and a
@@ -374,9 +458,12 @@ public sealed class FleetProjectionWriterTests : IDisposable
         => CreateRunningRoomAsync(roomName, identity, stdoutContent: null);
 
     /// <summary>Same as the overload above, but with the captured `.stdout.log`'s content overridable
-    /// -- #1812: lets a test feed several usage-bearing lines rather than the single-line default.</summary>
+    /// -- #1812: lets a test feed several usage-bearing lines rather than the single-line default --
+    /// and (#1886) the room's adapter tag, which is what selects the parser the daemon's live block is
+    /// accumulated through.</summary>
     private async Task<(string RoomDir, ExecutionId ExecutionId)> CreateRunningRoomAsync(
-        string roomName, (int Pid, DateTimeOffset StartTime) identity, string? stdoutContent)
+        string roomName, (int Pid, DateTimeOffset StartTime) identity, string? stdoutContent,
+        string adapter = "claude")
     {
         var room = Path.Combine(_tempHome, BatonPaths.RoomsDirectoryName, roomName);
         Directory.CreateDirectory(room);
@@ -389,7 +476,7 @@ public sealed class FleetProjectionWriterTests : IDisposable
         var bindings = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["architect"] = new WorkerBindingConfigEntry(
-                "claude",
+                adapter,
                 new WorkerContract("architect", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
                 "Draft a plan.",
                 TimeSpan.FromMinutes(5)),
@@ -400,7 +487,7 @@ public sealed class FleetProjectionWriterTests : IDisposable
         var execId = new ExecutionId($"exec-{roomName}");
         var req = new ExecutionRequest(
             execId, new WorkflowId("wf"), stepDef.StepId, stepDef.Worker,
-            [], [], TimeSpan.FromMinutes(5), [], new Dictionary<StepId, ExecutionId>(), Adapter: "claude");
+            [], [], TimeSpan.FromMinutes(5), [], new Dictionary<StepId, ExecutionId>(), Adapter: adapter);
 
         var logWriter = new FlowEventLogWriter(Path.Combine(room, "flow.jsonl"));
         await logWriter.AppendAsync(
