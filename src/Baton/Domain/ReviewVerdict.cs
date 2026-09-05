@@ -40,11 +40,14 @@ public sealed record ReviewVerdict(
 /// Why a converter rather than the plain binding: declaring the property at all is what would
 /// otherwise turn a previously-TOLERATED unknown field into a hard parse failure, and
 /// <see cref="ReviewVerdictSchema"/> is the single definition of "valid verdict" whose failure mode
-/// is a contract-not-satisfied and a retried frontier review. Naming <c>instruments</c> in the review
-/// prompt (#1882) makes a model writing its own — in whatever shape it guesses — more likely, not
-/// less. Nothing is lost by dropping it: <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> overwrites
-/// this key unconditionally after the worker exits, so the model's version is never the one a reader
-/// sees.
+/// is a contract-not-satisfied and a retried frontier review. Nothing in the prompt asks a model for
+/// this field — the paragraph <c>RoleDispatch.VerifyResultsParagraph</c> adds never names it, and
+/// <c>WorkerRoles.json</c>'s verdict example does not carry it — but a field a model invents unasked
+/// is exactly the failure the engine's overwrite exists for, so the parse must survive it in whatever
+/// shape it was guessed. Nothing is lost by dropping it here:
+/// <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> runs on every dispatch that produced a verdict
+/// and either writes the engine's rows or removes the key, so the model's version is never the one a
+/// reader sees.
 /// </para>
 /// </summary>
 internal sealed class TolerantVerifyInstrumentListConverter : JsonConverter<IReadOnlyList<VerifyInstrument>?>

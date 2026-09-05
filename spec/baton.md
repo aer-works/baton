@@ -2251,8 +2251,12 @@ above; both are listed now.
 review-role feature below) and the size of the `verify-results.md` it wrote. They carry no tokens
 because the step spends no model — that is its whole point — but it does spend time, and the reviewer
 does spend a read on the file, so #1849's ledger row needs both visible rather than free. Present
-together or not at all, and only on the room's FIRST execution by start time: the step ran once,
-before the first turn, so reporting it on a retried step's second execution too would double it.
+together or not at all, and only on the room's first execution by start time **that also exited**:
+the step ran once, before the first turn, so reporting it on a retried step's second execution too
+would double it. The exit condition is not a second rule — this view is only ever built for an
+execution that recorded an exit (`wallClockMs` is unconditional on it), so an execution still
+running, arrested, or dead without an `ExecutionExited` event has no row to carry the figures, and
+the next one that does is where they land rather than nowhere.
 Derived on read from the step's own sidecar (`artifacts/verify-step.json`), never a ledger event —
 the same derive-over-record-twice preference the rest of this view rests on; an absent, unreadable or
 malformed sidecar reads as "no verify step ran", which is what is true for every room dispatched
@@ -3926,13 +3930,28 @@ commands before the worker's first turn, sequentially, and the contract is:
   each command is spawned through the shell-less launcher, never `cmd /c`, with the review workspace
   as its cwd and wrapped in `python tools/buildlock.py`. That wrapping is not optional — two
   concurrent MSBuild runs on one machine kill each other (#1402), and this step launches beside lanes
-  that are already building.
+  that are already building. **Every argument of every shape must also name something inside the
+  workspace** — the "no escape" rule the python arm applies to its script path, applied to all of them,
+  so `dotnet build ../../elsewhere/Evil.csproj` is refused too. What the gate decides is location, not
+  intent: a script's own handling of the flags after `--check`/`--selftest` stays that script's
+  business, and the grammar's own comment is canonical for the exact spellings refused.
+- **A missing wrapper refuses the step, not the review.** `--workspace` is an arbitrary directory and
+  need not be a Baton checkout at all, so `tools/buildlock.py`'s absence under it is checked before
+  anything is spawned and recorded as the reason on every requested command
+  (`VerifyStepRunner.MissingBuildLockReason`). Spawning anyway put `python`'s own "can't open file"
+  exit under a heading naming the operator's command, which a reviewer told to treat a non-zero exit
+  as evidence reads as a failing build.
 - **A non-zero exit does not abort the review.** It is what the reviewer reads first. Each command
   gets its own wall-clock bound (`--verify-timeout`, 10 minutes by default); a command that exceeds it
   has its process tree killed and is recorded with NO exit code, because a killed tree has none and a
-  fabricated `-1` would be indistinguishable from a command that really exited -1. A timeout can mean
-  a slow command or a long wait for the build lock, and `verify-results.md` says so rather than
-  letting the reader assume a failing build.
+  fabricated `-1` would be indistinguishable from a command that really exited -1. **An absent exit
+  code means only that none was observed** — a timeout, a spawn the OS refused, or a command never run
+  at all — and the three are told apart in `verify-results.md` rather than by the field. Two other
+  outcomes are likewise not command failures and are labelled as such where they appear: a timeout can
+  mean a slow command or a long wait for the build lock, and exit 75 is `tools/buildlock.py`'s own
+  BLOCKED code, meaning the wrapper gave up waiting and never ran the command — the same reading
+  `VerifyRunner` already gives 75 (`VerifyFailedKind.BuildLockBusy`), so the two consumers of that
+  wrapper cannot disagree about what it said.
 - **`<room>/artifacts/verify-results.md`** carries one section per command — the exact command line,
   the exit code, the wall clock and a 200-line output tail — and the review prompt gains one paragraph
   pointing at it and requiring the verdict's runtime claims to cite it. The prompt says nothing at all
@@ -3949,7 +3968,17 @@ commands before the worker's first turn, sequentially, and the contract is:
   Declaring the field must not narrow that tolerance: a model-written `instruments` of any other shape
   reads as absent rather than failing the parse, since a declared key that throws where an unknown one
   was ignored would turn a review dispatched with no `--verify-cmd` at all into a contract failure and
-  a retried frontier run. Nothing is lost — the engine overwrites the key regardless.
+  a retried frontier run. Nothing is lost — the engine overwrites the key regardless. **"Regardless"
+  is literal, and includes the no-step case**: the stamp runs on every `verdict.json` a `baton
+  dispatch` produced, and when no verify step ran it REMOVES the key rather than leaving what the
+  model wrote. Removal, not an empty array, so that absent keeps its single meaning — no step ran —
+  which is what the field's own doc, `docs/agents/invoking-baton.md` and this bullet all already say.
+  Skipping the stamp when no step ran is what made the field a claim rather than a record on the
+  majority of review lanes: nothing removed a model-written array, and `--notify` carries
+  `verdict.json` verbatim off disk. **Scoped to `dispatch` because that is where the stamp is wired:
+  `baton redispatch` drives the same pump and does not stamp**, so a redispatched review's verdict can
+  still carry a model-written `instruments`. Stated rather than left as a silent second door; it is
+  the same boundary that keeps `--verify-cmd` from being inherited on that path.
 - **The role's shell grant is unchanged**, and `WorkerRoles.json` is untouched. `--verify-cmd` is
   accepted only for a verdict-producing role (today, `review` alone) and refused for a workflow
   template. It is **not** `--verify`, which overrides the *post-exit* verify command a mutating role

@@ -19,6 +19,12 @@ public class VerifyStepCommandParserTests
     [InlineData("python benchmarks/deepswe/derive_scores.py --check-all")]
     [InlineData("python tools/gates/gates.py --selftest")]
     [InlineData("python tools\\gates\\gates.py --selftest")]
+    // The workspace rule is about location, not about colons or slashes: an MSBuild property and a
+    // relative project path under the tree both stay usable. Without these the refusal above could be
+    // a blanket "any argument with punctuation", which would break the flag's own documented example.
+    [InlineData("dotnet build -p:Configuration=Release")]
+    [InlineData("dotnet build /p:Configuration=Release")]
+    [InlineData("dotnet test tests/Baton.Tests/Baton.Tests.csproj --minimum-expected-tests 1")]
     public void An_allowlisted_shape_parses(string commandLine)
     {
         Assert.True(VerifyStepCommandParser.TryParse(commandLine, out var command, out var error), error);
@@ -43,10 +49,25 @@ public class VerifyStepCommandParserTests
     // An absolute or relative path standing in for the allowlisted program name.
     [InlineData("C:/tools/dotnet.exe build")]
     [InlineData("../dotnet build")]
-    // Shell syntax, which nothing here would interpret.
+    // Shell syntax, which nothing here would interpret. One arm per character in
+    // VerifyStepCommandParser's own ShellMetacharacters set that a person would plausibly type --
+    // without them the set could lose a member and no test would notice.
     [InlineData("dotnet build && dotnet test")]
     [InlineData("dotnet build | tee log.txt")]
     [InlineData("dotnet build > out.txt")]
+    [InlineData("dotnet build < input.txt")]
+    [InlineData("dotnet build ; dotnet test")]
+    [InlineData("dotnet build `whoami`")]
+    [InlineData("dotnet build ^ test")]
+    // Arguments naming a location outside the workspace -- the rule the python script path already
+    // had, now applied to every argument of every shape.
+    [InlineData("dotnet build ../../elsewhere/Evil.csproj")]
+    [InlineData("dotnet build ..\\..\\elsewhere\\Evil.csproj")]
+    [InlineData("dotnet test C:/other-repo/Evil.csproj")]
+    [InlineData("dotnet test /etc/passwd")]
+    [InlineData("dotnet build src/../../out/Evil.csproj")]
+    [InlineData("python tools/gates/gates.py --selftest --emit C:\\anywhere\\out.json")]
+    [InlineData("python tools/gates/gates.py --selftest --emit ../../out.json")]
     // Degenerate input.
     [InlineData("")]
     [InlineData("   ")]

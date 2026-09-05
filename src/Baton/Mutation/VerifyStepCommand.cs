@@ -25,6 +25,14 @@ public sealed record VerifyStepCommand(string CommandLine, IReadOnlyList<string>
 /// a shell metacharacter — there is no shell here to interpret one, so its presence means the caller
 /// expected a shell and would otherwise get a literal argument silently.
 /// </para>
+/// <para>
+/// On top of the shape, EVERY remaining argument of every shape has to name something inside the
+/// workspace (<see cref="EscapesWorkspace"/>). Without that, the two arms were asymmetric: a python
+/// script path could not escape <c>tools/</c>, while <c>dotnet build ../../elsewhere/Evil.csproj</c>
+/// handed MSBuild an arbitrary project outside the tree under review, and
+/// <c>python tools/x.py --selftest --emit C:\anywhere\out.json</c> handed a script an arbitrary
+/// destination. spec/baton.md §9 states the limit of what this buys.
+/// </para>
 /// </summary>
 public static class VerifyStepCommandParser
 {
@@ -74,6 +82,14 @@ public static class VerifyStepCommandParser
             error = $"'--verify-cmd {commandLine}' is not an allowlisted verify command shape. Allowed: "
                 + "'dotnet build ...', 'dotnet test ...', or 'python <script under tools/ or benchmarks/> "
                 + "--check.../--selftest...'.";
+            return false;
+        }
+
+        if (argv.Skip(2).FirstOrDefault(EscapesWorkspace) is { } escaping)
+        {
+            error = $"'--verify-cmd {commandLine}' has an argument that names a location outside the "
+                + $"workspace ('{escaping}'). Every argument must stay inside the tree under review — "
+                + "the verify step runs with the review workspace as its working directory.";
             return false;
         }
 
@@ -139,6 +155,41 @@ public static class VerifyStepCommandParser
 
         return ScriptRoots.Any(root => normalized.StartsWith(root, StringComparison.Ordinal))
             && normalized.EndsWith(".py", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when an argument names a location outside the workspace. Deliberately narrower than
+    /// <see cref="IsRepoScriptPath"/>, which is a whitelist of one shape; this is a blacklist of the
+    /// four ways out of a directory, applied to arguments whose legitimate values include things that
+    /// are not paths at all (<c>-p:Configuration=Release</c>, <c>--minimum-expected-tests 1</c>).
+    /// A bare <c>:</c> is therefore fine — only a drive- or UNC-rooted spelling is refused — and an
+    /// MSBuild-style <c>/p:x=y</c> switch stays usable, since a leading <c>/</c> is read as a root
+    /// only when the token has no <c>:</c> in it or a second separator after it.
+    /// </summary>
+    private static bool EscapesWorkspace(string token)
+    {
+        var normalized = token.Replace('\\', '/');
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalized.StartsWith('/')
+            && (normalized.IndexOf('/', 1) >= 0 || !normalized.Contains(':', StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        if (normalized.Contains(":/", StringComparison.Ordinal)
+            || (normalized.Length >= 2 && char.IsAsciiLetter(normalized[0]) && normalized[1] == ':'))
+        {
+            return true;
+        }
+
+        return normalized == ".."
+            || normalized.StartsWith("../", StringComparison.Ordinal)
+            || normalized.EndsWith("/..", StringComparison.Ordinal)
+            || normalized.Contains("/../", StringComparison.Ordinal);
     }
 
     /// <summary>

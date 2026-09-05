@@ -323,10 +323,10 @@ public static class DispatchCommand
 
         // #1882: the engine stamps the instruments onto the verdict the worker just wrote -- see
         // VerifyStep.InjectInstrumentsAsync for why the engine, and not the model, is the writer.
-        if (verifyStep is not null)
-        {
-            await StampInstrumentsOnVerdictAsync(options, result, verifyStep).ConfigureAwait(false);
-        }
+        // UNCONDITIONAL, including when no verify step ran: that arm removes a model-written
+        // `instruments` instead of writing one, which is the only thing that makes the field a record
+        // rather than a claim on the majority of review lanes (dispatched without --verify-cmd).
+        await StampInstrumentsOnVerdictAsync(options, result, verifyStep).ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
         {
@@ -359,19 +359,6 @@ public static class DispatchCommand
     }
 
     /// <summary>
-    /// #1882: runs the allowlisted <c>--verify-cmd</c> commands and records them into the room's
-    /// artifacts, printing one line per command so an operator watching the dispatch sees the evidence
-    /// being gathered rather than a silent pause.
-    /// </summary>
-    /// <param name="workspace">
-    /// The commands' working directory — the tree this review was dispatched against. Deliberately the
-    /// workspace and not the worker's own provisioned worktree: that worktree does not exist yet when
-    /// this runs (RunCommand provisions it), and the whole point of running before the first turn is
-    /// that the results are on disk when the worker starts. The gap that leaves is the same one
-    /// <c>workspaceFact</c> already discloses above — a worktree-provisioned worker sees HEAD, while
-    /// these commands see the workspace's actual working tree.
-    /// </param>
-    /// <summary>
     /// Re-derives the argv for each <c>--verify-cmd</c> line. Re-parsed rather than carried so the
     /// string an operator reads back off the room and the argv that actually ran cannot diverge; the
     /// call site's own comment states why it happens before the room directory exists.
@@ -397,6 +384,21 @@ public static class DispatchCommand
         return commands;
     }
 
+    /// <summary>
+    /// #1882: runs the allowlisted <c>--verify-cmd</c> commands and records them into the room's
+    /// artifacts, printing one line per command so an operator watching the dispatch sees the evidence
+    /// being gathered rather than a silent pause.
+    /// </summary>
+    /// <param name="workspace">
+    /// The commands' working directory — the tree this review was dispatched against. Deliberately the
+    /// workspace and not the worker's own provisioned worktree: that worktree does not exist yet when
+    /// this runs (RunCommand provisions it), and the whole point of running before the first turn is
+    /// that the results are on disk when the worker starts. The gap that leaves is the same one
+    /// <c>workspaceFact</c> already discloses above — a worktree-provisioned worker sees HEAD, while
+    /// these commands see the workspace's actual working tree. It is also what
+    /// <c>VerifyStepRunner.MissingBuildLockReason</c> is measured against: an arbitrary <c>--workspace</c>
+    /// need not be a Baton checkout at all.
+    /// </param>
     private static async Task<Baton.Mutation.VerifyStep.Outcome?> RunVerifyStepAsync(
         DispatchOptions options,
         IReadOnlyList<Baton.Mutation.VerifyStepCommand> commands,
@@ -417,7 +419,15 @@ public static class DispatchCommand
 
             foreach (var commandResult in outcome.Results)
             {
-                var verdict = commandResult.TimedOut ? "timed out" : $"exit {commandResult.ExitCode?.ToString() ?? "unknown"}";
+                // Same three readings of an absent exit code the results file distinguishes -- "exit
+                // unknown" was the one spelling that told an operator nothing about which happened.
+                var verdict = commandResult switch
+                {
+                    { TimedOut: true } => "timed out",
+                    { ExitCode: null } => "not run",
+                    { ExitCode: Baton.Mutation.VerifyStepReport.BuildLockBlockedExitCode } => "blocked on the build lock",
+                    var r => $"exit {r.ExitCode}",
+                };
                 Console.Out.WriteLine($"  {commandResult.CommandLine} -- {verdict} ({commandResult.WallClockMs} ms)");
             }
 
@@ -438,35 +448,55 @@ public static class DispatchCommand
     }
 
     /// <summary>
-    /// #1882: copies the verify step's instruments onto the review's own <c>verdict.json</c>, after the
-    /// run and before this command returns. Placed here rather than inside the engine's contract check
-    /// for the same reason <see cref="CopyPrimaryOutputToOverride"/> is: the execution-scoped artifact
-    /// directory is not known until the run has produced one.
+    /// #1882: makes every <c>verdict.json</c> this dispatch produced say what the ENGINE knows about
+    /// the instruments — the step's rows when one ran, and the key removed when none did. Placed here
+    /// rather than inside the engine's contract check for the same reason
+    /// <see cref="CopyPrimaryOutputToOverride"/> is: the execution-scoped artifact directory is not
+    /// known until the run has produced one.
+    /// <para>
+    /// Every step with an execution is visited, not just the first: a composed template's review phase
+    /// is not necessarily its first step, and the removal arm has to reach a model-written
+    /// <c>instruments</c> wherever a verdict was written. A step whose execution wrote no
+    /// <c>verdict.json</c> — every non-verdict role — is silently skipped, which is why no role check
+    /// is needed here: the file's existence is the population.
+    /// </para>
     /// </summary>
+    /// <param name="verifyStep">Null when no verify step ran for this dispatch.</param>
     private static async Task StampInstrumentsOnVerdictAsync(
-        DispatchOptions options, CommandResult result, Baton.Mutation.VerifyStep.Outcome verifyStep)
+        DispatchOptions options, CommandResult result, Baton.Mutation.VerifyStep.Outcome? verifyStep)
     {
-        var step = result.State.Steps.FirstOrDefault(s => s.LatestExecutionId is not null);
-        if (step?.LatestExecutionId is not { } execId)
+        foreach (var step in result.State.Steps)
         {
-            return;
-        }
+            if (step.LatestExecutionId is not { } execId)
+            {
+                continue;
+            }
 
-        var verdictPath = Path.Combine(
-            options.RoomDirectoryPath,
-            Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName,
-            $"execution_{execId}",
-            VerdictOutputName);
+            var verdictPath = Path.Combine(
+                options.RoomDirectoryPath,
+                Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName,
+                $"execution_{execId}",
+                VerdictOutputName);
+            if (!File.Exists(verdictPath))
+            {
+                continue;
+            }
 
-        // CancellationToken.None: the review is already finished and its outputs are already durable.
-        var stamped = await Baton.Mutation.VerifyStep
-            .InjectInstrumentsAsync(verdictPath, verifyStep.Instruments, CancellationToken.None)
-            .ConfigureAwait(false);
-        if (!stamped)
-        {
-            Console.Error.WriteLine(
-                $"Warning: could not record the verify step's instruments on '{verdictPath}'. The verify "
-                + $"results themselves are unaffected, at '{verifyStep.ResultsFilePath}'.");
+            // CancellationToken.None: the review is already finished and its outputs are already durable.
+            var stamped = await Baton.Mutation.VerifyStep
+                .InjectInstrumentsAsync(verdictPath, verifyStep?.Instruments, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (stamped)
+            {
+                continue;
+            }
+
+            Console.Error.WriteLine(verifyStep is null
+                ? $"Warning: could not check '{verdictPath}' for a model-written 'instruments' field. No "
+                    + "verify step ran for this dispatch, so any value under that key is the worker's own "
+                    + "claim rather than an engine record."
+                : $"Warning: could not record the verify step's instruments on '{verdictPath}'. The verify "
+                    + $"results themselves are unaffected, at '{verifyStep.ResultsFilePath}'.");
         }
     }
 

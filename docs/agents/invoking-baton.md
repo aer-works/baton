@@ -305,13 +305,15 @@ as `baton dispatch`'s own.)
   `Mutation.VerifyStepCommandParser` is the grammar; spec/baton.md §9 says why it is drawn this way.
 - Each runs sequentially, wrapped in `python tools/buildlock.py`, with the review workspace as its
   cwd and `--verify-timeout` minutes (default 10) of wall clock. A timeout kills the process tree and
-  records no exit code.
+  records no exit code. If your `--workspace` is not a Baton checkout — no `tools/buildlock.py` under
+  it — the step is refused with that reason recorded and the review still runs.
 - Results land in `<room>/artifacts/verify-results.md` — one section per command with the exact
   command line, exit code, wall clock and a 200-line output tail. **A failing command is evidence,
   not a stop signal** (spec/baton.md §9 has the rule; the review prompt states it too).
 - `verdict.json` gains `instruments: [{command, exitCode, wallClockMs}]`, written by the engine from
   what actually ran, never by the model — so a verdict citing a number absent from the results file
-  is a finding a second reader can raise. Additive and optional: absent without the flag.
+  is a finding a second reader can raise. Additive and optional: absent without the flag, including
+  when the worker wrote its own (the engine strips it).
 - `steps[].usage.verifyStepMs` / `.verifyResultsBytes` carry the step's cost, on the room's first
   execution only.
 - **Not `--verify`.** That flag overrides the *post-exit* verify command (a role's `verify_pixi_task`,

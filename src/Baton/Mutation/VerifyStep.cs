@@ -77,7 +77,13 @@ public static class VerifyStep
     /// <item><description>
     /// It OVERWRITES any <c>instruments</c> the model wrote itself. That is the point of the field —
     /// a reviewer must not be able to claim an instrument it did not have — so a model-authored value
-    /// is replaced, never merged with or appended to.
+    /// is replaced, never merged with or appended to. Unconditionally, which is why
+    /// <paramref name="instruments"/> is nullable: null means NO verify step ran, and then the key is
+    /// REMOVED rather than left as the model wrote it. Skipping the whole call in that case would have
+    /// left a fabricated instruments array on disk and in <c>--notify</c>'s payload on the majority of
+    /// review lanes — the ones dispatched without <c>--verify-cmd</c> — which is the exact claim this
+    /// field exists to make impossible. Removal rather than an empty array so that "absent" keeps its
+    /// one meaning (spec/baton.md §9): no step ran.
     /// </description></item>
     /// <item><description>
     /// Every failure (absent file, unparseable JSON, a top-level array or scalar, an unwritable path)
@@ -87,12 +93,19 @@ public static class VerifyStep
     /// </description></item>
     /// </list>
     /// </summary>
-    /// <returns>True when the file was rewritten with the instruments in place.</returns>
+    /// <param name="instruments">
+    /// The step's own rows, or null when no step ran — see the third bullet above for why null is a
+    /// removal rather than a skip.
+    /// </param>
+    /// <returns>
+    /// True when the verdict on disk ends up saying what the engine says: the instruments written, or
+    /// the key gone. Also true when null was passed and the file never carried the key — nothing to
+    /// remove is not a failure, and rewriting the file to prove it would be a write for no reader.
+    /// </returns>
     public static async Task<bool> InjectInstrumentsAsync(
-        string verdictFilePath, IReadOnlyList<VerifyInstrument> instruments, CancellationToken cancellationToken)
+        string verdictFilePath, IReadOnlyList<VerifyInstrument>? instruments, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(verdictFilePath);
-        ArgumentNullException.ThrowIfNull(instruments);
 
         string? temporaryPath = null;
         try
@@ -117,7 +130,17 @@ public static class VerifyStep
                 return false;
             }
 
-            verdict["instruments"] = JsonSerializer.SerializeToNode(instruments);
+            if (instruments is null)
+            {
+                if (!verdict.Remove("instruments"))
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                verdict["instruments"] = JsonSerializer.SerializeToNode(instruments);
+            }
 
             // Write-then-rename, the same atomic-write discipline TerminalSentinelWriter and
             // CancelRequestFile already use, and for the same reason: this rewrites a file that is

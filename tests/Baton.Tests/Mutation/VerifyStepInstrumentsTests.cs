@@ -203,4 +203,52 @@ public class VerifyStepInstrumentsTests
 
         Assert.Null(verdict!.Instruments);
     }
+
+    [Fact]
+    public async Task No_verify_step_removes_the_instruments_the_model_wrote_rather_than_leaving_them()
+    {
+        // Null instruments means "no step ran", and the field then has to be ABSENT -- not the array
+        // the worker invented. This is the arm the overwrite test above cannot cover: there, an engine
+        // value replaces the model's, so the field is right either way; here there is no engine value,
+        // and doing nothing is precisely what leaves a fabricated test run on disk.
+        var path = TempVerdict(
+            """
+            {"reviewedRef": "1882-lane", "summary": "looks fine", "findings": [],
+             "instruments": [{"command": "dotnet test", "exitCode": 0, "wallClockMs": 91002}]}
+            """);
+        try
+        {
+            Assert.True(await VerifyStep.InjectInstrumentsAsync(path, instruments: null, CancellationToken.None));
+
+            var root = JsonDocument.Parse(File.ReadAllBytes(path)).RootElement;
+            Assert.False(root.TryGetProperty("instruments", out _));
+            // Removal, never a rewrite of the whole verdict: the rest of what the worker wrote stands.
+            Assert.Equal("looks fine", root.GetProperty("summary").GetString());
+            Assert.Equal("1882-lane", root.GetProperty("reviewedRef").GetString());
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task No_verify_step_and_no_model_written_field_rewrites_nothing()
+    {
+        // The common case by far, and the control for the arm above: there is nothing to remove, so
+        // the file is reported clean and left byte-for-byte alone rather than reserialized. A pass
+        // here plus a pass there is what tells "removes the key" apart from "always rewrites".
+        const string Original = """{"reviewedRef": "main", "findings": [], "model": "opus"}""";
+        var path = TempVerdict(Original);
+        try
+        {
+            Assert.True(await VerifyStep.InjectInstrumentsAsync(path, instruments: null, CancellationToken.None));
+
+            Assert.Equal(Original, File.ReadAllText(path));
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
 }

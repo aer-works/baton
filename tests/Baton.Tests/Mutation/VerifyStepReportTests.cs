@@ -28,6 +28,10 @@ public class VerifyStepReportTests
         (`tools/buildlock.py` waits up to `BATON_BUILDLOCK_TIMEOUT_S`, 1800s by default, before it
         reports contention itself). Do not read a timeout as a failing build.
 
+        Two other lines below are not command failures either, and say so where they appear: a
+        command reported as blocked on the build lock never ran (the wrapper gave up waiting), and
+        a command reported as not run never started at all.
+
 
         """;
 
@@ -72,13 +76,18 @@ public class VerifyStepReportTests
     public async Task Running_the_step_writes_both_the_results_file_and_the_engine_only_sidecar()
     {
         var root = Path.Combine(Path.GetTempPath(), $"verify-step-{Guid.NewGuid():N}");
+        // A real workspace carrying the wrapper: the runner refuses to launch anything without it, so
+        // a fake path here would silently turn this into the refusal arm and pin the wrong bytes.
+        var workspace = Path.Combine(Path.GetTempPath(), $"verify-ws-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(workspace, "tools"));
+        File.WriteAllText(Path.Combine(workspace, VerifyStepRunner.BuildLockScriptPath), "# stand-in");
         try
         {
             Assert.True(VerifyStepCommandParser.TryParse("dotnet build", out var command, out _));
             VerifyProcessLauncher launcher = (_, _, _, _, _) => Task.FromResult<(int?, string, bool)>((7, "boom", false));
 
             var outcome = await VerifyStep.RunAndRecordAsync(
-                [command!], @"C:\worktrees\w1882", root, TimeSpan.FromMinutes(1), CancellationToken.None, launcher);
+                [command!], workspace, root, TimeSpan.FromMinutes(1), CancellationToken.None, launcher);
 
             var resultsPath = Path.Combine(root, VerifyStepReport.ResultsFileName);
             Assert.True(File.Exists(resultsPath));
@@ -99,7 +108,63 @@ public class VerifyStepReportTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(root);
+            DirectoryCleanup.DeleteRecursively(workspace);
         }
+    }
+
+    [Fact]
+    public void A_build_lock_block_and_a_command_that_never_ran_are_not_rendered_as_failures()
+    {
+        // The two readings a bare "- exit code: N" line loses. Both are pinned here rather than probed
+        // with Contains, for the same reason the whole-document test above is: a Contains assertion
+        // passes just as happily when the qualifying clause disappears and the number stays.
+        var results = new List<VerifyCommandResult>
+        {
+            new(
+                "dotnet build -warnaserror",
+                ExitCode: VerifyStepReport.BuildLockBlockedExitCode,
+                WallClockMs: 1_800_000,
+                TimedOut: false,
+                Tail: "buildlock: BLOCKED"),
+            new(
+                "dotnet test",
+                ExitCode: null,
+                WallClockMs: 0,
+                TimedOut: false,
+                Tail: VerifyStepRunner.MissingBuildLockReason(@"C:\other-repo")),
+        };
+
+        var expected = Preamble
+            + "## 1. `dotnet build -warnaserror`\n\n"
+            + "- exit code: 75 (blocked on the build lock: `tools/buildlock.py` gave up waiting for another "
+            + "build and never ran this command — contention, not a failing command)\n"
+            + "- wall clock: 1800000 ms\n\n"
+            + "Last 200 lines of combined stdout and stderr:\n\n"
+            + "```text\nbuildlock: BLOCKED\n```\n\n"
+            + "## 2. `dotnet test`\n\n"
+            + "- exit code: none (the command was not run)\n"
+            + "- wall clock: 0 ms\n\n"
+            // Not "Last 200 lines of ... stdout and stderr": nothing ran, so there is no output to
+            // bound, and labelling the engine's own reason as captured output would be a fabrication.
+            + "Why:\n\n"
+            + "```text\n" + VerifyStepRunner.MissingBuildLockReason(@"C:\other-repo") + "\n```\n\n";
+
+        Assert.Equal(expected.Replace("\r\n", "\n"), VerifyStepReport.Render(results));
+    }
+
+    [Fact]
+    public void An_ordinary_non_zero_exit_keeps_its_bare_line_and_its_output_heading()
+    {
+        // The control for the test above: same renderer, an exit code that is NOT 75 and a non-null
+        // one, so a pass there cannot come from a renderer that qualifies every line it prints.
+        var rendered = VerifyStepReport.Render(
+            [new("dotnet test", ExitCode: 74, WallClockMs: 10, TimedOut: false, Tail: "Failed!")]);
+
+        Assert.Contains("- exit code: 74\n", rendered, StringComparison.Ordinal);
+        // The preamble names the blocked case for every document, so the discriminating check is on
+        // the exit-code LINE, not on the document.
+        Assert.DoesNotContain("- exit code: 74 (", rendered, StringComparison.Ordinal);
+        Assert.Contains("Last 200 lines of combined stdout and stderr:", rendered, StringComparison.Ordinal);
     }
 
     [Fact]

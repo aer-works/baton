@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Baton.Domain;
 using Baton.Mutation;
 using Baton.Status;
@@ -12,8 +13,40 @@ namespace Baton.Cli.Tests;
 /// The step's own spawning is pinned in <c>Baton.Tests</c>'s <c>VerifyStepRunnerTests</c>; nothing
 /// here launches a process.
 /// </summary>
-public class DispatchVerifyStepTests
+[Collection(SerializedEnvironmentCollection.Name)]
+public sealed class DispatchVerifyStepTests : IDisposable
 {
+    /// <summary>
+    /// A model-written verdict, complete with an <c>instruments</c> array it invented for itself —
+    /// the fabricated test run the engine's stamp exists to remove. Fed to the fake worker as a
+    /// fixture so no JSON is assembled through a shell echo.
+    /// </summary>
+    private const string ModelWrittenVerdict =
+        """
+        {"reviewedRef": "1882-lane", "summary": "all good", "findings": [],
+         "instruments": [{"command": "dotnet test", "exitCode": 0, "wallClockMs": 91002}]}
+        """;
+
+    private readonly IsolatedBatonHome _batonHome = new();
+    private readonly IDisposable _catalogScope;
+
+    // Pin the shipped catalog, for the reason DispatchCommandEndToEndTests' own constructor states.
+    public DispatchVerifyStepTests()
+    {
+        _catalogScope = BatonEnvironmentSnapshot.BeginScope(BatonEnvironmentSnapshot.Current with
+        {
+            WorkerRolesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerRoles.json"),
+            WorkerTiersPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkerTiers.json"),
+            WorkflowTemplatesPathOverride = Path.Combine(AppContext.BaseDirectory, "WorkflowTemplates.json"),
+        });
+    }
+
+    public void Dispose()
+    {
+        _catalogScope.Dispose();
+        _batonHome.Dispose();
+    }
+
     [Fact]
     public void The_flag_is_repeatable_and_each_value_is_kept_verbatim()
     {
@@ -158,6 +191,93 @@ public class DispatchVerifyStepTests
             < withStep.PromptTemplate.IndexOf("Required outputs:", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Runs a real <c>review</c> dispatch through the real pump with a fake worker that writes
+    /// <see cref="ModelWrittenVerdict"/>, and hands back the <c>verdict.json</c> that ended up on
+    /// disk — the same bytes <c>--notify</c> would carry, since <c>WatchFireService.BuildPayload</c>
+    /// deserializes that file verbatim into the payload with no schema in between.
+    /// </summary>
+    private static async Task<(string VerdictPath, JsonElement Verdict)> DispatchReviewAsync(
+        string testRoot, IReadOnlyList<string>? verifyCommands)
+    {
+        var specPath = Path.Combine(testRoot, "spec.md");
+        var fixturePath = Path.Combine(testRoot, "worker-verdict.json");
+        var workspace = Path.Combine(testRoot, "workspace");
+        var roomDirectory = Path.Combine(testRoot, "room");
+        Directory.CreateDirectory(workspace);
+        await File.WriteAllTextAsync(specPath, "review the branch", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(fixturePath, ModelWrittenVerdict, TestContext.Current.CancellationToken);
+
+        var adapters = new Dictionary<string, IWorkerAdapter>(StringComparer.Ordinal)
+        {
+            ["fake"] = new ContractOutputWorkerAdapter(
+                satisfyOutputs: true,
+                outputFixtures: new Dictionary<string, string>(StringComparer.Ordinal) { ["verdict.json"] = fixturePath }),
+        };
+
+        var options = new DispatchOptions(
+            "review", specPath, roomDirectory, Adapter: "fake",
+            WorkspaceDirectory: workspace, VerifyCommands: verifyCommands);
+
+        var result = await DispatchCommand.ExecuteAsync(options, adapters, TestContext.Current.CancellationToken);
+        var step = Assert.Single(result.State.Steps);
+        var verdictPath = Path.Combine(
+            roomDirectory, "artifacts", $"execution_{step.LatestExecutionId}", "verdict.json");
+
+        Assert.True(File.Exists(verdictPath));
+        return (verdictPath, JsonDocument.Parse(
+            await File.ReadAllBytesAsync(verdictPath, TestContext.Current.CancellationToken)).RootElement.Clone());
+    }
+
+    [Fact]
+    public async Task A_review_dispatched_without_the_flag_has_the_model_written_instruments_stripped()
+    {
+        // The majority population, and the one the stamp used to skip entirely: no --verify-cmd, so
+        // nothing measured anything, so the field must be ABSENT rather than whatever the worker put
+        // there. Read off disk, which is also what --notify carries (WatchFireService.BuildPayload
+        // deserializes verdict.json verbatim into the payload).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-verify-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var (_, verdict) = await DispatchReviewAsync(testRoot, verifyCommands: null);
+
+            Assert.False(verdict.TryGetProperty("instruments", out _));
+            // The rest of the worker's verdict is untouched -- this strips a field, it does not rewrite
+            // the review.
+            Assert.Equal("all good", verdict.GetProperty("summary").GetString());
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_review_dispatched_with_the_flag_gets_the_engine_value_over_the_model_written_one()
+    {
+        // The polarity arm: same worker, same fabricated instruments, one flag different. The
+        // workspace here is not a Baton checkout, so the step records its own refusal rather than
+        // spawning a build -- which is exactly what makes this test CI-safe, and the engine's row is
+        // still unmistakably the engine's (the command the operator asked for, no exit code).
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-verify-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var (_, verdict) = await DispatchReviewAsync(testRoot, verifyCommands: ["dotnet build -warnaserror"]);
+
+            var instruments = verdict.GetProperty("instruments");
+            var instrument = Assert.Single(instruments.EnumerateArray());
+            Assert.Equal("dotnet build -warnaserror", instrument.GetProperty("command").GetString());
+            // The model's "dotnet test exited 0" is gone, not merged with or appended to.
+            Assert.Equal(JsonValueKind.Null, instrument.GetProperty("exitCode").ValueKind);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public void The_verify_step_cost_lands_on_the_first_execution_only_never_on_a_retry_as_well()
     {
@@ -190,6 +310,48 @@ public class DispatchVerifyStepTests
             // The step ran once. Reporting it on the retry too would double it in #1849's ledger.
             Assert.Null(usage["exec-2"].VerifyStepMs);
             Assert.Null(usage["exec-2"].VerifyResultsBytes);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_first_execution_that_never_exited_passes_the_cost_to_the_next_one_rather_than_dropping_it()
+    {
+        // The discriminating case the test above cannot see (it journals both executions with exits,
+        // so it passes whether or not the exit condition exists): a FIRST execution that started and
+        // recorded no exit. That execution gets no usage view at all, so the figures land on the next
+        // execution that does have one. spec/baton.md §3 states the condition and which situations
+        // reach it; without this arm nothing pins it.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"verify-usage-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var sidecar = new VerifyStepReport.Sidecar(
+                TotalWallClockMs: 125_400, ResultsBytes: 4096, Commands: [new VerifyInstrument("dotnet build", 0, 125_400)]);
+            File.WriteAllText(
+                Path.Combine(testRoot, VerifyStepReport.SidecarFileName), VerifyStepReport.SerializeSidecar(sidecar));
+
+            var first = new ExecutionId("exec-1");
+            var second = new ExecutionId("exec-2");
+            var t0 = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
+            var entries = new List<LogEntry>
+            {
+                // exec-1 starts first and never exits; exec-2 starts later and does.
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(first, Pid: 1), t0),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(second, Pid: 2), t0.AddMinutes(10)),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(second, 0, CoreExitReason.Natural), t0.AddMinutes(11)),
+            };
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            // No row at all for the execution that never exited -- which is why the fields cannot be
+            // attributed to it, and the reason the projector's own condition is what it is.
+            Assert.False(usage.ContainsKey("exec-1"));
+            Assert.Equal(125_400, usage["exec-2"].VerifyStepMs);
+            Assert.Equal(4096, usage["exec-2"].VerifyResultsBytes);
         }
         finally
         {

@@ -31,6 +31,11 @@ public delegate Task<(int? ExitCode, string Output, bool TimedOut)> VerifyProces
 /// <c>python tools/buildlock.py</c>, under an individual wall-clock bound. A non-zero exit is
 /// recorded and the step carries on: the results are evidence for the reviewer, not a gate on it.
 /// </para>
+/// <para>
+/// The one thing that refuses the step outright is that wrapper being absent under the working
+/// directory — see <see cref="MissingBuildLockReason"/>. Even then nothing
+/// throws: the refusal is recorded per command and the review runs.
+/// </para>
 /// </summary>
 /// <remarks>
 /// Registered in <c>tests/Baton.Architecture.Tests/VendorSpawnGateTests.cs</c>'s approved-spawn-sites
@@ -49,6 +54,18 @@ public static class VerifyStepRunner
     /// <c>workingDirectory</c> — the review worktree, which is a checkout of this repo.
     /// </summary>
     public const string BuildLockScriptPath = "tools/buildlock.py";
+
+    /// <summary>
+    /// What every result carries when <see cref="BuildLockScriptPath"/> is not present under the
+    /// working directory. <c>--workspace</c> is an arbitrary directory — <c>docs/agents/invoking-baton.md</c>
+    /// exists precisely for lanes run against some OTHER repo — and without the wrapper there is no
+    /// contention protection to run under. spec/baton.md §9 states why refusing beats spawning anyway.
+    /// Only the STEP is refused: the review still runs, with this recorded in <c>verify-results.md</c>.
+    /// </summary>
+    public static string MissingBuildLockReason(string workingDirectory) =>
+        $"Not run: '{BuildLockScriptPath}' does not exist under '{workingDirectory}', so there is no "
+        + "build-lock wrapper to run this command under. The verify step is refused (the review itself "
+        + "is unaffected); pass a --workspace that is a Baton checkout, or drop --verify-cmd.";
 
     /// <summary>
     /// The default per-command wall clock (<c>--verify-timeout</c>'s default). Ten minutes is longer
@@ -77,6 +94,16 @@ public static class VerifyStepRunner
 
         var spawn = launcher ?? SpawnAsync;
         var results = new List<VerifyCommandResult>(commands.Count);
+
+        // Checked once, before anything is launched -- see MissingBuildLockReason. Every command is
+        // still LISTED, with the same reason on each, because "three commands were asked for and none
+        // could run" is what the reviewer needs to read, not an empty file.
+        if (!File.Exists(Path.Combine(workingDirectory, BuildLockScriptPath)))
+        {
+            var reason = MissingBuildLockReason(workingDirectory);
+            return [.. commands.Select(command => new VerifyCommandResult(
+                command.CommandLine, ExitCode: null, WallClockMs: 0, TimedOut: false, Tail: reason))];
+        }
 
         foreach (var command in commands)
         {

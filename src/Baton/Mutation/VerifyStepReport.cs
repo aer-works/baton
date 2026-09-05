@@ -6,10 +6,15 @@ using Baton.Domain;
 namespace Baton.Mutation;
 
 /// <summary>
-/// What one command of the pre-turn verify step (#1882) did. <see cref="ExitCode"/> is null exactly
-/// when <see cref="TimedOut"/> is true — see <see cref="VerifyInstrument.ExitCode"/> for why absence
-/// rather than a sentinel. <see cref="Tail"/> is the last <see cref="VerifyStepReport.MaxTailLines"/> lines of the combined
-/// stdout+stderr, never the whole log.
+/// What one command of the pre-turn verify step (#1882) did. <see cref="ExitCode"/> is null whenever
+/// no exit code was observed, which is three different facts: the command timed out
+/// (<see cref="TimedOut"/> true), the OS refused to spawn it, or it was never run at all (the build
+/// lock wrapper was absent — <see cref="VerifyStepRunner.MissingBuildLockReason"/>). Absence rather
+/// than a sentinel in all three, for the reason <see cref="VerifyInstrument.ExitCode"/> states; the
+/// two non-timeout cases carry their reason in <see cref="Tail"/>, and
+/// <see cref="VerifyStepReport.Render"/> tells them apart for the reader.
+/// <see cref="Tail"/> is otherwise the last <see cref="VerifyStepReport.MaxTailLines"/> lines of the
+/// combined stdout+stderr, never the whole log.
 /// </summary>
 public sealed record VerifyCommandResult(
     string CommandLine,
@@ -42,6 +47,15 @@ public static class VerifyStepReport
     /// lands mid-line.
     /// </summary>
     public const int MaxTailLines = 200;
+
+    /// <summary>
+    /// <c>tools/buildlock.py</c>'s own BLOCKED exit (its <c>BUILDLOCK_BLOCKED_EXIT</c>): the wrapper
+    /// gave up waiting for another build to finish and never ran the wrapped command. It is a fact
+    /// about contention, not about the command — the same reading <see cref="VerifyRunner"/> already
+    /// gives it (<c>VerifyFailedKind.BuildLockBusy</c>), and rendering it as an ordinary non-zero exit
+    /// is how a reviewer told "a non-zero exit is evidence" concludes the branch does not build.
+    /// </summary>
+    public const int BuildLockBlockedExitCode = 75;
 
     private static readonly JsonSerializerOptions SidecarOptions = new() { WriteIndented = true };
 
@@ -83,6 +97,10 @@ public static class VerifyStepReport
             + "wall-clock bound, which can mean a slow command OR a long wait for the shared build lock\n"
             + "(`tools/buildlock.py` waits up to `BATON_BUILDLOCK_TIMEOUT_S`, 1800s by default, before it\n"
             + "reports contention itself). Do not read a timeout as a failing build.\n\n");
+        sb.Append(
+            "Two other lines below are not command failures either, and say so where they appear: a\n"
+            + "command reported as blocked on the build lock never ran (the wrapper gave up waiting), and\n"
+            + "a command reported as not run never started at all.\n\n");
 
         if (results.Count == 0)
         {
@@ -94,9 +112,7 @@ public static class VerifyStepReport
         {
             var result = results[i];
             sb.Append($"## {i + 1}. `{result.CommandLine}`\n\n");
-            sb.Append(result.TimedOut
-                ? "- exit code: none (timed out; process tree killed)\n"
-                : $"- exit code: {result.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}\n");
+            sb.Append(ExitCodeLine(result));
             sb.Append($"- wall clock: {result.WallClockMs.ToString(System.Globalization.CultureInfo.InvariantCulture)} ms\n\n");
 
             if (result.Tail.Length == 0)
@@ -105,13 +121,42 @@ public static class VerifyStepReport
                 continue;
             }
 
-            sb.Append($"Last {MaxTailLines} lines of combined stdout and stderr:\n\n");
+            // A command that never started has no stdout to bound -- what its Tail carries is the
+            // engine's own reason for not starting it, and labelling that as captured output would be
+            // the fabrication this file exists to avoid.
+            sb.Append(result is { ExitCode: null, TimedOut: false }
+                ? "Why:\n\n"
+                : $"Last {MaxTailLines} lines of combined stdout and stderr:\n\n");
             sb.Append("```text\n");
             sb.Append(result.Tail);
             sb.Append("\n```\n\n");
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The one line of a section that says whether the command ran at all. Four outcomes, each named
+    /// rather than left as a bare number: a real exit, a build-lock block
+    /// (<see cref="BuildLockBlockedExitCode"/>), a timeout, and never-started. The last two share a
+    /// null exit code, which is why the flag rather than the code decides between them.
+    /// </summary>
+    private static string ExitCodeLine(VerifyCommandResult result)
+    {
+        if (result.TimedOut)
+        {
+            return "- exit code: none (timed out; process tree killed)\n";
+        }
+
+        if (result.ExitCode is not { } exitCode)
+        {
+            return "- exit code: none (the command was not run)\n";
+        }
+
+        return exitCode == BuildLockBlockedExitCode
+            ? $"- exit code: {BuildLockBlockedExitCode} (blocked on the build lock: `tools/buildlock.py` gave up "
+                + "waiting for another build and never ran this command — contention, not a failing command)\n"
+            : $"- exit code: {exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n";
     }
 
     /// <summary>

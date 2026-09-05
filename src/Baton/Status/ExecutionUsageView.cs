@@ -255,7 +255,11 @@ public static class ExecutionUsageProjector
         // belongs to exactly one execution. Attributing it to every execution would double-count it in
         // #1849's ledger the moment a step retried; attributing it to none would hide a real cost. The
         // earliest execution with a start/exit pair is the one the step preceded — ties broken by id
-        // so the answer is deterministic rather than dictionary-order.
+        // so the answer is deterministic rather than dictionary-order. The exit half of that pair is
+        // not an extra rule this projection invented: the loop below emits NO view at all for an
+        // execution that never exited (wallClockMs is unconditional on the view), so an id chosen
+        // without it would attribute the cost to a row that is never written and lose the figures
+        // entirely. spec/baton.md §3 states the same condition, in those terms.
         var verifyStep = VerifyStepReport.TryReadSidecar(artifactsRootPath);
         var verifyStepExecutionId = verifyStep is null
             ? null
