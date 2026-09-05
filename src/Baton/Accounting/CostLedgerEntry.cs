@@ -187,6 +187,9 @@ public sealed record CostLedgerEntry(
     [property: JsonPropertyName("pr")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? PullRequest = null,
+    [property: JsonPropertyName("deliverySource")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeliverySource = null,
     [property: JsonPropertyName("startedAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTime? StartedAt = null,

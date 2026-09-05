@@ -96,10 +96,17 @@ internal sealed class LedgerGitRunner : ILedgerGitRunner
 /// </summary>
 internal static partial class CostLedgerSettlementMetadata
 {
+    internal const string WorkspaceHeadDeliverySource = "workspace-head";
+    internal const string DispatchStampedBranchDeliverySource = "dispatch-stamped-branch";
+
     private static readonly TimeSpan DefaultSpawnTimeout = TimeSpan.FromSeconds(20);
 
     private sealed record BranchFacts(string? Issue, string? PullRequest);
-    private sealed record RepositoryProbe(string WorkingDirectory, bool UsesRemoteBranchHead);
+    private sealed record DeliveryProbe(
+        string? WorkingDirectory,
+        string? Branch,
+        bool UsesRemoteBranchHead,
+        string? Source);
 
     /// <summary>Builds one optional metadata value per settled execution.</summary>
     public static async Task<IReadOnlyDictionary<string, CostLedgerExecutionMetadata>> BuildAsync(
@@ -146,47 +153,62 @@ internal static partial class CostLedgerSettlementMetadata
             }
         }
 
-        var branchFactsByBranch = new Dictionary<string, BranchFacts>(StringComparer.Ordinal);
-        BranchFacts? roomFacts = null;
-        var result = new Dictionary<string, CostLedgerExecutionMetadata>(StringComparer.Ordinal);
-
+        string? deliveryExecutionId = null;
+        WorkerBindingConfigEntry? deliveryBinding = null;
+        string? fallbackDeliveryExecutionId = null;
+        WorkerBindingConfigEntry? fallbackDeliveryBinding = null;
         foreach (var (executionId, request) in requests)
         {
-            bindings.TryGetValue(request.Worker, out var binding);
-            var repositoryProbe = ResolveRepositoryProbe(binding);
-            var workingDirectory = repositoryProbe?.WorkingDirectory;
-            var branch = binding?.WorkspaceBranch
-                ?? await TryReadBranchAsync(workingDirectory, gitRunner, cancellationToken, effectiveSpawnTimeout).ConfigureAwait(false);
-
-            BranchFacts? branchFacts = null;
-            if (branch is { Length: > 0 })
+            if (!bindings.TryGetValue(request.Worker, out var binding) || !binding.DeliversBranch)
             {
-                if (!branchFactsByBranch.TryGetValue(branch, out branchFacts))
-                {
-                    branchFacts = new BranchFacts(
-                        IssueFromBranch(branch),
-                        await TryFindPullRequestAsync(ghRunner, workingDirectory, branch, cancellationToken, effectiveSpawnTimeout)
-                            .ConfigureAwait(false));
-                    branchFactsByBranch[branch] = branchFacts;
-                }
-
-                roomFacts ??= branchFacts;
+                continue;
             }
 
-            branchFacts ??= roomFacts;
-            var issue = branchFacts?.Issue ?? priorIssue;
-            var pullRequest = branchFacts?.PullRequest;
+            fallbackDeliveryExecutionId = executionId;
+            fallbackDeliveryBinding = binding;
+            if (succeeded.Contains(executionId)
+                && lastSucceededByWorker.GetValueOrDefault(request.Worker) == executionId)
+            {
+                deliveryExecutionId = executionId;
+                deliveryBinding = binding;
+            }
+        }
 
+        deliveryExecutionId ??= fallbackDeliveryExecutionId;
+        deliveryBinding ??= fallbackDeliveryBinding;
+
+        var deliveryProbe = await ResolveDeliveryProbeAsync(
+            deliveryBinding,
+            gitRunner,
+            cancellationToken,
+            effectiveSpawnTimeout).ConfigureAwait(false);
+        BranchFacts? deliveryFacts = null;
+        if (deliveryProbe?.Branch is { Length: > 0 } deliveryBranch)
+        {
+            deliveryFacts = new BranchFacts(
+                IssueFromBranch(deliveryBranch),
+                await TryFindPullRequestAsync(
+                        ghRunner,
+                        deliveryProbe.WorkingDirectory,
+                        deliveryBranch,
+                        cancellationToken,
+                        effectiveSpawnTimeout)
+                    .ConfigureAwait(false));
+        }
+
+        var issue = deliveryProbe is null ? priorIssue : deliveryFacts?.Issue;
+        var result = new Dictionary<string, CostLedgerExecutionMetadata>(StringComparer.Ordinal);
+        foreach (var (executionId, _) in requests)
+        {
             CostLedgerExecutionMetadata? diff = null;
-            if (binding is { DeliversBranch: true }
+            if (executionId == deliveryExecutionId
                 && succeeded.Contains(executionId)
-                && lastSucceededByWorker.GetValueOrDefault(request.Worker) == executionId
-                && branch is { Length: > 0 })
+                && deliveryProbe?.Branch is { Length: > 0 } branch)
             {
                 diff = await TryReadPushedDiffAsync(
-                    workingDirectory,
+                    deliveryProbe.WorkingDirectory,
                     branch,
-                    repositoryProbe?.UsesRemoteBranchHead == true,
+                    deliveryProbe.UsesRemoteBranchHead,
                     gitRunner,
                     cancellationToken,
                     effectiveSpawnTimeout).ConfigureAwait(false);
@@ -194,26 +216,12 @@ internal static partial class CostLedgerSettlementMetadata
 
             result[executionId] = new CostLedgerExecutionMetadata(
                 Issue: issue,
-                PullRequest: pullRequest,
+                PullRequest: deliveryFacts?.PullRequest,
+                DeliverySource: deliveryProbe?.Source,
                 FilesChanged: diff?.FilesChanged,
                 Additions: diff?.Additions,
                 Deletions: diff?.Deletions,
                 TestFilesChanged: diff?.TestFilesChanged);
-        }
-
-        // A worker without a resolvable directory can still inherit the one branch another binding in
-        // this room recorded. Fill that fallback only after every binding has had a chance to provide it.
-        if (roomFacts is not null || priorIssue is not null)
-        {
-            foreach (var executionId in result.Keys.ToList())
-            {
-                var metadata = result[executionId];
-                result[executionId] = metadata with
-                {
-                    Issue = metadata.Issue ?? roomFacts?.Issue ?? priorIssue,
-                    PullRequest = metadata.PullRequest ?? roomFacts?.PullRequest,
-                };
-            }
         }
 
         return result;
@@ -271,22 +279,45 @@ internal static partial class CostLedgerSettlementMetadata
         }
     }
 
-    private static RepositoryProbe? ResolveRepositoryProbe(WorkerBindingConfigEntry? binding)
+    private static async Task<DeliveryProbe?> ResolveDeliveryProbeAsync(
+        WorkerBindingConfigEntry? binding,
+        ILedgerGitRunner gitRunner,
+        CancellationToken cancellationToken,
+        TimeSpan spawnTimeout)
     {
-        if (binding?.WorkingDirectory is { Length: > 0 } workingDirectory
+        if (binding is null)
+        {
+            return null;
+        }
+
+        if (binding.WorkingDirectory is { Length: > 0 } workingDirectory
             && Directory.Exists(workingDirectory))
         {
-            return new RepositoryProbe(workingDirectory, UsesRemoteBranchHead: false);
+            var branch = await TryReadBranchAsync(
+                workingDirectory,
+                gitRunner,
+                cancellationToken,
+                spawnTimeout).ConfigureAwait(false);
+            return new DeliveryProbe(
+                workingDirectory,
+                branch,
+                UsesRemoteBranchHead: false,
+                Source: branch is null ? null : WorkspaceHeadDeliverySource);
         }
 
         // A terminal audited run normally tears its clean worktree down before Program performs the
-        // settle-time ledger append. The provisioner preserved the source repository on the binding,
-        // and DeliveryVerifier fetched origin/<branch> before removal, so that remote-tracking ref is
-        // the same pushed commit the now-missing worktree called HEAD.
-        var sourceRepository = binding?.WorktreeSourceRepository ?? binding?.Worktree?.Repository;
-        return sourceRepository is { Length: > 0 } && Directory.Exists(sourceRepository)
-            ? new RepositoryProbe(sourceRepository, UsesRemoteBranchHead: true)
+        // settle-time ledger append. Only then is the dispatch stamp authoritative: DeliveryVerifier
+        // fetched origin/<branch> before removal, so the source repository's remote-tracking ref is
+        // the same pushed commit the missing worktree called HEAD.
+        var sourceRepository = binding.WorktreeSourceRepository ?? binding.Worktree?.Repository;
+        var probeDirectory = sourceRepository is { Length: > 0 } && Directory.Exists(sourceRepository)
+            ? sourceRepository
             : null;
+        return new DeliveryProbe(
+            probeDirectory,
+            binding.WorkspaceBranch,
+            UsesRemoteBranchHead: true,
+            Source: binding.WorkspaceBranch is null ? null : DispatchStampedBranchDeliverySource);
     }
 
     private static string? IssueFromBranch(string branch)

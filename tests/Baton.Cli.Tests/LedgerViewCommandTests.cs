@@ -392,6 +392,9 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Equal(12, metadata["exec-implement"].Additions);
             Assert.Equal(4, metadata["exec-implement"].Deletions);
             Assert.Equal(2, metadata["exec-implement"].TestFilesChanged);
+            Assert.Equal(
+                CostLedgerSettlementMetadata.DispatchStampedBranchDeliverySource,
+                metadata["exec-implement"].DeliverySource);
 
             Assert.Equal("1901", metadata["exec-review"].Issue);
             Assert.Equal("4321", metadata["exec-review"].PullRequest);
@@ -399,6 +402,9 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Null(metadata["exec-review"].Additions);
             Assert.Null(metadata["exec-review"].Deletions);
             Assert.Null(metadata["exec-review"].TestFilesChanged);
+            Assert.Equal(
+                CostLedgerSettlementMetadata.DispatchStampedBranchDeliverySource,
+                metadata["exec-review"].DeliverySource);
 
             Assert.DoesNotContain(git.Calls, args => args.Contains("--shortstat", StringComparer.Ordinal));
             Assert.Contains(git.Calls, args => args.SequenceEqual(
@@ -518,6 +524,72 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Equal(2, neverGh.Count);
             Assert.Null(neverGh["exec-implement"].PullRequest);
             Assert.Null(neverGh["exec-review"].PullRequest);
+
+            await WorkerBindingConfigWriter.SaveToFileAsync(
+                new Dictionary<string, WorkerBindingConfigEntry>(StringComparer.Ordinal)
+                {
+                    ["implement"] = new(
+                        "test",
+                        contract,
+                        "prompt",
+                        TimeSpan.FromMinutes(1),
+                        WorkingDirectory: workspace,
+                        DeliversBranch: true,
+                        WorkspaceBranch: "9999-stale"),
+                    ["review"] = new(
+                        "test",
+                        contract,
+                        "prompt",
+                        TimeSpan.FromMinutes(1),
+                        WorkingDirectory: workspace,
+                        WorkspaceBranch: "9999-stale"),
+                },
+                BatonPaths.RoomBindingsFile(room),
+                TestContext.Current.CancellationToken);
+            gh.Stdout = """[{"number":9876}]""";
+            gh.Calls.Clear();
+            git.Calls.Clear();
+            git.BranchOutput = "1902-live";
+
+            var fromWorkspaceHead = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal("1902", fromWorkspaceHead["exec-implement"].Issue);
+            Assert.Equal("9876", fromWorkspaceHead["exec-implement"].PullRequest);
+            Assert.Equal(
+                CostLedgerSettlementMetadata.WorkspaceHeadDeliverySource,
+                fromWorkspaceHead["exec-implement"].DeliverySource);
+            Assert.Equal(
+                CostLedgerSettlementMetadata.WorkspaceHeadDeliverySource,
+                fromWorkspaceHead["exec-review"].DeliverySource);
+            Assert.Equal(
+                ["pr", "list", "--head", "1902-live", "--state", "all", "--json", "number", "--limit", "1"],
+                Assert.Single(gh.Calls));
+            Assert.Contains(git.Calls, args => args.SequenceEqual(
+                ["diff", "--numstat", "origin/main...HEAD"]));
+            Assert.DoesNotContain(
+                git.Calls,
+                args => args.Any(argument => argument.Contains("9999-stale", StringComparison.Ordinal)));
+
+            git.BranchOutput = "HEAD";
+            gh.Calls.Clear();
+            var detachedWorkspace = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Null(detachedWorkspace["exec-implement"].Issue);
+            Assert.Null(detachedWorkspace["exec-implement"].PullRequest);
+            Assert.Null(detachedWorkspace["exec-implement"].DeliverySource);
+            Assert.Null(detachedWorkspace["exec-implement"].FilesChanged);
+            Assert.Empty(gh.Calls);
         }
         finally
         {
@@ -531,6 +603,7 @@ public sealed class LedgerViewCommandTests : IDisposable
         new(
             CostSourceKind.BatonExecution,
             Execution: executionId,
+            DeliverySource: metadata.DeliverySource,
             FilesChanged: metadata.FilesChanged,
             Additions: metadata.Additions,
             Deletions: metadata.Deletions,
@@ -680,6 +753,8 @@ public sealed class LedgerViewCommandTests : IDisposable
 
         public string NumStatOutput { get; set; } = DefaultNumStatOutput;
 
+        public string BranchOutput { get; set; } = "1901-sol";
+
         public bool RemoteRefExists { get; set; } = true;
 
         public bool HeadIsOnRemote { get; set; } = true;
@@ -695,13 +770,20 @@ public sealed class LedgerViewCommandTests : IDisposable
             var command = string.Join(' ', args);
             var exitCode = command switch
             {
-                "rev-parse --verify refs/remotes/origin/1901-sol" when !RemoteRefExists => 1,
-                "merge-base --is-ancestor origin/1901-sol refs/remotes/origin/1901-sol" when !HeadIsOnRemote => 1,
+                _ when command.StartsWith(
+                    "rev-parse --verify refs/remotes/origin/",
+                    StringComparison.Ordinal) && !RemoteRefExists => 1,
+                _ when command.StartsWith(
+                    "merge-base --is-ancestor ",
+                    StringComparison.Ordinal) && !HeadIsOnRemote => 1,
                 _ => 0,
             };
             var stdout = command switch
             {
-                "diff --numstat origin/main...origin/1901-sol" => NumStatOutput,
+                "rev-parse --abbrev-ref HEAD" => BranchOutput,
+                _ when command.StartsWith(
+                    "diff --numstat origin/main...",
+                    StringComparison.Ordinal) => NumStatOutput,
                 _ => string.Empty,
             };
             return Task.FromResult(new LedgerGitResult(true, exitCode, stdout, string.Empty));

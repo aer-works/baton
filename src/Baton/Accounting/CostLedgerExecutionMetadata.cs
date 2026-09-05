@@ -8,6 +8,7 @@ namespace Baton.Accounting;
 public sealed record CostLedgerExecutionMetadata(
     string? Issue = null,
     string? PullRequest = null,
+    string? DeliverySource = null,
     int? FilesChanged = null,
     int? Additions = null,
     int? Deletions = null,

@@ -38,7 +38,7 @@ public static class LedgerCsv
     [
         "sourceKind", "repository", "room", "parentRoom", "workstream", "workflow", "step", "execution",
         "attempt", "role", "adapter", "model", "modelEchoed", "modelsObserved", "effort", "outcome",
-        "issue", "pr", "startedAt", "endedAt", "tokensIn", "tokensOut", "cacheRead", "cacheCreation",
+        "issue", "pr", "deliverySource", "startedAt", "endedAt", "tokensIn", "tokensOut", "cacheRead", "cacheCreation",
         "thinking", "turns", "wallClockMs", "verifyStepMs", "verifyResultsBytes", "billedTokens", "liveBilledTokens", "billedUnderReadTokens",
         "peakBilledInWindow", "raw", "completeness", "completenessReason", "apiEquivalentUsd",
         "estimateStatus", "planMeterEstimateUsd", "planMeterEstimateStatus", "estimateReason",

@@ -193,6 +193,7 @@ public static class CostLedgerStore
                 Outcome: outcome,
                 Issue: metadata?.Issue,
                 PullRequest: metadata?.PullRequest,
+                DeliverySource: metadata?.DeliverySource,
                 StartedAt: startedAt,
                 EndedAt: endedAt,
                 TokensIn: usage.TokensIn,
