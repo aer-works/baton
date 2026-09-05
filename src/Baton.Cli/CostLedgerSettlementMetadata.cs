@@ -86,7 +86,7 @@ internal sealed class LedgerGitRunner : ILedgerGitRunner
         }
         catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)
         {
-            // The process exited between cancellation and the kill, or the host cannot kill a tree.
+            // Cancellation lost the exit race, or tree termination is unsupported; absence still wins.
         }
     }
 }

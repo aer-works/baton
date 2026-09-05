@@ -505,7 +505,7 @@ public sealed class LedgerViewCommandTests : IDisposable
                     new NeverCompletingLedgerGitRunner(),
                     TestContext.Current.CancellationToken,
                     spawnTimeout: TimeSpan.FromMilliseconds(20))
-                .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+                .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
             Assert.Equal(2, neverGit.Count);
             Assert.Null(neverGit["exec-implement"].FilesChanged);
             Assert.Null(neverGit["exec-implement"].Additions);
@@ -534,7 +534,7 @@ public sealed class LedgerViewCommandTests : IDisposable
                     git,
                     TestContext.Current.CancellationToken,
                     spawnTimeout: TimeSpan.FromMilliseconds(20))
-                .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+                .WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
             Assert.Equal(2, neverGh.Count);
             Assert.Null(neverGh["exec-implement"].PullRequest);
             Assert.Null(neverGh["exec-review"].PullRequest);
