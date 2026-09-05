@@ -1168,7 +1168,8 @@ public sealed partial class AgyWorkerAdapter : IWorkerAdapter, IPermissionGrantT
     private static readonly HashSet<string> AgyModelsRequiringEffortSuffix =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro",
+            // Mirrors the families in the fence (re-captured 2026-09-05, #1342).
+            "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro",
         };
 
     /// <summary>

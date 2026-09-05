@@ -1,81 +1,7 @@
 {
-  "RanAt": "2026-09-04T16:52:17.382864-04:00",
+  "RanAt": "2026-09-05T15:44:36.8507437-04:00",
   "Host": "Microsoft Windows NT 10.0.26200.0",
   "Findings": [
-    {
-      "Capability": "plan usage \u0026 reset",
-      "Vendor": "agy",
-      "Evidence": "NotFound",
-      "Value": null,
-      "SurfacesConsulted": [
-        "--help",
-        "subcommand list",
-        "in-session slash command"
-      ],
-      "Detail": "\u0060--help\u0060 carries no usage/quota flag, no such subcommand exists, and \u0060agy -p \u0022/usage\u0022\u0060 produced no percentage \u2014 the model answered conversationally rather than the CLI reporting. Help mentioned \u0027usage\u0027 1 time(s), all of them the synopsis line.",
-      "VendorVersion": "1.1.23"
-    },
-    {
-      "Capability": "per-turn cost",
-      "Vendor": "agy",
-      "Evidence": "NotFound",
-      "Value": null,
-      "SurfacesConsulted": [
-        "structured output stream",
-        "--help"
-      ],
-      "Detail": "No \u0060total_cost_usd\u0060 in a \u0060stream-json\u0060 run, and no cost flag in \u0060--help\u0060. The run streamed a \u0060result\u0060 event carrying per-turn **token** usage (the \u0060usage\u0060 object), but no dollar cost field \u2014 token-denominated, not dollars.",
-      "VendorVersion": "1.1.23"
-    },
-    {
-      "Capability": "structured output",
-      "Vendor": "agy",
-      "Evidence": "Observed",
-      "Value": "\u0060--output-format stream-json\u0060",
-      "SurfacesConsulted": [
-        "--help",
-        "structured output stream",
-        "local RPC server"
-      ],
-      "Detail": "Emitted 5 JSON lines on a trivial turn.",
-      "VendorVersion": "1.1.23"
-    },
-    {
-      "Capability": "--permission-prompt-tool",
-      "Vendor": "agy",
-      "Evidence": "NotFound",
-      "Value": null,
-      "SurfacesConsulted": [
-        "--help",
-        "stderr",
-        "flag acceptance vs. a control flag",
-        "structured output stream"
-      ],
-      "Detail": "**Undocumented in \u0060--help\u0060** \u2014 which is why help text alone was never enough. Rejected: exit 2, \u0022flags provided but not defined: -permission-prompt-tool\u0022. The control flag exits 2, so this CLI does discriminate \u2014 the rejection is real.",
-      "VendorVersion": "1.1.23"
-    },
-    {
-      "Capability": "effort",
-      "Vendor": "agy",
-      "Evidence": "Inspected",
-      "Value": "\u0060--effort\u0060 \u2014 low|medium|high",
-      "SurfacesConsulted": [
-        "--help"
-      ],
-      "Detail": "Read from help: \u0022--effort Reasoning effort for the current CLI session (low|medium|high)\u0022. Help names the accepted values, but naming is not behaviour: 0023 declines to assert a mapping until each value is shown to be accepted AND to behave distinctly.",
-      "VendorVersion": "1.1.23"
-    },
-    {
-      "Capability": "extra directories",
-      "Vendor": "agy",
-      "Evidence": "Inspected",
-      "Value": "\u0060--add-dir\u0060",
-      "SurfacesConsulted": [
-        "--help"
-      ],
-      "Detail": "Read from help. On \u0060agy\u0060 this is load-bearing rather than optional: \u0060-p\u0060 ignores the process working directory entirely (#491), so the room\u0027s folder must be bound explicitly.",
-      "VendorVersion": "1.1.23"
-    },
     {
       "Capability": "plan usage \u0026 reset",
       "Vendor": "claude",
@@ -249,6 +175,80 @@
       ],
       "Detail": "The account-sensitive app-server catalog reported: gpt-6-astra[low/medium/high/xhigh/max/ultra], gpt-5.6-sol[low/medium/high/xhigh/max/ultra], gpt-5.6-terra[low/medium/high/xhigh/max/ultra], gpt-5.6-luna[low/medium/high/xhigh/max], gpt-5.5[low/medium/high/xhigh], gpt-5.4[low/medium/high/xhigh], gpt-5.4-mini[low/medium/high/xhigh], gpt-5.3-codex-spark[low/medium/high/xhigh].",
       "VendorVersion": "codex-cli 0.153.2"
+    },
+    {
+      "Capability": "plan usage \u0026 reset",
+      "Vendor": "agy",
+      "Evidence": "NotFound",
+      "Value": null,
+      "SurfacesConsulted": [
+        "--help",
+        "subcommand list",
+        "in-session slash command"
+      ],
+      "Detail": "\u0060--help\u0060 carries no usage/quota flag, no such subcommand exists, and \u0060agy -p \u0022/usage\u0022\u0060 produced no percentage \u2014 the model answered conversationally rather than the CLI reporting. Help mentioned \u0027usage\u0027 1 time(s), all of them the synopsis line.",
+      "VendorVersion": "1.1.27"
+    },
+    {
+      "Capability": "per-turn cost",
+      "Vendor": "agy",
+      "Evidence": "NotFound",
+      "Value": null,
+      "SurfacesConsulted": [
+        "structured output stream",
+        "--help"
+      ],
+      "Detail": "No \u0060total_cost_usd\u0060 in a \u0060stream-json\u0060 run, and no cost flag in \u0060--help\u0060. The run streamed a \u0060result\u0060 event carrying per-turn **token** usage (the \u0060usage\u0060 object), but no dollar cost field \u2014 token-denominated, not dollars.",
+      "VendorVersion": "1.1.27"
+    },
+    {
+      "Capability": "structured output",
+      "Vendor": "agy",
+      "Evidence": "Observed",
+      "Value": "\u0060--output-format stream-json\u0060",
+      "SurfacesConsulted": [
+        "--help",
+        "structured output stream",
+        "local RPC server"
+      ],
+      "Detail": "Emitted 4 JSON lines on a trivial turn.",
+      "VendorVersion": "1.1.27"
+    },
+    {
+      "Capability": "--permission-prompt-tool",
+      "Vendor": "agy",
+      "Evidence": "NotFound",
+      "Value": null,
+      "SurfacesConsulted": [
+        "--help",
+        "stderr",
+        "flag acceptance vs. a control flag",
+        "structured output stream"
+      ],
+      "Detail": "**Undocumented in \u0060--help\u0060** \u2014 which is why help text alone was never enough. Rejected: exit 2, \u0022flags provided but not defined: -permission-prompt-tool\u0022. The control flag exits 2, so this CLI does discriminate \u2014 the rejection is real.",
+      "VendorVersion": "1.1.27"
+    },
+    {
+      "Capability": "effort",
+      "Vendor": "agy",
+      "Evidence": "Inspected",
+      "Value": "\u0060--effort\u0060 \u2014 low|medium|high",
+      "SurfacesConsulted": [
+        "--help"
+      ],
+      "Detail": "Read from help: \u0022--effort Reasoning effort for the current CLI session (low|medium|high)\u0022. Help names the accepted values, but naming is not behaviour: 0023 declines to assert a mapping until each value is shown to be accepted AND to behave distinctly.",
+      "VendorVersion": "1.1.27"
+    },
+    {
+      "Capability": "extra directories",
+      "Vendor": "agy",
+      "Evidence": "Inspected",
+      "Value": "\u0060--add-dir\u0060",
+      "SurfacesConsulted": [
+        "--help"
+      ],
+      "Detail": "Read from help. On \u0060agy\u0060 this is load-bearing rather than optional: \u0060-p\u0060 ignores the process working directory entirely (#491), so the room\u0027s folder must be bound explicitly.",
+      "VendorVersion": "1.1.27"
     }
   ]
 }
