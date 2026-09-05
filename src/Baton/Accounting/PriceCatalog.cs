@@ -96,6 +96,14 @@ public sealed record PriceCatalog(
         var parsed = JsonSerializer.Deserialize<PriceCatalog>(json)
             ?? throw new JsonException("A price catalog document deserialized to null.");
 
+        // System.Text.Json passes default(T) for a missing positional member, so a document with no
+        // "vendors" arrives here as null; the doc above promises JsonException for malformed input,
+        // not a NullReferenceException one line later.
+        if (parsed.Vendors is null)
+        {
+            throw new JsonException("A price catalog document has no \"vendors\" member.");
+        }
+
         var vendors = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<PricePoint>>>>(
             StringComparer.OrdinalIgnoreCase);
         foreach (var (vendor, models) in parsed.Vendors)

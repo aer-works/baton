@@ -114,13 +114,35 @@ public sealed record PlanFactorTable(
 
     /// <summary>
     /// Parses a table from JSON — the same explicit-document seam <see cref="PriceCatalog.Parse"/>
-    /// provides, and for the same reason.
+    /// provides, and for the same reason, including the rebuild of every lookup dictionary with
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/> so a loaded table matches keys the way
+    /// <see cref="Default"/> does (a deserialized dictionary is ordinal, and <see cref="Resolve"/>
+    /// inherits whichever comparer the instance carries).
     /// </summary>
     public static PlanFactorTable Parse(string json)
     {
         ArgumentException.ThrowIfNullOrEmpty(json);
-        return JsonSerializer.Deserialize<PlanFactorTable>(json)
+        var parsed = JsonSerializer.Deserialize<PlanFactorTable>(json)
             ?? throw new JsonException("A plan-factor table document deserialized to null.");
+        if (parsed.Vendors is null)
+        {
+            throw new JsonException("A plan-factor table document has no \"vendors\" member.");
+        }
+
+        var vendors = new Dictionary<string, PlanVendorFactors>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (vendor, factors) in parsed.Vendors)
+        {
+            vendors[vendor] = factors is null
+                ? new PlanVendorFactors()
+                : factors with
+                {
+                    DimensionWeights = factors.DimensionWeights is null
+                        ? null
+                        : new Dictionary<string, PlanDimensionWeight>(factors.DimensionWeights, StringComparer.OrdinalIgnoreCase),
+                };
+        }
+
+        return parsed with { Vendors = vendors };
     }
 
     /// <summary>

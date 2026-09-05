@@ -87,8 +87,8 @@ public enum CostCompleteness
 /// from "the vendor reported zero" by accident; absence is the only spelling of the former.
 /// </para>
 /// <para>
-/// <b>Fields reserved with no phase-A writer.</b> <see cref="Effort"/>, <see cref="Issue"/>,
-/// <see cref="PullRequest"/>, <see cref="ParentRoom"/>, <see cref="Workstream"/>,
+/// <b>Fields reserved with no phase-A writer.</b> <see cref="Attempt"/>, <see cref="Effort"/>,
+/// <see cref="Issue"/>, <see cref="PullRequest"/>, <see cref="ParentRoom"/>, <see cref="Workstream"/>,
 /// <see cref="ModelEchoed"/> and <see cref="Raw"/> are named here but never populated by <see cref="CostLedgerStore.BuildEntries"/>:
 /// none of them is derivable from the events a settle already has in hand, and #1849's telemetry
 /// checklist wants the NAME pinned now so a later phase fills a reserved field rather than inventing

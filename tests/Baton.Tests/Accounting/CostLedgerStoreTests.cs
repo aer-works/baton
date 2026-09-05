@@ -606,8 +606,10 @@ public sealed class CostLedgerStoreTests
     public void An_attempt_ending_exactly_on_a_range_boundary_matches_exactly_one_range()
     {
         // #1883 review F5. The two arms above bracket the 2026-07-01 boundary without ever landing on
-        // it, and half-open ranges are precisely what a boundary instant tests: `from <= at < to` must
-        // put this attempt in the SECOND range, not both and not the first.
+        // it. This arm lands on it and pins that the SECOND range's rate is what prices the attempt:
+        // it rules out a first-match-wins lookup (15) and a strict `from < at` comparison (unpriced).
+        // It cannot see a closed-range flip (`at <= to` would match both ranges and last-match-wins
+        // still yields 30) -- the sibling below, whose only range ENDS at the boundary, is what does.
         var room = NewRoom();
         try
         {
@@ -624,6 +626,52 @@ public sealed class CostLedgerStoreTests
             Assert.Equal(boundary, row.EndedAt);
             var expected = ((100 * 30m) + (50 * 75m) + (5 * 1.5m) + (10 * 18.75m) + (7 * 75m)) / 1_000_000m;
             Assert.Equal(expected, row.ApiEquivalentUsd);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
+    public void An_attempt_ending_exactly_when_the_only_range_ends_is_unpriced_because_ranges_are_half_open()
+    {
+        // #1883 second-pass review: the discriminating half of the boundary rule. With no successor range
+        // covering 2026-07-01, `from <= at < to` prices nothing at that instant; a closed `at <= to` would
+        // price it at 15. Only one of those can be true of the same catalog, so this arm fails on the flip.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-closed-end");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var boundary = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+            var closedEnded = PriceCatalog.Parse("""
+                {
+                  "id": "test-prices",
+                  "version": "closed-end",
+                  "vendors": {
+                    "claude": {
+                      "claude-opus-5": {
+                        "input": [{"effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-07-01T00:00:00Z","usdPerMillion":15,"source":"test"}],
+                        "output": [{"effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-07-01T00:00:00Z","usdPerMillion":75,"source":"test"}],
+                        "cacheRead": [{"effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-07-01T00:00:00Z","usdPerMillion":1.5,"source":"test"}],
+                        "cacheCreation": [{"effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-07-01T00:00:00Z","usdPerMillion":18.75,"source":"test"}],
+                        "thinking": [{"effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-07-01T00:00:00Z","usdPerMillion":75,"source":"test"}]
+                      }
+                    }
+                  }
+                }
+                """);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", boundary.AddSeconds(-2)),
+                room,
+                Repository,
+                closedEnded));
+
+            Assert.Equal(boundary, row.EndedAt);
+            Assert.Null(row.ApiEquivalentUsd);
+            Assert.Equal(EstimateStatus.Unpriced, row.EstimateStatus);
         }
         finally
         {
