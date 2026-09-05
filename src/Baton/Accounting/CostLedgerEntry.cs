@@ -222,9 +222,22 @@ public sealed record CostLedgerEntry(
     [property: JsonPropertyName("pr")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? PullRequest = null,
+    /// <summary>
+    /// When the attempt started, UTC. Absent on a correcting row (<see cref="Resolution"/>): an
+    /// intervention is an instant rather than an interval, so it carries an end and no start.
+    /// </summary>
     [property: JsonPropertyName("startedAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTime? StartedAt = null,
+    /// <summary>
+    /// The instant this row is attributed to, UTC, and the only field <see cref="LedgerQuery"/>'s
+    /// <c>--since</c>/<c>--until</c> window reads. On an execution row it is when the attempt exited
+    /// (and what its estimate was priced at). <b>On a correcting row it is when the conductor's
+    /// <c>baton resolve</c> was recorded</b> — the intervention's own instant, not the corrected
+    /// attempt's, so a window that contains the intervention counts it (#1913 review finding 1).
+    /// Absent means no end instant was recorded, and a windowed reading excludes such a row and counts
+    /// it into <c>undatedExcluded</c> rather than assuming it in.
+    /// </summary>
     [property: JsonPropertyName("endedAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTime? EndedAt = null,

@@ -345,6 +345,80 @@ public sealed class LedgerViewCommandTests : IDisposable
         Assert.Contains("--since is INCLUSIVE, --until is EXCLUSIVE", help, StringComparison.Ordinal);
         Assert.Contains("quota-ledger.jsonl", help, StringComparison.Ordinal);
         Assert.Contains("never an invoice", help, StringComparison.Ordinal);
+
+        // #1913 review findings 5 and 6: what a correcting row costs a reading, and the option that
+        // removes it, are stated where an operator meets them rather than only in the spec.
+        Assert.Contains("--resolution", help, StringComparison.Ordinal);
+        Assert.Contains("'none' is execution attempts alone", help, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1913 review findings 5 and 6, over a two-row ledger of its own so the shared fixture's counts
+    /// stay what every other test here asserts: an intervention is LEGIBLE in the default human view,
+    /// and it is selectable in both directions.
+    /// <para>
+    /// The drill line is the failure this closes — <see cref="LedgerViewCommand"/>'s own comment on
+    /// the appended clause states it. The control is the assertion counted: exactly one of the two
+    /// rows is marked, so a clause printed unconditionally fails here.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_correcting_row_is_marked_in_the_drill_view_and_selectable_in_both_directions()
+    {
+        var ledgerPath = Path.Combine(Path.GetDirectoryName(_ledgerFilePath)!, "resolutions.jsonl");
+        var attempt = new CostLedgerEntry(
+            CostSourceKind.BatonExecution,
+            Repository: "github.com/aer-works/baton",
+            Room: _roomA,
+            Workflow: "wf1",
+            Step: "s1",
+            Execution: "r1",
+            Role: "implement",
+            Adapter: "claude",
+            Model: "claude-opus-5",
+            Outcome: "Succeeded",
+            EndedAt: Sep4.AddHours(10));
+        var correcting = CostLedgerStore.BuildResolutionRow(
+            [attempt], _roomA, ConductorResolution.Reject, "capture did not satisfy its outputs", Sep4.AddHours(11));
+        Assert.NotNull(correcting);
+        await CostLedgerStore.AppendAsync(
+            [attempt, correcting], ledgerPath, TestContext.Current.CancellationToken);
+
+        var text = await RunOverAsync(ledgerPath, "--format", "text", "--drill");
+        Assert.Contains("resolution=reject", text, StringComparison.Ordinal);
+        Assert.Equal(1, text.Split("resolution=").Length - 1);
+
+        static int Attempts(JsonDocument document) =>
+            document.RootElement.GetProperty("total").GetProperty("attempts").GetInt32();
+
+        using var everything = JsonDocument.Parse(await RunOverAsync(ledgerPath, "--format", "json"));
+        using var attemptsOnly = JsonDocument.Parse(
+            await RunOverAsync(ledgerPath, "--format", "json", "--drill", "--resolution", "none"));
+        using var interventions = JsonDocument.Parse(
+            await RunOverAsync(ledgerPath, "--format", "json", "--drill", "--resolution", "any"));
+
+        Assert.Equal(2, Attempts(everything));
+        Assert.Equal(1, Attempts(attemptsOnly));
+        Assert.Equal(1, Attempts(interventions));
+        Assert.Equal(
+            "r1",
+            attemptsOnly.RootElement.GetProperty("rows").EnumerateArray().Single().GetProperty("execution").GetString());
+
+        // The echoed query says which of the two readings this is -- a stored total that dropped the
+        // interventions must say it dropped them.
+        Assert.False(attemptsOnly.RootElement.GetProperty("query").GetProperty("hasResolution").GetBoolean());
+        Assert.True(interventions.RootElement.GetProperty("query").GetProperty("hasResolution").GetBoolean());
+        Assert.Contains("resolution=none", await RunOverAsync(ledgerPath, "--resolution", "none"), StringComparison.Ordinal);
+    }
+
+    private async Task<string> RunOverAsync(string ledgerFilePath, params string[] args)
+    {
+        var output = new StringWriter { NewLine = "\n" };
+        Assert.Equal(
+            0,
+            await LedgerViewCommand.ExecuteAsync(
+                LedgerViewOptionsParser.Parse(args), output, ledgerFilePath, TestContext.Current.CancellationToken));
+        return output.ToString();
     }
 
     private async Task<string> RunAsync(params string[] args)

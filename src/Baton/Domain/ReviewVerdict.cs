@@ -116,11 +116,20 @@ public sealed record VerifyInstrument(
     [property: JsonPropertyName("wallClockMs")] long WallClockMs);
 
 /// <summary>One thing a review claims (#732).</summary>
+/// <param name="Severity">
+/// How much it matters. <b>Nullable so that ABSENT is distinguishable from <c>high</c></b> (#1913
+/// review finding 4): STJ binds a missing constructor parameter to its default, and for this value
+/// type the default is <see cref="ReviewFindingSeverity.High"/> — so a finding written with no
+/// <c>severity</c> silently arrived as the most severe one there is.
+/// <see cref="ReviewVerdictSchema.TryParse"/> refuses that document rather than letting the null
+/// travel, so every finding a reader ever sees has one; the nullability exists to make the refusal
+/// possible, not to admit a severity-less finding downstream.
+/// </param>
 /// <param name="Claim">The one-line statement of the finding. Required and non-empty.</param>
 /// <param name="Anchor">Where in the reviewed code the claim points, when it points anywhere.</param>
 /// <param name="Detail">Free-text elaboration — evidence, reproduction, reasoning.</param>
 public sealed record ReviewFinding(
-    ReviewFindingSeverity Severity,
+    ReviewFindingSeverity? Severity,
     string Claim,
     ReviewFindingStatus Status,
     ReviewFindingAnchor? Anchor = null,
@@ -228,6 +237,20 @@ public static class ReviewVerdictSchema
             if (string.IsNullOrWhiteSpace(finding.Claim))
             {
                 error = $"findings[{i}].claim must be a non-empty one-line statement.";
+                return false;
+            }
+
+            // The same deserializer leniency, on a VALUE type, where it is worse: an absent severity
+            // binds to default(ReviewFindingSeverity) = High rather than to null, so a finding with
+            // no severity would read as the most severe one there is -- and #1901's cost-ledger row
+            // counts these into a durable accounting field where 0 is a measurement. Refused rather
+            // than defaulted or dropped: an unknown severity ("critical") already fails this parse,
+            // and a missing one is no more readable than a wrong one. The review prompt in
+            // WorkerRoles.json names the field and gives it in the example, so this asks a worker for
+            // nothing new (#1913 review finding 4).
+            if (finding.Severity is null)
+            {
+                error = $"findings[{i}].severity must be one of high, medium or low.";
                 return false;
             }
 

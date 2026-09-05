@@ -16,8 +16,8 @@ public static class LedgerViewOptionsParser
     public const string Usage =
         "Usage: baton ledger [<room-dir>] [--since <instant>] [--until <instant>] [--vendor <name>] " +
         "[--model <id>] [--role <name>] [--project <repo-identity>] [--outcome <token>] [--workflow <id>] " +
-        "[--pr <n>] [--issue <n>] [--source-kind <kind>] [--repo-identity <key>] [--format text|json|csv] " +
-        "[--drill] [--help]";
+        "[--pr <n>] [--issue <n>] [--source-kind <kind>] [--resolution none|any|accept-capture|reject|close] " +
+        "[--repo-identity <key>] [--format text|json|csv] [--drill] [--help]";
 
     /// <summary>
     /// What <c>--help</c> prints under <see cref="Usage"/>. Every line here is a place a reader's prior
@@ -47,6 +47,12 @@ public static class LedgerViewOptionsParser
         "                      reads phase C and #1848 bring.",
         "  --source-kind       baton-execution | claude-code-session | codex-session | antigravity-session.",
         "                      Only baton-execution has a writer today.",
+        "  --resolution        A `baton resolve` appends a CORRECTING row rather than rewriting the row it",
+        "                      corrects, so a conductor's intervention is one more row in every reading --",
+        "                      counted in 'attempts' and in 'unread', carrying the corrected row's role,",
+        "                      outcome, issue and pr. 'none' is execution attempts alone (the reading that",
+        "                      excludes interventions); 'any' is the interventions alone; accept-capture |",
+        "                      reject | close is one kind of them. Unset counts both, which is the file.",
         "  --repo-identity     Read another repository's ledger: its canonical identity",
         "                      ('github.com/owner/repo') or the ledger file's own stem.",
         "  --format json       One object: {query, vendors, total, rows?}. Field names are the ledger",
@@ -124,6 +130,10 @@ public static class LedgerViewOptionsParser
                     break;
                 case "--source-kind":
                     query = query with { SourceKind = ParseSourceKind(RequireValue(args, i)) };
+                    i += 2;
+                    break;
+                case "--resolution":
+                    query = ApplyResolution(query, RequireValue(args, i));
                     i += 2;
                     break;
                 case "--repo-identity":
@@ -215,6 +225,43 @@ public static class LedgerViewOptionsParser
         throw new CliArgumentException(
             $"Option '{optionName}' needs an ISO-8601 instant or a 'yyyy-MM-dd' date, not '{value}'. {Usage}",
             $"{optionName} 2026-09-04   (local midnight)   or   {optionName} 2026-09-04T14:00:00Z");
+    }
+
+    /// <summary>
+    /// <c>--resolution</c>, which is two facets behind one option (#1913 review finding 5):
+    /// <c>none</c>/<c>any</c> select on the field's ABSENCE or presence, and a kind selects one value
+    /// of it. Two spellings rather than a second option because an operator asking "which rows are
+    /// interventions" and one asking "which rows are rejections" are asking about the same field.
+    /// The kind vocabulary is the ledger's own enum spelling, deserialized rather than restated, for
+    /// the same reason <see cref="ParseSourceKind"/> is.
+    /// </summary>
+    private static LedgerQuery ApplyResolution(LedgerQuery query, string value)
+    {
+        var trimmed = value.Trim();
+        if (string.Equals(trimmed, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return query with { HasResolution = false, Resolution = null };
+        }
+
+        if (string.Equals(trimmed, "any", StringComparison.OrdinalIgnoreCase))
+        {
+            return query with { HasResolution = true, Resolution = null };
+        }
+
+        try
+        {
+            return query with
+            {
+                HasResolution = null,
+                Resolution = JsonSerializer.Deserialize<ConductorResolution>($"\"{JsonEncodedText.Encode(trimmed)}\""),
+            };
+        }
+        catch (JsonException)
+        {
+            throw new CliArgumentException(
+                $"Unknown --resolution '{value}'. Known values: none (execution attempts alone), any " +
+                $"(interventions alone), accept-capture, reject, close. {Usage}");
+        }
     }
 
     /// <summary>

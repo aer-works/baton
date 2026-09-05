@@ -49,6 +49,21 @@ public static class WorkspaceDeliveryProbe
     internal const string TestPathPrefix = "tests/";
 
     /// <summary>
+    /// How long any ONE of these spawns may take before it is abandoned (#1913 review finding 2).
+    /// <para>
+    /// <b>The bound is here because nothing else bounds it.</b> These are network-touching child
+    /// processes at a settle that has already finished: a <c>gh</c> waiting on a wedged credential
+    /// helper, a proxy that never answers, or a captive portal would otherwise stall <c>baton
+    /// run</c>/<c>dispatch</c> after the work is done, for as long as the process lives. Twenty
+    /// seconds is far past any healthy answer (<c>gh pr list</c> is a single API call) and far short
+    /// of a person's patience. It bounds each spawn, not the whole probe: three spawns per distinct
+    /// workspace, each abandoned independently, so one wedged workspace costs its own facts rather
+    /// than every later worker's.
+    /// </para>
+    /// </summary>
+    internal static readonly TimeSpan SpawnTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>
     /// The spawn seam (#1901: "no network in unit tests — inject the lookup"). Shaped like
     /// <see cref="Daemon.IGhCliRunner"/>'s, widened by a <paramref name="program"/> so one seam covers
     /// both the <c>git</c> reads and the <c>gh</c> lookup; a test supplies canned output for both
@@ -66,8 +81,15 @@ public static class WorkspaceDeliveryProbe
         ReadForRoomAsync(roomDirectoryPath, SpawnAsync, cancellationToken);
 
     /// <inheritdoc cref="ReadForRoomAsync(string, CancellationToken)"/>
+    /// <param name="spawnTimeout">
+    /// Overrides <see cref="SpawnTimeout"/>. Injectable only so a test can prove the bound holds
+    /// without waiting the production twenty seconds for it.
+    /// </param>
     internal static async Task<IReadOnlyDictionary<string, WorkspaceDelivery>> ReadForRoomAsync(
-        string roomDirectoryPath, CommandRunner runner, CancellationToken cancellationToken)
+        string roomDirectoryPath,
+        CommandRunner runner,
+        CancellationToken cancellationToken,
+        TimeSpan? spawnTimeout = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(runner);
@@ -86,7 +108,12 @@ public static class WorkspaceDeliveryProbe
             bindings = await WorkerBindingConfigParser.LoadFromFileAsync(bindingsFilePath, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or BatonFlowException)
+        // OperationCanceledException among them (#1913 review finding 2): now that the settle site
+        // hands this probe a real token, a Ctrl-C during the bindings read must cost the attribution
+        // and nothing else -- the same absence every other failure here produces, never an exception
+        // escaping into a settle whose row has yet to be written.
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or BatonFlowException or OperationCanceledException)
         {
             Console.Error.WriteLine(
                 $"Could not read '{bindingsFilePath}' for delivery attribution: {ex.Message} "
@@ -96,6 +123,7 @@ public static class WorkspaceDeliveryProbe
 
         var byDirectory = new Dictionary<string, WorkspaceDelivery>(StringComparer.OrdinalIgnoreCase);
         var result = new Dictionary<string, WorkspaceDelivery>(StringComparer.Ordinal);
+        var spawner = new BoundedSpawner(runner, spawnTimeout ?? SpawnTimeout, cancellationToken);
 
         foreach (var (worker, entry) in bindings)
         {
@@ -106,7 +134,7 @@ public static class WorkspaceDeliveryProbe
 
             if (!byDirectory.TryGetValue(directory, out var delivery))
             {
-                delivery = await ProbeAsync(directory, runner, cancellationToken).ConfigureAwait(false);
+                delivery = await ProbeAsync(directory, spawner).ConfigureAwait(false);
                 byDirectory[directory] = delivery;
             }
 
@@ -117,15 +145,52 @@ public static class WorkspaceDeliveryProbe
     }
 
     /// <summary>
+    /// Every spawn this probe makes, each bounded by its own <see cref="SpawnTimeout"/> and by the
+    /// settle site's cancellation.
+    /// <para>
+    /// <b>An abandoned spawn is a failed spawn, never an exception and never a fabricated answer</b> —
+    /// it returns the same <c>Started: false</c> shape a <c>git</c> that is not on PATH returns, so
+    /// the fail-open contract in this type's remarks holds for a hang exactly as it does for a missing
+    /// binary: the facts that spawn would have produced are absent from the row, and the row is still
+    /// written. <see cref="Task.WaitAsync(CancellationToken)"/> rather than only handing the token
+    /// down, because a runner that ignores its token has to be abandonable too.
+    /// </para>
+    /// </summary>
+    private readonly record struct BoundedSpawner(CommandRunner Runner, TimeSpan Timeout, CancellationToken HostToken)
+    {
+        public async Task<Daemon.GhCliResult> RunAsync(string program, string directory, IReadOnlyList<string> args)
+        {
+            using var bound = CancellationTokenSource.CreateLinkedTokenSource(HostToken);
+            bound.CancelAfter(Timeout);
+
+            try
+            {
+                return await Runner(program, directory, args, bound.Token).WaitAsync(bound.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Said out loud, per the no-silent-swallow rule: a settle that stalled for the whole
+                // bound and produced nothing is otherwise indistinguishable from a workspace that had
+                // nothing to report.
+                Console.Error.WriteLine(
+                    $"'{program} {string.Join(' ', args)}' in '{directory}' did not answer within "
+                    + $"{Timeout.TotalSeconds:0.##}s (or the run was cancelled), so this row carries no "
+                    + "issue, pr or diff shape from it.");
+                return new Daemon.GhCliResult(
+                    Started: false, ExitCode: -1, Stdout: string.Empty, Stderr: $"{program} was abandoned at its time bound.");
+            }
+        }
+    }
+
+    /// <summary>
     /// One workspace's facts. The branch is resolved first because everything else keys on it: with no
     /// named branch (a detached HEAD, or not a git repository at all) there is no issue to derive and
     /// no head to ask <c>gh</c> about, and the diff shape is skipped too rather than measured against
     /// whatever <c>HEAD</c> happens to be.
     /// </summary>
-    private static async Task<WorkspaceDelivery> ProbeAsync(
-        string directory, CommandRunner runner, CancellationToken cancellationToken)
+    private static async Task<WorkspaceDelivery> ProbeAsync(string directory, BoundedSpawner spawner)
     {
-        var branchResult = await runner("git", directory, ["rev-parse", "--abbrev-ref", "HEAD"], cancellationToken)
+        var branchResult = await spawner.RunAsync("git", directory, ["rev-parse", "--abbrev-ref", "HEAD"])
             .ConfigureAwait(false);
         if (!branchResult.Started || branchResult.ExitCode != 0)
         {
@@ -138,11 +203,11 @@ public static class WorkspaceDeliveryProbe
             return new WorkspaceDelivery();
         }
 
-        var diff = await ReadDiffShapeAsync(directory, runner, cancellationToken).ConfigureAwait(false);
+        var diff = await ReadDiffShapeAsync(directory, spawner).ConfigureAwait(false);
 
         return new WorkspaceDelivery(
             Issue: TryReadIssueNumber(branch),
-            PullRequest: await ReadPullRequestNumberAsync(directory, branch, runner, cancellationToken).ConfigureAwait(false),
+            PullRequest: await ReadPullRequestNumberAsync(directory, branch, spawner).ConfigureAwait(false),
             FilesChanged: diff?.Files,
             Additions: diff?.Additions,
             Deletions: diff?.Deletions,
@@ -175,9 +240,9 @@ public static class WorkspaceDeliveryProbe
     /// number and never a fabricated absence beyond "none was found".
     /// </summary>
     private static async Task<string?> ReadPullRequestNumberAsync(
-        string directory, string branch, CommandRunner runner, CancellationToken cancellationToken)
+        string directory, string branch, BoundedSpawner spawner)
     {
-        var result = await runner("gh", directory, ["pr", "list", "--head", branch, "--json", "number"], cancellationToken)
+        var result = await spawner.RunAsync("gh", directory, ["pr", "list", "--head", branch, "--json", "number"])
             .ConfigureAwait(false);
         if (!result.Started || result.ExitCode != 0)
         {
@@ -219,17 +284,34 @@ public static class WorkspaceDeliveryProbe
     /// per-file form already carries every figure <c>--shortstat</c> would summarise plus the paths
     /// <c>testFilesChanged</c> needs, so deriving the same totals twice buys nothing.
     /// <para>
-    /// <see langword="null"/> when the command did not run or did not succeed — which is what a
-    /// workspace that never pushed looks like, because <c>origin/main</c> is only present once the
-    /// repository has fetched it. A binary file's row is <c>-\t-\tpath</c>: it counts towards
+    /// <b>What it measures is the workspace's LOCAL <c>HEAD</c> against <c>origin/main</c>, pushed or
+    /// not</b> (#1913 review finding 3). <c>origin/main</c> is a remote-tracking ref every ordinary
+    /// clone or worktree already has, and <c>...</c> diffs the merge base against local <c>HEAD</c>,
+    /// so a branch that committed and never pushed still reports its full shape. These numbers are
+    /// therefore evidence of work done in the workspace, never evidence of delivery — the <c>pr</c>
+    /// field is the delivery question.
+    /// </para>
+    /// <para>
+    /// <see langword="null"/> when the command did not run or did not succeed, which is a different
+    /// set: not a git repository, no <c>origin/main</c> ref (a clone that has never fetched it, or a
+    /// fork whose trunk is named otherwise), a workspace torn down before settle, or a spawn abandoned
+    /// at its time bound. A binary file's row is <c>-\t-\tpath</c>: it counts towards
     /// <see cref="DiffShape.Files"/> and towards neither line total, because git reports no line counts
     /// for one and inventing zeros there would understate a real change.
     /// </para>
+    /// <para>
+    /// <b>Two spellings are turned off rather than parsed</b> (#1913 review finding 9). Rename
+    /// detection would emit <c>src/{a.cs =&gt; tests/b.cs}</c>, which is not a path;
+    /// <c>core.quotePath</c> would C-quote any non-ASCII one. Both would have missed the
+    /// <see cref="TestPathPrefix"/> test silently. <c>--no-renames</c> costs the rename ITS
+    /// compactness — a moved file reads as one delete plus one add, in <see cref="DiffShape.Files"/>
+    /// and in both line totals — which is a stated reading rather than a wrong one.
+    /// </para>
     /// </summary>
-    private static async Task<DiffShape?> ReadDiffShapeAsync(
-        string directory, CommandRunner runner, CancellationToken cancellationToken)
+    private static async Task<DiffShape?> ReadDiffShapeAsync(string directory, BoundedSpawner spawner)
     {
-        var result = await runner("git", directory, ["diff", "--numstat", $"{BaseRef}...HEAD"], cancellationToken)
+        var result = await spawner
+            .RunAsync("git", directory, ["-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", $"{BaseRef}...HEAD"])
             .ConfigureAwait(false);
         if (!result.Started || result.ExitCode != 0)
         {
@@ -261,8 +343,10 @@ public static class WorkspaceDeliveryProbe
             }
 
             // Forward slashes always: --numstat writes repo-relative paths in git's own spelling, which
-            // is POSIX-separated even on Windows.
-            if (columns[2].StartsWith(TestPathPrefix, StringComparison.OrdinalIgnoreCase))
+            // is POSIX-separated even on Windows. The leading quote is git's C-quoting, which
+            // core.quotePath=false above suppresses for non-ASCII but not for a path containing a
+            // quote, a backslash or a control character -- rare, and one character away from counting.
+            if (columns[2].TrimStart('"').StartsWith(TestPathPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 testFiles++;
             }
@@ -292,10 +376,12 @@ public static class WorkspaceDeliveryProbe
         };
 
         // Non-interactive hardening, the same pair Baton.Mutation.DeliveryVerifier applies to its own
-        // network-touching git spawns: without it a host whose credential helper needs a refresh can
-        // block on an OS credential prompt that reads no stdin, turning an optional accounting read
-        // into a hang at settle. `gh` reads its own non-interactive mode implicitly when stdout is not
-        // a terminal, which is always true of a spawned child here.
+        // network-touching git spawns: a host whose credential helper needs a refresh can block on a
+        // prompt that reads no stdin. It makes that LESS LIKELY and does not prevent it -- neither
+        // variable is read by an OS credential manager, which DeliveryVerifier's own doc records and
+        // answers with a third measure -- so what actually stops a hang here is BoundedSpawner's time
+        // bound, not this pair (#1913 review finding 2). `gh` reads its own non-interactive mode
+        // implicitly when stdout is not a terminal, which is always true of a spawned child here.
         startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
         startInfo.Environment["GCM_INTERACTIVE"] = "never";
 
@@ -318,7 +404,28 @@ public static class WorkspaceDeliveryProbe
         {
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The child is KILLED, not merely abandoned: WaitForExitAsync's cancellation stops the
+                // wait and nothing else, so a `gh` wedged on a credential prompt would otherwise
+                // outlive the baton process that started it. Tree-wide because git spawns helpers.
+                // Best-effort by construction -- a process that exited between the timeout firing and
+                // this line throws, and there is nothing left to kill.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
+                {
+                }
+
+                throw;
+            }
+
             return new Daemon.GhCliResult(
                 Started: true,
                 process.ExitCode,

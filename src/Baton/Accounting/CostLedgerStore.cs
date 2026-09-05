@@ -258,11 +258,14 @@ public static partial class CostLedgerStore
         string ReviewedRef, string? ReviewedPr, string? ReviewedHead, int High, int Medium, int Low);
 
     /// <summary>
-    /// The output name a verdict-producing role writes — the same literal
-    /// <c>Baton.Cli.VerdictInstrumentStamp.VerdictOutputName</c> stamps, kept as a constant here rather
-    /// than reached for across the project boundary (this layer cannot see <c>Baton.Cli</c>).
+    /// <b>The single home of the output name a verdict-producing role writes</b> (#1913 review finding
+    /// 7). Public because the other in-code speller of it, <c>Baton.Cli.VerdictInstrumentStamp</c>,
+    /// references THIS constant: the project dependency runs <c>Baton.Cli</c> → <c>Baton</c>, so the
+    /// engine side is the end of that arrow and the only one both can see. The name the review ROLE
+    /// declares lives in <c>WorkerRoles.json</c>, which is data rather than code; nothing compiles the
+    /// two together, so a rename there still has to reach here.
     /// </summary>
-    internal const string VerdictOutputName = "verdict.json";
+    public const string VerdictOutputName = "verdict.json";
 
     /// <summary>
     /// This execution's <c>verdict.json</c> reduced to the row's fields, or <see langword="null"/> when
@@ -364,14 +367,26 @@ public static partial class CostLedgerStore
     /// and the id <see cref="ResolutionExecutionSuffix"/> builds — which is what
     /// <see cref="AppendAsync"/>'s dedupe on <see cref="CostLedgerEntry.Execution"/> then sees.
     /// </para>
+    /// <para>
+    /// <b>The row is DATED</b> (#1913 review finding 1), on <see cref="CostLedgerEntry.EndedAt"/> and
+    /// nothing else — that field's own doc says which instant it carries here and
+    /// <see cref="CostLedgerEntry.StartedAt"/>'s says why it stays absent, and spec/baton.md §7 states
+    /// what leaving it undated cost every windowed reading.
+    /// </para>
     /// </summary>
     /// <param name="existingRows">The ledger file's rows as already written — this method appends nothing itself.</param>
     /// <param name="recordedRoomKey">A <see cref="BatonPaths.RecordKey"/>, matched with <see cref="BatonPaths.RecordKeyComparer"/>.</param>
+    /// <param name="resolvedAt">
+    /// When the resolution happened, in UTC — the ledger's own frame (<see cref="LedgerQuery.ToUtc"/>
+    /// states why every instant it writes is UTC). Defaults to now; injectable only so a test can put
+    /// the row inside or outside a fixed window.
+    /// </param>
     public static CostLedgerEntry? BuildResolutionRow(
         IReadOnlyList<CostLedgerEntry> existingRows,
         string recordedRoomKey,
         ConductorResolution resolution,
-        string? reason)
+        string? reason,
+        DateTime? resolvedAt = null)
     {
         ArgumentNullException.ThrowIfNull(existingRows);
         ArgumentException.ThrowIfNullOrEmpty(recordedRoomKey);
@@ -404,6 +419,7 @@ public static partial class CostLedgerStore
             Outcome: last.Outcome,
             Issue: last.Issue,
             PullRequest: last.PullRequest,
+            EndedAt: LedgerQuery.ToUtc(resolvedAt ?? DateTime.UtcNow),
             Resolution: resolution,
             ResolutionReason: reason is { Length: > 0 } ? reason : null);
     }

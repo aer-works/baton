@@ -1321,6 +1321,151 @@ public sealed class CostLedgerStoreTests
     }
 
     /// <summary>
+    /// #1913 review finding 4: a finding with no <c>severity</c> is not counted as a High one. STJ
+    /// binds the absent value-type parameter to <c>default</c>, which IS High, so the fixture below
+    /// used to land as <c>findingsHigh: 1</c> — a correctly-computed wrong number in the one field
+    /// this row declares to be a measurement. The verdict is now refused whole, which is why all five
+    /// fields go absent together rather than the counts alone.
+    /// <para>
+    /// The polarity control is one test above: the same shape WITH severities records 1/0/1. Without
+    /// it this arm would pass against a reader that had stopped counting anything at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_finding_with_no_severity_is_refused_rather_than_counted_as_high()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-severityless-verdict");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            WriteVerdict(room, executionId, """
+                {"reviewedRef": "#1913", "findings": [{"claim": "no severity given", "status": "confirmed"}]}
+                """);
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start, worker: "review"), room, Repository));
+
+            Assert.Null(row.FindingsHigh);
+            Assert.Null(row.FindingsMedium);
+            Assert.Null(row.FindingsLow);
+            Assert.Null(row.ReviewedRef);
+            Assert.Null(row.ReviewedPr);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    /// <summary>
+    /// #1913 review finding 1, over the three arms that discriminate: a window around the resolution
+    /// counts the row, a window elsewhere does not, and in NEITHER case does it land in
+    /// <c>undatedExcluded</c>. Before the fix the first arm counted 0 and the third counted 1 — see
+    /// <see cref="CostLedgerStore.BuildResolutionRow"/> and spec/baton.md §7 for what that cost.
+    /// </summary>
+    [Fact]
+    public void A_resolution_row_is_dated_with_the_resolutions_own_instant_so_a_window_can_contain_it()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-windowed-resolution");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var rows = CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), room, Repository);
+
+            var resolvedAt = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
+            var resolution = CostLedgerStore.BuildResolutionRow(
+                rows, BatonPaths.RecordKey(room), ConductorResolution.Reject, "capture rejected", resolvedAt);
+
+            Assert.NotNull(resolution);
+            Assert.Equal(resolvedAt, resolution.EndedAt);
+
+            // An intervention is an instant, not an interval: no start is invented for it.
+            Assert.Null(resolution.StartedAt);
+
+            var containing = LedgerRollup.Build(
+                [resolution],
+                new LedgerQuery(Since: resolvedAt.AddHours(-1), Until: resolvedAt.AddHours(1)),
+                includeRows: true);
+            Assert.Equal(1, containing.Total.Attempts);
+            Assert.Equal(0, containing.Query.UndatedExcluded);
+
+            var elsewhere = LedgerRollup.Build(
+                [resolution],
+                new LedgerQuery(Since: resolvedAt.AddDays(1), Until: resolvedAt.AddDays(2)),
+                includeRows: true);
+            Assert.Equal(0, elsewhere.Total.Attempts);
+            Assert.Equal(0, elsewhere.Query.UndatedExcluded);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    /// <summary>
+    /// #1913 review finding 5: both readings <see cref="LedgerQuery.HasResolution"/> exists for are
+    /// expressible, over the SAME two rows — so a facet that matched everything, or nothing, fails one
+    /// arm or the other.
+    /// </summary>
+    [Fact]
+    public void The_resolution_facet_selects_execution_attempts_alone_or_the_interventions_alone()
+    {
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-resolution-facet");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+            var rows = CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), room, Repository);
+            var resolution = CostLedgerStore.BuildResolutionRow(
+                rows, BatonPaths.RecordKey(room), ConductorResolution.Reject, "capture rejected");
+            Assert.NotNull(resolution);
+            CostLedgerEntry[] file = [.. rows, resolution];
+
+            Assert.Equal(2, LedgerRollup.Build(file, new LedgerQuery()).Total.Attempts);
+            Assert.Equal(1, LedgerRollup.Build(file, new LedgerQuery(HasResolution: false)).Total.Attempts);
+            Assert.Equal(1, LedgerRollup.Build(file, new LedgerQuery(HasResolution: true)).Total.Attempts);
+            Assert.Equal(
+                1,
+                LedgerRollup.Build(file, new LedgerQuery(Resolution: ConductorResolution.Reject)).Total.Attempts);
+
+            // The kind facet is a kind facet, not a presence one: the other two kinds match neither row.
+            Assert.Equal(
+                0,
+                LedgerRollup.Build(file, new LedgerQuery(Resolution: ConductorResolution.Close)).Total.Attempts);
+
+            // The trap finding 1 was ABOUT, one facet along: an undated row a NON-time facet already
+            // excluded must not be reported as dropped by the window. LedgerRollup.MatchesIgnoringTime
+            // re-asks the whole query with the bounds removed, so this holds for a facet added later
+            // without an edit there -- and this arm is what says so out loud.
+            var undated = file[0] with { Execution = "undated", EndedAt = null };
+            var windowed = LedgerRollup.Build(
+                [undated],
+                new LedgerQuery(
+                    Since: new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc),
+                    Until: new DateTime(2026, 9, 6, 0, 0, 0, DateTimeKind.Utc),
+                    HasResolution: true));
+            Assert.Equal(0, windowed.Total.Attempts);
+            Assert.Equal(0, windowed.Query.UndatedExcluded);
+
+            // The control: with no resolution facet, that same row IS a window casualty and says so.
+            Assert.Equal(
+                1,
+                LedgerRollup.Build(
+                    [undated],
+                    new LedgerQuery(Since: new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc)))
+                    .Query.UndatedExcluded);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    /// <summary>
     /// #1901 C1 item 4: a resolution is a CORRECTING row carrying the last execution row's identity and
     /// none of its dimensions — history is never rewritten.
     /// </summary>

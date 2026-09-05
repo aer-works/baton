@@ -307,6 +307,15 @@ public static class LedgerViewCommand
         builder.Append("  api ").Append(Money(row.ApiEquivalentUsd));
         builder.Append(" plan ").Append(Money(row.PlanMeterEstimateUsd));
         builder.Append("  ").Append(row.Execution ?? "(no execution id)");
+
+        // #1913 review finding 6: without this clause a correcting row renders as an execution attempt
+        // nothing was read for, wearing the CORRECTED row's outcome -- 'Succeeded', for an intervention.
+        // The digest omits most columns by design; this is the one that says what kind of row it is.
+        if (row.Resolution is { } resolution)
+        {
+            builder.Append("  resolution=").Append(JsonSerializer.Serialize(resolution).Trim('"'));
+        }
+
         return builder.ToString();
     }
 
@@ -340,6 +349,17 @@ public static class LedgerViewCommand
         if (query.SourceKind is { } kind)
         {
             Add("source-kind", JsonSerializer.Serialize(kind).Trim('"'));
+        }
+
+        // Printed under the same name the operator typed, including the two that select on presence:
+        // a reading filtered to execution attempts alone must say so, or its total reads as the file's.
+        if (query.Resolution is { } resolutionKind)
+        {
+            Add("resolution", JsonSerializer.Serialize(resolutionKind).Trim('"'));
+        }
+        else if (query.HasResolution is { } hasResolution)
+        {
+            Add("resolution", hasResolution ? "any" : "none");
         }
 
         return facets.Count == 0 ? null : string.Join(", ", facets);

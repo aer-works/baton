@@ -416,8 +416,17 @@ try
                 // (WorkspaceDeliveryProbe's own remarks), and fail-open in exactly the same way -- a
                 // workspace that is gone, a `gh` that is absent, or a network that is down costs the
                 // stamp, never the row.
+                //
+                // hostStopSource.Token, NOT the CancellationToken.None every other write at this site
+                // takes (#1913 review finding 2). Those are local file writes a Ctrl-C must not lose,
+                // each already bounded by JsonLinesLedger's lock timeout. This one spawns child
+                // processes that touch the network, so it is the one call here a person can still be
+                // waiting on after the room has settled -- and it is bounded twice over: by this token
+                // and by WorkspaceDeliveryProbe.SpawnTimeout per spawn. What that costs is stated
+                // rather than hidden: a Ctrl-C during the probe writes the row with the delivery
+                // fields absent, which is the same absence a missing `gh` produces.
                 var delivery = await WorkspaceDeliveryProbe
-                    .ReadForRoomAsync(terminalRoomDirectoryPath, CancellationToken.None).ConfigureAwait(false);
+                    .ReadForRoomAsync(terminalRoomDirectoryPath, hostStopSource.Token).ConfigureAwait(false);
                 var costEntries = CostLedgerStore.BuildEntries(
                     terminalEntries, terminalRoomDirectoryPath, repository,
                     runwayOverrideReasonByWorker: runwayOverrides,
