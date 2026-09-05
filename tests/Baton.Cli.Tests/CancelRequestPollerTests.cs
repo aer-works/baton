@@ -132,9 +132,8 @@ public class CancelRequestPollerTests
 
     // #1916 fix round 2 / polarity control for the test above: this target was never accepted by
     // this room AT ALL (a typo'd or stale literal id) -- "too late (it already settled)" is a false
-    // claim for it, since no real execution ever existed to settle. It must land on room.jsonl's
-    // ArrestRequestUnresolvable instead, the same durable home the malformed-content/ambiguous-'latest'
-    // rejections already use for a shape with nothing real to key a flow.jsonl fact on.
+    // claim for it, since no real execution ever existed to settle. See TickAsync's own remarks on
+    // its everAccepted check for why this lands on ArrestRequestUnresolvable instead.
     [Fact]
     public async Task A_request_naming_an_execution_id_never_accepted_by_this_room_is_unresolvable_not_too_late()
     {

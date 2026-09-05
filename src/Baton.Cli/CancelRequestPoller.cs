@@ -266,9 +266,8 @@ public static class CancelRequestPoller
                 }
                 else
                 {
-                    // Never a real ExecutionId this room ever accepted, so there is nothing to key a
-                    // FlowEvent.CancellationRejected on -- room.jsonl is its durable home instead, the
-                    // same one the malformed-content/ambiguous-'latest' rejections above use.
+                    // A third caller of the durable home TryRecordUnresolvableAsync's own doc names --
+                    // see that method's remarks for why room.jsonl, not flow.jsonl, is where this lands.
                     await TryRecordUnresolvableAsync(
                             roomLogPath, content.Target, unresolvableReason,
                             content.WrittenAtUtc?.UtcDateTime ?? lastWriteUtc, cancellationToken)
