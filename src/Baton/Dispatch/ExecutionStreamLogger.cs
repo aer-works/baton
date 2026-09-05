@@ -15,10 +15,9 @@ public sealed class ExecutionStreamLogger
 
     /// <summary>
     /// #1876: how many bytes of chunks whose write FAILED this logger will hold in memory, waiting for
-    /// a later chunk's open to succeed, before it gives up and declares the stream lossy. Bounded
-    /// because the failure this exists for — a reader holding the file open, an AV scanner, a
-    /// delete-pending handle — can also be permanent, and an unbounded retry queue on a multi-hour
-    /// lane is a memory leak that ends the dispatch rather than degrading it.
+    /// a later chunk's open to succeed, before it gives up and declares the stream lossy. This constant
+    /// IS the bound the spec refers to without naming a number; for why the queue is bounded at all,
+    /// read <c>spec/baton.md</c> §3.
     /// </summary>
     public const long DefaultMaxPendingBytes = 4 * 1024 * 1024; // 4 MiB
 

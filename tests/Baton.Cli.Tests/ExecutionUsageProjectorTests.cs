@@ -827,11 +827,10 @@ public sealed class ExecutionUsageProjectorTests
     [Fact]
     public void A_write_failure_gap_reports_its_OWN_reason_not_the_rollover_one()
     {
-        // #1876. The two gaps are different facts with different remedies -- a rollover gap sits at the
-        // head of the retained window and is the expected cost of the 8 MiB bound, a write-failure gap
-        // sits at an unknown offset and means the host obstructed the writer. Reporting the rollover
-        // reason for both would send an operator to the retention bound for a problem that is a sharing
-        // conflict. The terminal figures are still withheld either way, for the same reason.
+        // #1876. Two gaps, two remedies -- see spec/baton.md §3. What this arm discriminates is the
+        // collapse: reporting the rollover reason for both would send an operator to the retention
+        // bound for a problem that is a sharing conflict. The terminal figures are withheld either way,
+        // so the reason string is the only thing that tells them apart.
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1876-{Guid.NewGuid():N}");
         try
         {

@@ -10,11 +10,11 @@ using Baton.Vendors;
 namespace Baton.Cli.Tests;
 
 /// <summary>
-/// #1876. Pins the invariant stated on <see cref="ExecutionStreamLogger"/>'s append path: what lands on
-/// disk is a PREFIX of what the worker emitted, with no interior gap, unless a marker file says
-/// otherwise. Before this, a write that failed skipped its chunk and said "Continuing to retry on
-/// subsequent chunks" — which retried the SINK, never the chunk, so the promise in the warning was not
-/// the behaviour and the resulting hole was silent.
+/// #1876. Pins THE INVARIANT, which is stated once on <see cref="ExecutionStreamLogger"/>'s private
+/// append path and not restated here — read it there before reading these fixtures, since every arm
+/// below is an attempt to break it. Before this, a write that failed skipped its chunk and said
+/// "Continuing to retry on subsequent chunks" — which retried the SINK, never the chunk, so the
+/// promise in the warning was not the behaviour and the resulting hole was silent.
 /// <para>
 /// The control arm throughout is <c>maxPendingBytes: 0</c>, which reproduces the pre-fix drop exactly.
 /// It is read first in the first test: if the control did not show the gap, these fixtures would be
@@ -366,9 +366,8 @@ public sealed class StreamLogWriteFailureBufferingTests
 
             // Loud, not zero-filled: the stream is still declared incomplete...
             Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
-            // ...and the fallback stops at the dimensions. A live Σ is a floor, and standing it in for
-            // the authoritative terminal figure would fabricate the very under-read the triple exists to
-            // expose.
+            // ...and the fallback stops at the dimensions: no member of the reconciliation triple is
+            // synthesised from the journalled figure. Why that line is drawn there: spec/baton.md §3.
             Assert.Null(view.BilledTokens);
             Assert.Null(view.LiveBilledTokens);
             Assert.Null(view.BilledUnderReadTokens);

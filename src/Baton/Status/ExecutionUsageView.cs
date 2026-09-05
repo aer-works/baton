@@ -14,12 +14,10 @@ namespace Baton.Status;
 /// <see cref="CoreEvent.ExecutionStarted"/>/<see cref="CoreEvent.ExecutionExited"/> timestamps, which
 /// every completed execution has. Every other field is independently omitted from the serialized JSON
 /// (never emitted as <c>null</c>, never fabricated as zero) when the vendor's captured stdout carried
-/// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. These fields are
-/// #1876 widened "no such figure" by one source: when the captured stdout yields no terminal reading at
-/// all, the per-dimension fields fall back to the usage the live monitor observed in memory and
-/// journalled on <see cref="FlowEvent.ExecutionArrested"/> — see
-/// <see cref="ExecutionUsageProjector"/> for why that fallback stops at the dimensions and never reaches
-/// the reconciliation triple below. These fields are
+/// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. #1876 widened
+/// "no such figure" by one source (the in-memory fallback off <see cref="FlowEvent.ExecutionArrested"/>,
+/// which reaches these six fields and nothing below); <c>spec/baton.md</c> §3 has the rule and its
+/// limit, and <see cref="ExecutionUsageProjector"/> the code that draws it. These fields are
 /// per-execution attribution, not a complete burn figure — see <c>spec/baton.md</c> §3/§7 for why.
 /// <para>
 /// #1706's reconciliation triple. <see cref="BilledTokens"/> is the AUTHORITATIVE per-execution billed
@@ -478,15 +476,10 @@ public static class ExecutionUsageProjector
             return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-rollover"));
         }
 
-        // #1876: the other announced gap. Same posture as the rollover marker above and for the same
-        // reason -- a Σ over a stream with a hole in it is a fabricated under-read -- but a DIFFERENT
-        // reason string, because the two gaps are not the same fact: a rollover gap is at the head of
-        // the retained window and is the expected cost of an 8 MiB bound, while a write-failure gap is
-        // at an unknown offset and means the host obstructed the writer (a sharing conflict, an AV
-        // hold, a full disk) for longer than its retry buffer could cover. The transient failure this
-        // marker does NOT get written for -- one the buffer absorbed -- deliberately produces no reason
-        // string at all: nothing was lost, so the triple is PRESENT and this field's contract is that
-        // it explains the triple's absence.
+        // #1876: the other announced gap -- same posture as the rollover branch above, deliberately a
+        // DIFFERENT reason string. Why the two are kept apart, and why a failure the retry buffer
+        // absorbed writes no marker and so reaches this branch as an ordinary whole stream, is in
+        // spec/baton.md §3.
         if (File.Exists(writeFailureMarkerPath))
         {
             return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-write-failure"));
