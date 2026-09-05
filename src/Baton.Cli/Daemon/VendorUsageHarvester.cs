@@ -143,19 +143,27 @@ public sealed class VendorUsageHarvester : BackgroundService
     /// this same process reads back (<see cref="VendorUsageProjectionReader"/>), never a wire contract,
     /// so it does not need the lowerCamelCase <c>JsonPropertyName</c> shape the fleet projection's own
     /// <c>vendors[]</c> block uses.
+    /// <para>
+    /// #1746: read-modify-write, because the file carries the per-window sample ring a burn rate needs
+    /// two of. <see cref="VendorUsageBurn.Advance"/> owns every ring rule; this method only supplies
+    /// the previous rings and fails OPEN when it cannot read them -- an unreadable or pre-#1746 file
+    /// costs the history (rate absent until two fresh samples land), never the harvest itself.
+    /// </para>
     /// </summary>
-    private static void Persist(string vendor, VendorUsageSnapshot snapshot)
+    internal static void Persist(string vendor, VendorUsageSnapshot snapshot)
     {
         try
         {
             var path = BatonPaths.VendorUsageSnapshotFile(vendor);
+            var rings = VendorUsageBurn.Advance(ReadExistingRings(path), snapshot);
             var directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))
             {
                 Directory.CreateDirectory(directory);
             }
 
-            var json = JsonSerializer.Serialize(snapshot);
+            var json = JsonSerializer.Serialize(new PersistedVendorUsage(
+                snapshot.Vendor, snapshot.HarvestedAt, snapshot.Caveat, snapshot.Windows, rings));
             var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, path, overwrite: true);
@@ -163,6 +171,22 @@ public sealed class VendorUsageHarvester : BackgroundService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine($"VendorUsageHarvester: failed to persist snapshot for {vendor}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Previous rings, or null when there is no readable prior file (absent, pre-#1746, or
+    /// corrupt) — see <see cref="Persist"/>'s fail-open note.</summary>
+    private static IReadOnlyDictionary<string, IReadOnlyList<VendorUsageSample>>? ReadExistingRings(string path)
+    {
+        try
+        {
+            return File.Exists(path)
+                ? JsonSerializer.Deserialize<PersistedVendorUsage>(File.ReadAllText(path))?.Rings
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 }

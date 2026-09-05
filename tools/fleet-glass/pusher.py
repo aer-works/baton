@@ -5670,8 +5670,12 @@ def _selftest() -> int:
           and "pusher" not in build_wrapped([], [], {}, 0))
 
     # -- #1391: per-vendor usage runway rides `vendors[]`, absent-safe like conductor/pusher above --
+    # #1746 adds two DERIVED window keys (`ratePctPerHour`/`minutesToExhaustion`); this file computes
+    # neither and must forward whatever the daemon's projection put there, so the fixture carries them
+    # and the assertion is verbatim equality, not a key-by-key subset.
     vendors_obj = [{"adapter": "claude", "harvestedAt": "2026-09-04T18:00:00+00:00",
-                     "windows": [{"name": "session", "percentUsed": 8, "rawLine": "Current session: 8% used"}],
+                     "windows": [{"name": "session", "percentUsed": 8, "rawLine": "Current session: 8% used",
+                                  "ratePctPerHour": 4.5, "minutesToExhaustion": 1226.7}],
                      "liveLanes": 1}]
     wrapped_with_vendors = build_wrapped([], [], {}, 0, vendors=vendors_obj)
     check("build_wrapped carries the vendors block through to the snapshot, absent-safe otherwise",
