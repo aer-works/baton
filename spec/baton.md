@@ -3560,7 +3560,7 @@ finishes. This gate arrests nothing, throttles nothing mid-flight, and reserves 
 | Entry point | Gated? | Why |
 |---|---|---|
 | `baton dispatch <role\|template>` | **yes** | The one entry point that admits new vendor spend from cold. |
-| `baton dispatch --continue <room>` | no | Rehires a worker the fleet already admitted; continuation, not a new admission. |
+| `baton dispatch --continue <room>` | no | Rehires a worker the fleet already admitted; continuation, not a new admission. `--override-runway` alongside it is refused (below), never silently dropped. |
 | `baton redispatch` / `baton resolve` | no | Both continue work an earlier admission already started. |
 | `baton run` / `baton resume` / `baton decide` / `baton supply` | no | Drive an already-provisioned room's own bindings; the admission decision was taken at dispatch. |
 | A composed template's later phases | no | Admitted once, at the dispatch that materialised the whole DAG — a phase boundary is not a new admission. |
@@ -3595,10 +3595,15 @@ value in a well-formed one, leaves the shipped defaults in force rather than dis
 
 **`--override-runway "<reason>"` is the only bypass.** Per dispatch, reason mandatory (blank is a parse
 error), no global switch and no silent config bump. On a Hold the dispatch proceeds and the room's
-`bindings.json` carries `runwayOverride: {vendor, reason, used: true, counters, holdReason}`; the
-`#1849` cost-ledger row for each of that room's executions carries `runwayOverrideReason`. On an Admit
-the flag is still recorded, as `used: false` — "offered and not needed" stays distinguishable from
-"never offered", and no ledger row is stamped, because that override bypassed nothing.
+`bindings.json` carries `"RunwayOverride": {"Vendor", "Reason", "Used": true, "Counters":
+[{"Window", "PercentUsed"}], "HoldReason"}` — PascalCase, because `WorkerBindingConfigWriter`
+serializes that file with no naming policy and every other binding field is spelled the same way; the
+`#1849` cost-ledger row for each of that room's executions carries `runwayOverrideReason` (camelCase
+there, and deliberately: every cost-ledger field declares its own `JsonPropertyName`). On an Admit
+the flag is still recorded, as `"Used": false` — "offered and not needed" stays distinguishable from
+"never offered", and no ledger row is stamped, because that override bypassed nothing. Passed together
+with `--continue` the flag is **refused**, not discarded: that dispatch consults no gate, so there is
+nothing to bypass and no decision its reason would annotate.
 
 **Without the flag, a Hold exits non-zero** (`ValidationRefused`, the same code every other pre-run
 refusal uses), printing the counters and the exact flag to use, once. **No flow event is emitted for

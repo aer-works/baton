@@ -21,11 +21,32 @@ public sealed record DaemonSettings
 
     /// <summary>
     /// #1848: the runway hold's thresholds, read by <c>baton dispatch</c> before it admits new vendor
-    /// spend. Never null — an absent <c>runwayHold</c> key in <c>settings.json</c> leaves the
+    /// spend. Never null — an absent <c>RunwayHold</c> key in <c>settings.json</c> leaves the
     /// operator-approved defaults (week ≥85%, session ≥90%) in force, so the gate exists on a machine
     /// that has never been configured.
     /// </summary>
-    public RunwayHoldSettings RunwayHold { get; init; } = new();
+    /// <remarks>
+    /// <b>An explicit <c>"RunwayHold": null</c> falls back to those same defaults</b>, which is why this
+    /// reads through a nullable backing field rather than relying on the initializer. A well-formed file
+    /// carrying an explicit null parses cleanly — <see cref="DaemonSettingsStore.LoadAsync"/>'s
+    /// defaults-on-failure arm only fires for an absent, unreadable, or malformed file — so without this
+    /// the deserializer would hand back a null here and the first <c>For(vendor)</c> would throw where
+    /// the operator's typo should simply have left the gate at its shipped thresholds.
+    /// </remarks>
+    public RunwayHoldSettings RunwayHold
+    {
+        get => _runwayHold ?? DefaultRunwayHold;
+
+        // Coalesced on the way IN as well as out, and the field carries the default from the start:
+        // this is a record, so the synthesized equality compares the FIELD. Leaving it null on an
+        // instance nobody configured would make `new DaemonSettings()` unequal to the same settings
+        // round-tripped through the store, which is what DaemonSettingsStoreTests asserts.
+        init => _runwayHold = value ?? DefaultRunwayHold;
+    }
+
+    private static readonly RunwayHoldSettings DefaultRunwayHold = new();
+
+    private readonly RunwayHoldSettings? _runwayHold = DefaultRunwayHold;
 
     public const int DefaultGlobalConcurrencyCap = 3;
     public const int DefaultPerVendorConcurrencyCap = 2;

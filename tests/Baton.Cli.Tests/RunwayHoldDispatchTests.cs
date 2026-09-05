@@ -184,6 +184,43 @@ public sealed class RunwayHoldDispatchTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1848 review: the flag used to be accepted and silently dropped on a <c>--continue</c> dispatch,
+    /// because the gate returns before it stamps anything. An audited bypass that can be passed and
+    /// leave no record is worse than one that refuses, so the combination is a typed argument error —
+    /// and the message names both flags, since either one is the half the operator may have meant.
+    /// </summary>
+    [Fact]
+    public async Task An_override_passed_with_continue_is_refused_rather_than_discarded()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"runway-continue-override-{Guid.NewGuid():N}");
+        try
+        {
+            var (first, specPath) = await BuildDispatchAsync(testRoot, overrideReason: null);
+            await DispatchCommand.ExecuteAsync(first, Adapters, TestContext.Current.CancellationToken, evaluateRunway: Admit);
+
+            var second = first with
+            {
+                RoomDirectoryPath = Path.Combine(testRoot, "second"),
+                ContinueFromRoomDirectoryPath = first.RoomDirectoryPath,
+                SpecFilePath = specPath,
+                OverrideRunwayReason = "belt and braces",
+            };
+
+            var ex = await Assert.ThrowsAsync<CliArgumentException>(() => DispatchCommand.ExecuteAsync(
+                second, Adapters, TestContext.Current.CancellationToken, evaluateRunway: Admit));
+
+            Assert.Contains("--override-runway", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--continue", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("--override-runway", ex.TryInvocation!, StringComparison.Ordinal);
+            Assert.False(File.Exists(Path.Combine(second.RoomDirectoryPath, "bindings.json")));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     private static async Task<(DispatchOptions Options, string SpecPath)> BuildDispatchAsync(string testRoot, string? overrideReason)
     {
         Directory.CreateDirectory(testRoot);

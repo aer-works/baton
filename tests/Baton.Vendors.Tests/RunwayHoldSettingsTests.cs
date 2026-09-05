@@ -91,6 +91,39 @@ public class RunwayHoldSettingsTests
         }
     }
 
+    /// <summary>
+    /// #1848 review: <c>"RunwayHold": null</c> in an otherwise well-formed file parses cleanly — the
+    /// store's defaults-on-failure arm never fires for it — so before the null-coalescing accessor the
+    /// first <c>For(vendor)</c> threw a NullReferenceException and an operator's typo took dispatch down
+    /// instead of leaving the shipped thresholds in force. The honoured-value arm above is this one's
+    /// control: it proves a settings file's contents reach <c>For</c> at all, so "gates at 85/90" here
+    /// means the null fell back rather than the file being ignored.
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_null_runway_hold_still_gates_at_the_defaults()
+    {
+        var path = TempPath();
+        try
+        {
+            await File.WriteAllTextAsync(
+                path,
+                """{ "GlobalConcurrencyCap": 3, "RunwayHold": null }""",
+                TestContext.Current.CancellationToken);
+
+            var loaded = await DaemonSettingsStore.LoadAsync(path, TestContext.Current.CancellationToken);
+
+            var thresholds = loaded.RunwayHold.For("claude");
+            Assert.Equal(RunwayThresholds.DefaultWeekHoldPct, thresholds.WeekHoldPct);
+            Assert.Equal(RunwayThresholds.DefaultSessionHoldPct, thresholds.SessionHoldPct);
+            Assert.Equal(
+                TimeSpan.FromHours(RunwayThresholds.DefaultMaxSnapshotAgeHours), thresholds.EffectiveMaxSnapshotAge);
+        }
+        finally
+        {
+            FileCleanup.Delete(path);
+        }
+    }
+
     [Fact]
     public async Task A_malformed_settings_file_still_gates_at_the_defaults()
     {

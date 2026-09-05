@@ -151,7 +151,10 @@ public static class RunwayGate
             return new RunwayDecision(
                 vendor,
                 RunwayDisposition.Hold,
-                $"the usage snapshot is {(int)age.TotalHours}h old (limit {(int)thresholds.EffectiveMaxSnapshotAge.TotalHours}h) — "
+                // One decimal, invariant: an integer cast prints a 6h30m snapshot as "6h old (limit 6h)",
+                // which reads as a refusal for no reason. Invariant because the refusal text is asserted
+                // on, and a comma decimal separator is not what a message contract should turn on.
+                $"the usage snapshot is {Hours(age)}h old (limit {Hours(thresholds.EffectiveMaxSnapshotAge)}h) — "
                 + "a stale counter is a lower bound on today's usage, not evidence of headroom",
                 Counters(snapshot, names));
         }
@@ -199,6 +202,9 @@ public static class RunwayGate
 
         return new RunwayDecision(vendor, RunwayDisposition.Admit, Reason: null, counters);
     }
+
+    private static string Hours(TimeSpan span) =>
+        span.TotalHours.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
 
     private static VendorUsageWindow? Find(VendorUsageSnapshot snapshot, string name) =>
         snapshot.Windows.FirstOrDefault(w => string.Equals(w.Name, name, StringComparison.Ordinal));

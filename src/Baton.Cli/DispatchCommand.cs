@@ -83,6 +83,22 @@ public static class DispatchCommand
                 new WorkflowDefinitionSnapshot(snapshotId, new WorkflowTemplateId("capabilities"), 1, []));
         }
 
+        // #1848 review: --override-runway is the audited bypass of a gate a --continue dispatch never
+        // consults, so together they are a refusal rather than a no-op. Accepting the flag and dropping
+        // it is the one failure the record cannot survive: the operator would read "override recorded"
+        // into a room whose bindings.json says nothing. Refused here, ahead of the continuation resolve
+        // below, so the message names the flag combination rather than whatever the rehire happens to
+        // complain about first — and, like every other pre-provision refusal, before any directory is
+        // created. spec/baton.md §7, "Runway hold (#1848)".
+        if (options.OverrideRunwayReason is not null && options.ContinueFromRoomDirectoryPath is not null)
+        {
+            throw new CliArgumentException(
+                "'--override-runway' does not apply to a '--continue' dispatch — rehiring a worker the "
+                + "fleet already admitted consults no runway gate, so the flag would bypass nothing and "
+                + "its reason would be recorded nowhere.",
+                "drop --override-runway, or drop --continue and dispatch cold if the runway hold is what you mean to override.");
+        }
+
         var workspace = options.WorkspaceDirectory ?? workspaceDirectory ?? Directory.GetCurrentDirectory();
         var (definition, bindings) = await MaterializeAsync(options, workspace, cancellationToken).ConfigureAwait(false);
 
@@ -550,6 +566,9 @@ public static class DispatchCommand
     {
         if (options.ContinueFromRoomDirectoryPath is not null)
         {
+            // No gate here, and no --override-runway to drop either: the combination was refused at the
+            // top of ExecuteAsync, which is the only reason this early return cannot silently discard
+            // an audited flag.
             return bindings;
         }
 

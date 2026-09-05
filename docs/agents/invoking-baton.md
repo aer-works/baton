@@ -519,7 +519,8 @@ holds are per vendor: a held `claude` does not hold an `agy` dispatch. **"Cannot
 `agy` dispatch is held until it does, or until you override. The only bypass is
 `--override-runway "<reason>"`, with a mandatory reason that is written to the room record and the
 cost ledger. `baton dispatch --continue`, `baton redispatch`, and `baton resolve` are not gated —
-they continue work the fleet already admitted. Contract: `spec/baton.md` §7, "Runway hold (#1848)".
+they continue work the fleet already admitted; passing `--override-runway` with `--continue` is a
+typed argument error rather than a no-op, since there is no gate there to override. Contract: `spec/baton.md` §7, "Runway hold (#1848)".
 
 A quick read-only scoping question doesn't need a brief file at all: `--spec-text <text>` (or
 `--spec -` to pipe the prompt in over stdin) is a drop-in alternative to `--spec <spec-file>` — same

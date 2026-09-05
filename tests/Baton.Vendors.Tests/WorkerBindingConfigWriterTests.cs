@@ -144,6 +144,52 @@ public class WorkerBindingConfigWriterTests
         }
     }
 
+    /// <summary>
+    /// #1848 review: the tripwire under the documented key names. `spec/baton.md` §7 and
+    /// `docs/dispatch.md` quote the runway override's on-disk shape, and this writer serializes with no
+    /// naming policy — so the file carries <c>"RunwayOverride"</c>, not <c>"runwayOverride"</c>, down to
+    /// the nested counters. Asserted as exact strings so the docs cannot drift away from the bytes
+    /// without a test going red; changing the writer's naming policy would be a migration, not a fix.
+    /// </summary>
+    [Fact]
+    public void Serialize_writes_the_runway_override_under_the_documented_pascal_case_keys()
+    {
+        var config = new Dictionary<string, WorkerBindingConfigEntry>
+        {
+            ["advisor"] = new WorkerBindingConfigEntry(
+                "claude",
+                new WorkerContract("advise", RequiredInputs: [], ProducedOutputs: [], OptionalMetadata: []),
+                "Weigh the options.",
+                TimeSpan.FromMinutes(5),
+                RunwayOverride: new RunwayOverride(
+                    "claude",
+                    "conductor lane, week resets in 2h",
+                    Used: true,
+                    [new RunwayCounter("week (all models)", 87)],
+                    "'week (all models)' is at 87% (holds at 85%)")),
+        };
+
+        var json = WorkerBindingConfigWriter.Serialize(config);
+
+        Assert.Contains("\"RunwayOverride\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Vendor\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Reason\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Used\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Counters\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Window\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"PercentUsed\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"HoldReason\"", json, StringComparison.Ordinal);
+
+        // The polarity arm: the camelCase spelling the docs used to claim is genuinely absent, so this
+        // test discriminates rather than passing on a file that happens to contain both.
+        Assert.DoesNotContain("\"runwayOverride\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"percentUsed\"", json, StringComparison.Ordinal);
+
+        // And it survives the parser every consumer reads the file with, not just the writer.
+        var parsed = WorkerBindingConfigParser.Parse(json);
+        Assert.Equal(87, parsed["advisor"].RunwayOverride!.Counters.Single().PercentUsed);
+    }
+
     [Fact]
     public void Serialize_emits_indented_human_editable_json()
     {

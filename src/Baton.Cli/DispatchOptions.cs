@@ -134,8 +134,11 @@ namespace Baton.Cli;
 /// reason is mandatory (a blank one is a parse error in <see cref="DispatchOptionsParser"/>). Unlike
 /// <paramref name="Timeout"/> and its neighbours this is NOT role-dispatch-only: a workflow template
 /// admits new vendor spend exactly the way a role does, so the flag applies to both. Null means no
-/// override — a held vendor refuses the dispatch. Whether it was needed is recorded either way:
-/// <see cref="Baton.Vendors.RunwayOverride.Used"/>.
+/// override — a held vendor refuses the dispatch. On a cold dispatch, whether it was needed is recorded
+/// either way (<see cref="Baton.Vendors.RunwayOverride.Used"/>); combined with
+/// <paramref name="ContinueFromRoomDirectoryPath"/> it is REFUSED rather than recorded, because a
+/// continuation consults no gate — there is nothing for it to bypass and no decision for its reason to
+/// annotate.
 /// </param>
 public sealed record DispatchOptions(
     string Name,

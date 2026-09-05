@@ -179,6 +179,23 @@ public class RunwayGateTests
         Assert.Equal(RunwayDisposition.Admit, RunwayGate.Evaluate("claude", stale, new RunwayThresholds(), Now.AddHours(-5)).Disposition);
     }
 
+    /// <summary>
+    /// #1848 review: the tripwire under the staleness message's formatting — why it is not an integer
+    /// cast is stated once, beside the format string in <see cref="RunwayGate.Evaluate"/>.
+    /// </summary>
+    [Fact]
+    public void The_staleness_refusal_prints_the_fractional_age_rather_than_truncating_it()
+    {
+        var stale = ClaudeUsageSlashCommandSource.Parse(
+            "Current session: 0% used\nCurrent week (all models): 0% used\n", Now.AddHours(-6.5));
+
+        var decision = RunwayGate.Evaluate("claude", stale, new RunwayThresholds(), Now);
+
+        Assert.Equal(RunwayDisposition.Hold, decision.Disposition);
+        Assert.Contains("6.5h old (limit 6h)", decision.Reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("6h old", decision.Reason, StringComparison.Ordinal);
+    }
+
     // ---- unmeasured vendor -------------------------------------------------------------------------
 
     [Fact]
