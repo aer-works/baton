@@ -11,8 +11,10 @@ namespace Baton.Architecture.Tests;
 /// demonstrably reads a directory that is not an execution's output directory.
 /// <para>
 /// As of #1351, <c>src/</c> has zero call sites that enumerate an execution's own output directory —
-/// the four sites below all list an unrelated directory (a memory root, a capture directory, or a
-/// commands directory), never <c>{artifactsRoot}/execution_{id}</c> itself. This test pins that fact
+/// the sites below each list an unrelated directory, never <c>{artifactsRoot}/execution_{id}</c>
+/// itself. Which directory is said per entry in the allowlist rather than summarised here: this
+/// sentence used to carry both a count and a list of directory kinds, and both went stale the moment
+/// the allowlist grew, which is what an entry's own comment cannot do. This test pins that fact
 /// structurally: the allowlist below is the complete, named set of raw file-listing calls in <c>src/</c>,
 /// each with a comment saying why it does not need the filter. The next author who adds a new one must
 /// either route it through a filtered listing that excludes <see cref="Baton.Dispatch.ExecutionStreamLogger.IsStreamLogFileName"/>

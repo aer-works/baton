@@ -18,15 +18,20 @@ public enum MemoryPathSource
     [JsonStringEnumMemberName("decoded-unique")] DecodedUnique,
 
     /// <summary>
-    /// Decoded from the directory name, which admitted several readings, exactly one of which names a
-    /// directory that exists. Disk broke the tie, not the decoder.
+    /// Decoded from the directory name, which admitted several readings, exactly one of which is an
+    /// absolute path naming a checkout that is present on this machine. Disk broke the tie, not the
+    /// decoder — and only a <b>fully qualified</b> reading is ever offered to disk, so this source
+    /// never depends on where the process happened to be running from.
     /// </summary>
     [JsonStringEnumMemberName("decoded-existing")] DecodedExisting,
 
     /// <summary>Several readings survive and nothing available here picks one. Reported, never guessed.</summary>
     [JsonStringEnumMemberName("ambiguous")] Ambiguous,
 
-    /// <summary>The name yields no usable path at all.</summary>
+    /// <summary>
+    /// The name yields no usable path at all — either no reading survives the decoder, or the single
+    /// reading it produced is not a fully qualified path and so names nothing on this machine.
+    /// </summary>
     [JsonStringEnumMemberName("unresolvable")] Unresolvable,
 }
 
@@ -69,10 +74,13 @@ public sealed record MemoryRootPathResolution(
 /// thing that resolves them.
 /// </para>
 /// <para>
-/// <b>Ground truth first.</b> Every session transcript under a project directory records the absolute
-/// <c>cwd</c> it ran in — the value the directory name was derived from. When the transcripts agree on
-/// one, that is the answer and the decoder is not consulted. When they disagree, or there are none
-/// (every archived root), the decoder runs and its ambiguity is reported as ambiguity.
+/// <b>Ground truth first.</b> A session transcript under a project directory records the absolute
+/// <c>cwd</c> it ran in — the value the directory name was derived from. That the field is present is
+/// an observation about this vendor's transcripts, not a guarantee it publishes, so the read scans for
+/// it rather than assuming where it sits (<see cref="ReadSessionWorkingDirectories"/>) and a transcript
+/// that carries none costs nothing but its own read. When the transcripts agree on one, that is the
+/// answer and the decoder is not consulted. When they disagree, or there are none (every archived
+/// root), the decoder runs and its ambiguity is reported as ambiguity.
 /// </para>
 /// <para>
 /// <b>Candidates are enumerated lazily and never counted.</b> A name with <i>n</i> interior hyphens
@@ -89,12 +97,29 @@ public static class MemoryRootPath
     public const int MaxSessionFilesRead = 50;
 
     /// <summary>
+    /// Lines scanned per session transcript while looking for a <c>cwd</c>. A transcript is a JSONL
+    /// stream whose records vary, so the field is looked for rather than assumed to sit on line 1 — but
+    /// a transcript can be tens of megabytes, and reading one whole to learn one string is what this
+    /// bound refuses. A transcript that carries no <c>cwd</c> in its first
+    /// <see cref="MaxSessionLinesScanned"/> lines contributes no ground truth and the decoder runs.
+    /// </summary>
+    public const int MaxSessionLinesScanned = 64;
+
+    /// <summary>
     /// Hard ceiling on readings <see cref="DecodeCandidates"/> will produce for one name. A name with
     /// <i>n</i> interior hyphens has 2^<i>n</i> of them, and every caller here short-circuits long
     /// before that — but a caller filtering by disk existence walks the whole set when none exists, so
     /// this is what keeps a pathologically long name from stalling an audit rather than reporting one.
-    /// Truncation is invisible to every answer this type gives: each is "is there a second reading?",
-    /// and a truncated enumeration still has one if the full one did.
+    /// <para>
+    /// <b>What truncation can and cannot change.</b> It cannot change an "is there a second reading?"
+    /// answer — <see cref="IsAmbiguousByName"/> and the fallback in <see cref="Resolve"/> both
+    /// short-circuit at the second hit, and a truncated enumeration still has one if the full one did.
+    /// It <i>can</i> change the disk tie-break: that filter walks the enumeration, so a checkout whose
+    /// only matching reading sits past this cap is never seen, and the root reports
+    /// <see cref="MemoryPathSource.Ambiguous"/> instead of <see cref="MemoryPathSource.DecodedExisting"/>.
+    /// The degradation is one-way — a missed reading loses a resolution, it never invents one — which is
+    /// why the cap is stated here rather than raised.
+    /// </para>
     /// </summary>
     public const int MaxReadingsEnumerated = 4096;
 
@@ -182,12 +207,32 @@ public static class MemoryRootPath
     /// order.
     /// </summary>
     /// <remarks>
-    /// Reads the FIRST line of each <c>*.jsonl</c> under <paramref name="sessionDirectoryPath"/>,
-    /// newest file first, up to <see cref="MaxSessionFilesRead"/> of them: a session's opening record
-    /// carries its <c>cwd</c>, and a project with 149 transcripts must not cost 149 full file reads to
-    /// audit. <b>These are session transcripts, not memory files</b> — the audit never opens a memory
-    /// file for anything but its digest. The bound is why a project whose first 50 transcripts agree
-    /// reads as unanimous even if a 51st disagreed; that is a smaller error than an audit nobody runs.
+    /// <para>
+    /// Scans each <c>*.jsonl</c> under <paramref name="sessionDirectoryPath"/>, newest file first, up to
+    /// <see cref="MaxSessionFilesRead"/> of them, stopping at the first line of each that carries a
+    /// <c>cwd</c> and never reading past <see cref="MaxSessionLinesScanned"/> lines: a project with 149
+    /// transcripts must not cost 149 full file reads to audit. <b>The record shape is looked for, not
+    /// assumed</b> — a blank, non-JSON, or <c>cwd</c>-less leading line is skipped rather than ending the
+    /// file, because "the opening record carries the <c>cwd</c>" is a claim about a vendor's format that
+    /// nothing here has measured (no <c>tools/vendor-verify</c> check and no
+    /// <c>docs/vendor-doc-audit.md</c> entry covers it), and a scan is right whether or not it holds.
+    /// </para>
+    /// <para>
+    /// <b>Only <c>cwd</c> is read.</b> No other field of a transcript reaches a report, a log or an
+    /// exception message — a parse failure is swallowed rather than surfaced, precisely so no fragment of
+    /// a transcript can leave through one. <b>These are session transcripts, not memory files</b> — the
+    /// audit never opens a memory file for anything but its digest.
+    /// </para>
+    /// <para>
+    /// <b>A relative <c>cwd</c> is discarded, not trusted.</b> A path that is not fully qualified would
+    /// resolve against whatever directory the audit happens to run from, which is the same
+    /// working-directory-dependent wrong answer the decoder's own tie-break refuses (see
+    /// <see cref="Resolve"/>). Dropping it degrades the root to the decoder's ambiguity.
+    /// </para>
+    /// <para>
+    /// The file bound is why a project whose newest 50 transcripts agree reads as unanimous even if a
+    /// 51st disagreed; that is a smaller error than an audit nobody runs.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<string> ReadSessionWorkingDirectories(string? sessionDirectoryPath)
     {
@@ -216,7 +261,8 @@ public static class MemoryRootPath
 
         foreach (var file in sessionFiles)
         {
-            if (TryReadWorkingDirectory(file) is { Length: > 0 } cwd && seen.Add(cwd))
+            if (TryReadWorkingDirectory(file) is { Length: > 0 } cwd &&
+                Path.IsPathFullyQualified(cwd) && seen.Add(cwd))
             {
                 found.Add(cwd);
             }
@@ -233,12 +279,47 @@ public static class MemoryRootPath
                 new FileStream(sessionFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite),
                 Encoding.UTF8);
 
-            var line = reader.ReadLine();
-            if (string.IsNullOrWhiteSpace(line))
+            for (var scanned = 0; scanned < MaxSessionLinesScanned; scanned++)
             {
-                return null;
+                var line = reader.ReadLine();
+                if (line is null)
+                {
+                    return null;
+                }
+
+                if (ReadWorkingDirectory(line) is { Length: > 0 } cwd)
+                {
+                    return cwd;
+                }
             }
 
+            // The bound ran out before a cwd turned up: no ground truth here, decoder runs.
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // An unreadable transcript contributes no ground truth; the decoder still runs.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The <c>cwd</c> one transcript line carries, or <see langword="null"/> when it carries none.
+    /// </summary>
+    /// <remarks>
+    /// The <see cref="JsonException"/> catch is scoped to ONE line on purpose: caught around the whole
+    /// file it would make a blank or non-JSON leading line fatal to the scan, which is the very
+    /// assumption the scan exists to stop depending on.
+    /// </remarks>
+    private static string? ReadWorkingDirectory(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        try
+        {
             using var document = JsonDocument.Parse(line);
             return document.RootElement.ValueKind == JsonValueKind.Object &&
                    document.RootElement.TryGetProperty("cwd", out var cwd) &&
@@ -246,9 +327,10 @@ public static class MemoryRootPath
                 ? cwd.GetString()
                 : null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (JsonException)
         {
-            // An unreadable or non-JSON transcript contributes no ground truth; the decoder still runs.
+            // Not a JSON record: skip this line. Nothing from it is surfaced — the exception carries a
+            // fragment of the transcript and is deliberately dropped rather than logged or wrapped.
             return null;
         }
     }
@@ -263,18 +345,21 @@ public static class MemoryRootPath
     /// than one is a genuine ambiguity (a project directory that two different cwds encoded onto), and
     /// none sends this to the decoder.
     /// </param>
-    /// <param name="directoryExists">
-    /// Existence probe, injected so this stays testable against a fixture tree without one. Production
-    /// callers pass <see cref="Directory.Exists(string)"/>.
+    /// <param name="isCheckoutRoot">
+    /// <b>Not a bare existence probe.</b> The narrow question it must answer is the one
+    /// <c>RepositoryIdentityResolver.IsWorkTreeRoot</c> defines and production callers pass — never
+    /// "is there a directory here", and never "is this path somewhere inside a repository". See the
+    /// tie-break's own comment below for the wrong answer each weaker predicate produced. Injected so
+    /// this stays testable without a fixture tree, and so the engine holds no notion of git.
     /// </param>
     public static MemoryRootPathResolution Resolve(
         string directoryName,
         IReadOnlyList<string> sessionWorkingDirectories,
-        Func<string, bool> directoryExists)
+        Func<string, bool> isCheckoutRoot)
     {
         ArgumentException.ThrowIfNullOrEmpty(directoryName);
         ArgumentNullException.ThrowIfNull(sessionWorkingDirectories);
-        ArgumentNullException.ThrowIfNull(directoryExists);
+        ArgumentNullException.ThrowIfNull(isCheckoutRoot);
 
         switch (sessionWorkingDirectories.Count)
         {
@@ -286,8 +371,29 @@ public static class MemoryRootPath
                     null, MemoryPathSource.Ambiguous, sessionWorkingDirectories.Take(MaxReportedCandidates).ToList());
         }
 
-        // No ground truth. Disk breaks a decoder tie when exactly one reading names a real directory.
-        var existing = DecodeCandidates(directoryName).Where(directoryExists).Take(MaxReportedCandidates + 1).ToList();
+        // No ground truth. Disk breaks a decoder tie when exactly one reading names a real checkout —
+        // under two filters, each of which is a defect this got wrong first (#1908 review F1):
+        //
+        //   Path.IsPathFullyQualified: a name with no "X--" drive prefix decodes to RELATIVE readings
+        //     (every archived root is keyed by its bare directory name, so `alpaca-agent-bot` yields
+        //     `alpaca\agent\bot` and three siblings). Probing one resolves it against the process
+        //     working directory, so the SAME machine answers differently depending on where `audit` was
+        //     run from, and the answer it gives is a confident wrong checkout. A relative reading names
+        //     nothing here; it is never offered to the probe and never becomes a CheckoutPath below.
+        //
+        //   isCheckoutRoot, not Directory.Exists: git discovers a repository by walking UP, so the
+        //     probe that follows this one (RepositoryIdentityResolver) answers with full confidence for
+        //     any directory INSIDE a checkout. A reading landing on `...\baton\memory` would therefore
+        //     be filed under `baton` as though the decoder had found the checkout. Requiring the reading
+        //     to be the work tree's own root is what makes "disk broke the tie" mean the tie was broken
+        //     by the thing being looked for.
+        //
+        // Both failures degrade the same safe way now: to Ambiguous with candidates and no chosen path.
+        var existing = DecodeCandidates(directoryName)
+            .Where(Path.IsPathFullyQualified)
+            .Where(isCheckoutRoot)
+            .Take(MaxReportedCandidates + 1)
+            .ToList();
         if (existing.Count == 1)
         {
             return new MemoryRootPathResolution(existing[0], MemoryPathSource.DecodedExisting, existing);
@@ -300,12 +406,15 @@ public static class MemoryRootPath
         }
 
         // Nothing on disk: the path is gone (or never was here). The decoder's own ambiguity is all
-        // that is left to report.
+        // that is left to report. Candidates are still listed as decoded, relative ones included, since
+        // they are what an operator reads — but only a fully qualified one may become a CheckoutPath.
         var candidates = DecodeCandidates(directoryName).Take(MaxReportedCandidates + 1).ToList();
         return candidates.Count switch
         {
             0 => new MemoryRootPathResolution(null, MemoryPathSource.Unresolvable, []),
-            1 => new MemoryRootPathResolution(candidates[0], MemoryPathSource.DecodedUnique, candidates),
+            1 when Path.IsPathFullyQualified(candidates[0]) =>
+                new MemoryRootPathResolution(candidates[0], MemoryPathSource.DecodedUnique, candidates),
+            1 => new MemoryRootPathResolution(null, MemoryPathSource.Unresolvable, candidates),
             _ => new MemoryRootPathResolution(
                 null, MemoryPathSource.Ambiguous, candidates.Take(MaxReportedCandidates).ToList()),
         };

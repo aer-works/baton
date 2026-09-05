@@ -111,6 +111,75 @@ public sealed class RepositoryIdentityResolverTests
         }
     }
 
+    /// <summary>
+    /// #1908 review F1, leak (b). <see cref="RepositoryIdentityResolver.TryResolveAsync"/> answers for
+    /// any directory INSIDE a checkout, because that is how git discovers a repository — correct for a
+    /// room's recorded project root, and wrong as a tie-break for a GUESSED path, which is what
+    /// <c>MemoryRootPath.Resolve</c> hands it. <see cref="RepositoryIdentityResolver.IsWorkTreeRoot"/>
+    /// is the narrower predicate that tie-break needs.
+    /// </summary>
+    [Fact]
+    public async Task A_directory_inside_a_checkout_is_not_a_work_tree_root_even_though_git_answers_for_it()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var checkout = Path.Combine(root, "checkout");
+            await InitGitRepoAsync(checkout);
+            var inside = Path.Combine(checkout, "memory");
+            Directory.CreateDirectory(inside);
+
+            // The control that makes the negative below mean something: git DOES hand back the
+            // checkout's identity for the subdirectory, at full confidence and with no hint that it
+            // walked up to find it. Bare existence as a tie-break is what turned that into a wrong
+            // answer on a decoded reading.
+            var walkedUp = await RepositoryIdentityResolver.TryResolveAsync(inside, TestContext.Current.CancellationToken);
+            Assert.NotNull(walkedUp);
+            Assert.Equal(
+                (await RepositoryIdentityResolver.TryResolveAsync(checkout, TestContext.Current.CancellationToken))!.Value,
+                walkedUp.Value);
+            Assert.True(Directory.Exists(inside));
+
+            Assert.True(RepositoryIdentityResolver.IsWorkTreeRoot(checkout));
+            Assert.False(RepositoryIdentityResolver.IsWorkTreeRoot(inside));
+
+            // And an ordinary directory that is no repository at all is not one either.
+            Assert.False(RepositoryIdentityResolver.IsWorkTreeRoot(root));
+            Assert.False(RepositoryIdentityResolver.IsWorkTreeRoot(Path.Combine(root, "absent")));
+            Assert.False(RepositoryIdentityResolver.IsWorkTreeRoot("   "));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(root);
+        }
+    }
+
+    /// <summary>
+    /// A linked worktree's <c>.git</c> is a FILE, not a directory — the shape that makes every worktree
+    /// of one repository share one identity (see <see cref="RepositoryIdentityResolver.TryResolveAsync"/>'s
+    /// <c>--git-common-dir</c> comment). It is a work-tree root, so the predicate must accept it.
+    /// </summary>
+    [Fact]
+    public async Task A_linked_worktree_whose_git_is_a_file_is_a_work_tree_root()
+    {
+        var root = NewTempDirectory();
+        try
+        {
+            var checkout = Path.Combine(root, "checkout");
+            await InitGitRepoAsync(checkout);
+
+            var linked = Path.Combine(root, "linked");
+            await RunGitAsync(checkout, "worktree", "add", "-q", "-b", "linked-branch", linked);
+
+            Assert.True(File.Exists(Path.Combine(linked, ".git")));
+            Assert.True(RepositoryIdentityResolver.IsWorkTreeRoot(linked));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(root);
+        }
+    }
+
     [Fact]
     public async Task A_missing_directory_resolves_to_nothing()
     {

@@ -103,13 +103,21 @@ public static class MemoryAuditCommand
     /// only against a path that exists — a probe of a vanished directory answers nothing, and running
     /// one anyway would spend a process per gone root to learn that.
     /// </summary>
+    /// <remarks>
+    /// The decoder's tie-break is handed <see cref="RepositoryIdentityResolver.IsWorkTreeRoot"/> rather
+    /// than <see cref="Directory.Exists(string)"/> — <see cref="MemoryRootPath.Resolve"/>'s own comment
+    /// states what each weaker predicate got wrong. The part only visible from this site is the
+    /// asymmetry: a session <c>cwd</c> is deliberately NOT filtered that way. It is the value the
+    /// directory name was derived from, so a session run from inside a checkout belongs to that
+    /// checkout; the narrow predicate is for a GUESSED reading, not a recorded one.
+    /// </remarks>
     private static async Task<MemoryRootResolution> ResolveAsync(
         MemoryRoot root, CancellationToken cancellationToken)
     {
         var resolution = MemoryRootPath.Resolve(
             root.DirectoryName,
             MemoryRootPath.ReadSessionWorkingDirectories(root.SessionDirectoryPath),
-            Directory.Exists);
+            RepositoryIdentityResolver.IsWorkTreeRoot);
 
         var checkoutExists = resolution.CheckoutPath is { Length: > 0 } path && Directory.Exists(path);
 

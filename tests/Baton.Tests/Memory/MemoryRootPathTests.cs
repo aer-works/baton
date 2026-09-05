@@ -78,8 +78,13 @@ public sealed class MemoryRootPathTests : IDisposable
         Assert.Equal(@"C:\Users\pbree\.baton", resolved.CheckoutPath);
     }
 
+    /// <summary>
+    /// The probe is "is this reading a work tree's own ROOT", not "does a directory exist here" — see
+    /// <c>RepositoryIdentityResolver.IsWorkTreeRoot</c> for why the weaker predicate attached a
+    /// confident wrong repository to any reading that landed inside a checkout (#1908 review F1).
+    /// </summary>
     [Fact]
-    public void Disk_breaks_a_decoder_tie_when_exactly_one_reading_exists()
+    public void A_checkout_root_on_disk_breaks_a_decoder_tie_when_exactly_one_reading_is_one()
     {
         const string Name = "C--Users-pbree-source-repos-aer-aer-flow";
         const string OnDisk = @"C:\Users\pbree\source\repos\aer\aer-flow";
@@ -100,6 +105,40 @@ public sealed class MemoryRootPathTests : IDisposable
         Assert.Null(both.CheckoutPath);
     }
 
+    /// <summary>
+    /// #1908 review F1, leak (a) — <see cref="MemoryRootPath.Resolve"/>'s tie-break comment states the
+    /// mechanism; this pins it. <c>alpaca-agent-bot</c> is the live name from the #1852 survey, and it
+    /// carries no drive prefix, so every reading of it is relative.
+    /// </summary>
+    [Fact]
+    public void A_relative_reading_is_never_offered_to_the_disk_probe()
+    {
+        const string Name = "alpaca-agent-bot";
+
+        // The control that keeps the negative from being vacuous: the decoder DOES produce this
+        // reading, and the probe below is the shape that USED to break the tie with it -- exactly one
+        // reading answering yes. Nothing but the fully-qualified filter can be what refuses it. An
+        // all-true probe would NOT discriminate here: four readings say yes and the answer is
+        // ambiguous either way, which is how a filterless resolver passes a test written that way.
+        Assert.Contains("alpaca-agent-bot", MemoryRootPath.DecodeCandidates(Name));
+        Assert.True(MemoryRootPath.IsAmbiguousByName(Name));
+
+        var resolved = MemoryRootPath.Resolve(Name, [], path => path == "alpaca-agent-bot");
+
+        Assert.Equal(MemoryPathSource.Ambiguous, resolved.Source);
+        Assert.Null(resolved.CheckoutPath);
+
+        // Polarity: the same one-reading-says-yes probe over a name whose readings ARE fully qualified
+        // does break the tie. Without this arm the assertion above passes on a resolver that ignores
+        // its probe entirely.
+        var rooted = MemoryRootPath.Resolve(
+            "C--Users-pbree-source-repos-aer-aer-flow",
+            [],
+            path => string.Equals(path, @"C:\Users\pbree\source\repos\aer\aer-flow", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(MemoryPathSource.DecodedExisting, rooted.Source);
+        Assert.Equal(@"C:\Users\pbree\source\repos\aer\aer-flow", rooted.CheckoutPath);
+    }
+
     [Fact]
     public void A_name_with_one_segment_decodes_unambiguously()
     {
@@ -108,6 +147,28 @@ public sealed class MemoryRootPathTests : IDisposable
         Assert.Equal(MemoryPathSource.DecodedUnique, resolved.Source);
         Assert.Equal(@"C:\baton", resolved.CheckoutPath);
         Assert.False(MemoryRootPath.IsAmbiguousByName("C--baton"));
+    }
+
+    /// <summary>
+    /// The other half of leak (a): a prefixless name with no interior hyphen decodes to exactly ONE
+    /// reading, which the fallback used to hand out as a confident <c>decoded-unique</c> checkout path
+    /// — a relative string in the JSON contract phase B consumes. A path that cannot be made absolute
+    /// names nothing on this machine, so it is <c>unresolvable</c> (a <c>no-provenance</c> finding),
+    /// with the reading still listed as a candidate for an operator to read.
+    /// </summary>
+    [Fact]
+    public void A_single_relative_reading_is_unresolvable_rather_than_a_confident_relative_path()
+    {
+        var resolved = MemoryRootPath.Resolve("alpaca", [], _ => true);
+
+        Assert.Equal(MemoryPathSource.Unresolvable, resolved.Source);
+        Assert.Null(resolved.CheckoutPath);
+        Assert.Equal(["alpaca"], resolved.Candidates);
+
+        // Polarity: the identical shape and the identical probe, differing only in whether the single
+        // reading is fully qualified, DOES yield a checkout path -- so the arm above is that filter and
+        // not "a name with one candidate never resolves".
+        Assert.Equal(@"C:\baton", MemoryRootPath.Resolve("C--baton", [], _ => true).CheckoutPath);
     }
 
     [Fact]
@@ -121,7 +182,7 @@ public sealed class MemoryRootPathTests : IDisposable
     }
 
     [Fact]
-    public void The_working_directory_is_read_from_a_transcripts_first_line()
+    public void The_working_directory_is_read_from_a_transcript()
     {
         var project = Path.Combine(_root, "projects", "C--Users-pbree-source-repos-aer-aer-flow");
         Directory.CreateDirectory(project);
@@ -141,6 +202,49 @@ public sealed class MemoryRootPathTests : IDisposable
         Assert.Empty(MemoryRootPath.ReadSessionWorkingDirectories(Path.Combine(_root, "projects", "absent")));
     }
 
+    /// <summary>
+    /// #1908 review F2. The read used to bet the whole ground-truth ordering on a single
+    /// <c>ReadLine</c>, so a leading record with no <c>cwd</c> silently threw the transcript away.
+    /// <see cref="MemoryRootPath.ReadSessionWorkingDirectories"/>'s remarks say why that assumption had
+    /// no business being load-bearing; these arms pin the bounded scan that replaced it.
+    /// </summary>
+    [Fact]
+    public void A_cwd_is_found_on_a_later_line_when_the_first_record_carries_none()
+    {
+        var project = Path.Combine(_root, "projects", "C--later");
+        Directory.CreateDirectory(project);
+        File.WriteAllText(
+            Path.Combine(project, "a.jsonl"),
+            """
+            {"type":"file-history-snapshot","messageId":"abc"}
+            {"type":"summary","summary":"a session with no cwd on it"}
+            {"type":"user","cwd":"C:\\Users\\pbree\\source\\repos\\baton"}
+            """);
+
+        Assert.Equal(
+            [@"C:\Users\pbree\source\repos\baton"],
+            MemoryRootPath.ReadSessionWorkingDirectories(project));
+    }
+
+    /// <summary>
+    /// The same scan's other half: a blank or non-JSON leading line is SKIPPED, not fatal. Pinned
+    /// separately because the natural way to write the loop — one <c>try</c> around the whole file —
+    /// leaves this arm failing while the arm above passes.
+    /// </summary>
+    [Fact]
+    public void A_blank_or_non_json_leading_line_is_skipped_rather_than_ending_the_scan()
+    {
+        var project = Path.Combine(_root, "projects", "C--noisy");
+        Directory.CreateDirectory(project);
+        File.WriteAllText(
+            Path.Combine(project, "a.jsonl"),
+            "\nnot json at all\n{\"type\":\"user\",\"cwd\":\"C:\\\\Users\\\\pbree\\\\source\\\\repos\\\\baton\"}\n");
+
+        Assert.Equal(
+            [@"C:\Users\pbree\source\repos\baton"],
+            MemoryRootPath.ReadSessionWorkingDirectories(project));
+    }
+
     [Fact]
     public void A_transcript_that_is_not_json_contributes_no_ground_truth()
     {
@@ -149,5 +253,58 @@ public sealed class MemoryRootPathTests : IDisposable
         File.WriteAllText(Path.Combine(project, "a.jsonl"), "not json at all\n");
 
         Assert.Empty(MemoryRootPath.ReadSessionWorkingDirectories(project));
+    }
+
+    /// <summary>
+    /// A transcript longer than <see cref="MemoryRootPath.MaxSessionLinesScanned"/> whose <c>cwd</c>
+    /// sits past the bound contributes nothing rather than being read whole. The degradation is to the
+    /// decoder's ambiguity, never to a wrong path.
+    /// </summary>
+    [Fact]
+    public void A_cwd_past_the_line_bound_is_not_read()
+    {
+        var project = Path.Combine(_root, "projects", "C--long");
+        Directory.CreateDirectory(project);
+
+        var lines = Enumerable
+            .Repeat("""{"type":"user","content":"no cwd here"}""", MemoryRootPath.MaxSessionLinesScanned)
+            .Append("""{"type":"user","cwd":"C:\\Users\\pbree\\source\\repos\\baton"}""");
+        File.WriteAllLines(Path.Combine(project, "a.jsonl"), lines);
+
+        Assert.Empty(MemoryRootPath.ReadSessionWorkingDirectories(project));
+
+        // Control: the SAME record one line earlier -- inside the bound -- is found, so the arm above
+        // is the bound and not the record being unreadable.
+        File.WriteAllLines(
+            Path.Combine(project, "a.jsonl"),
+            lines.Skip(1));
+        Assert.Equal(
+            [@"C:\Users\pbree\source\repos\baton"],
+            MemoryRootPath.ReadSessionWorkingDirectories(project));
+    }
+
+    /// <summary>
+    /// Found while fixing #1908 review F1: nothing required a transcript's <c>cwd</c> to be fully
+    /// qualified, which reproduces that finding's wrong answer through a different input. See
+    /// <see cref="MemoryRootPath.ReadSessionWorkingDirectories"/>'s remarks for the mechanism; ground
+    /// truth that is not a path is discarded, not trusted.
+    /// </summary>
+    [Fact]
+    public void A_relative_cwd_is_discarded_rather_than_taken_as_ground_truth()
+    {
+        var project = Path.Combine(_root, "projects", "C--relative");
+        Directory.CreateDirectory(project);
+        File.WriteAllText(
+            Path.Combine(project, "a.jsonl"),
+            """{"type":"user","cwd":"source\\repos\\baton"}""");
+
+        Assert.Empty(MemoryRootPath.ReadSessionWorkingDirectories(project));
+
+        // Control: the same file with an absolute cwd IS ground truth, so the arm above is the
+        // fully-qualified guard rather than the read failing.
+        File.WriteAllText(
+            Path.Combine(project, "a.jsonl"),
+            """{"type":"user","cwd":"C:\\source\\repos\\baton"}""");
+        Assert.Equal([@"C:\source\repos\baton"], MemoryRootPath.ReadSessionWorkingDirectories(project));
     }
 }
