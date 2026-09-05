@@ -100,6 +100,44 @@ public class ResolveCommandEndToEndTests
         }
     }
 
+    [Fact]
+    public async Task A_missing_cost_row_is_reported_without_reversing_the_durable_resolution()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-{Guid.NewGuid():N}");
+        var roomDirectory = Path.Combine(testRoot, "task");
+        var originalError = Console.Error;
+        try
+        {
+            var executionId = await SeedIndeterminateRoomAsync(
+                testRoot,
+                roomDirectory,
+                "advice.md",
+                "not honest advice.md");
+            var emptyLedgerPath = Path.Combine(testRoot, "empty-cost-ledger.jsonl");
+            using var stderr = new StringWriter();
+            Console.SetError(stderr);
+
+            var result = await ResolveCommand.ExecuteAsync(
+                new ResolveOptions(
+                    roomDirectory,
+                    executionId.Value,
+                    Accept: false,
+                    Reason: "does not honestly satisfy advice.md"),
+                TestContext.Current.CancellationToken,
+                emptyLedgerPath);
+
+            Assert.Equal(StepStatus.Failed, Assert.Single(result.State.Steps).Status);
+            Assert.Contains("resolution was recorded", stderr.ToString(), StringComparison.Ordinal);
+            Assert.Contains("no execution row", stderr.ToString(), StringComparison.Ordinal);
+            Assert.Contains(BatonPaths.RecordKey(roomDirectory), stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     /// <summary>
     /// F1 (#1593 review): admits exactly one verb for a ContractFailure producer, per
     /// <c>ResolveCommand.ResolveExplicitExecutionAsync</c>'s own admission logic. Distinct from a

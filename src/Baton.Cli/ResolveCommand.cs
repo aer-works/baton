@@ -100,13 +100,22 @@ public static class ResolveCommand
 
                 if (ledgerPath is not null)
                 {
-                    await CostLedgerStore.AppendResolutionAsync(
+                    var appended = await CostLedgerStore.AppendResolutionAsync(
                             options.RoomDirectoryPath,
                             options.Close ? "close" : "reject",
                             resolutionReason,
                             ledgerPath,
                             CancellationToken.None)
                         .ConfigureAwait(false);
+                    if (!appended)
+                    {
+                        // The journal mutation above is already durable, so accounting remains fail-open:
+                        // report the missing correction, but do not turn a successful resolution into a failure.
+                        Console.Error.WriteLine(
+                            $"The conductor resolution was recorded, but cost ledger '{ledgerPath}' has no "
+                            + $"execution row for room '{BatonPaths.RecordKey(options.RoomDirectoryPath)}'; "
+                            + "no accounting correction was appended.");
+                    }
                 }
             }
             catch (Exception ex) when (
