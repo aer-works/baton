@@ -65,7 +65,7 @@ public class NonProcessArrestSeamTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             var pumpTask = MutationInterface.StartWorkflowAsync(

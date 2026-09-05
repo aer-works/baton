@@ -138,8 +138,10 @@ public sealed class ExecutionStreamLogger
     private readonly record struct PendingChunk(byte[] Bytes, bool Owned);
 
     /// <summary>Everything that is per-stream rather than per-logger.</summary>
-    private sealed class StreamState(string logFileName, string rolloverFileName)
+    private sealed class StreamState(string streamName, string logFileName, string rolloverFileName)
     {
+        /// <summary>#1885: <c>"stdout"</c>/<c>"stderr"</c>, carried on the loss report.</summary>
+        public string StreamName { get; } = streamName;
         public string LogFileName { get; } = logFileName;
         public string RolloverFileName { get; } = rolloverFileName;
         public long Size;
@@ -167,14 +169,43 @@ public sealed class ExecutionStreamLogger
         public bool RetryUnsafe;
     }
 
+    /// <summary>
+    /// #1885: one declared loss, in primitives. This type deliberately does not name
+    /// <c>Baton.Domain.FlowEvent</c>: <see cref="CoreDispatcher"/> is the one party that turns a report
+    /// into <c>FlowEvent.StreamLogLossDeclared</c>, for the layering reason <c>spec/baton.md</c> §3
+    /// gives.
+    /// </summary>
+    /// <param name="StreamName">
+    /// <c>"stdout"</c> or <c>"stderr"</c> — the stream, not its file name, so the caller does not have to
+    /// re-derive which of the two a <c>.stdout.log</c> belongs to.
+    /// </param>
+    /// <param name="BytesSurrendered">
+    /// The buffered bytes discarded by this declaration, or null when there is no count to give: a
+    /// capture that never opened surrendered an unknown quantity, and a
+    /// <see cref="TerminalReannouncement"/> repeats a loss whose bytes the first report already carried.
+    /// </param>
+    /// <param name="MarkerWritten">
+    /// Whether the write-failure marker had landed at the moment of the report. False on a
+    /// <see cref="TerminalReannouncement"/> report is the whole reason that report exists.
+    /// </param>
+    public readonly record struct StreamLogLoss(
+        string StreamName,
+        long? BytesSurrendered,
+        bool MarkerWritten,
+        bool TerminalReannouncement);
+
+    public const string StdoutStreamName = "stdout";
+    public const string StderrStreamName = "stderr";
+
     private readonly string _outputDirectory;
     private readonly long _maxSizeBytes;
     private readonly long _maxPendingBytes;
     private readonly Action<string, byte[]> _appendBytes;
+    private readonly Action<StreamLogLoss>? _onLossDeclared;
     private readonly object _lock = new();
 
-    private readonly StreamState _stdout = new(StdoutLogFileName, StdoutRolloverFileName);
-    private readonly StreamState _stderr = new(StderrLogFileName, StderrRolloverFileName);
+    private readonly StreamState _stdout = new(StdoutStreamName, StdoutLogFileName, StdoutRolloverFileName);
+    private readonly StreamState _stderr = new(StderrStreamName, StderrLogFileName, StderrRolloverFileName);
 
     private bool _isTerminal;
     private bool _disabled;
@@ -189,11 +220,21 @@ public sealed class ExecutionStreamLogger
     /// N times without needing a real Windows sharing conflict. Null uses the real file append; nothing
     /// in <c>src/</c> passes anything else.
     /// </param>
+    /// <param name="onLossDeclared">
+    /// #1885: invoked once when a stream's loss is first latched, and once more per stream at terminal
+    /// per <see cref="ReportTerminalLossIfUnannounced"/>. <see cref="CoreDispatcher"/> is the only
+    /// production caller; what it does with a report, and why that second channel is worth having, are
+    /// <c>spec/baton.md</c> §3's. <b>Called while this logger's lock is held</b>, and on whichever thread
+    /// declared the loss (the chunk-delivery thread, or the dispatch thread at terminal): a handler must
+    /// enqueue rather than block, and must not re-enter this logger. Null — every caller but the
+    /// dispatcher — leaves the marker and the stderr warning as the only channels, unchanged from #1879.
+    /// </param>
     public ExecutionStreamLogger(
         string outputDirectory,
         long maxSizeBytes = DefaultMaxSizeBytes,
         long maxPendingBytes = DefaultMaxPendingBytes,
-        Action<string, byte[]>? appendBytes = null)
+        Action<string, byte[]>? appendBytes = null,
+        Action<StreamLogLoss>? onLossDeclared = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(outputDirectory);
         ArgumentOutOfRangeException.ThrowIfNegative(maxPendingBytes);
@@ -201,6 +242,9 @@ public sealed class ExecutionStreamLogger
         _maxSizeBytes = maxSizeBytes;
         _maxPendingBytes = maxPendingBytes;
         _appendBytes = appendBytes ?? AppendBytesToFile;
+        // Assigned BEFORE the initialization attempt below, which can itself declare a loss on both
+        // streams -- a callback wired after that point would miss the largest gap this logger reports.
+        _onLossDeclared = onLossDeclared;
 
         try
         {
@@ -254,6 +298,10 @@ public sealed class ExecutionStreamLogger
             _stderr.LossDeclared = true;
             RetryPendingMarker(_stdout);
             RetryPendingMarker(_stderr);
+            // #1885: and reported on the second channel too -- see StreamLogLoss.BytesSurrendered for
+            // why this one carries no count.
+            ReportLoss(_stdout, bytesSurrendered: null, terminalReannouncement: false);
+            ReportLoss(_stderr, bytesSurrendered: null, terminalReannouncement: false);
         }
     }
 
@@ -301,6 +349,11 @@ public sealed class ExecutionStreamLogger
             RetryPendingMarker(_stdout);
             RetryPendingMarker(_stderr);
 
+            // #1885: the last retry has now had its turn, so a marker still unwritten never will be --
+            // spec/baton.md §3 is where what that second report means is stated.
+            ReportTerminalLossIfUnannounced(_stdout);
+            ReportTerminalLossIfUnannounced(_stderr);
+
             _isTerminal = true;
         }
     }
@@ -325,6 +378,11 @@ public sealed class ExecutionStreamLogger
     /// whole run leaves the announcement unwritten. What this logger guarantees is that it never STOPS
     /// trying, which is what the pre-#1879 latch broke; what it cannot guarantee, and what an operator
     /// is told on stderr instead, is stated in <c>spec/baton.md</c> §3.
+    /// <para>
+    /// #1885: that is now a limit of THIS FILE'S channel rather than of the system — the same latch is
+    /// also reported out through <see cref="StreamLogLoss"/>. The rule that makes the two channels one
+    /// announcement is spec/baton.md §3's.
+    /// </para>
     /// </para>
     /// </summary>
     private void AppendChunk(StreamState stream, byte[] data)
@@ -573,19 +631,67 @@ public sealed class ExecutionStreamLogger
     /// </summary>
     private void DeclareWriteLoss(StreamState stream)
     {
+        // #1885: read BEFORE the clear below, which is above the transition guard and would otherwise
+        // hand every report a surrendered-byte count of zero.
+        var surrendered = stream.PendingBytes;
         stream.Pending.Clear();
         stream.PendingBytes = 0;
         // A later chunk starts a fresh attempt against whatever the file now is; the unknown tail it
         // may be appending after is the gap this call is announcing.
         stream.RetryUnsafe = false;
 
-        if (!stream.LossDeclared)
+        var firstDeclaration = !stream.LossDeclared;
+        if (firstDeclaration)
         {
             stream.LossDeclared = true;
             Console.Error.WriteLine($"Warning: Discarding buffered '{stream.LogFileName}' chunks in '{_outputDirectory}' after repeated write failures — this stream log now has a gap and its token reconciliation will report as unavailable.");
         }
 
         RetryPendingMarker(stream);
+
+        // #1885: reported on the false->true transition ONLY. This method re-runs per failed chunk once
+        // the latch is set (every chunk, on the maxPendingBytes: 0 control arm), and an unguarded report
+        // would be one journal append per chunk for a fact that is already durable.
+        if (firstDeclaration)
+        {
+            ReportLoss(stream, surrendered > 0 ? surrendered : null, terminalReannouncement: false);
+        }
+    }
+
+    /// <summary>
+    /// #1885: at terminal, re-reports a loss whose marker never landed. Bytes are null: the count was
+    /// carried by that stream's first report and this one repeats the loss, it does not add to it.
+    /// </summary>
+    private void ReportTerminalLossIfUnannounced(StreamState stream)
+    {
+        if (stream.LossDeclared && !stream.MarkerWritten)
+        {
+            ReportLoss(stream, bytesSurrendered: null, terminalReannouncement: true);
+        }
+    }
+
+    /// <summary>
+    /// #1885: hands one declared loss to the dispatcher's callback, if there is one. Never throws into
+    /// the append path — a handler that fails must not turn a stream-log gap into a dispatch failure,
+    /// the same posture <see cref="TryWriteMarker"/> already takes toward the marker file — but the
+    /// failure is stated rather than swallowed (CLAUDE.md), because a handler that throws means the loss
+    /// reached NEITHER durable channel.
+    /// </summary>
+    private void ReportLoss(StreamState stream, long? bytesSurrendered, bool terminalReannouncement)
+    {
+        if (_onLossDeclared is not { } handler)
+        {
+            return;
+        }
+
+        try
+        {
+            handler(new StreamLogLoss(stream.StreamName, bytesSurrendered, stream.MarkerWritten, terminalReannouncement));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Failed to journal the declared '{stream.LogFileName}' loss in '{_outputDirectory}': {ex.Message}.");
+        }
     }
 
     /// <summary>

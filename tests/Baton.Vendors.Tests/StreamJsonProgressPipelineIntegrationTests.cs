@@ -51,7 +51,7 @@ public class StreamJsonProgressPipelineIntegrationTests
 
             var logPath = Path.Combine(tempDir, "flow.jsonl");
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // Mirrors ExecuteSessionTurnAsync's own channel/pump exactly: OnStdoutLine only ever
             // enqueues (it runs on BatonTask's callback thread — EventRaised is invoked

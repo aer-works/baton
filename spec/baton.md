@@ -2286,12 +2286,33 @@ following record too, which is why the marker, not the file, is the authority). 
 latched **in memory** and the marker is retried after every later successful append and again at
 terminal — the marker file is created in the same directory whose writes just failed, so treating its
 first refusal as final is how a real gap goes unannounced while later chunks land around it. When the
-marker still cannot be written, that fact goes to stderr; a reader of the files alone cannot recover
-what was never written down, and the engine's guarantee is that it never stops trying. A channel that
-survives a host refusing every file create — journalling the loss as a flow event through the room's
-own ledger, which the projector already reads — is #1885. An
-initialization failure — the logger that never opened, whose capture is therefore empty rather than
-partial — declares the same loss for both streams.
+marker still cannot be written, that fact goes to stderr; the engine's guarantee is that it never stops
+trying. An initialization failure — the logger that never opened, whose capture is therefore empty
+rather than partial — declares the same loss for both streams.
+
+**A declared loss is announced on TWO channels, and a reader takes the event first (#1885).** Retrying
+the marker is not enough on its own: it is created in the very directory whose writes are failing, so a
+host that refuses this logger every file create for the whole run leaves the loss unannounced there for
+good, and a reader of those files alone then reports a reconciliation over a holed stream as complete.
+So the same in-memory latch is also journalled, as `FlowEvent.StreamLogLossDeclared`, through the room's
+own event ledger — a different writer, into the room directory rather than the obstructed execution
+output directory, and already the projector's first input. The two channels announce **one fact and
+carry the same reason string**, and neither replaces the other: the marker stays, and stays the only
+channel available to a reader holding just an execution's output directory (a pruned or hand-copied
+one), while the event is the only channel that survives the refusal above. `ExecutionUsageView` reads
+the event first, and a journalled loss withholds the reconciliation triple exactly as the marker does —
+a Σ replayed over a holed stream is a fabricated under-read whether or not the hole was announced on
+disk. When both are present they must agree; a **disagreement is reported on stderr rather than
+resolved in silence**, because two announcements of one fact that differ mean something upstream is
+wrong that picking a winner would hide. The event is emitted by `CoreDispatcher`, never by the stream
+logger itself — the logger is a core-layer file writer and owns no journal; it reports the latch out in
+primitives and the dispatcher is the only party that names a flow event. It is emitted once when the
+loss is latched and again at terminal if the marker still has not landed, that second event carrying
+`MarkerLanded: false` as the durable record that the file channel never carried this loss at all.
+Diagnostic-only in `StateProjector`: durable in the ledger, no `StepState`/`FlowState` consequence.
+Only a `stdout` loss reaches `billedReconciliationUnavailable` — the projector's terminal read and its
+replay both consume `.stdout.log` and nothing else — so a `stderr` loss is durable and correctly
+consequence-free there.
 
 **When the bytes are gone, the token counts are not — for an arrest.** A declared gap withholds the
 *reconciliation*, never the *reading*: the per-dimension fields fall back to the usage the live monitor

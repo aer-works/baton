@@ -69,6 +69,14 @@ public class FlowEventLogJsonTests
         new FlowEvent.DeliveryMerged(123, Merged: false),
         // #1373: the per-attempt start sha the crash-recovery timeout probe reads back.
         new FlowEvent.ExecutionAttemptStarted(ExecutionId, "0f2b9ac1"),
+        // #1885: both MarkerLanded polarities, for the same reason DeliveryMerged carries both — the
+        // bool has no natural "unset" wire value, and a strip test run only against `false` would read
+        // a fail-open default as a correct replay. `false` is the load-bearing one: it is the durable
+        // record that the marker channel never carried this loss at all.
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stdout", "stream-truncated-by-write-failure", BytesSurrendered: 4096, MarkerLanded: false),
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stderr", "stream-truncated-by-write-failure", BytesSurrendered: 4096, MarkerLanded: true),
     ];
 
     /// <summary>

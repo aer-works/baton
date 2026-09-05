@@ -412,6 +412,7 @@ public static class StateProjector
             case FlowEvent.DeliveryChecksGreen:
             case FlowEvent.DeliveryChecksRed:
             case FlowEvent.DeliveryMerged:
+            case FlowEvent.StreamLogLossDeclared:
                 // Diagnostic-only facts: durable in the ledger, but no StepState/FlowState consequence.
                 // The two VerifyDeclaration* events are listed here on purpose rather than by falling off
                 // the end of this switch -- see their own docs for why they stay reader-less (#1708 H1/M1).
@@ -419,6 +420,9 @@ public static class StateProjector
                 // same shape: durable operator/observability facts that never change what a step's own
                 // state projects to. The four #734 delivery events are the same shape once more, proven
                 // the same interleaved-baseline way in this assembly's own test suite (spec/baton.md §2).
+                // #1885's StreamLogLossDeclared joins them: it is read by ExecutionUsageProjector off the
+                // raw ledger entries, never off this projection, so a stream-log gap has no bearing on
+                // whether a step succeeded, failed, or may retry.
                 break;
 
             case FlowEvent.ExecutionIndeterminate indeterminate:

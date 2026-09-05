@@ -39,6 +39,7 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(DeliveryChecksGreen), "deliveryChecksGreen")]
 [JsonDerivedType(typeof(DeliveryChecksRed), "deliveryChecksRed")]
 [JsonDerivedType(typeof(DeliveryMerged), "deliveryMerged")]
+[JsonDerivedType(typeof(StreamLogLossDeclared), "streamLogLossDeclared")]
 public abstract record FlowEvent
 {
     private FlowEvent()
@@ -522,6 +523,43 @@ public abstract record FlowEvent
     /// exists at all.
     /// </summary>
     public sealed record ExecutionProgress(ExecutionId ExecutionId) : FlowEvent;
+
+    /// <summary>
+    /// #1885: <see cref="Dispatch.ExecutionStreamLogger"/> has latched a declared loss on one of this
+    /// execution's stream logs — the stream on disk is provably not a prefix of what the worker emitted.
+    /// The JOURNAL half of the two-channel announcement whose whole rule — why a second channel exists,
+    /// which one a reader takes first, what the two owe each other — is <c>spec/baton.md</c> §3's, cited
+    /// rather than repeated here. Produced by <see cref="Dispatch.CoreDispatcher"/> and consumed by
+    /// <see cref="Status.ExecutionUsageProjector"/>; diagnostic-only in
+    /// <see cref="Projection.StateProjector"/>, the same shape as <see cref="ExecutionProgress"/>.
+    /// </summary>
+    /// <param name="Stream">
+    /// <c>"stdout"</c> or <c>"stderr"</c> — which of the two stream logs lost bytes. What each is worth
+    /// to a reader differs; <c>spec/baton.md</c> §3 draws that line.
+    /// </param>
+    /// <param name="Reason">
+    /// The <see cref="Status.ExecutionUsageView.BilledReconciliationUnavailable"/> value this loss maps
+    /// to — today always <c>stream-truncated-by-write-failure</c>, the literal the marker channel yields
+    /// too. Deliberately that literal rather than prose: it is what makes <c>spec/baton.md</c> §3's
+    /// agreement rule a decidable
+    /// comparison instead of a judgement.
+    /// </param>
+    /// <param name="BytesSurrendered">
+    /// Carried verbatim off <c>ExecutionStreamLogger.StreamLogLoss</c>, whose own doc states what this
+    /// counts and when it is null.
+    /// </param>
+    /// <param name="MarkerLanded">
+    /// Whether the logger's marker file had been written when this event was emitted.
+    /// <c>spec/baton.md</c> §3 states what a
+    /// second event carrying <c>false</c> means and why the fact is a field rather than a suffix on
+    /// <paramref name="Reason"/>.
+    /// </param>
+    public sealed record StreamLogLossDeclared(
+        ExecutionId ExecutionId,
+        string Stream,
+        string Reason,
+        long? BytesSurrendered = null,
+        bool MarkerLanded = false) : FlowEvent;
 
     /// <summary>
     /// #1549: an operator's <c>cancel.request</c> actually reached a live, still-registered

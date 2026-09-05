@@ -111,7 +111,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // Run pump in background
             var pumpTask = MutationInterface.StartWorkflowAsync(
@@ -198,7 +198,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-2"),
@@ -305,7 +305,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-7"),
@@ -367,7 +367,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-8"),
@@ -425,7 +425,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-8b"),
@@ -490,7 +490,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // Attempt 1 runs and fails, pause point triggers WorkflowPaused
             var pausedState = await MutationInterface.StartWorkflowAsync(
@@ -576,7 +576,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-10"),
@@ -645,7 +645,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // StepA fails and defers; StepB succeeds and pauses.
             // Pump should return WorkflowStatus.Paused immediately without blocking on StepA's deferral wait.
@@ -730,7 +730,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // Nothing ever advances fakeTime: the pump must return on its own, promptly.
             var finalState = await MutationInterface.StartWorkflowAsync(
@@ -787,7 +787,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-12"),
@@ -1038,7 +1038,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // Operator issues RetryWithRevision against the parked (never-paused) execution.
             // Nothing ever advances fakeTime: if the decision had been machine-deferred back to
@@ -1136,7 +1136,7 @@ public class MutationInterfaceRetryBackoffTests
             // fires deterministically (no wall-clock grace), then the host stop releases the pump.
             var pump = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
-                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer, writer),
                 timeProvider: s.FakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
                 onVendorQuotaPark: instant => { captured = instant; noticed.TrySetResult(); });
 
@@ -1166,7 +1166,7 @@ public class MutationInterfaceRetryBackoffTests
             // an ordinary Retryable park must never fire the vendor-quota notice.
             var pump = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
-                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer, writer),
                 timeProvider: s.FakeTime, jitterSource: () => 0.0,
                 cancellationToken: TestContext.Current.CancellationToken,
                 onVendorQuotaPark: instant => captured = instant);
@@ -1235,7 +1235,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1183-far"),
@@ -1400,7 +1400,7 @@ public class MutationInterfaceRetryBackoffTests
 
             var pump = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1094"), s.Room, s.Snapshot, s.Bindings, s.Artifacts,
-                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer),
+                new FlowEventLogReader(s.Log), writer, new CoreDispatcher(writer, writer),
                 timeProvider: s.FakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
                 onVendorQuotaPark: instant =>
                 {
@@ -1476,7 +1476,7 @@ public class MutationInterfaceRetryBackoffTests
 
             var pump = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-distinct"), roomDirectory, snapshot, bindings, Path.Combine(roomDirectory, "artifacts"),
-                reader, writer, new CoreDispatcher(writer),
+                reader, writer, new CoreDispatcher(writer, writer),
                 timeProvider: fakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
                 onVendorQuotaPark: instant =>
                 {
@@ -1571,7 +1571,7 @@ public class MutationInterfaceRetryBackoffTests
 
             var pump = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-repeat"), roomDirectory, snapshot, bindings, Path.Combine(roomDirectory, "artifacts"),
-                reader, writer, new CoreDispatcher(writer),
+                reader, writer, new CoreDispatcher(writer, writer),
                 timeProvider: fakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token,
                 onVendorQuotaPark: instant =>
                 {
@@ -1717,7 +1717,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             using var cts = new CancellationTokenSource();
             var ct = TestContext.Current.CancellationToken;
 
@@ -1811,7 +1811,7 @@ public class MutationInterfaceRetryBackoffTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1577"),

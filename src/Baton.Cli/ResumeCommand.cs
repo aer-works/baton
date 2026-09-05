@@ -145,7 +145,7 @@ public static class ResumeCommand
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         // F5 (#1388 review): RecordResumeAsync only ever looks up the worker actually being resumed —
         // it never touches any other entry in the bindings file — so this is the ONLY binding it

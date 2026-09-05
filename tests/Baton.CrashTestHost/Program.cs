@@ -40,7 +40,7 @@ var (snapshot, bindings) = Scenarios.Build(workerKind);
 
 await using var writer = new FlowEventLogWriter(logPath);
 var reader = new FlowEventLogReader(logPath);
-var dispatcher = new PausableCoreDispatcher(new CoreDispatcher(writer), pausePoint, pauseSignalPath);
+var dispatcher = new PausableCoreDispatcher(new CoreDispatcher(writer, writer), pausePoint, pauseSignalPath);
 var inFlightExecutions = new InFlightExecutionRegistry();
 
 // Fire-and-forget: harmless if this process is killed before cancelSignalPath ever appears (the

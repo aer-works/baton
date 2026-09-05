@@ -31,7 +31,7 @@ public class CoreDispatcherTests
             var target = EchoHelloToOutputFile();
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
@@ -62,7 +62,7 @@ public class CoreDispatcherTests
             var target = EchoHelloToOutputFile();
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
@@ -95,7 +95,7 @@ public class CoreDispatcherTests
             var target = EchoEnvVarToOutputFile("BATON_533_TEST_VAR", [("BATON_533_TEST_VAR", "reached-the-child")]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -128,7 +128,7 @@ public class CoreDispatcherTests
             var target = EchoEnvVarToOutputFile("BATON_533_TEST_VAR", environment: null);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -165,7 +165,7 @@ public class CoreDispatcherTests
             var target = baseTarget with { DetectsTerminalResult = line => line.Contains("RESULT_MARKER_1664", StringComparison.Ordinal) };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -193,7 +193,7 @@ public class CoreDispatcherTests
             var target = baseTarget with { DetectsTerminalResult = line => line.Contains("RESULT_MARKER_1664", StringComparison.Ordinal) };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -222,7 +222,7 @@ public class CoreDispatcherTests
 
             await using (var writer = new FlowEventLogWriter(logPath))
             {
-                await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+                await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
             }
 
             var entries = (await File.ReadAllLinesAsync(logPath, TestContext.Current.CancellationToken))
@@ -261,7 +261,7 @@ public class CoreDispatcherTests
 
             await using (var writer = new FlowEventLogWriter(logPath))
             {
-                await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+                await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
             }
 
             var reader = new FlowEventLogReader(logPath);
@@ -288,7 +288,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 7"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(7, result.ExitCode);
             Assert.Equal(CoreExitReason.Natural, result.Reason);
@@ -311,7 +311,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 0"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
         }
@@ -345,7 +345,7 @@ public class CoreDispatcherTests
             var target = PrintCwdToOutputFile(configuredWorkingDirectory);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
             var printedCwd = (await File.ReadAllTextAsync(
@@ -389,7 +389,7 @@ public class CoreDispatcherTests
             };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer)
+            var result = await new CoreDispatcher(writer, writer)
                 .DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -400,6 +400,89 @@ public class CoreDispatcherTests
             var rule = doc.RootElement.GetProperty("target").GetString();
             var expectedDir = outputDirectory.Replace('\\', '/');
             Assert.Equal($"write_file({expectedDir}/out.md)", rule);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    /// <summary>
+    /// #1885: the wiring, end to end on a real dispatch. The obstruction is reproduced the way this
+    /// file's own #1525 arm above already does — a DIRECTORY where the stream file has to go, so the
+    /// logger's eager create throws and it declares both streams lost — extended with directories at
+    /// both marker paths, so the file channel cannot announce the loss for the whole run. Why the ledger
+    /// survives that and the marker does not is <c>spec/baton.md</c> §3's.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_journals_a_declared_stream_log_loss_when_no_marker_can_ever_land()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName));
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName));
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StderrWriteFailureMarkerFileName));
+
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+            var target = EchoHelloToOutputFile();
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            }
+
+            // Neither marker landed -- so if the journal is empty too, the loss reached no durable
+            // channel at all, which is precisely the pre-#1885 state this arm exists to forbid.
+            Assert.False(File.Exists(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)));
+
+            var events = await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken);
+            var losses = events.OfType<FlowEvent.StreamLogLossDeclared>().ToList();
+
+            var stdout = losses.Where(l => l.Stream == ExecutionStreamLogger.StdoutStreamName).ToList();
+            Assert.NotEmpty(stdout);
+            Assert.All(stdout, l => Assert.Equal(ExecutionId, l.ExecutionId));
+            // The literal ExecutionUsageProjector compares the marker channel against -- a different
+            // string here would read as a disagreement between the writer's own two announcements.
+            Assert.All(stdout, l => Assert.Equal("stream-truncated-by-write-failure", l.Reason));
+            Assert.All(stdout, l => Assert.False(l.MarkerLanded));
+            // The terminal re-announcement: the record that the file channel never carried this at all.
+            Assert.Contains(stdout, l => l.MarkerLanded is false);
+            Assert.Contains(losses, l => l.Stream == ExecutionStreamLogger.StderrStreamName);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
+    /// <summary>
+    /// The discriminating control for the arm above: an unobstructed dispatch of the same worker. A
+    /// stream-log loss journalled here would mean the event fires on every healthy run, and the arm
+    /// above would be measuring nothing.
+    /// </summary>
+    [Fact]
+    public async Task DispatchAsync_journals_no_stream_log_loss_on_an_unobstructed_run()
+    {
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await new CoreDispatcher(writer, writer).DispatchAsync(
+                    request, EchoHelloToOutputFile(), TestContext.Current.CancellationToken);
+            }
+
+            var events = await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(events.OfType<FlowEvent.StreamLogLossDeclared>());
         }
         finally
         {
@@ -493,7 +576,7 @@ public class CoreDispatcherTests
             var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 request, EchoEnvVarToOutputFile(variableName, environment: null), TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -551,7 +634,7 @@ public class CoreDispatcherTests
             var target = EchoHelloToOutputFile() with { PromptText = promptText };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             var promptFilePath = Path.Combine(outputDirectory, ArtifactManager.PromptFileName);
             Assert.True(File.Exists(promptFilePath));
@@ -592,7 +675,7 @@ public class CoreDispatcherTests
             };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             var writtenPrompt = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, ArtifactManager.PromptFileName),
@@ -628,7 +711,7 @@ public class CoreDispatcherTests
             { PromptText = "Draft a plan." };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(7, result.ExitCode);
             var promptFilePath = Path.Combine(outputDirectory, ArtifactManager.PromptFileName);
@@ -655,7 +738,7 @@ public class CoreDispatcherTests
             var target = EchoHelloToOutputFile();
 
             await using var writer = new FlowEventLogWriter(logPath);
-            await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
+            await new CoreDispatcher(writer, writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.False(File.Exists(Path.Combine(outputDirectory, ArtifactManager.PromptFileName)));
         }
@@ -681,7 +764,7 @@ public class CoreDispatcherTests
             var target = WriteToStderrAndExit("BOILER-PLATE-DIAGNOSTIC", exitCode: 1);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(1, result.ExitCode);
@@ -709,7 +792,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(1, result.ExitCode);
@@ -732,7 +815,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStdout}& exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(1, result.ExitCode);
@@ -755,7 +838,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(1, result.ExitCode);
@@ -783,7 +866,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} & exit 1"], payloadDirectory);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 MakeRequest([]), target, TestContext.Current.CancellationToken);
 
             Assert.NotNull(result.StdoutTail);
@@ -831,7 +914,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} 1>&2 & exit 1"], payloadDirectory);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer).DispatchAsync(
+            var result = await new CoreDispatcher(writer, writer).DispatchAsync(
                 MakeRequest([]), target, TestContext.Current.CancellationToken);
 
             Assert.NotNull(result.StderrTail);
@@ -1345,7 +1428,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 0", oversizedPrompt]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var exception = await Assert.ThrowsAsync<CommandLineTooLongException>(
                 () => dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));
@@ -1378,7 +1461,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 0", ordinaryPrompt]);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var result = await new CoreDispatcher(writer)
+            var result = await new CoreDispatcher(writer, writer)
                 .DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -1411,7 +1494,7 @@ public class CoreDispatcherTests
             { PromptText = oversizedPrompt };
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await Assert.ThrowsAsync<CommandLineTooLongException>(
                 () => dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));
@@ -1444,7 +1527,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "echo %BATON_PROMPT_FILE% > %BATON_OUTPUT_DIR%\\hello.txt", prompt], PromptText: prompt, OversizePromptWrapper: wrapper);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -1476,7 +1559,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: wrapper);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);
 
             Assert.Equal(0, result.ExitCode);
@@ -1509,7 +1592,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 0", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: null);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await Assert.ThrowsAsync<CommandLineTooLongException>(
                 () => dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));
@@ -1534,7 +1617,7 @@ public class CoreDispatcherTests
             var target = new CoreDispatchTarget("cmd", ["/c", "exit 0", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: wrapper);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await Assert.ThrowsAsync<CommandLineTooLongException>(
                 () => dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken));

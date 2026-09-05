@@ -100,7 +100,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
@@ -205,7 +205,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
@@ -313,7 +313,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             var pumpTask = MutationInterface.StartWorkflowAsync(
@@ -441,7 +441,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // The DIRECT path itself: no CancelRequestPoller runs alongside this call, and
             // MarkArrestIntent is never invoked. RequestCancellationAsync journals
@@ -528,7 +528,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                     new WorkflowId("wf-1634b"),
@@ -617,7 +617,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // The DIRECT path, targeting the STALE first attempt — not the step's current parked one.
             var finalState = await MutationInterface.RequestCancellationAsync(
@@ -720,7 +720,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // A brand-new pump call over this exact ledger -- no InFlightExecutionRegistry carrying
             // hostStopRequested state from whatever process wrote the HostStop line, and no
@@ -805,7 +805,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                     new WorkflowId("wf-1762b"),
@@ -886,7 +886,7 @@ public class QuotaParkCancelArrestTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                     new WorkflowId("wf-1762c"),

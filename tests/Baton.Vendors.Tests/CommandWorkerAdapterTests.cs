@@ -58,7 +58,7 @@ public class CommandWorkerAdapterTests
             var target = Adapter.Resolve(new WorkerInvocation(prompt), contract);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var request = MakeRequest("exec1", tempDir, ["out.txt"]);
 
@@ -95,7 +95,7 @@ public class CommandWorkerAdapterTests
             var target = Adapter.Resolve(new WorkerInvocation(prompt), contract);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var request = MakeRequest("exec1", tempDir, ["out.txt"]);
 
@@ -127,7 +127,7 @@ public class CommandWorkerAdapterTests
             var target = Adapter.Resolve(new WorkerInvocation(prompt), contract);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var request = MakeRequest("exec1", tempDir, ["out.txt"]);
 
@@ -175,7 +175,7 @@ public class CommandWorkerAdapterTests
             var target = Adapter.Resolve(new WorkerInvocation(prompt, WorkingDirectory: repoDir), contract);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var request = MakeRequest("exec1", outputDir, ["branch.diff"]);
 
@@ -225,7 +225,7 @@ public class CommandWorkerAdapterTests
                 new WorkerInvocation("[\"git\", \"diff\", \"HEAD\"]", WorkingDirectory: repoDir), contract);
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var request = MakeRequest("exec1", outputDir, ["empty.diff"]);
 
             var result = await dispatcher.DispatchAsync(request, target, TestContext.Current.CancellationToken);

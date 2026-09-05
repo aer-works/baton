@@ -281,7 +281,7 @@ public static class CancelCommand
                 provisionedConfig, adapters, profiles, Path.GetDirectoryName(options.BindingsFilePath));
 
             await using var writer = new FlowEventLogWriter(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             state = await MutationInterface.RequestCancellationAsync(
                     workflowId,

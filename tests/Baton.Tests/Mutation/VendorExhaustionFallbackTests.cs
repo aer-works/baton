@@ -81,7 +81,7 @@ public class VendorExhaustionFallbackTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // fakeTime is NEVER advanced: if the fallback redispatch instead waited out
             // farFutureReset (a day out), this would hang until WaitAsync's own timeout below.
@@ -171,7 +171,7 @@ public class VendorExhaustionFallbackTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             // No fallbackWorkerBindings supplied -- today's behaviour: the step paces to
@@ -252,7 +252,7 @@ public class VendorExhaustionFallbackTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                     new WorkflowId("wf-802c"),
@@ -331,7 +331,7 @@ public class VendorExhaustionFallbackTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
 
             var pumpTask = MutationInterface.StartWorkflowAsync(

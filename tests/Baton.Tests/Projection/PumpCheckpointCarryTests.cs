@@ -95,7 +95,7 @@ public class PumpCheckpointCarryTests
 
         var pumpTask = MutationInterface.StartWorkflowAsync(
             new WorkflowId("wf-carry"), roomDirectory, MakeRetryableSnapshot(), FailingBindings(),
-            artifactsRoot, reader, writer, new CoreDispatcher(writer),
+            artifactsRoot, reader, writer, new CoreDispatcher(writer, writer),
             timeProvider: fakeTime, jitterSource: () => 0.0, cancellationToken: cts.Token);
 
         // The retry event is the durable proof that a LATER round has already re-read the log past

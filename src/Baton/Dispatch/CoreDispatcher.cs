@@ -473,7 +473,15 @@ internal sealed class StdoutLineBuffer
 /// Core's lifecycle events to the combined log (M7 Phase 6). This is the only place in
 /// <c>Baton</c> that touches <c>Baton.Core</c> directly.
 /// </summary>
-public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICoreDispatcher
+/// <param name="flowEventLogWriter">
+/// #1885: the ONE flow event this dispatcher is allowed to write —
+/// <see cref="FlowEvent.StreamLogLossDeclared"/>, and nothing else. Required rather than optional
+/// precisely because the alternative fails open with plausible output: a caller that forgot to pass one
+/// would still write the marker file on most hosts, so the missing second channel would only ever be
+/// noticed on the host that needed it. <see cref="Store.ICoreEventLogWriter"/>'s own doc states the
+/// caller/half separation this narrowly breaches, and why.
+/// </param>
+public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter, IEventLogWriter flowEventLogWriter) : ICoreDispatcher
 {
     /// <summary>
     /// How many characters of a worker's stderr are retained for
@@ -486,6 +494,17 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
     /// size would take that choice away from it.
     /// </remarks>
     public const int MaxRetainedStderrLength = 2000;
+
+    /// <summary>
+    /// #1885: the reason string a journalled stream-log loss carries. Deliberately the SAME const the
+    /// marker channel already yields (<c>ExecutionUsageProjector</c>'s write-failure arm), because the
+    /// two channels announce one fact and <c>ExecutionUsageView</c> compares them for agreement — see
+    /// <see cref="FlowEvent.StreamLogLossDeclared.Reason"/>. A logger only ever declares a loss for the
+    /// write-failure cause; the rollover cause is announced by its own marker and never reaches here.
+    /// An alias, not a second spelling: #1883 made <c>ExecutionUsageView</c> the one place the reason
+    /// vocabulary is written, and a fresh literal here would make that agreement check vacuous.
+    /// </summary>
+    private const string StreamLogLossReason = Status.ExecutionUsageView.StreamTruncatedByWriteFailureReason;
 
     /// <summary>
     /// Expanded-prompt length at which <see cref="DispatchAsync"/> stops passing the prompt inline
@@ -822,12 +841,35 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             };
         }
 
+        // #1885: the stream logger's declared losses, journalled as they are reported. The lock is not
+        // ceremony: this callback fires on BatonTask's chunk-delivery thread for a mid-run loss and on
+        // this method's own thread for the terminal re-announcement, and `pendingLogWrites` is a plain
+        // List the Exited arm below also appends to. AppendAsync is started, never awaited, because the
+        // callback runs while ExecutionStreamLogger holds its own lock (see that parameter's doc) --
+        // Task.WhenAll below is what actually waits for these, exactly like the Core events.
+        var pendingLogWritesLock = new object();
+        void JournalStreamLogLoss(ExecutionStreamLogger.StreamLogLoss loss)
+        {
+            var append = flowEventLogWriter.AppendAsync(
+                new FlowEvent.StreamLogLossDeclared(
+                    request.ExecutionId,
+                    loss.StreamName,
+                    StreamLogLossReason,
+                    loss.BytesSurrendered,
+                    loss.MarkerWritten),
+                CancellationToken.None);
+            lock (pendingLogWritesLock)
+            {
+                pendingLogWrites.Add(append);
+            }
+        }
+
         ExecutionStreamLogger? streamLogger = null;
         if (pathVariables.TryGetValue("BATON_OUTPUT_DIR", out var outputDir))
         {
             try
             {
-                streamLogger = new ExecutionStreamLogger(outputDir);
+                streamLogger = new ExecutionStreamLogger(outputDir, onLossDeclared: JournalStreamLogLoss);
             }
             catch (Exception ex)
             {
@@ -869,8 +911,12 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     // to it), so recording it must not itself be cancellable by that same signal —
                     // the same reasoning DispatchAndRecordOutcomeAsync's outcome append already
                     // applies to its own append.
-                    pendingLogWrites.Add(coreEventLogWriter.AppendAsync(
-                        new CoreEvent.ExecutionStarted(request.ExecutionId, e.Pid), CancellationToken.None));
+                    lock (pendingLogWritesLock)
+                    {
+                        pendingLogWrites.Add(coreEventLogWriter.AppendAsync(
+                            new CoreEvent.ExecutionStarted(request.ExecutionId, e.Pid), CancellationToken.None));
+                    }
+
                     break;
 
                 case BatonTaskEventKind.StdoutChunk:
@@ -962,8 +1008,12 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     {
                         capturedStderrTail = stderrTail.ToTailOrNull();
                     }
-                    pendingLogWrites.Add(coreEventLogWriter.AppendAsync(
-                        new CoreEvent.ExecutionExited(request.ExecutionId, e.ExitCode, reason, capturedStderrTail), CancellationToken.None));
+                    lock (pendingLogWritesLock)
+                    {
+                        pendingLogWrites.Add(coreEventLogWriter.AppendAsync(
+                            new CoreEvent.ExecutionExited(request.ExecutionId, e.ExitCode, reason, capturedStderrTail), CancellationToken.None));
+                    }
+
                     break;
             }
         };
@@ -988,7 +1038,13 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
             streamLogger?.MarkTerminal();
         }
 
-        await Task.WhenAll(pendingLogWrites).ConfigureAwait(false);
+        Task[] logWrites;
+        lock (pendingLogWritesLock)
+        {
+            logWrites = [.. pendingLogWrites];
+        }
+
+        await Task.WhenAll(logWrites).ConfigureAwait(false);
 
         bool terminalSuccessLatched;
         bool terminalResultLatched;

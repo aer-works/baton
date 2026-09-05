@@ -55,7 +55,7 @@ public class LiveCancellationEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
             var workflowId = new WorkflowId("wf-live-cancel");
 
@@ -117,7 +117,7 @@ public class LiveCancellationEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
             var workflowId = new WorkflowId("wf-cancel-pause-recover");
 
@@ -184,7 +184,7 @@ public class LiveCancellationEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-too-late-success");
 
             var succeededState = await MutationInterface.StartWorkflowAsync(
@@ -226,7 +226,7 @@ public class LiveCancellationEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-too-late-failure");
 
             var failedState = await MutationInterface.StartWorkflowAsync(
@@ -268,7 +268,7 @@ public class LiveCancellationEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var registry = new InFlightExecutionRegistry();
             var workflowId = new WorkflowId("wf-too-late-cancelled");
 
