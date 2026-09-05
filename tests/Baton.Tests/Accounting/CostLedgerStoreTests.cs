@@ -1425,7 +1425,7 @@ public sealed class CostLedgerStoreTests
         finally
         {
             DirectoryCleanup.DeleteRecursively(room);
-            File.Delete(ledgerPath);
+            FileCleanup.Delete(ledgerPath);
         }
     }
 
