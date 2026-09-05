@@ -5,6 +5,20 @@ namespace Baton.Tests.Status;
 public sealed class CodexUsageParserTests
 {
     [Fact]
+    public void App_server_dynamic_tool_start_is_counted_by_the_shared_live_monitor_parser()
+    {
+        const string line = """
+            {"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_write_output"}}
+            """;
+        var parser = new CodexUsageParser();
+
+        Assert.Equal("baton_write_output", parser.TryParseToolName(line));
+        Assert.Equal(1, parser.CountToolSteps(line));
+        Assert.Equal(0, parser.CountToolSteps(
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"mcp_tool_call\"}}"));
+    }
+
+    [Fact]
     public void Completed_turn_separates_uncached_input_from_cache_and_preserves_other_usage_fields()
     {
         var parser = new CodexUsageParser();

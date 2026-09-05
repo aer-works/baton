@@ -16,6 +16,45 @@ public sealed class CodexUsageParser : IWorkerUsageParser
     public bool TryParseIncrementalUsage(string rawLine, out WorkerUsage? usage) =>
         TryParse(rawLine, out usage);
 
+    public string? TryParseToolName(string rawLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawLine))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawLine);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var eventType)
+                || eventType.GetString() != "item.started"
+                || !root.TryGetProperty("item", out var item)
+                || item.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            return ReadString(item, "type") switch
+            {
+                "command_execution" => ReadString(item, "command") is { Length: > 0 } command
+                    ? command
+                    : "command",
+                "file_change" => "file change",
+                "mcp_tool_call" => ReadString(item, "tool") ?? ReadString(item, "name") ?? "MCP tool",
+                "web_search" => "web search",
+                _ => null,
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public int CountToolSteps(string rawLine) => TryParseToolName(rawLine) is null ? 0 : 1;
+
     private static bool TryParse(string rawLine, out WorkerUsage? usage)
     {
         usage = null;
@@ -75,5 +114,11 @@ public sealed class CodexUsageParser : IWorkerUsageParser
         && property.ValueKind == JsonValueKind.Number
         && property.TryGetInt64(out var value)
             ? value
+            : null;
+
+    private static string? ReadString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var property)
+        && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
             : null;
 }

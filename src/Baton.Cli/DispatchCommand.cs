@@ -788,7 +788,7 @@ public static class DispatchCommand
     /// </param>
     /// <exception cref="CliArgumentException">
     /// The named room does not exist, its bindings.json is unreadable or dispatched more than one
-    /// worker, its adapter (or this dispatch's own resolved adapter) is not <c>claude</c> (Q1 scope,
+    /// worker, its adapter is not resumable, this dispatch resolves to a different adapter,
     /// spec/baton.md §3), or it has no <see cref="WorkerBindingConfigEntry.SessionId"/> recorded.
     /// </exception>
     private static async Task<(WorkerBindingConfigEntry Entry, ContinuationProvenance Provenance)> ResolveContinuationAsync(
@@ -828,18 +828,18 @@ public static class DispatchCommand
 
         var (parentWorkerName, parentEntry) = parentBindings.Single();
 
-        // Q1 scope (spec/baton.md §3). Checking both sides below closes an adapter-swap escape
-        // (--adapter agy against a claude veteran, or the reverse) that checking only one would miss.
-        if (!string.Equals(parentEntry.Adapter, "claude", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(entry.Adapter, "claude", StringComparison.OrdinalIgnoreCase))
+        // #1853 extends #1381's measured Claude continuation set with Codex's measured app-server
+        // thread/resume path. Requiring the identical adapter on both sides closes an adapter-swap
+        // escape; agy remains gated on its own unmeasured headless conversation resume.
+        if (!SupportsDispatchContinuation(parentEntry.Adapter)
+            || !string.Equals(entry.Adapter, parentEntry.Adapter, StringComparison.OrdinalIgnoreCase))
         {
             throw new CliArgumentException(
                 $"'--continue {continueFromRoomDirectoryPath}' cannot rehire worker '{parentWorkerName}' — "
                 + $"its vendor session lives on adapter '{parentEntry.Adapter}', and this dispatch resolved "
-                + $"to adapter '{entry.Adapter}'. Rehiring a veteran is supported for the claude adapter "
-                + "only today (#1381 Q1 scope) — agy rehire is gated on its own resume measurement.",
-                "drop --continue to dispatch cold on this adapter, or dispatch the same role with "
-                + "--adapter claude to match the veteran.");
+                + $"to adapter '{entry.Adapter}'. Rehiring a veteran requires the same supported adapter "
+                + "on both rooms (claude or codex); agy remains gated on its own resume measurement.",
+                "drop --continue to dispatch cold, or dispatch the same role with the veteran's adapter.");
         }
 
         if (parentEntry.SessionId is null)
@@ -849,7 +849,7 @@ public static class DispatchCommand
                 + $"its '{BatonPaths.RoomBindingsFileName}' has no SessionId recorded, so there is no "
                 + "vendor session to resume. Ordinary Claude dispatches capture the id reported by "
                 + "the worker; this adapter or worker stream reported no usable id.",
-                "drop --continue to dispatch this brief cold, or --continue a Claude room whose "
+                "drop --continue to dispatch this brief cold, or --continue a supported room whose "
                 + "bindings.json contains a captured SessionId.");
         }
 
@@ -873,6 +873,10 @@ public static class DispatchCommand
         var provenance = new ContinuationProvenance(continueFromRoomDirectoryPath, parentExecutionId, parentEntry.SessionId);
         return (resumedEntry, provenance);
     }
+
+    private static bool SupportsDispatchContinuation(string adapter) =>
+        string.Equals(adapter, "claude", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(adapter, "codex", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// When a composed template declares a capture step (0047 §4), captures <paramref name="workspaceDirectory"/>'s

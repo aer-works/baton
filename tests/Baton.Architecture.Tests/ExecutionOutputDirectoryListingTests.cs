@@ -51,6 +51,10 @@ public class ExecutionOutputDirectoryListingTests
         // Lists a slash-command definitions directory shipped alongside the adapter, never an
         // execution's own output directory.
         ["Baton.Vendors/ClaudeWorkerAdapter.cs"] = "lists commandsDir (bundled slash-command defs), not an execution output directory",
+        // #1853: both recursive calls first pass through ResolveWithinWorkspace. The separate output
+        // root is never accepted by that method, even when the grant permits writing declared outputs.
+        ["Baton.Vendors/CodexDynamicToolPolicy.cs"] =
+            "lists only a ResolveWithinWorkspace-validated path for the broker's list/search tools, never the separate execution output root",
         // #1488: lists {BATON_HOME}/watches -- the baton watch registry directory -- never an
         // execution's own output directory.
         ["Baton.Cli/WatchStore.cs"] = "lists watchesDirectoryPath (the baton watch registry), not an execution output directory",

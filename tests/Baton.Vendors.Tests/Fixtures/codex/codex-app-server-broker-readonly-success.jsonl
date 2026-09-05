@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_list_files"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_list_files","status":"completed","aggregated_output":"Sanitized listing."}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_read_text"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_read_text","status":"completed","aggregated_output":"Sanitized content."}}
+{"type":"item.started","item":{"type":"mcp_tool_call","tool":"baton_write_output"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"baton_write_output","status":"completed","aggregated_output":"Wrote declared output 'findings.md'."}}
+{"type":"item.completed","item":{"type":"agent_message","text":"SYNTHETIC_BROKER_READONLY_OK"}}
+{"type":"turn.completed","usage":{"input_tokens":23875,"cached_input_tokens":23296,"cache_write_input_tokens":0,"output_tokens":11,"reasoning_output_tokens":0}}

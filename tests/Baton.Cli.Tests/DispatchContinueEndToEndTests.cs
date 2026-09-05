@@ -10,8 +10,8 @@ namespace Baton.Cli.Tests;
 /// <c>baton dispatch &lt;role&gt; --continue &lt;room&gt;</c> end to end (#1381): a terminal room's
 /// worker is rehired for a follow-on brief instead of starting cold. Mirrors
 /// <see cref="RedispatchCommandEndToEndTests"/>'s catalog-pinning/fake-adapter setup, keyed under
-/// <c>"claude"</c> rather than <c>"fake"</c> so the Q1-scope adapter check (claude only) can pass on
-/// the happy-path arms without a live vendor CLI.
+/// <c>"claude"</c>/<c>"codex"</c> rather than <c>"fake"</c> so the supported-adapter check can pass
+/// on the happy-path arms without a live vendor CLI.
 /// </summary>
 [Collection(SerializedEnvironmentCollection.Name)]
 public sealed class DispatchContinueEndToEndTests : IDisposable
@@ -20,6 +20,7 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
         new Dictionary<string, IWorkerAdapter>
         {
             ["claude"] = new ContractOutputWorkerAdapter(satisfyOutputs: true),
+            ["codex"] = new ContractOutputWorkerAdapter(satisfyOutputs: true),
             ["agy"] = new ContractOutputWorkerAdapter(satisfyOutputs: true),
         };
 
@@ -65,6 +66,33 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
 
             // The follow-on brief actually reached the worker, not the veteran's stale prompt.
             Assert.Contains("Now weigh Y instead.", childBindings["advise"].PromptTemplate, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Continuing_a_codex_room_dispatches_with_the_same_session_and_resume_set()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"dispatch-continue-e2e-{Guid.NewGuid():N}");
+        try
+        {
+            var parentRoom = await DispatchTerminalParentWithSessionAsync(
+                testRoot, "Check X.", "codex-thread-123", adapter: "codex");
+            var followUpSpecPath = await WriteSpecAsync(testRoot, "Now check Y.");
+            var childRoom = Path.Combine(testRoot, "child");
+            var options = new DispatchOptions(
+                "advise", followUpSpecPath, childRoom, Adapter: "codex", ContinueFromRoomDirectoryPath: parentRoom);
+
+            var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
+
+            Assert.Equal(WorkflowStatus.Terminal, result.State.Status);
+            var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+                Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+            Assert.Equal("codex-thread-123", childBindings["advise"].SessionId);
+            Assert.True(childBindings["advise"].ResumeSession);
         }
         finally
         {
@@ -175,15 +203,15 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
 
             var followUpSpecPath = await WriteSpecAsync(testRoot, "Now weigh Y instead.");
             var childRoom = Path.Combine(testRoot, "child");
-            // Q1 scope: claude only -- swapping the CONTINUATION dispatch onto agy must refuse even
-            // though the veteran room itself was claude.
+            // Swapping the continuation onto agy must refuse even though the veteran itself is on a
+            // supported adapter.
             var options = new DispatchOptions(
                 "advise", followUpSpecPath, childRoom, Adapter: "agy", ContinueFromRoomDirectoryPath: parentRoom);
 
             var ex = await Assert.ThrowsAsync<CliArgumentException>(
                 () => DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken));
 
-            Assert.Contains("claude adapter only", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("same supported adapter", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(Directory.Exists(childRoom));
         }
         finally
@@ -334,11 +362,12 @@ public sealed class DispatchContinueEndToEndTests : IDisposable
         }
     }
 
-    private static async Task<string> DispatchTerminalParentWithSessionAsync(string testRoot, string spec, string sessionId)
+    private static async Task<string> DispatchTerminalParentWithSessionAsync(
+        string testRoot, string spec, string sessionId, string adapter = "claude")
     {
         var specPath = await WriteSpecAsync(testRoot, spec);
         var roomDirectory = Path.Combine(testRoot, "parent");
-        var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: "claude");
+        var options = new DispatchOptions("advise", specPath, roomDirectory, Adapter: adapter);
 
         var result = await DispatchCommand.ExecuteAsync(options, Adapters, TestContext.Current.CancellationToken);
         var view = WorkflowStatusProjector.Project(result.State, result.Snapshot, roomDirectory);

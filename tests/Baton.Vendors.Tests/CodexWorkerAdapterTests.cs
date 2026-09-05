@@ -2,6 +2,7 @@ using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Outcomes;
 using Baton.Tests.Shared;
+using System.Text.Json;
 
 namespace Baton.Vendors.Tests;
 
@@ -184,31 +185,33 @@ public sealed class CodexWorkerAdapterTests
     }
 
     [Fact]
-    public void Adapter_wide_withheld_write_support_stays_false_until_every_output_shape_is_measured()
+    public void Broker_supports_withheld_writes_for_every_declared_output_shape()
     {
-        Assert.False(new CodexWorkerAdapter().WithheldWritesReachTheOutbox);
+        Assert.True(new CodexWorkerAdapter().WithheldWritesReachTheOutbox);
     }
 
     [Theory]
-    [MemberData(nameof(InexactReadGrants))]
-    public void Grants_without_an_exact_codex_read_and_command_shape_are_refused(
-        PermissionGrant grant,
-        string expectedReason)
+    [MemberData(nameof(BrokeredGrants))]
+    public void Structured_grants_route_through_the_baton_broker(PermissionGrant grant)
     {
         var adapter = new CodexWorkerAdapter();
 
-        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
-        Assert.Null(mode);
-        Assert.Contains(expectedReason, reason);
-        Assert.Throws<PermissionGrantUnsupportedException>(
-            () => adapter.Resolve(new WorkerInvocation("Review.", PermissionGrant: grant), SingleOutputContract));
+        Assert.True(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Equal("baton-broker", mode);
+        Assert.Null(reason);
+        var target = adapter.Resolve(
+            new WorkerInvocation("Review.", PermissionGrant: grant), SingleOutputContract);
+        Assert.Equal("dotnet", target.Program);
+        Assert.Equal("codex-broker", target.Args[1]);
+        Assert.Equal(target.PromptText, target.Args[^1]);
     }
 
-    public static TheoryData<PermissionGrant, string> InexactReadGrants => new()
+    public static TheoryData<PermissionGrant> BrokeredGrants => new()
     {
-        { new PermissionGrant(), "filesystem-read denial" },
-        { new PermissionGrant(ReadFiles: true), "without RunShellCommands" },
-        { new PermissionGrant(ReadFiles: true, WriteFiles: true), "without RunShellCommands" },
+        new PermissionGrant(),
+        new PermissionGrant(ReadFiles: true),
+        new PermissionGrant(ReadFiles: true, WriteFiles: true),
+        new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: true),
     };
 
     [Fact]
@@ -225,12 +228,11 @@ public sealed class CodexWorkerAdapterTests
             new WorkerInvocation("Implement.", PermissionGrant: grant, WorkingDirectory: project),
             SingleOutputContract);
 
-        Assert.Equal("workspace-write", ArgValue(target, "--sandbox"));
-        Assert.Equal(project, ArgValue(target, "--cd"));
+        Assert.Equal("dotnet", target.Program);
+        Assert.Equal("codex-broker", target.Args[1]);
         Assert.Equal(project, target.WorkingDirectory);
-        Assert.Equal([OutputDirectory], ArgValues(target, "--add-dir"));
-        Assert.DoesNotContain("shell_tool", ArgValues(target, "--disable"));
-        Assert.DoesNotContain("unified_exec", ArgValues(target, "--disable"));
+        Assert.True(BrokerConfiguration(target).PermissionGrant.WriteFiles);
+        Assert.True(BrokerConfiguration(target).PermissionGrant.RunShellCommands);
     }
 
     [Fact]
@@ -242,9 +244,7 @@ public sealed class CodexWorkerAdapterTests
         var target = new CodexWorkerAdapter().Resolve(
             new WorkerInvocation("Research.", PermissionGrant: grant), NoOutputContract);
 
-        Assert.Contains("sandbox_workspace_write.network_access=true", ArgValues(target, "--config"));
-        Assert.Contains("web_search=\"live\"", ArgValues(target, "--config"));
-        Assert.DoesNotContain("sandbox_workspace_write.network_access=false", ArgValues(target, "--config"));
+        Assert.True(BrokerConfiguration(target).PermissionGrant.NetworkAccess);
     }
 
     [Fact]
@@ -254,8 +254,7 @@ public sealed class CodexWorkerAdapterTests
         var target = new CodexWorkerAdapter().Resolve(
             new WorkerInvocation("Inspect.", PermissionGrant: grant), NoOutputContract);
 
-        Assert.Contains("sandbox_workspace_write.network_access=false", ArgValues(target, "--config"));
-        Assert.Contains("web_search=\"disabled\"", ArgValues(target, "--config"));
+        Assert.False(BrokerConfiguration(target).PermissionGrant.NetworkAccess);
     }
 
     [Fact]
@@ -291,43 +290,46 @@ public sealed class CodexWorkerAdapterTests
         Assert.DoesNotContain("multi_agent_v2", ArgValues(target, "--disable"));
     }
 
-    public static TheoryData<PermissionGrant, string> UnsupportedPatternGrants => new()
+    public static TheoryData<PermissionGrant> PatternGrants => new()
     {
-        { new PermissionGrant(RunShellCommands: true, ShellCommandPatterns: ["git diff*"]), "command-pattern" },
-        { new PermissionGrant(DeniedShellCommandPatterns: ["git push*"]), "command-pattern" },
-        { new PermissionGrant(DeniedShellOptionTokens: ["--output"]), "option-token" },
+        new PermissionGrant(ReadFiles: true, RunShellCommands: true, ShellCommandPatterns: ["git diff*"], ShellCommandsAreReadOnly: true),
+        new PermissionGrant(ReadFiles: true, RunShellCommands: true, DeniedShellCommandPatterns: ["git push*"]),
+        new PermissionGrant(ReadFiles: true, RunShellCommands: true, DeniedShellOptionTokens: ["--output"]),
     };
 
     [Theory]
-    [MemberData(nameof(UnsupportedPatternGrants))]
-    public void Pattern_and_option_scoped_shell_permissions_are_refused(
-        PermissionGrant grant,
-        string expectedReason)
+    [MemberData(nameof(PatternGrants))]
+    public void Pattern_and_option_scoped_shell_permissions_route_to_the_broker(PermissionGrant grant)
     {
         var adapter = new CodexWorkerAdapter();
 
-        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
-        Assert.Null(mode);
-        Assert.Contains(expectedReason, reason);
-        var exception = Assert.Throws<PermissionGrantUnsupportedException>(
-            () => adapter.Resolve(
-                new WorkerInvocation("Inspect.", PermissionGrant: grant), NoOutputContract));
-        Assert.Equal("codex", exception.AdapterName);
-        Assert.Contains(expectedReason, exception.Message);
+        Assert.True(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Equal("baton-broker", mode);
+        Assert.Null(reason);
+        var target = adapter.Resolve(new WorkerInvocation("Inspect.", PermissionGrant: grant), NoOutputContract);
+        var roundTripped = BrokerConfiguration(target).PermissionGrant;
+        Assert.Equal(grant.ReadFiles, roundTripped.ReadFiles);
+        Assert.Equal(grant.WriteFiles, roundTripped.WriteFiles);
+        Assert.Equal(grant.RunShellCommands, roundTripped.RunShellCommands);
+        Assert.Equal(grant.NetworkAccess, roundTripped.NetworkAccess);
+        Assert.Equal(grant.ShellCommandsAreReadOnly, roundTripped.ShellCommandsAreReadOnly);
+        Assert.Equal(grant.ShellCommandPatterns ?? [], roundTripped.ShellCommandPatterns ?? []);
+        Assert.Equal(grant.DeniedShellCommandPatterns ?? [], roundTripped.DeniedShellCommandPatterns ?? []);
+        Assert.Equal(grant.DeniedShellOptionTokens ?? [], roundTripped.DeniedShellOptionTokens ?? []);
     }
 
     [Fact]
-    public void Read_and_write_permission_without_execution_tools_is_refused()
+    public void Read_and_write_permission_without_execution_tools_is_brokered_without_a_command_tool()
     {
         var grant = new PermissionGrant(ReadFiles: true, WriteFiles: true, RunShellCommands: false);
         var adapter = new CodexWorkerAdapter();
 
-        Assert.False(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
-        Assert.Null(mode);
-        Assert.Contains("without RunShellCommands", reason);
-        Assert.Throws<PermissionGrantUnsupportedException>(
-            () => adapter.Resolve(
-                new WorkerInvocation("Implement.", PermissionGrant: grant), SingleOutputContract));
+        Assert.True(adapter.TryTranslatePermissionGrant(grant, out var mode, out var reason));
+        Assert.Equal("baton-broker", mode);
+        Assert.Null(reason);
+        var target = adapter.Resolve(
+            new WorkerInvocation("Implement.", PermissionGrant: grant), SingleOutputContract);
+        Assert.False(BrokerConfiguration(target).PermissionGrant.RunShellCommands);
     }
 
     [Fact]
@@ -584,6 +586,26 @@ public sealed class CodexWorkerAdapterTests
     }
 
     [Fact]
+    public void Brokered_live_fixtures_preserve_tool_steps_per_turn_usage_and_resume_cache_miss()
+    {
+        var adapter = new CodexWorkerAdapter();
+        var initial = FixtureLines("codex-app-server-broker-readonly-success.jsonl");
+        var resumed = FixtureLines("codex-app-server-broker-resume-cache-miss.jsonl");
+
+        Assert.Equal(3, initial.Sum(adapter.CountToolSteps));
+        Assert.Equal(1, resumed.Sum(adapter.CountToolSteps));
+        Assert.True(adapter.TryParseFinalUsage(initial[^1], out var initialUsage));
+        Assert.Equal(579, initialUsage!.TokensIn);
+        Assert.Equal(23296, initialUsage.CacheReadTokens);
+        Assert.True(adapter.TryParseFinalUsage(resumed[^1], out var resumedUsage));
+        Assert.Equal(26379, resumedUsage!.TokensIn);
+        Assert.Equal(0, resumedUsage.CacheReadTokens);
+        Assert.NotEqual(
+            (initialUsage.TokensIn ?? 0) + (initialUsage.CacheReadTokens ?? 0) + (resumedUsage.TokensIn ?? 0),
+            resumedUsage.TokensIn);
+    }
+
+    [Fact]
     public void App_server_notifications_are_not_misclassified_as_exec_terminal_failures()
     {
         var adapter = new CodexWorkerAdapter();
@@ -737,6 +759,12 @@ public sealed class CodexWorkerAdapterTests
         }
 
         return values;
+    }
+
+    private static CodexBrokerConfiguration BrokerConfiguration(CoreDispatchTarget target)
+    {
+        var seed = Assert.Single(target.SeedFiles!);
+        return JsonSerializer.Deserialize<CodexBrokerConfiguration>(seed.Content)!;
     }
 
     private static string? ArgValue(CoreDispatchTarget target, string flag) =>
