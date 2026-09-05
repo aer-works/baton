@@ -431,6 +431,54 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Equal(0, zeroLineDiff["exec-implement"].TestFilesChanged);
 
             git.NumStatOutput = RecordingLedgerGitRunner.DefaultNumStatOutput;
+            git.RemoteRefExists = false;
+            var missingRemoteRef = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Null(missingRemoteRef["exec-implement"].FilesChanged);
+            Assert.Null(missingRemoteRef["exec-implement"].Additions);
+            Assert.Null(missingRemoteRef["exec-implement"].Deletions);
+            Assert.Null(missingRemoteRef["exec-implement"].TestFilesChanged);
+
+            git.RemoteRefExists = true;
+            git.HeadIsOnRemote = false;
+            var notAnAncestor = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Null(notAnAncestor["exec-implement"].FilesChanged);
+            Assert.Null(notAnAncestor["exec-implement"].Additions);
+            Assert.Null(notAnAncestor["exec-implement"].Deletions);
+            Assert.Null(notAnAncestor["exec-implement"].TestFilesChanged);
+
+            var controlLedgerPath = Path.Combine(room, "control-ledger.jsonl");
+            await CostLedgerStore.AppendAsync(
+                [
+                    DiffShapeRow("exec-missing-remote", missingRemoteRef["exec-implement"]),
+                    DiffShapeRow("exec-not-ancestor", notAnAncestor["exec-implement"]),
+                ],
+                controlLedgerPath,
+                TestContext.Current.CancellationToken);
+            var controlRows = await File.ReadAllLinesAsync(
+                controlLedgerPath,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(2, controlRows.Length);
+            Assert.All(controlRows, row =>
+            {
+                Assert.DoesNotContain("\"filesChanged\"", row, StringComparison.Ordinal);
+                Assert.DoesNotContain("\"additions\"", row, StringComparison.Ordinal);
+                Assert.DoesNotContain("\"deletions\"", row, StringComparison.Ordinal);
+                Assert.DoesNotContain("\"testFilesChanged\"", row, StringComparison.Ordinal);
+            });
+
+            git.HeadIsOnRemote = true;
             gh.Stdout = "[]";
             var withoutPr = await CostLedgerSettlementMetadata.BuildAsync(
                 entries,
@@ -476,6 +524,17 @@ public sealed class LedgerViewCommandTests : IDisposable
             DirectoryCleanup.DeleteRecursively(room);
         }
     }
+
+    private static CostLedgerEntry DiffShapeRow(
+        string executionId,
+        CostLedgerExecutionMetadata metadata) =>
+        new(
+            CostSourceKind.BatonExecution,
+            Execution: executionId,
+            FilesChanged: metadata.FilesChanged,
+            Additions: metadata.Additions,
+            Deletions: metadata.Deletions,
+            TestFilesChanged: metadata.TestFilesChanged);
 
     [Fact]
     public async Task Dispatch_branch_probe_contains_a_non_Win32_runner_exception()
@@ -621,6 +680,10 @@ public sealed class LedgerViewCommandTests : IDisposable
 
         public string NumStatOutput { get; set; } = DefaultNumStatOutput;
 
+        public bool RemoteRefExists { get; set; } = true;
+
+        public bool HeadIsOnRemote { get; set; } = true;
+
         public List<IReadOnlyList<string>> Calls { get; } = [];
 
         public Task<LedgerGitResult> RunAsync(
@@ -630,12 +693,18 @@ public sealed class LedgerViewCommandTests : IDisposable
         {
             Calls.Add(args.ToArray());
             var command = string.Join(' ', args);
+            var exitCode = command switch
+            {
+                "rev-parse --verify refs/remotes/origin/1901-sol" when !RemoteRefExists => 1,
+                "merge-base --is-ancestor origin/1901-sol refs/remotes/origin/1901-sol" when !HeadIsOnRemote => 1,
+                _ => 0,
+            };
             var stdout = command switch
             {
                 "diff --numstat origin/main...origin/1901-sol" => NumStatOutput,
                 _ => string.Empty,
             };
-            return Task.FromResult(new LedgerGitResult(true, 0, stdout, string.Empty));
+            return Task.FromResult(new LedgerGitResult(true, exitCode, stdout, string.Empty));
         }
     }
 
