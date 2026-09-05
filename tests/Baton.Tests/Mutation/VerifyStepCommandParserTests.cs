@@ -25,6 +25,11 @@ public class VerifyStepCommandParserTests
     [InlineData("dotnet build -p:Configuration=Release")]
     [InlineData("dotnet build /p:Configuration=Release")]
     [InlineData("dotnet test tests/Baton.Tests/Baton.Tests.csproj --minimum-expected-tests 1")]
+    // #1895's control: a =-attached value that stays inside the tree is still usable. Without these,
+    // the four rejected =-arms below could be passing because every '=' is refused.
+    [InlineData("dotnet build -p:OutDir=out/sub/")]
+    [InlineData("python tools/gates/gates.py --selftest --emit=artifacts/out.json")]
+    [InlineData("dotnet build -o:out/sub")]
     public void An_allowlisted_shape_parses(string commandLine)
     {
         Assert.True(VerifyStepCommandParser.TryParse(commandLine, out var command, out var error), error);
@@ -68,6 +73,17 @@ public class VerifyStepCommandParserTests
     [InlineData("dotnet build src/../../out/Evil.csproj")]
     [InlineData("python tools/gates/gates.py --selftest --emit C:\\anywhere\\out.json")]
     [InlineData("python tools/gates/gates.py --selftest --emit ../../out.json")]
+    // #1895: the same destinations spelled with '=' attached to the flag, which parsed while the
+    // space-separated form above was refused -- one parent segment is enough, and the MSBuild-property
+    // spelling reaches the same place. The rooted arm is the one the whole-token read cannot see at
+    // all, since a token containing ':' is deliberately not read as rooted.
+    [InlineData("python tools/gates/gates.py --selftest --emit=../out.json")]
+    [InlineData("dotnet build -p:OutDir=../out/")]
+    [InlineData("dotnet build -p:OutDir=C:/anywhere/out/")]
+    [InlineData("python tools/gates/gates.py --selftest --emit=/etc/passwd")]
+    // The dotnet CLI takes ':' as an attached-value delimiter too (`-o:x`), so the same door has two
+    // spellings and closing only one would leave the class doc's enumeration wrong.
+    [InlineData("dotnet build -o:../out")]
     // Degenerate input.
     [InlineData("")]
     [InlineData("   ")]

@@ -278,6 +278,148 @@ public sealed class DispatchVerifyStepTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// #1895: dispatches a real <c>review</c> WITH <c>--verify-cmd</c> (so the parent room genuinely
+    /// carries both the paragraph and an engine-written <c>instruments</c>), settles it terminal, then
+    /// redispatches it bare — the exact path an operator takes to rerun a review. Hands back both
+    /// rooms' bindings and the child's own result so each arm can assert the parent as its control:
+    /// without that half these tests would pass against a redispatch that inherits everything.
+    /// </summary>
+    private static async Task<(WorkerBindingConfigEntry Parent, WorkerBindingConfigEntry Child,
+        string ChildRoom, CommandResult ChildResult)> DispatchThenRedispatchReviewAsync(
+        string testRoot, string? amendedSpecPath = null)
+    {
+        var specPath = Path.Combine(testRoot, "spec.md");
+        var fixturePath = Path.Combine(testRoot, "worker-verdict.json");
+        var workspace = Path.Combine(testRoot, "workspace");
+        var parentRoom = Path.Combine(testRoot, "parent");
+        var childRoom = Path.Combine(testRoot, "child");
+        Directory.CreateDirectory(workspace);
+        await File.WriteAllTextAsync(specPath, "review the branch", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(fixturePath, ModelWrittenVerdict, TestContext.Current.CancellationToken);
+
+        var adapters = new Dictionary<string, IWorkerAdapter>(StringComparer.Ordinal)
+        {
+            ["fake"] = new ContractOutputWorkerAdapter(
+                satisfyOutputs: true,
+                outputFixtures: new Dictionary<string, string>(StringComparer.Ordinal) { ["verdict.json"] = fixturePath }),
+        };
+
+        var parentOptions = new DispatchOptions(
+            "review", specPath, parentRoom, Adapter: "fake", WorkspaceDirectory: workspace,
+            VerifyCommands: ["dotnet build -warnaserror"]);
+        var parentResult = await DispatchCommand.ExecuteAsync(parentOptions, adapters, TestContext.Current.CancellationToken);
+        await TerminalSentinelWriter.WriteAsync(
+            parentRoom,
+            WorkflowStatusProjector.Project(parentResult.State, parentResult.Snapshot, parentRoom),
+            TestContext.Current.CancellationToken);
+
+        var childResult = await RedispatchCommand.ExecuteAsync(
+            new RedispatchOptions(parentRoom, childRoom, SpecFilePath: amendedSpecPath),
+            adapters, TestContext.Current.CancellationToken);
+
+        var parentBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+            Path.Combine(parentRoom, "bindings.json"), TestContext.Current.CancellationToken);
+        var childBindings = await WorkerBindingConfigParser.LoadFromFileAsync(
+            Path.Combine(childRoom, "bindings.json"), TestContext.Current.CancellationToken);
+
+        return (parentBindings["review"], childBindings["review"], childRoom, childResult);
+    }
+
+    [Fact]
+    public async Task A_redispatched_review_has_the_model_written_instruments_stripped_too()
+    {
+        // #1895 arm A: `baton redispatch` runs no verify step at all, so the field can only ever be the
+        // model's own -- and `baton watch` registers against any room, so it would ride verbatim into a
+        // --notify payload. Asserted BOTH on disk and through WatchFireService.BuildPayload, the
+        // notifier's own builder, rather than only through a comment claiming they are the same bytes.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-verify-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var (_, _, childRoom, childResult) = await DispatchThenRedispatchReviewAsync(testRoot);
+
+            var step = Assert.Single(childResult.State.Steps);
+            var verdictPath = Path.Combine(
+                childRoom, "artifacts", $"execution_{step.LatestExecutionId}", "verdict.json");
+            var verdict = JsonDocument.Parse(
+                await File.ReadAllBytesAsync(verdictPath, TestContext.Current.CancellationToken)).RootElement;
+
+            Assert.False(verdict.TryGetProperty("instruments", out _));
+            // The rest of the worker's verdict is untouched -- this strips a field, it does not rewrite
+            // the review -- which is also the control for "the file was actually read and rewritten".
+            Assert.Equal("all good", verdict.GetProperty("summary").GetString());
+
+            var payload = WatchFireService.BuildPayload(
+                childRoom, WorkflowStatusProjector.Project(childResult.State, childResult.Snapshot, childRoom));
+            Assert.NotNull(payload.Verdict);
+            Assert.False(payload.Verdict!.Value.TryGetProperty("instruments", out _));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_bare_redispatch_does_not_inherit_the_parents_verify_results_paragraph()
+    {
+        // #1895 arm B, whose reasoning is RoleDispatch.WithoutVerifyResultsParagraph's own doc and
+        // spec/baton.md §9. Polarity in both directions: the parent's prompt must carry the paragraph,
+        // or "the child does not" would be true of a prompt that never had one.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-verify-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var (parent, child, _, _) = await DispatchThenRedispatchReviewAsync(testRoot);
+
+            Assert.Contains("verify-results.md", parent.PromptTemplate, StringComparison.Ordinal);
+            Assert.Contains("must cite that file", parent.PromptTemplate, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("verify-results.md", child.PromptTemplate, StringComparison.Ordinal);
+            // The whole paragraph goes, not just the sentence carrying the path: the claim that the
+            // engine ran commands is the part that would strand the citation requirement.
+            Assert.DoesNotContain("allowlisted commands", child.PromptTemplate, StringComparison.Ordinal);
+            Assert.DoesNotContain("must cite that file", child.PromptTemplate, StringComparison.Ordinal);
+
+            // And nothing else was dropped with it -- the brief and the outputs block still arrive.
+            Assert.StartsWith("review the branch", child.PromptTemplate, StringComparison.Ordinal);
+            Assert.Contains("Required outputs:", child.PromptTemplate, StringComparison.Ordinal);
+            Assert.Contains("verdict.json", child.PromptTemplate, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task A_spec_amended_redispatch_rebuilds_the_prompt_without_the_paragraph_too()
+    {
+        // The --spec arm is clean by construction -- RoleSpecMaterializer.Materialize is called with no
+        // verify-results path, so the rebuilt prompt never gains the paragraph. Pinned rather than left
+        // to a reading of the call site: threading a path through that seam later would reopen the same
+        // door on the other half of the verb, and nothing else would fail.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"redispatch-verify-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            var amendedSpecPath = Path.Combine(testRoot, "amended.md");
+            await File.WriteAllTextAsync(
+                amendedSpecPath, "review the branch again", TestContext.Current.CancellationToken);
+
+            var (parent, child, _, _) = await DispatchThenRedispatchReviewAsync(testRoot, amendedSpecPath);
+
+            Assert.Contains("verify-results.md", parent.PromptTemplate, StringComparison.Ordinal);
+            Assert.DoesNotContain("verify-results.md", child.PromptTemplate, StringComparison.Ordinal);
+            Assert.StartsWith("review the branch again", child.PromptTemplate, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
     [Fact]
     public void The_verify_step_cost_lands_on_the_first_execution_only_never_on_a_retry_as_well()
     {

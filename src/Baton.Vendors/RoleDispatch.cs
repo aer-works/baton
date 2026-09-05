@@ -331,13 +331,49 @@ public static class RoleDispatch
     /// review ending with "nothing was executed here, the PR body's numbers are unverified".
     /// </summary>
     private static string VerifyResultsParagraph(string verifyResultsPath) =>
-        $"Before your first turn the engine ran a set of allowlisted commands for you, with no model "
+        $"{VerifyResultsParagraphOpening}, with no model "
         + $"involved, and wrote what they did to {verifyResultsPath}. Read that file first: it holds the "
         + "exact command line, exit code, wall clock and output tail for each one, captured by the "
         + "engine rather than reported by anybody. A non-zero exit there is evidence for your review, "
         + "not a reason to stop reviewing. Every runtime claim your verdict makes — a test count, an "
         + "exit code, whether something builds — must cite that file; if a claim you want to make is "
         + "not answered there, say it was not measured rather than asserting it.";
+
+    /// <summary>
+    /// The paragraph's opening clause, shared by the builder above and
+    /// <see cref="WithoutVerifyResultsParagraph"/> so the text that is written and the text that is
+    /// recognized cannot drift apart. It carries no interpolated path, which is what makes it
+    /// matchable at all.
+    /// </summary>
+    private const string VerifyResultsParagraphOpening =
+        "Before your first turn the engine ran a set of allowlisted commands for you";
+
+    /// <summary>
+    /// #1895: the same prompt with <see cref="VerifyResultsParagraph"/> removed, or unchanged when it
+    /// carries none. Its one caller is <c>RedispatchCommand.InheritBinding</c>, and spec/baton.md §9
+    /// is the register for why a redispatched review must not inherit it — not restated here.
+    /// <para>
+    /// Matched on the opening clause and removed whole, paragraph-wise, because the sentence that
+    /// carries the path is the second one — a path-substring match would leave the "the engine ran a
+    /// set of allowlisted commands for you" claim standing with the citation requirement attached.
+    /// </para>
+    /// </summary>
+    public static string WithoutVerifyResultsParagraph(string promptTemplate)
+    {
+        ArgumentNullException.ThrowIfNull(promptTemplate);
+
+        if (!promptTemplate.Contains(VerifyResultsParagraphOpening, StringComparison.Ordinal))
+        {
+            return promptTemplate;
+        }
+
+        // The same "\n\n" BuildPrompt joins its blocks with -- this only ever reads a prompt that
+        // builder wrote, so there is no other separator to consider.
+        var paragraphs = promptTemplate
+            .Split("\n\n")
+            .Where(paragraph => !paragraph.TrimStart().StartsWith(VerifyResultsParagraphOpening, StringComparison.Ordinal));
+        return string.Join("\n\n", paragraphs);
+    }
 
     // #1095: a dispatched worker runs in a one-shot, non-interactive harness — the turn is never
     // resumed. A sonnet implement worker instead scheduled a background test run, ended its turn to

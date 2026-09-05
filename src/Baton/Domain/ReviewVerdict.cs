@@ -45,7 +45,8 @@ public sealed record ReviewVerdict(
 /// <c>WorkerRoles.json</c>'s verdict example does not carry it — but a field a model invents unasked
 /// is exactly the failure the engine's overwrite exists for, so the parse must survive it in whatever
 /// shape it was guessed. Nothing is lost by dropping it here:
-/// <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> runs on every dispatch that produced a verdict
+/// <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> runs on every dispatch or redispatch (#1895)
+/// that produced a verdict
 /// and either writes the engine's rows or removes the key, so the model's version is never the one a
 /// reader sees.
 /// </para>
