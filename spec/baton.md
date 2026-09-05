@@ -2223,8 +2223,8 @@ left a silent interior hole in a file a reconciler later summed over, and a vend
 record is the last chunk of the stream — exactly the one with no successor to carry it. `MarkTerminal`
 drains the queue before latching, because that is the last chance those bytes get.
 
-The queue is **bounded** (`ExecutionStreamLogger.DefaultMaxPendingBytes`, 4 MiB — the constant is the
-value, never restated here) because the obstruction can also be permanent, and an unbounded retry queue
+The queue is **bounded** (`ExecutionStreamLogger.DefaultMaxPendingBytes` — that constant is the value,
+not restated here) because the obstruction can also be permanent, and an unbounded retry queue
 on a multi-hour lane ends the dispatch rather than degrading it. Past the bound, or still queued at
 terminal, the bytes are surrendered — and *that* is what gets announced, with its own warning and its
 own marker file, distinct from the rollover marker. So there are two announced gaps and two reason
@@ -2232,6 +2232,14 @@ strings, `stream-truncated-by-rollover` and `stream-truncated-by-write-failure`,
 their remedies are: a rollover gap is at the head of the retained window and is the expected cost of
 the ceiling above, while a write-failure gap is at an unknown offset and means the host obstructed the
 writer.
+
+**When the bytes are gone, the token counts are not.** A declared gap withholds the *reconciliation*,
+never the *reading*: the per-dimension fields fall back to the usage the live monitor observed in memory
+and journalled on `FlowEvent.ExecutionArrested`, which never went near the disk. That fallback stops at
+the dimensions and never reaches `billedTokens` — a live Σ is a floor, and standing it in for the
+authoritative terminal figure would fabricate the very under-read the triple exists to expose. So the
+shape of a lost stream is: dimensions present, triple absent, reason set. Never zero-filled, never
+silent.
 
 **A failure the buffer absorbed gets no reason string at all**, and that silence is the contract rather
 than an omission: nothing was lost, so the triple is PRESENT, and this field's whole job is to explain

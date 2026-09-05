@@ -15,6 +15,11 @@ namespace Baton.Status;
 /// every completed execution has. Every other field is independently omitted from the serialized JSON
 /// (never emitted as <c>null</c>, never fabricated as zero) when the vendor's captured stdout carried
 /// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. These fields are
+/// #1876 widened "no such figure" by one source: when the captured stdout yields no terminal reading at
+/// all, the per-dimension fields fall back to the usage the live monitor observed in memory and
+/// journalled on <see cref="FlowEvent.ExecutionArrested"/> — see
+/// <see cref="ExecutionUsageProjector"/> for why that fallback stops at the dimensions and never reaches
+/// the reconciliation triple below. These fields are
 /// per-execution attribution, not a complete burn figure — see <c>spec/baton.md</c> §3/§7 for why.
 /// <para>
 /// #1706's reconciliation triple. <see cref="BilledTokens"/> is the AUTHORITATIVE per-execution billed
@@ -132,6 +137,12 @@ public static class ExecutionUsageProjector
         // ExecutionUsageView.PeakBilledInWindow's own doc comment for what this is and is not the same
         // figure as.
         var peakBilledInWindowByExecutionId = new Dictionary<string, long>(StringComparer.Ordinal);
+        // #1876: the usage the LIVE monitor accumulated in memory, journalled on the arrest event. This
+        // is the only token reading that exists for an execution whose captured stream cannot supply
+        // one -- it never touched the disk, so a disk problem cannot erase it. Read below only when the
+        // stream yielded no terminal reading of its own; see that site for why it is deliberately not
+        // allowed to stand in for the AUTHORITATIVE terminal figure.
+        var arrestedUsageByExecutionId = new Dictionary<string, WorkerUsage>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
@@ -146,11 +157,20 @@ public static class ExecutionUsageProjector
                 {
                     FlowEvent.ExecutionSucceeded { PeakBilledInWindow: { } p } succeeded => (succeeded.ExecutionId, p),
                     FlowEvent.ExecutionFailed { PeakBilledInWindow: { } p } failed => (failed.ExecutionId, p),
+                    // #1876: an ARREST carries one too, and was being dropped -- so the execution shape
+                    // most likely to have no usable captured stream (killed mid-turn, terminal line
+                    // never emitted) was also the one shape whose journalled figure went unread.
+                    FlowEvent.ExecutionArrested { PeakBilledInWindow: { } p } arrested => (arrested.ExecutionId, p),
                     _ => null,
                 };
                 if (peak is { } recorded)
                 {
                     peakBilledInWindowByExecutionId[recorded.Item1.Value] = recorded.Item2;
+                }
+
+                if (flowEntry.Event is FlowEvent.ExecutionArrested { Usage: { } arrestedUsage } arrestedEvent)
+                {
+                    arrestedUsageByExecutionId[arrestedEvent.ExecutionId.Value] = arrestedUsage;
                 }
             }
 
@@ -206,6 +226,18 @@ public static class ExecutionUsageProjector
                 : (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
             var liveBilled = reading?.LiveBilled;
 
+            // #1876: the in-memory fallback, and the exact line at which it stops. The per-dimension
+            // fields fall back to what the live monitor observed and journalled on the arrest when the
+            // captured stream yielded NO terminal reading -- because a disk problem (or an arrest that
+            // preempted the vendor's terminal line) must not be able to erase token counts that were
+            // already observed in memory. It deliberately does NOT feed `billed` above: that figure's
+            // documented meaning is "off the terminal line", a live Σ is a floor rather than an
+            // authoritative total, and pairing a floor with the replay Σ as though it were the terminal
+            // figure would fabricate exactly the under-read the reconciliation triple exists to expose.
+            // So a fallback reading reports dimensions, never a reconciliation -- the triple stays
+            // withheld and the reason string stays whatever it already was.
+            var dimensions = usage ?? (arrestedUsageByExecutionId.TryGetValue(executionId, out var fromArrest) ? fromArrest : null);
+
             // #1706 review M2: ALL THREE or none. The previous shape emitted `billedTokens` alone
             // whenever the terminal figure was computable but the replay was not -- which is exactly
             // the case the rollover guard below exists to SIGNAL, so a consumer following the
@@ -225,12 +257,12 @@ public static class ExecutionUsageProjector
 
             result[executionId] = new ExecutionUsageView(
                 wallClockMs,
-                usage?.TokensIn,
-                usage?.TokensOut,
-                usage?.Turns,
-                usage?.CacheReadTokens,
-                usage?.CacheCreationTokens,
-                usage?.ThinkingTokens,
+                dimensions?.TokensIn,
+                dimensions?.TokensOut,
+                dimensions?.Turns,
+                dimensions?.CacheReadTokens,
+                dimensions?.CacheCreationTokens,
+                dimensions?.ThinkingTokens,
                 reconciled ? billed : null,
                 reconciled ? liveBilled : null,
                 reconciled ? billed!.Value - liveBilled!.Value : null,

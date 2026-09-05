@@ -298,17 +298,7 @@ public sealed class StreamLogWriteFailureBufferingTests
             var start = DateTime.UtcNow;
             var entries = new List<LogEntry>
             {
-                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(new ExecutionRequest(
-                    executionId,
-                    new WorkflowId("wf-1876"),
-                    new StepId("plan"),
-                    "plan",
-                    Inputs: [],
-                    Outputs: [],
-                    Timeout: TimeSpan.FromSeconds(30),
-                    Environment: [],
-                    UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
-                    Adapter: "claude"))),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId))),
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
                 new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
             };
@@ -327,6 +317,123 @@ public sealed class StreamLogWriteFailureBufferingTests
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }
+
+    [Fact]
+    public void A_permanently_broken_sink_still_reports_the_in_memory_token_totals_with_the_reason_set()
+    {
+        // The half of #1876 the buffer cannot save: the sink never recovers, the bytes are gone, and the
+        // stream is honestly declared incomplete. The token counts must survive anyway, because the live
+        // monitor already observed them in memory and the arrest event already journals them -- they
+        // never went near the disk, so a disk problem has no business erasing them. Before #1876 nothing
+        // read that event's `Usage` and the attempt reported wall-clock alone.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1876-arrest-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1876-arrest");
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+
+            var appender = new FlakyAppender(failuresToInject: int.MaxValue);
+            var logger = new ExecutionStreamLogger(outputDir, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes(ClaudeTerminalLine + "\n"));
+            logger.MarkTerminal();
+            Assert.True(WriteFailureMarked(outputDir));
+
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, -1, CoreExitReason.CancelRequested), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionArrested(
+                    executionId,
+                    Usage: new WorkerUsage(TokensIn: 11, TokensOut: 22, Turns: 3, CacheReadTokens: 44, CacheCreationTokens: 55, ThinkingTokens: 66),
+                    Reason: ArrestReason.ToolStepCap,
+                    ToolStepCount: 41,
+                    PeakBilledInWindow: 88)),
+            };
+
+            var view = Assert.Single(
+                ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default)).Value;
+
+            Assert.Equal(11, view.TokensIn);
+            Assert.Equal(22, view.TokensOut);
+            Assert.Equal(3, view.Turns);
+            Assert.Equal(44, view.CacheReadTokens);
+            Assert.Equal(55, view.CacheCreationTokens);
+            Assert.Equal(66, view.ThinkingTokens);
+            Assert.Equal(88, view.PeakBilledInWindow);
+
+            // Loud, not zero-filled: the stream is still declared incomplete...
+            Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
+            // ...and the fallback stops at the dimensions. A live Σ is a floor, and standing it in for
+            // the authoritative terminal figure would fabricate the very under-read the triple exists to
+            // expose.
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_a_readable_stream_prefers_its_own_terminal_line_over_the_journalled_arrest_usage()
+    {
+        // The polarity arm, and the one that keeps the fallback a fallback. Same journalled arrest
+        // usage, but the capture is intact: every dimension must come from the terminal LINE, whose
+        // figures differ from the journalled ones on purpose. Without this, a fallback that always won
+        // would pass the test above and silently downgrade every reconcilable room to a live floor.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1876-ctl-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1876-ctl");
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllLines(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName),
+                [ClaudeAssistantLine, ClaudeTerminalLine]);
+
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, -1, CoreExitReason.CancelRequested), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionArrested(
+                    executionId,
+                    Usage: new WorkerUsage(TokensIn: 11, TokensOut: 22, Turns: 3),
+                    Reason: ArrestReason.ToolStepCap,
+                    ToolStepCount: 41)),
+            };
+
+            var view = Assert.Single(
+                ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default)).Value;
+
+            Assert.Equal(1000, view.TokensIn);
+            Assert.Equal(500, view.TokensOut);
+            Assert.Equal(5500, view.BilledTokens);
+            Assert.Equal(700, view.LiveBilledTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    private static ExecutionRequest AcceptedRequest(ExecutionId executionId) => new(
+        executionId,
+        new WorkflowId("wf-1876"),
+        new StepId("plan"),
+        "plan",
+        Inputs: [],
+        Outputs: [],
+        Timeout: TimeSpan.FromSeconds(30),
+        Environment: [],
+        UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>(),
+        Adapter: "claude");
 
     private const string ClaudeAssistantLine =
         """{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":2,"cache_creation_input_tokens":700,"cache_read_input_tokens":0,"output_tokens":3}}}""";
