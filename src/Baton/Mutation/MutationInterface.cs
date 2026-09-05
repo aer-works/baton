@@ -1110,6 +1110,7 @@ public static class MutationInterface
                 {
                     if (!workerPidByExecutionId.TryGetValue(executionId, out var workerPid)
                         || mergedExited.ContainsKey(executionId)
+                        || state.CancellationRequestedExecutionIds.Contains(executionId)
                         || effectiveWorkerLivenessProbe(workerPid).Status != EngineLivenessStatus.Dead)
                     {
                         continue;
