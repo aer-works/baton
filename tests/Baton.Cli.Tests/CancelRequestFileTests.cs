@@ -202,8 +202,8 @@ public class CancelRequestFileTests
         }
     }
 
-    // Polarity control: no roomLogPath given (every caller predating this feature) must not throw
-    // and must not write room.jsonl at all.
+    // Polarity control (same shape CancelRequestPollerTests' own room-log-path controls take): omit
+    // roomLogPath, assert silence.
     [Fact]
     public async Task DeleteStalePendingRequest_with_no_room_log_path_given_does_not_write_room_jsonl()
     {

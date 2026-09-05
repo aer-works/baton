@@ -54,12 +54,10 @@ public sealed record ArrestLedgerEntry(
 /// on — <c>flow.jsonl</c> for every request that resolved a target <see cref="ExecutionId"/>
 /// (<see cref="FlowEvent.CancellationRequested"/>/<see cref="FlowEvent.ExecutionCancelled"/>/
 /// <see cref="FlowEvent.CancellationRejected"/>), and <c>room.jsonl</c> for the two shapes that never
-/// did (<see cref="RoomEvent.ArrestRequestUnresolvable"/>/<see cref="RoomEvent.ArrestRequestExpired"/>).
-/// <c>BatonPaths.RoomLogFileName</c>'s own remarks are why the second log exists at all: it is the
-/// one durable store <see cref="Baton.Cli"/>'s <c>cancel.request</c> poller can append to without
-/// ever touching <c>flow.lock</c>, which is that channel's entire premise — inventing a third,
-/// parallel ledger store instead of reading both existing logs would be exactly the drift
-/// CLAUDE.md's <c>record-once</c> gate exists to stop.
+/// did (<see cref="RoomEvent.ArrestRequestUnresolvable"/>/<see cref="RoomEvent.ArrestRequestExpired"/>
+/// — see that type's own remarks for why the second log is the only durable home available). Reading
+/// both existing logs rather than inventing a third, parallel ledger store is exactly what CLAUDE.md's
+/// <c>record-once</c> gate asks for.
 /// </summary>
 public static class ArrestLedgerProjector
 {

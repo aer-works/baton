@@ -180,14 +180,11 @@ public static class CancelRequestFile
     }
 
     /// <summary>
-    /// #1530: best-effort append of <see cref="RoomEvent.ArrestRequestExpired"/> to <c>room.jsonl</c> —
-    /// the arrest ledger's record of a request that was neither delivered nor rejected, just swept
-    /// because the pump that would have serviced it is gone. <paramref name="roomLogPath"/> is
-    /// <c>null</c> for every caller that predates this feature or a test exercising this method
-    /// directly. Deliberately never allowed to fail this call: <see cref="RoomEventLogWriter"/>'s
-    /// constructor can throw <see cref="IOException"/> after its own contention budget, and this runs
-    /// at pump start, before the room's own poller exists — a run must never refuse to start over a
-    /// supplementary ledger fact.
+    /// #1530: best-effort append of <see cref="RoomEvent.ArrestRequestExpired"/> to <c>room.jsonl</c>,
+    /// the ledger's record of a request that aged out unserved — same best-effort shape and reasoning
+    /// as <see cref="CancelRequestPoller"/>'s sibling <c>TryRecordUnresolvableAsync</c> (that method's
+    /// own doc has the "why never allowed to fail this call" detail); this call site's own twist is
+    /// timing — it runs at pump start, before the room's own poller even exists.
     /// </summary>
     private static async Task TryRecordExpiredAsync(
         string? roomLogPath, string target, DateTime requestedAtUtc, CancellationToken cancellationToken)
