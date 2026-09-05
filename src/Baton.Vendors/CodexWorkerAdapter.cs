@@ -24,16 +24,18 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// The embedded recording that is the sole source of <see cref="KnownEffortsByModel"/> — one real
-    /// <c>codex app-server model/list</c> answer, named for the day it was taken. Its provenance and
-    /// what it settles are recorded once, in <c>docs/vendor-capabilities.md</c>'s effort table section
-    /// (#1875); before that the table was hand-written while <see cref="ValidateModel"/> called it a
-    /// probed snapshot.
+    /// The embedded recording that is the sole source of <see cref="KnownEffortsByModel"/> — the raw
+    /// <c>codex app-server</c> session that answered one <c>model/list</c>, kept exactly as the CLI
+    /// wrote it and named for the day it was taken. That means every line of the session, not the
+    /// catalog line alone: the <c>initialize</c> response carries the CLI version the catalog came
+    /// from, which is the provenance a trimmed file would throw away. <see cref="BuildEffortTable"/>
+    /// is what selects the catalog line out of it. Its provenance and what it settles are recorded
+    /// once, in <c>docs/vendor-capabilities.md</c>'s effort table section (#1875); before that the
+    /// table was hand-written while <see cref="ValidateModel"/> called it a probed snapshot.
     /// </summary>
     internal const string ModelCatalogResourceName = "Baton.Vendors.codex-model-list-2026-09-04.jsonl";
 
-    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyList<string>>> RecordedEffortsByModel =
-        new(LoadRecordedEffortTable);
+    private static readonly Lazy<RecordedCatalog> RecordedEffortsByModel = new(LoadRecordedEffortTable);
 
     /// <summary>
     /// Which reasoning efforts each model advertised in <see cref="ModelCatalogResourceName"/>.
@@ -43,7 +45,18 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     /// against before a process is ever started, while <see cref="DiscoverCapabilitiesAsync"/> asks
     /// the installed CLI what it offers right now.
     /// </summary>
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> KnownEffortsByModel => RecordedEffortsByModel.Value;
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> KnownEffortsByModel =>
+        RecordedEffortsByModel.Value.EffortsByModel;
+
+    /// <summary>
+    /// How the recorded snapshot names itself when it refuses a model: the resource (which carries the
+    /// date) plus the CLI version its <c>initialize</c> line recorded, so an operator reading the
+    /// refusal can tell which catalog said so without opening the file.
+    /// </summary>
+    private static string RecordedSnapshotProvenance =>
+        RecordedEffortsByModel.Value.CliVersion is { Length: > 0 } version
+            ? $"{ModelCatalogResourceName}, codex-cli {version}"
+            : ModelCatalogResourceName;
 
     /// <summary>
     /// The app-server broker exposes one output-only dynamic tool whose schema and host-side check
@@ -469,11 +482,46 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     /// </summary>
     private sealed record RecordedModel(string Model, IReadOnlyList<(string Effort, string? Description)> Efforts);
 
+    /// <summary>
+    /// What a recording yields: the validation table, and the CLI version the recording's
+    /// <c>initialize</c> line attributed it to — null when the recording kept no such line, because a
+    /// missing version is a thinner refusal message, never a reason to refuse differently.
+    /// </summary>
+    internal sealed record RecordedCatalog(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> EffortsByModel, string? CliVersion);
+
+    /// <summary>
+    /// The CLI version out of an app-server <c>initialize</c> response, whose <c>userAgent</c> reads
+    /// <c>&lt;client&gt;/&lt;codex version&gt; (&lt;os&gt;) …</c>. Anything that does not match that
+    /// shape yields null rather than a guess: this text is quoted to an operator as provenance.
+    /// </summary>
+    private static string? ReadCliVersion(JsonElement root)
+    {
+        if (!root.TryGetProperty("result", out var result)
+            || StringProperty(result, "userAgent") is not { Length: > 0 } userAgent)
+        {
+            return null;
+        }
+
+        var slash = userAgent.IndexOf('/', StringComparison.Ordinal);
+        if (slash < 0)
+        {
+            return null;
+        }
+
+        var version = userAgent[(slash + 1)..].Split(' ')[0];
+        return version.Length > 0 ? version : null;
+    }
+
     private static bool TryReadModelCatalog(string rawLine, out IReadOnlyList<RecordedModel> catalog)
     {
-        catalog = Array.Empty<RecordedModel>();
         using var document = JsonDocument.Parse(rawLine);
-        var root = document.RootElement;
+        return TryReadModelCatalog(document.RootElement, out catalog);
+    }
+
+    private static bool TryReadModelCatalog(JsonElement root, out IReadOnlyList<RecordedModel> catalog)
+    {
+        catalog = Array.Empty<RecordedModel>();
         if (!root.TryGetProperty("id", out var id) || !id.TryGetInt32(out var requestId) || requestId != 2
             || !root.TryGetProperty("result", out var result)
             || !result.TryGetProperty("data", out var data)
@@ -515,36 +563,61 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     /// it. Fails loudly rather than degrading to an empty table — see
     /// <see cref="VendorCapabilitySnapshotException"/> for why that would be worse than fail-closed.
     /// </summary>
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> LoadRecordedEffortTable()
+    private static RecordedCatalog LoadRecordedEffortTable()
     {
         using var stream = typeof(CodexWorkerAdapter).Assembly.GetManifestResourceStream(ModelCatalogResourceName)
             ?? throw new VendorCapabilitySnapshotException(
                 "codex", ModelCatalogResourceName, "the embedded resource is missing from Baton.Vendors.dll");
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
-        return BuildEffortTable(reader.ReadToEnd().Trim(), ModelCatalogResourceName);
+        return BuildEffortTable(reader.ReadToEnd(), ModelCatalogResourceName);
     }
 
     /// <summary>
     /// The derivation itself, split from resource loading so each way a recording can be unusable is
     /// reachable from a test — the guarantee is that none of them yields a silently empty table.
     /// </summary>
-    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> BuildEffortTable(
-        string rawLine, string resourceName)
+    /// <param name="rawContent">
+    /// Raw app-server JSONL as the CLI wrote it: one JSON value per line, in any mix of
+    /// notifications (no <c>id</c>) and responses, with either line ending and blank lines allowed.
+    /// The first line that is a <c>model/list</c> result — <c>id</c> 2 with a <c>result.data</c>
+    /// array — is the catalog; the <c>initialize</c> response's <c>userAgent</c>, if the recording
+    /// kept one, supplies the CLI version quoted when a model is refused. A single-line file holding
+    /// only the catalog line is the degenerate case of the same shape and still works. Every line
+    /// must be valid JSON: a recording this cannot read is a corrupt recording, never an empty table.
+    /// </param>
+    internal static RecordedCatalog BuildEffortTable(string rawContent, string resourceName)
     {
-        IReadOnlyList<RecordedModel> catalog;
+        IReadOnlyList<RecordedModel>? catalog = null;
+        string? cliVersion = null;
         try
         {
-            if (!TryReadModelCatalog(rawLine, out catalog))
+            using var lines = new StringReader(rawContent);
+            while (lines.ReadLine() is { } line)
             {
-                throw new VendorCapabilitySnapshotException(
-                    "codex", resourceName, "it is not a `model/list` result line (id 2 with a result.data array)");
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                using var document = JsonDocument.Parse(line);
+                cliVersion ??= ReadCliVersion(document.RootElement);
+                if (catalog is null && TryReadModelCatalog(document.RootElement, out var found))
+                {
+                    catalog = found;
+                }
             }
         }
         catch (JsonException ex)
         {
             throw new VendorCapabilitySnapshotException(
                 "codex", resourceName, "it is not valid JSON", ex);
+        }
+
+        if (catalog is null)
+        {
+            throw new VendorCapabilitySnapshotException(
+                "codex", resourceName, "it carries no `model/list` result line (id 2 with a result.data array)");
         }
 
         // Advertised order is preserved: it is the order the vendor listed the efforts in, and it is
@@ -561,7 +634,7 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
                 "codex", resourceName, "it advertises no model with a reasoning-effort set");
         }
 
-        return table;
+        return new RecordedCatalog(table, cliVersion);
     }
 
     internal static bool IsTerminalSuccessLine(string rawLine) =>
@@ -659,7 +732,7 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         {
             throw new IncoherentVendorEffortException(
                 "codex",
-                $"model '{model}' is absent from the recorded Codex capability snapshot ({ModelCatalogResourceName}).");
+                $"model '{model}' is absent from the recorded Codex capability snapshot ({RecordedSnapshotProvenance}).");
         }
     }
 

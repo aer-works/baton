@@ -161,9 +161,11 @@ The observed visible catalog on 2026-09-04 included:
 | `gpt-5.4-mini` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
 | `gpt-5.3-codex-spark` | low, medium, high, xhigh | not retained in the probe notes | not retained in the probe notes |
 
-`gpt-6-astra` was marked as the catalog default. The response also contained hidden entries; the
-request that produced it passed `includeHidden:false`. Visibility must be honored rather than inferred
-from a model-name allowlist.
+`gpt-6-astra` was marked as the catalog default. The response the table above was transcribed from
+also contained hidden entries, while the retained recording below was taken with `includeHidden:false`
+and carries visible models only; the probe notes do not record whether those were one call or two, so
+this document does not claim either. Visibility must be honored rather than inferred from a model-name
+allowlist.
 
 **Superseded in part by the retained recording (#1875).** The table above was transcribed from probe
 notes, not from a kept response — which is why four of its rows say "not retained in the probe notes".

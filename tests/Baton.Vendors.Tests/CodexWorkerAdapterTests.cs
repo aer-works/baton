@@ -448,6 +448,10 @@ public sealed class CodexWorkerAdapterTests
 
         Assert.Contains("absent from the recorded Codex capability snapshot", exception.Message);
         Assert.Contains("codex-model-list-2026-09-04.jsonl", exception.Message);
+
+        // #1880: the refusal names which CLI's catalog said so, read from the recording's own
+        // initialize line rather than restated here — the file's name already carries the date.
+        Assert.Contains("codex-cli 0.153.2", exception.Message);
     }
 
     /// <summary>
@@ -528,14 +532,52 @@ public sealed class CodexWorkerAdapterTests
         Assert.Contains("synthetic-recording.jsonl", exception.Message);
     }
 
+    /// <summary>
+    /// The shipped shape: the raw three-line app-server session, notification and initialize line
+    /// included. The loader must walk past both to the catalog line — and read the CLI version out of
+    /// the initialize line while it passes, which is the whole reason the file is kept whole (#1880).
+    /// </summary>
     [Fact]
-    public void A_usable_recording_builds_the_table_it_advertises()
+    public void The_raw_recording_builds_the_table_it_advertises_and_names_the_cli_that_answered()
     {
-        var table = CodexWorkerAdapter.BuildEffortTable(RecordedModelListLine(), "recording.jsonl");
+        var recorded = CodexWorkerAdapter.BuildEffortTable(RecordedRecording(), "recording.jsonl");
 
-        Assert.Equal(["low", "medium", "high", "xhigh", "max", "ultra"], table["gpt-6-astra"]);
-        Assert.Equal(["low", "medium", "high", "xhigh", "max"], table["gpt-5.6-luna"]);
-        Assert.False(table.ContainsKey("gpt-5.4"));
+        Assert.Equal(["low", "medium", "high", "xhigh", "max", "ultra"], recorded.EffortsByModel["gpt-6-astra"]);
+        Assert.Equal(["low", "medium", "high", "xhigh", "max"], recorded.EffortsByModel["gpt-5.6-luna"]);
+        Assert.False(recorded.EffortsByModel.ContainsKey("gpt-5.4"));
+        Assert.Equal("0.153.2", recorded.CliVersion);
+    }
+
+    /// <summary>
+    /// The polarity partner: a file trimmed to the catalog line alone — what shipped before #1880 —
+    /// still yields the identical table, so line-iterating widened what the loader accepts rather than
+    /// moving it. It has no initialize line, so the version is absent rather than invented.
+    /// </summary>
+    [Fact]
+    public void A_result_only_recording_builds_the_same_table_with_no_version_to_name()
+    {
+        var raw = CodexWorkerAdapter.BuildEffortTable(RecordedRecording(), "recording.jsonl");
+        var resultOnly = CodexWorkerAdapter.BuildEffortTable(RecordedModelListLine(), "result-only.jsonl");
+
+        Assert.Equal(raw.EffortsByModel, resultOnly.EffortsByModel);
+        Assert.Null(resultOnly.CliVersion);
+    }
+
+    /// <summary>
+    /// A well-formed session that simply never answered `model/list` is the case line-iterating makes
+    /// newly reachable: every line parses and none is a catalog, so it must refuse loudly rather than
+    /// let "skip lines that do not qualify" skip all of them into an empty table.
+    /// </summary>
+    [Fact]
+    public void A_recording_whose_lines_all_fail_to_qualify_is_refused_rather_than_emptied()
+    {
+        var exception = Assert.Throws<VendorCapabilitySnapshotException>(
+            () => CodexWorkerAdapter.BuildEffortTable(
+                "{\"id\":1,\"result\":{\"userAgent\":\"baton-conductor/0.153.2 (Windows)\"}}\n"
+                + "{\"method\":\"remoteControl/status/changed\",\"params\":{\"status\":\"disabled\"}}\n",
+                "no-catalog.jsonl"));
+
+        Assert.Contains("no `model/list` result line", exception.Message);
     }
 
     [Fact]
@@ -881,13 +923,28 @@ public sealed class CodexWorkerAdapterTests
         return -1;
     }
 
-    private static string RecordedModelListLine()
+    /// <summary>
+    /// The embedded recording exactly as it ships: raw app-server JSONL, initialize response and
+    /// notification included. What the loader reads.
+    /// </summary>
+    private static string RecordedRecording()
     {
         using var stream = typeof(CodexWorkerAdapter).Assembly
             .GetManifestResourceStream(CodexWorkerAdapter.ModelCatalogResourceName)!;
         using var reader = new StreamReader(stream);
-        return reader.ReadToEnd().Trim();
+        return reader.ReadToEnd();
     }
+
+    /// <summary>
+    /// The one `model/list` result line out of that recording. Live discovery parses a single stdout
+    /// line, so this is what stands in for one — selected here the same way the loader selects it, by
+    /// being the line whose id is 2, rather than by a position that a re-recording could shift.
+    /// </summary>
+    private static string RecordedModelListLine() =>
+        RecordedRecording()
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Single(line => line.StartsWith("{\"id\":2,", StringComparison.Ordinal));
 
     private static string[] FixtureLines(string fileName) =>
         File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex", fileName));
