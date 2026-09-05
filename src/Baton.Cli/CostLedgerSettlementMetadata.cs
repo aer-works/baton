@@ -233,19 +233,27 @@ internal static partial class CostLedgerSettlementMetadata
         CancellationToken cancellationToken = default,
         TimeSpan? spawnTimeout = null)
     {
-        var result = await TryRunGitAsync(
-            workingDirectory,
-            ["rev-parse", "--abbrev-ref", "HEAD"],
-            gitRunner,
-            cancellationToken,
-            spawnTimeout ?? DefaultSpawnTimeout).ConfigureAwait(false);
-        if (result is not { ExitCode: 0 } || string.IsNullOrWhiteSpace(result.Value.Output))
+        try
         {
+            var result = await TryRunGitAsync(
+                workingDirectory,
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                gitRunner,
+                cancellationToken,
+                spawnTimeout ?? DefaultSpawnTimeout).ConfigureAwait(false);
+            if (result is not { ExitCode: 0 } || string.IsNullOrWhiteSpace(result.Value.Output))
+            {
+                return null;
+            }
+
+            var branch = result.Value.Output.Trim();
+            return string.Equals(branch, "HEAD", StringComparison.Ordinal) ? null : branch;
+        }
+        catch (Exception)
+        {
+            // Dispatch accounting is optional: an arbitrary runner failure must not refuse the dispatch.
             return null;
         }
-
-        var branch = result.Value.Output.Trim();
-        return string.Equals(branch, "HEAD", StringComparison.Ordinal) ? null : branch;
     }
 
     private static async Task<IReadOnlyDictionary<string, WorkerBindingConfigEntry>> TryReadBindingsAsync(

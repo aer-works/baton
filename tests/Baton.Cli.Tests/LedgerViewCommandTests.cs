@@ -478,6 +478,18 @@ public sealed class LedgerViewCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Dispatch_branch_probe_contains_a_non_Win32_runner_exception()
+    {
+        var branch = await CostLedgerSettlementMetadata.TryReadBranchAsync(
+            Path.GetTempPath(),
+            new ThrowingLedgerGitRunner(),
+            TestContext.Current.CancellationToken,
+            TimeSpan.FromMilliseconds(20));
+
+        Assert.Null(branch);
+    }
+
+    [Fact]
     public async Task Help_says_which_ledger_this_reads_and_which_instant_the_window_is_on()
     {
         var help = await RunAsync("--help");
@@ -625,6 +637,15 @@ public sealed class LedgerViewCommandTests : IDisposable
             };
             return Task.FromResult(new LedgerGitResult(true, 0, stdout, string.Empty));
         }
+    }
+
+    private sealed class ThrowingLedgerGitRunner : ILedgerGitRunner
+    {
+        public Task<LedgerGitResult> RunAsync(
+            string workingDirectory,
+            IReadOnlyList<string> args,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("non-Win32 probe failure");
     }
 
     private sealed class NeverCompletingLedgerGitRunner : ILedgerGitRunner
