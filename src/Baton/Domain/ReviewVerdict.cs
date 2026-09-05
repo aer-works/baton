@@ -126,6 +126,11 @@ public sealed record VerifyInstrument(
 /// possible, not to admit a severity-less finding downstream.
 /// </param>
 /// <param name="Claim">The one-line statement of the finding. Required and non-empty.</param>
+/// <param name="Status">
+/// Whether the claim is confirmed. Still non-nullable, so a finding written with no <c>status</c>
+/// binds to the enum's default exactly as <paramref name="Severity"/> used to — the same hazard,
+/// deferred to #1919 rather than widened into this change.
+/// </param>
 /// <param name="Anchor">Where in the reviewed code the claim points, when it points anywhere.</param>
 /// <param name="Detail">Free-text elaboration — evidence, reproduction, reasoning.</param>
 public sealed record ReviewFinding(

@@ -372,12 +372,13 @@ public sealed record CostLedgerEntry(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? RunwayOverrideReason = null,
 
-    // #1901 C1 item 3: the diff shape of what this attempt's workspace has pushed, from ONE
-    // `git diff --numstat origin/main...HEAD` in that workspace at settle. All four are present
+    // #1901 C1 item 3: the diff shape from ONE `git diff --numstat origin/main...HEAD` in the attempt's
+    // workspace at settle; whether the branch was pushed plays no part (Baton.Cli's
+    // WorkspaceDeliveryProbe states once, at the probe, exactly what is measured). All four are present
     // together or absent together -- one spawn produces all of them, so a partial set would only ever
-    // mean a bug. ABSENT, never zero, when the workspace pushed nothing, is gone by settle time, or is
-    // not a git repository; a genuine empty diff (a branch level with origin/main) reports four zeros,
-    // which is a measurement rather than an absence.
+    // mean a bug. ABSENT, never zero, when the workspace is gone by settle time, is not a git repository,
+    // or has no origin/main to measure against; a genuine empty diff (a branch level with origin/main,
+    // committed nothing) reports four zeros, which is a measurement rather than an absence.
     /// <summary>Files touched between <c>origin/main</c> and the workspace's HEAD.</summary>
     [property: JsonPropertyName("filesChanged")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

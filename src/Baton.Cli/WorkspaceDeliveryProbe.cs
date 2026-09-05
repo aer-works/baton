@@ -8,9 +8,10 @@ using Baton.Vendors;
 namespace Baton.Cli;
 
 /// <summary>
-/// #1901 C1 items 1 and 3: resolves, at settle, what each of a room's workers actually delivered —
-/// the issue its branch names, the PR open for that branch, and the shape of the diff it pushed —
-/// and hands the result to <see cref="CostLedgerStore.BuildEntries"/> as plain values.
+/// #1901 C1 items 1 and 3: resolves, at settle, what each of a room's workers left in its workspace —
+/// the issue its branch names, the PR open for that branch, and the diff shape (what that measures, and
+/// when it is absent, is stated once on <see cref="CostLedgerEntry"/>'s diff-shape fields) — and hands
+/// the result to <see cref="CostLedgerStore.BuildEntries"/> as plain values.
 /// </summary>
 /// <remarks>
 /// <para>
