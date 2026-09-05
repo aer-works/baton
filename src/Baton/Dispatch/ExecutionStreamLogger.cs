@@ -21,6 +21,10 @@ public sealed class ExecutionStreamLogger
     /// </summary>
     public const long DefaultMaxPendingBytes = 4 * 1024 * 1024; // 4 MiB
 
+    public const string StdoutStreamName = "stdout";
+    public const string StderrStreamName = "stderr";
+    public const string StreamTruncatedByWriteFailureReason = "stream-truncated-by-write-failure";
+
     public const string StdoutLogFileName = ".stdout.log";
     public const string StdoutRolloverFileName = ".stdout.log.1";
     public const string StderrLogFileName = ".stderr.log";
@@ -137,9 +141,21 @@ public sealed class ExecutionStreamLogger
     /// </summary>
     private readonly record struct PendingChunk(byte[] Bytes, bool Owned);
 
+    /// <summary>
+    /// The logger's callback payload. It deliberately carries no <c>FlowEvent</c> dependency:
+    /// Core owns journalling this diagnostic fact, while this class remains a file writer (#1885).
+    /// </summary>
+    public sealed record StreamLogLossDeclaration(
+        string Stream,
+        string Reason,
+        long? BytesSurrendered,
+        bool MarkerLanded,
+        bool AtTerminal);
+
     /// <summary>Everything that is per-stream rather than per-logger.</summary>
-    private sealed class StreamState(string logFileName, string rolloverFileName)
+    private sealed class StreamState(string stream, string logFileName, string rolloverFileName)
     {
+        public string Stream { get; } = stream;
         public string LogFileName { get; } = logFileName;
         public string RolloverFileName { get; } = rolloverFileName;
         public long Size;
@@ -155,6 +171,7 @@ public sealed class ExecutionStreamLogger
         /// is retried on every later successful append and again at terminal.
         /// </summary>
         public bool LossDeclared;
+        public long? BytesSurrendered;
         public bool MarkerWritten;
         public bool MarkerFailureWarned;
 
@@ -171,10 +188,13 @@ public sealed class ExecutionStreamLogger
     private readonly long _maxSizeBytes;
     private readonly long _maxPendingBytes;
     private readonly Action<string, byte[]> _appendBytes;
+    private readonly Action<string> _createEmptyFile;
+    private readonly Action<string, byte[]> _writeMarkerBytes;
+    private readonly Action<StreamLogLossDeclaration>? _onLossDeclared;
     private readonly object _lock = new();
 
-    private readonly StreamState _stdout = new(StdoutLogFileName, StdoutRolloverFileName);
-    private readonly StreamState _stderr = new(StderrLogFileName, StderrRolloverFileName);
+    private readonly StreamState _stdout = new(StdoutStreamName, StdoutLogFileName, StdoutRolloverFileName);
+    private readonly StreamState _stderr = new(StderrStreamName, StderrLogFileName, StderrRolloverFileName);
 
     private bool _isTerminal;
     private bool _disabled;
@@ -193,7 +213,10 @@ public sealed class ExecutionStreamLogger
         string outputDirectory,
         long maxSizeBytes = DefaultMaxSizeBytes,
         long maxPendingBytes = DefaultMaxPendingBytes,
-        Action<string, byte[]>? appendBytes = null)
+        Action<string, byte[]>? appendBytes = null,
+        Action<string>? createEmptyFile = null,
+        Action<string, byte[]>? writeMarkerBytes = null,
+        Action<StreamLogLossDeclaration>? onLossDeclared = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(outputDirectory);
         ArgumentOutOfRangeException.ThrowIfNegative(maxPendingBytes);
@@ -201,6 +224,9 @@ public sealed class ExecutionStreamLogger
         _maxSizeBytes = maxSizeBytes;
         _maxPendingBytes = maxPendingBytes;
         _appendBytes = appendBytes ?? AppendBytesToFile;
+        _createEmptyFile = createEmptyFile ?? CreateEmptyFile;
+        _writeMarkerBytes = writeMarkerBytes ?? File.WriteAllBytes;
+        _onLossDeclared = onLossDeclared;
 
         try
         {
@@ -218,12 +244,12 @@ public sealed class ExecutionStreamLogger
             Directory.CreateDirectory(_outputDirectory);
             if (!File.Exists(stdoutPath))
             {
-                using var _ = new FileStream(stdoutPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                _createEmptyFile(stdoutPath);
             }
 
             if (!File.Exists(stderrPath))
             {
-                using var _ = new FileStream(stderrPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                _createEmptyFile(stderrPath);
             }
 
             _stdout.Size = File.Exists(stdoutPath) ? new FileInfo(stdoutPath).Length : 0;
@@ -254,6 +280,8 @@ public sealed class ExecutionStreamLogger
             _stderr.LossDeclared = true;
             RetryPendingMarker(_stdout);
             RetryPendingMarker(_stderr);
+            NotifyLoss(_stdout, atTerminal: false);
+            NotifyLoss(_stderr, atTerminal: false);
         }
     }
 
@@ -300,6 +328,8 @@ public sealed class ExecutionStreamLogger
             // the constructor and no append will ever run to carry the retry.
             RetryPendingMarker(_stdout);
             RetryPendingMarker(_stderr);
+            NotifyUnlandedLossAtTerminal(_stdout);
+            NotifyUnlandedLossAtTerminal(_stderr);
 
             _isTerminal = true;
         }
@@ -322,9 +352,10 @@ public sealed class ExecutionStreamLogger
     /// The honest limit of "unless a marker says otherwise" (#1879 review): the loss itself is latched
     /// in memory and retried onto disk until it lands (<see cref="StreamState.LossDeclared"/>,
     /// <see cref="RetryPendingMarker"/>), but a host that refuses this logger every file create for the
-    /// whole run leaves the announcement unwritten. What this logger guarantees is that it never STOPS
-    /// trying, which is what the pre-#1879 latch broke; what it cannot guarantee, and what an operator
-    /// is told on stderr instead, is stated in <c>spec/baton.md</c> §3.
+    /// whole run leaves the marker unwritten. #1885 reports that latch upward; Core records the
+    /// declaration through the room ledger, whose writer is outside the obstructed execution directory.
+    /// The marker remains the channel for a reader that has only that directory, and stderr still says
+    /// when it cannot land. What this logger guarantees is that it never STOPS trying.
     /// </para>
     /// </summary>
     private void AppendChunk(StreamState stream, byte[] data)
@@ -573,19 +604,62 @@ public sealed class ExecutionStreamLogger
     /// </summary>
     private void DeclareWriteLoss(StreamState stream)
     {
+        var bytesSurrendered = stream.PendingBytes;
         stream.Pending.Clear();
         stream.PendingBytes = 0;
         // A later chunk starts a fresh attempt against whatever the file now is; the unknown tail it
         // may be appending after is the gap this call is announcing.
         stream.RetryUnsafe = false;
 
-        if (!stream.LossDeclared)
+        if (stream.LossDeclared)
         {
-            stream.LossDeclared = true;
-            Console.Error.WriteLine($"Warning: Discarding buffered '{stream.LogFileName}' chunks in '{_outputDirectory}' after repeated write failures — this stream log now has a gap and its token reconciliation will report as unavailable.");
+            RetryPendingMarker(stream);
+            return;
         }
 
+        stream.LossDeclared = true;
+        stream.BytesSurrendered = bytesSurrendered;
+        Console.Error.WriteLine($"Warning: Discarding buffered '{stream.LogFileName}' chunks in '{_outputDirectory}' after repeated write failures — this stream log now has a gap and its token reconciliation will report as unavailable.");
+
+        // The marker remains for readers limited to this output directory, but #1885 makes the
+        // declaration durable through Core's room-ledger callback even if every marker create fails.
         RetryPendingMarker(stream);
+        NotifyLoss(stream, atTerminal: false);
+    }
+
+    private void NotifyUnlandedLossAtTerminal(StreamState stream)
+    {
+        if (stream.LossDeclared && !stream.MarkerWritten)
+        {
+            NotifyLoss(stream, atTerminal: true);
+        }
+    }
+
+    /// <summary>
+    /// Reports a loss latch to Core without taking a Flow dependency or writing a ledger entry itself.
+    /// The callback is isolated from logging so a caller's diagnostic path cannot turn this best-effort
+    /// capture detail into a worker failure.
+    /// </summary>
+    private void NotifyLoss(StreamState stream, bool atTerminal)
+    {
+        if (_onLossDeclared is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _onLossDeclared(new StreamLogLossDeclaration(
+                stream.Stream,
+                StreamTruncatedByWriteFailureReason,
+                stream.BytesSurrendered,
+                stream.MarkerWritten,
+                atTerminal));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Failed to report declared '{stream.LogFileName}' stream-log loss: {ex.Message}.");
+        }
     }
 
     /// <summary>
@@ -632,6 +706,11 @@ public sealed class ExecutionStreamLogger
         }
     }
 
+    private static void CreateEmptyFile(string path)
+    {
+        using var _ = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+    }
+
     private static void AppendBytesToFile(string logPath, byte[] data)
     {
         using var fs = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
@@ -656,7 +735,7 @@ public sealed class ExecutionStreamLogger
             var markerPath = Path.Combine(_outputDirectory, markerFileName);
             if (!File.Exists(markerPath))
             {
-                File.WriteAllBytes(markerPath, []);
+                _writeMarkerBytes(markerPath, []);
             }
 
             return true;

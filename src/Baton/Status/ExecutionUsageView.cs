@@ -69,13 +69,15 @@ public sealed record ExecutionUsageView(
     /// #1706 review M3: why the reconciliation triple above is absent, when it is absent for a reason a
     /// consumer can act on. One of <c>stream-truncated-by-rollover</c> (the capture is provably not the
     /// whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>),
-    /// <c>stream-truncated-by-write-failure</c> (#1876 — provably not the whole stream for the other
-    /// reason: the host obstructed the writer past its retry buffer,
-    /// <see cref="Dispatch.ExecutionStreamLogger.StdoutWriteFailureMarkerFileName"/>),
+    /// <c>stream-truncated-by-write-failure</c> (#1876/#1885 — the logger declared an unknown-offset
+    /// gap, sourced from the journalled <see cref="FlowEvent.StreamLogLossDeclared"/> event first or
+    /// its sibling <see cref="Dispatch.ExecutionStreamLogger.StdoutWriteFailureMarkerFileName"/>),
     /// <c>rollover-segment-unreadable</c>, <c>no-live-billed-figure</c> (the replay parsed no usage line
     /// carrying a billed component) or <c>no-terminal-billed-figure</c> (the terminal line reported
-    /// none). Absent — like the triple itself — when the execution simply has no captured stream at
-    /// all: that is the pre-#1706 "nothing was read" case, not a number being withheld.
+    /// none). When both declared-loss channels exist they must agree; disagreement is written to stderr
+    /// and the journalled reason wins. Absent — like the triple itself — when the execution simply has
+    /// no captured stream and no declared loss: that is the pre-#1706 "nothing was read" case, not a
+    /// number being withheld.
     /// </summary>
     [property: JsonPropertyName("billedReconciliationUnavailable")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -140,8 +142,9 @@ public sealed record ExecutionUsageView(
 /// no wall-clock to derive and is simply absent from the result rather than reported as zero.
 /// <para>
 /// Token/turn counts are read from the execution's already-captured <c>.stdout.log</c>
-/// (<see cref="ExecutionStreamLogger"/>) — never a new ledger event, per the issue's own preference
-/// for deriving over recording twice. Which adapter's parser to trust is resolved by preferring the
+/// (<see cref="ExecutionStreamLogger"/>). #1885 keeps that derive-over-record rule for the counts and
+/// journals only a declared stream loss, because a marker in the obstructed execution directory can
+/// itself be refused. Which adapter's parser to trust is resolved by preferring the
 /// accepted request's own recorded <see cref="ExecutionRequest.Adapter"/> — see that field's doc
 /// comment (issue #1567) for why, and for the one path where it is not the guarantee it usually is.
 /// Only the resolved adapter's <see cref="IWorkerUsageParser.TryParseFinalUsage"/> is tried, and
@@ -182,6 +185,10 @@ public static class ExecutionUsageProjector
         // stream yielded no terminal reading of its own; see that site for why it is deliberately not
         // allowed to stand in for the AUTHORITATIVE terminal figure.
         var arrestedUsageByExecutionId = new Dictionary<string, WorkerUsage>(StringComparer.Ordinal);
+        // #1885: a write-failure marker can be the very file create the host refuses. The room ledger
+        // survives that path, so stdout's journalled loss is the primary source for this usage view.
+        // stderr loss remains a durable diagnostic but cannot make a stdout-based reconciliation unsafe.
+        var journalledStdoutLossReasonByExecutionId = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
@@ -210,6 +217,15 @@ public static class ExecutionUsageProjector
                 if (flowEntry.Event is FlowEvent.ExecutionArrested { Usage: { } arrestedUsage } arrestedEvent)
                 {
                     arrestedUsageByExecutionId[arrestedEvent.ExecutionId.Value] = arrestedUsage;
+                }
+
+                if (flowEntry.Event is FlowEvent.StreamLogLossDeclared
+                    {
+                        Stream: ExecutionStreamLogger.StdoutStreamName,
+                        Reason: { Length: > 0 } reason,
+                    } streamLoss)
+                {
+                    journalledStdoutLossReasonByExecutionId[streamLoss.ExecutionId.Value] = reason;
                 }
             }
 
@@ -277,14 +293,28 @@ public static class ExecutionUsageProjector
             // withheld and the reason string stays whatever it already was.
             var dimensions = usage ?? (arrestedUsageByExecutionId.TryGetValue(executionId, out var fromArrest) ? fromArrest : null);
 
+            // #1885: the room ledger is the primary channel because it survives a host refusing
+            // every create below this execution directory. The per-execution marker remains the fallback
+            // for a reader that has only that directory. A disagreement is loud and chooses the journal
+            // rather than silently pretending the two facts are interchangeable.
+            var journalledLossReason = journalledStdoutLossReasonByExecutionId.TryGetValue(executionId, out var recordedLoss)
+                ? recordedLoss
+                : null;
+            var markerReason = FindWriteFailureMarkerReason(artifactsRootPath, executionId)
+                ?? reading?.WriteFailureMarkerReason;
+            var declaredLossReason = ResolveDeclaredStreamLossReason(
+                executionId,
+                journalledLossReason,
+                markerReason);
+
             // #1706 review M2: ALL THREE or none. The previous shape emitted `billedTokens` alone
             // whenever the terminal figure was computable but the replay was not -- which is exactly
             // the case the rollover guard below exists to SIGNAL, so a consumer following the
             // documented "all three together" contract would have read a partial answer as a complete
             // one. The reason string is what replaces the number.
-            var reconciled = billed is not null && liveBilled is not null;
-            string? unavailable = null;
-            if (!reconciled && reading is not null)
+            var reconciled = billed is not null && liveBilled is not null && declaredLossReason is null;
+            string? unavailable = declaredLossReason;
+            if (unavailable is null && !reconciled && reading is not null)
             {
                 unavailable = reading.LiveUnavailableReason
                     ?? (billed is null
@@ -361,6 +391,50 @@ public static class ExecutionUsageProjector
     private static readonly IReadOnlyDictionary<string, string> EmptyBindings =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    private static string? ResolveDeclaredStreamLossReason(
+        string executionId,
+        string? journalledReason,
+        string? markerReason)
+    {
+        if (journalledReason is null)
+        {
+            return markerReason;
+        }
+
+        if (markerReason is not null
+            && !string.Equals(journalledReason, markerReason, StringComparison.Ordinal))
+        {
+            Console.Error.WriteLine(
+                $"Warning: Stream-log loss reason disagreement for execution '{executionId}': " +
+                $"journal '{journalledReason}' versus marker '{markerReason}'. Using the journalled reason.");
+        }
+
+        return journalledReason;
+    }
+
+    /// <summary>
+    /// The directory-only fallback is intentionally independent of parser resolution. A failed logger
+    /// may leave no stdout file and an execution may predate a recorded adapter, but the marker still
+    /// says the capture is incomplete. The ledger channel above remains authoritative when both exist.
+    /// </summary>
+    private static string? FindWriteFailureMarkerReason(string artifactsRootPath, string executionId)
+    {
+        var id = new ExecutionId(executionId);
+        foreach (var directory in new[]
+                 {
+                     ArtifactManager.ResolveOutputDirectory(artifactsRootPath, id),
+                     ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id),
+                 })
+        {
+            if (File.Exists(Path.Combine(directory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)))
+            {
+                return ExecutionStreamLogger.StreamTruncatedByWriteFailureReason;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// #1706: one captured stream read once, yielding both the terminal reading and the live-billed Σ
     /// the budget monitor would have accumulated over the same bytes. Kept together because they come
@@ -383,7 +457,11 @@ public static class ExecutionUsageProjector
     /// append and re-reads, which is correct rather than merely tolerable.
     /// </para>
     /// </summary>
-    private sealed record UsageReading(WorkerUsage? Terminal, long? LiveBilled, string? LiveUnavailableReason = null);
+    private sealed record UsageReading(
+        WorkerUsage? Terminal,
+        long? LiveBilled,
+        string? LiveUnavailableReason = null,
+        string? WriteFailureMarkerReason = null);
 
     /// <summary>
     /// The memo behind <see cref="UsageReading"/>'s L3 note. Concurrent because both readers above are
@@ -460,7 +538,10 @@ public static class ExecutionUsageProjector
                 {
                     if (File.Exists(Path.Combine(directory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)))
                     {
-                        return new UsageReading(null, null, "stream-truncated-by-write-failure");
+                        return new UsageReading(
+                            null,
+                            null,
+                            WriteFailureMarkerReason: ExecutionStreamLogger.StreamTruncatedByWriteFailureReason);
                     }
                 }
 
@@ -547,7 +628,12 @@ public static class ExecutionUsageProjector
         // spec/baton.md §3.
         if (File.Exists(writeFailureMarkerPath))
         {
-            return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-write-failure"));
+            return Memoize(
+                cacheKey,
+                new UsageReading(
+                    terminal,
+                    null,
+                    WriteFailureMarkerReason: ExecutionStreamLogger.StreamTruncatedByWriteFailureReason));
         }
 
         string[] rolledLines = [];

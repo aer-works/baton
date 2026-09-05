@@ -13,6 +13,7 @@ namespace Baton.Cli.Tests;
 /// hand-written <c>.stdout.log</c>, so the wall-clock arithmetic and the "no terminal pair yet"
 /// absence rule are each pinned directly rather than only inferred from an end-to-end room.
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public sealed class ExecutionUsageProjectorTests
 {
     [Fact]
@@ -852,6 +853,107 @@ public sealed class ExecutionUsageProjectorTests
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_stream_loss_reason_is_available_from_the_journal_or_marker_and_absent_when_neither_exists()
+    {
+        // #1885's source matrix. No adapter or stdout file is supplied deliberately: the durable Flow
+        // event must survive the all-create-refused path, and the marker fallback must remain useful to
+        // a directory-only reader rather than accidentally depending on parser resolution.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1885-channels-{Guid.NewGuid():N}");
+        try
+        {
+            var eventOnly = new ExecutionId("exec-1885-event-only");
+            var markerOnly = new ExecutionId("exec-1885-marker-only");
+            var both = new ExecutionId("exec-1885-both");
+            var neither = new ExecutionId("exec-1885-neither");
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>();
+
+            foreach (var executionId in new[] { eventOnly, markerOnly, both, neither })
+            {
+                entries.Add(new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start));
+                entries.Add(new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)));
+            }
+
+            entries.Add(new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                eventOnly,
+                ExecutionStreamLogger.StdoutStreamName,
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason)));
+            entries.Add(new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                both,
+                ExecutionStreamLogger.StdoutStreamName,
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason)));
+
+            foreach (var executionId in new[] { markerOnly, both })
+            {
+                var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+                Directory.CreateDirectory(outputDir);
+                File.WriteAllText(
+                    Path.Combine(outputDir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName),
+                    string.Empty);
+            }
+
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+
+            Assert.Equal(
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason,
+                usage[eventOnly.Value].BilledReconciliationUnavailable);
+            Assert.Equal(
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason,
+                usage[markerOnly.Value].BilledReconciliationUnavailable);
+            Assert.Equal(
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason,
+                usage[both.Value].BilledReconciliationUnavailable);
+            Assert.Null(usage[neither.Value].BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_disagreement_between_journal_and_marker_is_logged_and_the_journal_wins()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1885-disagreement-{Guid.NewGuid():N}");
+        var originalError = Console.Error;
+        using var stderr = new StringWriter();
+        try
+        {
+            var executionId = new ExecutionId("exec-1885-disagreement");
+            var start = DateTime.UtcNow;
+            var journalReason = "journal-declared-stream-loss";
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                    executionId,
+                    ExecutionStreamLogger.StdoutStreamName,
+                    journalReason)),
+            };
+
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            File.WriteAllText(
+                Path.Combine(outputDir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName),
+                string.Empty);
+
+            Console.SetError(stderr);
+            var usage = ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default);
+            Console.SetError(originalError);
+
+            Assert.Equal(journalReason, usage[executionId.Value].BilledReconciliationUnavailable);
+            Assert.Contains("disagreement", stderr.ToString(), StringComparison.Ordinal);
+            Assert.Contains(executionId.Value, stderr.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalError);
             DirectoryCleanup.DeleteRecursively(testRoot);
         }
     }

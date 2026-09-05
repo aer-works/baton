@@ -77,6 +77,59 @@ public class CoreDispatcherTests
         }
     }
 
+    [Fact]
+    public async Task DispatchAsync_journals_declared_stream_log_loss_when_initialization_fails()
+    {
+        // #1885. Directories occupying both .stdout.log and its marker make eager creation fail and
+        // keep the marker unlanded. This exercises the real Core callback boundary and reads JSONL back,
+        // rather than proving only that the logger constructed an in-memory declaration.
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-1885-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(Path.GetTempPath(), $"flow-1885-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutLogFileName));
+            // Refuse the companion marker too, so MarkTerminal has to report the still-unlanded loss.
+            Directory.CreateDirectory(Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName));
+
+            var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                await new CoreDispatcher(writer).DispatchAsync(
+                    request,
+                    EchoHelloToOutputFile(),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var losses = (await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken))
+                .OfType<FlowEvent.StreamLogLossDeclared>()
+                .Where(loss => loss.ExecutionId == ExecutionId)
+                .ToList();
+
+            var stdoutInitial = Assert.Single(
+                losses,
+                loss => loss.Stream == ExecutionStreamLogger.StdoutStreamName && !loss.AtTerminal);
+            var stdoutAtTerminal = Assert.Single(
+                losses,
+                loss => loss.Stream == ExecutionStreamLogger.StdoutStreamName && loss.AtTerminal);
+            var stderr = Assert.Single(losses, loss => loss.Stream == ExecutionStreamLogger.StderrStreamName);
+            Assert.Equal(ExecutionStreamLogger.StreamTruncatedByWriteFailureReason, stdoutInitial.Reason);
+            Assert.Equal(ExecutionStreamLogger.StreamTruncatedByWriteFailureReason, stdoutAtTerminal.Reason);
+            Assert.Equal(ExecutionStreamLogger.StreamTruncatedByWriteFailureReason, stderr.Reason);
+            Assert.False(stdoutInitial.MarkerLanded);
+            Assert.False(stdoutAtTerminal.MarkerLanded);
+            Assert.True(stderr.MarkerLanded);
+            Assert.False(stdoutInitial.AtTerminal);
+            Assert.True(stdoutAtTerminal.AtTerminal);
+            Assert.False(stderr.AtTerminal);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(artifactsRoot);
+            FileCleanup.Delete(logPath);
+        }
+    }
+
     /// <summary>
     /// #533: <see cref="CoreDispatchTarget.Environment"/> is the seam a vendor adapter uses to set a
     /// vendor-specific variable (e.g. Claude Code's subagent depth cap) without <c>Baton</c> ever

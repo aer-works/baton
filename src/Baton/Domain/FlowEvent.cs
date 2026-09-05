@@ -30,6 +30,7 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(VerifyDeclarationIgnored), "verifyDeclarationIgnored")]
 [JsonDerivedType(typeof(VerifyDeclarationUnreviewed), "verifyDeclarationUnreviewed")]
 [JsonDerivedType(typeof(ExecutionArrested), "executionArrested")]
+[JsonDerivedType(typeof(StreamLogLossDeclared), "streamLogLossDeclared")]
 [JsonDerivedType(typeof(ExecutionIndeterminate), "executionIndeterminate")]
 [JsonDerivedType(typeof(CaptureResolved), "captureResolved")]
 [JsonDerivedType(typeof(ExecutionProgress), "executionProgress")]
@@ -413,6 +414,35 @@ public abstract record FlowEvent
         long? PeakBilledInWindow = null,
         long? BilledRateLimit = null,
         string? Adapter = null) : FlowEvent;
+
+    /// <summary>
+    /// #1885: <see cref="Dispatch.ExecutionStreamLogger"/> surrendered bytes from one captured stream,
+    /// and Core recorded the declaration through the room ledger rather than leaving the execution
+    /// directory's marker as the only cross-process channel. Diagnostic only: the status projector
+    /// reads this fact to withhold an unsafe reconciliation, but it has no <see cref="StepState"/>
+    /// consequence.
+    /// </summary>
+    /// <param name="Stream">Exactly <c>"stdout"</c> or <c>"stderr"</c>.</param>
+    /// <param name="Reason">The reconciliation reason associated with the declared loss.</param>
+    /// <param name="BytesSurrendered">
+    /// Bytes discarded from the logger's retry queue when known; null for an initialization failure
+    /// where the logger could not observe a queued byte count.
+    /// </param>
+    /// <param name="MarkerLanded">
+    /// Whether the sibling write-failure marker existed after the logger's attempt that caused this
+    /// event. A false value is the selected #1885 discriminator for the durable journal fallback.
+    /// </param>
+    /// <param name="AtTerminal">
+    /// True only for the terminal retry record: a loss already announced through this ledger still had
+    /// no marker after <c>MarkTerminal</c>'s final attempt.
+    /// </param>
+    public sealed record StreamLogLossDeclared(
+        ExecutionId ExecutionId,
+        string Stream,
+        string Reason,
+        long? BytesSurrendered = null,
+        bool MarkerLanded = false,
+        bool AtTerminal = false) : FlowEvent;
 
     /// <summary>
     /// S6 (spec/baton.md §3, #802 section 3.3, pulled forward by #1583): records that a step's execution was rebound to a different

@@ -827,7 +827,17 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
         {
             try
             {
-                streamLogger = new ExecutionStreamLogger(outputDir);
+                streamLogger = new ExecutionStreamLogger(
+                    outputDir,
+                    onLossDeclared: loss => pendingLogWrites.Add(coreEventLogWriter.AppendStreamLogLossAsync(
+                        new FlowEvent.StreamLogLossDeclared(
+                            request.ExecutionId,
+                            loss.Stream,
+                            loss.Reason,
+                            loss.BytesSurrendered,
+                            loss.MarkerLanded,
+                            loss.AtTerminal),
+                        CancellationToken.None)));
             }
             catch (Exception ex)
             {

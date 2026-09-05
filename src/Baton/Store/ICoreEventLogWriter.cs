@@ -16,4 +16,13 @@ public interface ICoreEventLogWriter
     /// <see cref="IEventLogWriter.AppendAsync"/> gives Flow's own events.
     /// </summary>
     Task AppendAsync(CoreEvent coreEvent, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Appends the one diagnostic Flow fact Core is responsible for: a stream logger's declared loss.
+    /// The logger itself only reports its in-memory latch; <c>CoreDispatcher</c> owns translating that
+    /// report into this room-ledger event (#1885).
+    /// </summary>
+    Task AppendStreamLogLossAsync(
+        FlowEvent.StreamLogLossDeclared streamLogLoss,
+        CancellationToken cancellationToken = default);
 }

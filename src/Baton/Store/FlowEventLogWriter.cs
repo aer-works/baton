@@ -125,6 +125,12 @@ public sealed class FlowEventLogWriter : IEventLogWriter, ICoreEventLogWriter, I
         return AppendEntryAsync(new LogEntry.CoreLogEntry(coreEvent, DateTime.UtcNow), cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task AppendStreamLogLossAsync(
+        FlowEvent.StreamLogLossDeclared streamLogLoss,
+        CancellationToken cancellationToken = default) =>
+        AppendAsync(streamLogLoss, cancellationToken);
+
     private async Task AppendEntryAsync(LogEntry entry, CancellationToken cancellationToken)
     {
         var line = JsonSerializer.Serialize(entry, typeof(LogEntry), FlowEventLogJson.Options);

@@ -2286,12 +2286,14 @@ following record too, which is why the marker, not the file, is the authority). 
 latched **in memory** and the marker is retried after every later successful append and again at
 terminal — the marker file is created in the same directory whose writes just failed, so treating its
 first refusal as final is how a real gap goes unannounced while later chunks land around it. When the
-marker still cannot be written, that fact goes to stderr; a reader of the files alone cannot recover
-what was never written down, and the engine's guarantee is that it never stops trying. A channel that
-survives a host refusing every file create — journalling the loss as a flow event through the room's
-own ledger, which the projector already reads — is #1885. An
-initialization failure — the logger that never opened, whose capture is therefore empty rather than
-partial — declares the same loss for both streams.
+marker still cannot be written, that fact goes to stderr. **#1885's two-channel rule:** the
+`ExecutionUsageProjector` reads the journalled `StreamLogLossDeclared` reason first and the
+per-execution marker second; when both exist they must agree, and a disagreement is logged to stderr
+rather than silently resolved. The marker remains for readers limited to the execution directory, while
+the event's `markerLanded: false` records the room-ledger fallback and is emitted again at terminal if the
+marker is still absent. The engine's guarantee is that it never stops trying. An initialization failure
+— the logger that never opened, whose capture is therefore empty rather than partial — declares the
+same loss for both streams.
 
 **When the bytes are gone, the token counts are not — for an arrest.** A declared gap withholds the
 *reconciliation*, never the *reading*: the per-dimension fields fall back to the usage the live monitor

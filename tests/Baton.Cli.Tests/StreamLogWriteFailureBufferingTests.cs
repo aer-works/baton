@@ -122,6 +122,26 @@ public sealed class StreamLogWriteFailureBufferingTests
         }
     }
 
+    /// <summary>
+    /// #1885: refuses both eager stream-file creation and the supposedly tiny marker write. This is
+    /// intentionally not a directory trick: the fake proves the journal callback survives precisely
+    /// when every create operation under the output directory is rejected.
+    /// </summary>
+    private sealed class RefusesEveryCreate
+    {
+        public List<string> Paths { get; } = [];
+
+        public void Create(string path) => Refuse(path);
+
+        public void Write(string path, byte[] _) => Refuse(path);
+
+        private void Refuse(string path)
+        {
+            Paths.Add(path);
+            throw new UnauthorizedAccessException($"Access to the path '{path}' is denied.");
+        }
+    }
+
     private static byte[] Bytes(string s) => Encoding.UTF8.GetBytes(s);
 
     private static string StdoutText(string dir) =>
@@ -630,6 +650,76 @@ public sealed class StreamLogWriteFailureBufferingTests
             Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
             Assert.Null(view.TokensIn);
             Assert.Null(view.BilledTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_journalled_loss_survives_a_fake_that_refuses_every_create_including_the_marker()
+    {
+        // #1885. The marker cannot be the sole source of truth when the same host denial rejects its
+        // own create. The logger reports the loss upward; Core owns turning that observation into the
+        // Flow fact the projector consumes here, without needing a readable stream or marker.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1885-refused-create-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1885-refused-create");
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            var refuser = new RefusesEveryCreate();
+            var declarations = new List<ExecutionStreamLogger.StreamLogLossDeclaration>();
+            var logger = new ExecutionStreamLogger(
+                outputDir,
+                maxPendingBytes: 0,
+                appendBytes: refuser.Write,
+                createEmptyFile: refuser.Create,
+                writeMarkerBytes: refuser.Write,
+                onLossDeclared: declarations.Add);
+
+            logger.MarkTerminal();
+
+            Assert.False(WriteFailureMarked(outputDir));
+            Assert.Contains(
+                refuser.Paths,
+                path => string.Equals(Path.GetFileName(path), ExecutionStreamLogger.StdoutLogFileName, StringComparison.Ordinal));
+            Assert.Contains(
+                refuser.Paths,
+                path => string.Equals(Path.GetFileName(path), ExecutionStreamLogger.StdoutWriteFailureMarkerFileName, StringComparison.Ordinal));
+
+            var stdoutInitialLoss = Assert.Single(
+                declarations.FindAll(declaration =>
+                    declaration.Stream == ExecutionStreamLogger.StdoutStreamName && !declaration.AtTerminal));
+            Assert.False(stdoutInitialLoss.MarkerLanded);
+            Assert.Contains(
+                declarations,
+                declaration => declaration.Stream == ExecutionStreamLogger.StdoutStreamName
+                    && declaration.AtTerminal
+                    && !declaration.MarkerLanded);
+
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+                new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                    executionId,
+                    stdoutInitialLoss.Stream,
+                    stdoutInitialLoss.Reason,
+                    stdoutInitialLoss.BytesSurrendered,
+                    stdoutInitialLoss.MarkerLanded,
+                    stdoutInitialLoss.AtTerminal)),
+            };
+
+            var view = Assert.Single(
+                ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default)).Value;
+
+            Assert.Equal(ExecutionStreamLogger.StreamTruncatedByWriteFailureReason, view.BilledReconciliationUnavailable);
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
         }
         finally
         {
