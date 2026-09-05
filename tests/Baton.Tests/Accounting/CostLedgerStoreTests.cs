@@ -755,6 +755,51 @@ public sealed class CostLedgerStoreTests
     }
 
     [Fact]
+    public void A_journalled_stream_log_loss_makes_a_row_partial_even_though_no_marker_file_exists()
+    {
+        // #1885: the write-failure marker is a file create under the execution directory, so the host
+        // refusing every create there is exactly the case where the marker cannot land -- and the
+        // marker was the ledger's only channel for that reason. The journalled event survives that
+        // refusal because it goes to the room ledger instead. Without this arm, the whole point of
+        // #1885 is invisible from the cost ledger: the row would read `complete` off a stream that is
+        // provably missing bytes, which is a plausible-looking wrong answer rather than a loud one.
+        var room = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-journalled-loss");
+            WriteCapturedStream(room, executionId, ClaudeTerminalLine);
+
+            // Guards the fixture, not the product: if WriteCapturedStream ever started writing a
+            // marker, this arm would pass through the marker path while claiming to prove the journal
+            // one -- the same instrument twice.
+            var outputDirectory = ArtifactManager.ResolveOutputDirectory(
+                Path.Combine(room, ArtifactManager.ArtifactsDirectoryName), executionId);
+            Assert.False(File.Exists(
+                Path.Combine(outputDirectory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)));
+
+            var entries = SettledExecution(executionId, "claude", "claude-opus-5", Start);
+            entries.Add(new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                executionId,
+                ExecutionStreamLogger.StdoutStreamName,
+                ExecutionStreamLogger.StreamTruncatedByWriteFailureReason,
+                BytesSurrendered: 4096,
+                MarkerLanded: false)));
+
+            var row = Assert.Single(CostLedgerStore.BuildEntries(entries, room, Repository));
+
+            Assert.Equal(CostCompleteness.Partial, row.Completeness);
+            // The constant, not a literal: the claim is that this path yields the SAME reason the
+            // marker path yields (ExecutionUsageView.FindWriteFailureMarkerReason returns this), so a
+            // consumer filtering on it cannot tell which channel carried the fact.
+            Assert.Equal(ExecutionStreamLogger.StreamTruncatedByWriteFailureReason, row.CompletenessReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
+    [Fact]
     public async Task A_retry_is_a_second_attempt_and_therefore_a_second_row()
     {
         var room = NewRoom();

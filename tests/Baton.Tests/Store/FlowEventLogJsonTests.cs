@@ -69,6 +69,18 @@ public class FlowEventLogJsonTests
         new FlowEvent.DeliveryMerged(123, Merged: false),
         // #1373: the per-attempt start sha the crash-recovery timeout probe reads back.
         new FlowEvent.ExecutionAttemptStarted(ExecutionId, "0f2b9ac1"),
+        // #1885: both shapes, for the reason the DeliveryMerged pair above states — this variant
+        // carries a nullable AND two defaulted bools. `An_intact_line_round_trips` compares
+        // re-serialized JSON, so an all-default row proves nothing about whether those three
+        // members BIND: a reader that discarded each value into its default would produce byte-
+        // identical output. Only a row whose optionals are non-default can tell those two apart.
+        // The first row is the journal-fallback shape production actually writes when the marker
+        // create is the very thing the host refused; the second is that discriminating case.
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stdout", "stream-truncated-by-write-failure"),
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stderr", "stream-truncated-by-write-failure",
+            BytesSurrendered: 4096, MarkerLanded: true, AtTerminal: true),
     ];
 
     /// <summary>
