@@ -303,6 +303,39 @@ public sealed class LedgerViewCommandTests : IDisposable
         Assert.Contains("endedAt >= 2026-09-04T00:00:00Z (inclusive) and < 2026-09-05T00:00:00Z (exclusive)", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #1901's acceptance criterion "<c>baton ledger --format json</c> groups correctly by <c>pr</c>".
+    /// <c>pr</c> is a FACET, not a grouping dimension — <c>LedgerRollup</c> groups by vendor and
+    /// nothing else — so "grouping by PR" is the query narrowed to one, and what this pins is that the
+    /// narrowing is exact in both directions: the other PR's rows are out, and so are the rows carrying
+    /// no PR at all. Both spellings of the same PR are one PR
+    /// (<c>LedgerQuery.NormalizeNumberReference</c>), which is the arm a writer that recorded
+    /// <c>#1907</c> and a filter that compared ordinally would fail.
+    /// </summary>
+    [Fact]
+    public async Task Json_narrowed_to_one_pr_carries_that_prs_rows_and_only_those()
+    {
+        using var first = JsonDocument.Parse(await RunAsync("--format", "json", "--drill", "--pr", "1907"));
+        using var second = JsonDocument.Parse(await RunAsync("--format", "json", "--drill", "--pr", "#1908"));
+        using var everything = JsonDocument.Parse(await RunAsync("--format", "json", "--drill"));
+
+        static string[] Executions(JsonDocument document) =>
+            [.. document.RootElement.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("execution").GetString()!)];
+
+        Assert.Equal(["e1", "e2"], Executions(first));
+        Assert.Equal(["e3"], Executions(second));
+
+        // The two views partition their PRs' rows, and neither swept in the three rows with no PR --
+        // the whole file is strictly larger than their union.
+        Assert.Equal(2, first.RootElement.GetProperty("total").GetProperty("attempts").GetInt32());
+        Assert.Equal(1, second.RootElement.GetProperty("total").GetProperty("attempts").GetInt32());
+        Assert.Equal(6, everything.RootElement.GetProperty("total").GetProperty("attempts").GetInt32());
+
+        // The echoed query says what the total is a total OF, which is what makes a stored reading
+        // interpretable later.
+        Assert.Equal("1907", first.RootElement.GetProperty("query").GetProperty("pr").GetString());
+    }
+
     [Fact]
     public async Task Help_says_which_ledger_this_reads_and_which_instant_the_window_is_on()
     {
@@ -312,6 +345,80 @@ public sealed class LedgerViewCommandTests : IDisposable
         Assert.Contains("--since is INCLUSIVE, --until is EXCLUSIVE", help, StringComparison.Ordinal);
         Assert.Contains("quota-ledger.jsonl", help, StringComparison.Ordinal);
         Assert.Contains("never an invoice", help, StringComparison.Ordinal);
+
+        // #1913 review findings 5 and 6: what a correcting row costs a reading, and the option that
+        // removes it, are stated where an operator meets them rather than only in the spec.
+        Assert.Contains("--resolution", help, StringComparison.Ordinal);
+        Assert.Contains("'none' is execution attempts alone", help, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1913 review findings 5 and 6, over a two-row ledger of its own so the shared fixture's counts
+    /// stay what every other test here asserts: an intervention is LEGIBLE in the default human view,
+    /// and it is selectable in both directions.
+    /// <para>
+    /// The drill line is the failure this closes — <see cref="LedgerViewCommand"/>'s own comment on
+    /// the appended clause states it. The control is the assertion counted: exactly one of the two
+    /// rows is marked, so a clause printed unconditionally fails here.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_correcting_row_is_marked_in_the_drill_view_and_selectable_in_both_directions()
+    {
+        var ledgerPath = Path.Combine(Path.GetDirectoryName(_ledgerFilePath)!, "resolutions.jsonl");
+        var attempt = new CostLedgerEntry(
+            CostSourceKind.BatonExecution,
+            Repository: "github.com/aer-works/baton",
+            Room: _roomA,
+            Workflow: "wf1",
+            Step: "s1",
+            Execution: "r1",
+            Role: "implement",
+            Adapter: "claude",
+            Model: "claude-opus-5",
+            Outcome: "Succeeded",
+            EndedAt: Sep4.AddHours(10));
+        var correcting = CostLedgerStore.BuildResolutionRow(
+            [attempt], _roomA, ConductorResolution.Reject, "capture did not satisfy its outputs", Sep4.AddHours(11));
+        Assert.NotNull(correcting);
+        await CostLedgerStore.AppendAsync(
+            [attempt, correcting], ledgerPath, TestContext.Current.CancellationToken);
+
+        var text = await RunOverAsync(ledgerPath, "--format", "text", "--drill");
+        Assert.Contains("resolution=reject", text, StringComparison.Ordinal);
+        Assert.Equal(1, text.Split("resolution=").Length - 1);
+
+        static int Attempts(JsonDocument document) =>
+            document.RootElement.GetProperty("total").GetProperty("attempts").GetInt32();
+
+        using var everything = JsonDocument.Parse(await RunOverAsync(ledgerPath, "--format", "json"));
+        using var attemptsOnly = JsonDocument.Parse(
+            await RunOverAsync(ledgerPath, "--format", "json", "--drill", "--resolution", "none"));
+        using var interventions = JsonDocument.Parse(
+            await RunOverAsync(ledgerPath, "--format", "json", "--drill", "--resolution", "any"));
+
+        Assert.Equal(2, Attempts(everything));
+        Assert.Equal(1, Attempts(attemptsOnly));
+        Assert.Equal(1, Attempts(interventions));
+        Assert.Equal(
+            "r1",
+            attemptsOnly.RootElement.GetProperty("rows").EnumerateArray().Single().GetProperty("execution").GetString());
+
+        // The echoed query says which of the two readings this is -- a stored total that dropped the
+        // interventions must say it dropped them.
+        Assert.False(attemptsOnly.RootElement.GetProperty("query").GetProperty("hasResolution").GetBoolean());
+        Assert.True(interventions.RootElement.GetProperty("query").GetProperty("hasResolution").GetBoolean());
+        Assert.Contains("resolution=none", await RunOverAsync(ledgerPath, "--resolution", "none"), StringComparison.Ordinal);
+    }
+
+    private async Task<string> RunOverAsync(string ledgerFilePath, params string[] args)
+    {
+        var output = new StringWriter { NewLine = "\n" };
+        Assert.Equal(
+            0,
+            await LedgerViewCommand.ExecuteAsync(
+                LedgerViewOptionsParser.Parse(args), output, ledgerFilePath, TestContext.Current.CancellationToken));
+        return output.ToString();
     }
 
     private async Task<string> RunAsync(params string[] args)
@@ -355,11 +462,15 @@ public sealed class LedgerViewCommandTests : IDisposable
 
         CostLedgerEntry[] entries =
         [
-            claude,
-            claude with { Execution = "e2", Outcome = "Failed", EndedAt = Sep4.AddHours(11), TokensIn = 200 },
+            // #1901 C1: e1/e2 belong to one PR, e3 to another, and e4-e6 to none — so the --pr facet
+            // has something to be wrong about in both directions (a PR that over-matches, and rows with
+            // no PR being swept in).
+            claude with { PullRequest = "1907" },
+            claude with { Execution = "e2", Outcome = "Failed", EndedAt = Sep4.AddHours(11), TokensIn = 200, PullRequest = "1907" },
             claude with
             {
                 Execution = "e3",
+                PullRequest = "1908",
                 Room = _roomB,
                 Adapter = "agy",
                 Model = "gemini-3-pro",

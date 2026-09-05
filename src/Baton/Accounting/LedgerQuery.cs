@@ -36,6 +36,19 @@ namespace Baton.Accounting;
 /// that method throws on a malformed path and this type is pure comparison. Matched with
 /// <see cref="BatonPaths.RecordKeyComparer"/>, so a room view is exactly the fleet view filtered here.
 /// </param>
+/// <param name="HasResolution">
+/// <c>--resolution none|any</c>: the tri-state that makes correcting rows selectable
+/// (#1913 review finding 5). <see langword="null"/> is every row; <see langword="false"/> is
+/// execution attempts alone, which is the remedy spec/baton.md §7 prescribes for what a correcting
+/// row costs a rollup reading — <b>it prescribed it before any invocation could express it</b>, and
+/// this facet is what makes the prose an instrument. <see langword="true"/> is the interventions
+/// alone, the count the correcting row exists for.
+/// </param>
+/// <param name="Resolution">
+/// <c>--resolution accept-capture|reject|close</c>: one KIND of intervention. Implies presence, so
+/// it is never combined with <see cref="HasResolution"/> by the parser; both are ANDed here anyway,
+/// because a JSON <c>query</c> a consumer wrote by hand is not the parser's output.
+/// </param>
 /// <param name="Project">
 /// <c>--project</c>, matched against a row's <see cref="CostLedgerEntry.Repository"/> — the only
 /// field on a row that means "which project this work belongs to". <b>Degenerate today, deliberately
@@ -80,6 +93,12 @@ public sealed record LedgerQuery(
     [property: JsonPropertyName("sourceKind")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     CostSourceKind? SourceKind = null,
+    [property: JsonPropertyName("hasResolution")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? HasResolution = null,
+    [property: JsonPropertyName("resolution")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ConductorResolution? Resolution = null,
     [property: JsonPropertyName("undatedExcluded")]
     int UndatedExcluded = 0)
 {
@@ -97,6 +116,18 @@ public sealed record LedgerQuery(
         // room named on the command line in another casing (or with a trailing separator) is the SAME
         // room. Ordinal here would silently return an empty room view instead.
         if (Room is { Length: > 0 } room && !BatonPaths.RecordKeyComparer.Equals(entry.Room ?? string.Empty, room))
+        {
+            return false;
+        }
+
+        // Presence first, then kind: --resolution none is the only facet on this type that selects
+        // rows by a field being ABSENT, which is what makes "execution attempts alone" expressible.
+        if (HasResolution is { } hasResolution && (entry.Resolution is not null) != hasResolution)
+        {
+            return false;
+        }
+
+        if (Resolution is { } resolutionKind && entry.Resolution != resolutionKind)
         {
             return false;
         }
@@ -156,9 +187,11 @@ public sealed record LedgerQuery(
         filter is not { Length: > 0 } || string.Equals(filter, value, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// <c>#1849</c>, <c>1849</c> and <c>1849</c>-with-whitespace are one issue. The ledger's own
-    /// <c>issue</c>/<c>pr</c> fields are strings with no phase-A writer, so no spelling is settled yet
-    /// and both sides are normalized rather than one side being declared canonical.
+    /// <c>#1849</c>, <c>1849</c> and <c>1849</c>-with-whitespace are one issue. #1901 C1 gave the
+    /// ledger's <c>issue</c>/<c>pr</c> fields their first writer and settled the WRITER's spelling as
+    /// a bare decimal (<see cref="CostLedgerEntry.Issue"/>); both sides stay normalized here anyway,
+    /// because the OPERATOR's spelling is not settled and never will be — a person types <c>#1901</c>
+    /// as readily as <c>1901</c>, and phase C's importers are a second writer this has not met.
     /// </summary>
     private static string? NormalizeNumberReference(string? value) =>
         value is { Length: > 0 } ? value.Trim().TrimStart('#') : value;

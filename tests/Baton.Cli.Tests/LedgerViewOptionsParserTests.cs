@@ -112,6 +112,35 @@ public sealed class LedgerViewOptionsParserTests
         Assert.True(options.Drill);
     }
 
+    /// <summary>
+    /// #1913 review finding 5: <c>--resolution</c> is two facets behind one option — presence and
+    /// kind — and each spelling must land on the one it names. All four arms over the same option, so
+    /// a parser that set both fields (or the wrong one) fails on at least one.
+    /// </summary>
+    [Theory]
+    [InlineData("none", false, null)]
+    [InlineData("any", true, null)]
+    [InlineData("reject", null, ConductorResolution.Reject)]
+    [InlineData("accept-capture", null, ConductorResolution.AcceptCapture)]
+    public void The_resolution_option_lands_on_presence_or_on_kind_but_never_on_both(
+        string value, bool? expectedPresence, ConductorResolution? expectedKind)
+    {
+        var query = LedgerViewOptionsParser.Parse(["--resolution", value]).Query;
+
+        Assert.Equal(expectedPresence, query.HasResolution);
+        Assert.Equal(expectedKind, query.Resolution);
+    }
+
+    [Fact]
+    public void An_unknown_resolution_is_refused_with_the_values_that_are_known()
+    {
+        var refusal = Assert.Throws<CliArgumentException>(
+            () => LedgerViewOptionsParser.Parse(["--resolution", "accepted"]));
+
+        Assert.Contains("Unknown --resolution 'accepted'", refusal.Message, StringComparison.Ordinal);
+        Assert.Contains("none (execution attempts alone)", refusal.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("--vendor")]
     [InlineData("--since")]

@@ -28,10 +28,12 @@ internal static class VerdictInstrumentStamp
 {
     /// <summary>
     /// The review role's structured output (<c>WorkerRoles.json</c>) — the one file this type
-    /// annotates. Named here rather than derived from the role's output list because the annotation is
-    /// specific to the ReviewVerdict schema, not to "whatever the first output happens to be called".
+    /// annotates. Named rather than derived from the role's output list because the annotation is
+    /// specific to the ReviewVerdict schema, not to "whatever the first output happens to be called";
+    /// <b>referenced, not respelled</b> (#1913 review finding 7), so this type and the cost ledger's
+    /// own read of the same file cannot drift apart.
     /// </summary>
-    internal const string VerdictOutputName = "verdict.json";
+    internal const string VerdictOutputName = Baton.Accounting.CostLedgerStore.VerdictOutputName;
 
     /// <param name="verifyStep">Null when no verify step ran for this room.</param>
     internal static async Task ApplyAsync(

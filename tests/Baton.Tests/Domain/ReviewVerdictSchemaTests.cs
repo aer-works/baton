@@ -149,6 +149,11 @@ public class ReviewVerdictSchemaTests
     [InlineData("""{"reviewedRef": "  ", "findings": []}""", "reviewedRef")]
     [InlineData("""{"reviewedRef": "main", "findings": [null]}""", "findings[0]")]
     [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": " ", "status": "confirmed"}]}""", "claim")]
+    // #1913 review finding 4: absent, not misspelled. STJ binds a missing VALUE-type parameter to
+    // default(ReviewFindingSeverity), which is High, so this document used to parse as a confirmed
+    // high-severity finding nobody wrote -- and #1901's cost-ledger row counts it into a durable
+    // accounting field. Refused here, in the single reader, rather than papered over per consumer.
+    [InlineData("""{"reviewedRef": "main", "findings": [{"claim": "x", "status": "confirmed"}]}""", "severity")]
     [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x", "status": "confirmed", "anchor": {"file": "f", "line": 0}}]}""", "line")]
     [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x", "status": "confirmed", "anchor": {"line": 3}}]}""", "anchor.file")]
     public void Documents_below_the_semantic_floor_are_refused_with_a_reason_naming_the_field(
