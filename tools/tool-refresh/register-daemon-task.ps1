@@ -14,8 +14,8 @@ $ErrorActionPreference = "Stop"
 $taskName = "baton-daemon"
 $batonHome = if ($env:BATON_HOME) { $env:BATON_HOME } else { Join-Path $HOME ".baton" }
 
-# The action runs `baton daemon` through the launcher on PATH (`~/.dotnet/tools/baton.cmd`,
-# installed by `tools/tool-refresh/refresh.py`'s `install_launcher`) rather than a fixed exe path,
+# The action runs `baton daemon` through the launcher on PATH (a bare `baton` in PowerShell resolves to
+# `~/.dotnet/tools/baton.ps1`, installed by `tools/tool-refresh/refresh.py`'s `install_launcher`) rather than a fixed exe path,
 # so every restart re-resolves `~/.baton/tools/current` and picks up whatever tool-refresh most
 # recently flipped the pointer to. `baton daemon` itself only logs via the default console
 # provider (`DaemonHost.cs` builds a plain `Host.CreateApplicationBuilder`, no file sink) -- run
