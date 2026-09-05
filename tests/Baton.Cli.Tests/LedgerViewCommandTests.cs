@@ -571,6 +571,10 @@ public sealed class LedgerViewCommandTests : IDisposable
                 ["pr", "list", "--head", "1902-live", "--state", "all", "--json", "number", "--limit", "1"],
                 Assert.Single(gh.Calls));
             Assert.Contains(git.Calls, args => args.SequenceEqual(
+                ["symbolic-ref", "--short", "HEAD"]));
+            Assert.DoesNotContain(git.Calls, args => args.SequenceEqual(
+                ["rev-parse", "--abbrev-ref", "HEAD"]));
+            Assert.Contains(git.Calls, args => args.SequenceEqual(
                 ["diff", "--numstat", "origin/main...HEAD"]));
             Assert.DoesNotContain(
                 git.Calls,
@@ -780,7 +784,7 @@ public sealed class LedgerViewCommandTests : IDisposable
             };
             var stdout = command switch
             {
-                "rev-parse --abbrev-ref HEAD" => BranchOutput,
+                "symbolic-ref --short HEAD" => BranchOutput,
                 _ when command.StartsWith(
                     "diff --numstat origin/main...",
                     StringComparison.Ordinal) => NumStatOutput,

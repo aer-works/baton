@@ -21,7 +21,10 @@ internal interface ILedgerGitRunner
         string workingDirectory, IReadOnlyList<string> args, CancellationToken cancellationToken);
 }
 
-/// <summary>Production local-git runner for settle metadata; no invocation here contacts a remote.</summary>
+/// <summary>
+/// This fourth process seam is warranted because settlement needs arbitrary, injectable exit/output
+/// probes while <see cref="WorkspaceHead"/> deliberately exposes one throwing SHA capture.
+/// </summary>
 internal sealed class LedgerGitRunner : ILedgerGitRunner
 {
     public async Task<LedgerGitResult> RunAsync(
@@ -245,7 +248,7 @@ internal static partial class CostLedgerSettlementMetadata
         {
             var result = await TryRunGitAsync(
                 workingDirectory,
-                ["rev-parse", "--abbrev-ref", "HEAD"],
+                ["symbolic-ref", "--short", "HEAD"],
                 gitRunner,
                 cancellationToken,
                 spawnTimeout ?? DefaultSpawnTimeout).ConfigureAwait(false);
