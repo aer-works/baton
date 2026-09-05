@@ -4,6 +4,7 @@ using Baton.Artifacts;
 using Baton.Dispatch;
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Outcomes;
 using Baton.Projection;
 using Baton.Store;
 using Baton.Tests.TestSupport;
@@ -269,19 +270,21 @@ public class PumpCheckpointCarryTests
                         artifactsRoot, reader, writer, stub,
                         timeProvider: new FakeTimeProvider(new DateTimeOffset(2026, 8, 4, 12, 0, 0, TimeSpan.Zero)),
                         jitterSource: () => 0.0,
-                        cancellationToken: TestContext.Current.CancellationToken)
+                        cancellationToken: TestContext.Current.CancellationToken,
+                        workerLivenessProbe: _ => new EngineLivenessResult(EngineLivenessStatus.Dead))
                     .WaitAsync(PumpCompletionTimeout, TestContext.Current.CancellationToken);
             }
 
             // Y classified from its recorded exit (failed: exit 0 but the declared output is
-            // missing); Z abandoned a round later off the fold-carried started set. Neither ever
-            // reached the dispatcher, and no third attempt exists.
+            // missing); Z has no retry budget and its fake dead PID produces the concrete terminal
+            // fact on the next round. Neither ever reached the dispatcher, and no third attempt exists.
             Assert.Equal(StepStatus.Failed, finalState.Steps.Single(s => s.StepId == stepY).Status);
             Assert.Equal(StepStatus.Failed, finalState.Steps.Single(s => s.StepId == stepZ).Status);
             var events = await new FlowEventLogReader(logPath).ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.Equal(2, events.OfType<FlowEvent.ExecutionRequestAccepted>().Count());
             var abandoned = events.OfType<FlowEvent.ExecutionFailed>().Single(e => e.ExecutionId == execZ);
-            Assert.Contains("crash recovery", abandoned.Reason, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(FailureClassification.Permanent, abandoned.FailureClassification);
+            Assert.Equal("Worker PID 4243 is no longer alive and no ExecutionExited was recorded.", abandoned.Reason);
             Assert.False(stub.DispatchStarted.TryRead(out _), "the orphan was re-dispatched instead of abandoned");
         }
         finally
