@@ -502,7 +502,11 @@ public static class CostLedgerStore
     /// append-only history remains auditable, while <see cref="ReadAllAsync"/> folds repeated execution
     /// ids last-write-wins so accounting views still count the attempt once.
     /// </summary>
-    /// <returns><see langword="true"/> when a matching row was found and corrected; otherwise false.</returns>
+    /// <returns>
+    /// <see langword="true"/> when a matching execution row was found and corrected; otherwise false.
+    /// Rows without an execution id are not eligible because <see cref="ReadAllAsync"/> folds corrections
+    /// by execution id, and appending a room-keyed correction it cannot fold would double-count the row.
+    /// </returns>
     public static Task<bool> AppendResolutionAsync(
         string roomDirectoryPath,
         string resolution,
@@ -524,7 +528,8 @@ public static class CostLedgerStore
             () =>
             {
                 var last = Ledger.ReadAllUnlocked(ledgerFilePath)
-                    .LastOrDefault(row => row.Room is not null
+                    .LastOrDefault(row => row.Execution is { Length: > 0 }
+                        && row.Room is not null
                         && BatonPaths.RecordKeyComparer.Equals(row.Room, recordedRoom));
                 if (last is null)
                 {

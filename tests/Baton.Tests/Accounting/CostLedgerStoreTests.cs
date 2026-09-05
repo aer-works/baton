@@ -1313,4 +1313,39 @@ public sealed class CostLedgerStoreTests
         }
     }
 
+    [Fact]
+    public async Task A_room_row_without_an_execution_id_is_not_corrected_or_folded()
+    {
+        var room = NewRoom();
+        var ledgerPath = NewLedgerPath();
+        try
+        {
+            var roomOnly = new CostLedgerEntry(
+                CostSourceKind.BatonExecution,
+                Room: BatonPaths.RecordKey(room),
+                TokensIn: 7);
+            await CostLedgerStore.AppendAsync([roomOnly], ledgerPath, TestContext.Current.CancellationToken);
+
+            Assert.False(await CostLedgerStore.AppendResolutionAsync(
+                room,
+                "close",
+                "administrative close",
+                ledgerPath,
+                TestContext.Current.CancellationToken));
+
+            Assert.Single(await File.ReadAllLinesAsync(ledgerPath, TestContext.Current.CancellationToken));
+            var logical = Assert.Single(await CostLedgerStore.ReadAllAsync(
+                ledgerPath,
+                TestContext.Current.CancellationToken));
+            Assert.Null(logical.Execution);
+            Assert.Null(logical.Resolution);
+            Assert.Equal(7, logical.TokensIn);
+        }
+        finally
+        {
+            FileCleanup.Delete(ledgerPath);
+            DirectoryCleanup.DeleteRecursively(room);
+        }
+    }
+
 }
