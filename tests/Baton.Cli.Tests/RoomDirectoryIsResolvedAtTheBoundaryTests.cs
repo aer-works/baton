@@ -58,6 +58,10 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
             DeliverOptionsParser.Parse(["file.md", "--room", Relative]).RoomDirectoryPath,
         // WatchOptions.RoomDirectoryPath is nullable (null for --list/--clear-fired), but the
         // Register shape driven here always resolves it -- see WatchOptionsParser.
+        // LedgerViewOptions.RoomDirectoryPath is nullable too (null is the fleet view), and the
+        // positional room-dir shape driven here always resolves it -- see LedgerViewOptionsParser.
+        [typeof(LedgerViewOptionsParser)] = () =>
+            LedgerViewOptionsParser.Parse([Relative]).RoomDirectoryPath!,
         [typeof(WatchOptionsParser)] = () =>
             WatchOptionsParser.Parse([Relative, "--notify", "echo hi"]).RoomDirectoryPath!,
     };

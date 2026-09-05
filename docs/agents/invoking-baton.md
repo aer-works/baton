@@ -333,6 +333,26 @@ baton deliver <file> [--title <text>] [--room <room-dir>]
 
 `--room-dir` is also accepted as an alias for `--room`. This copies the file into `<room>/artifacts/conductor/` under a filename unique to the source path (recorded as `artifact_file` in the manifest, defaulting the room to `~/.baton/rooms/conductor/`) and records it in `manifest.jsonl`, which `pusher.py` forwards to the inbox with a `CONDUCTOR` chip. Re-delivering the same source path updates the file and replaces the existing inbox item in place.
 
+**What a room cost (`baton ledger`).** After a room settles, its per-attempt accounting rows are
+readable without opening any file:
+
+```
+baton ledger [<room-dir>] [--since <instant>] [--until <instant>] [--vendor <name>] [--model <id>]
+             [--role <name>] [--outcome <token>] [--workflow <id>] [--pr <n>] [--issue <n>]
+             [--source-kind <kind>] [--format text|json|csv] [--drill]
+```
+
+With a `<room-dir>` you get that room's attempts and its total; without one, the whole repository's.
+`--format json` is the machine contract — one object `{query, vendors, total, rows?}`, whose field
+names are the ledger record's own (`spec/baton.md` §7 has the schema; `rows` is present only with
+`--drill`). The window filters on each attempt's `endedAt`, `--since` inclusive and `--until`
+exclusive, and an attempt with no recorded `endedAt` is excluded and counted as `undatedExcluded`
+rather than assumed into the window. Every dollar figure is a labelled **estimate** — never an
+invoice, subscription spend, or a quota reading — and an attempt whose cost could not be estimated is
+still counted as an attempt and reported as unpriced, never as `0`. Pass `--help` for the rest —
+including the warning about this verb's `--rebuild` form, which maintains an entirely separate file
+(`spec/baton.md` §7's burn ledger) and leaves these rows alone.
+
 ---
 
 ## 4. Adapter notes

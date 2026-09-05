@@ -175,6 +175,23 @@ public sealed record RepositoryIdentity
     /// digest of the WHOLE value. The digest is what guarantees injectivity: <c>github.com/a/b</c> and
     /// <c>github.com/a:b</c> sanitize to the same prefix and must not share a ledger file.
     /// </summary>
+    /// <summary>
+    /// The filename stem a given canonical <see cref="Value"/> is stored under — the same derivation
+    /// <see cref="FileSlug"/> uses, exposed for the one caller that has an identity STRING and no
+    /// repository to probe: <c>baton ledger --repo-identity &lt;key&gt;</c>, naming a repository other
+    /// than the one the operator is standing in.
+    /// <para>
+    /// <b>Deliberately a function, not a second constructor.</b> <see cref="From"/> stays the only way
+    /// to make a <see cref="RepositoryIdentity"/>, so nothing can fabricate a half-parsed identity into
+    /// a row's <c>repository</c> field; this only ever computes a path to READ.
+    /// </para>
+    /// </summary>
+    public static string FileSlugFor(string canonicalValue)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(canonicalValue);
+        return BuildFileSlug(canonicalValue);
+    }
+
     private static string BuildFileSlug(string value)
     {
         var builder = new StringBuilder(value.Length);
