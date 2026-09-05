@@ -442,6 +442,34 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Equal("1901", withoutPr["exec-implement"].Issue);
             Assert.Null(withoutPr["exec-implement"].PullRequest);
             Assert.Null(withoutPr["exec-review"].PullRequest);
+
+            var neverGit = await CostLedgerSettlementMetadata.BuildAsync(
+                    entries,
+                    room,
+                    ledgerPath,
+                    gh,
+                    new NeverCompletingLedgerGitRunner(),
+                    TestContext.Current.CancellationToken,
+                    spawnTimeout: TimeSpan.FromMilliseconds(20))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, neverGit.Count);
+            Assert.Null(neverGit["exec-implement"].FilesChanged);
+            Assert.Null(neverGit["exec-implement"].Additions);
+            Assert.Null(neverGit["exec-implement"].Deletions);
+            Assert.Null(neverGit["exec-implement"].TestFilesChanged);
+
+            var neverGh = await CostLedgerSettlementMetadata.BuildAsync(
+                    entries,
+                    room,
+                    ledgerPath,
+                    new NeverCompletingGhRunner(),
+                    git,
+                    TestContext.Current.CancellationToken,
+                    spawnTimeout: TimeSpan.FromMilliseconds(20))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, neverGh.Count);
+            Assert.Null(neverGh["exec-implement"].PullRequest);
+            Assert.Null(neverGh["exec-review"].PullRequest);
         }
         finally
         {
@@ -597,6 +625,24 @@ public sealed class LedgerViewCommandTests : IDisposable
             };
             return Task.FromResult(new LedgerGitResult(true, 0, stdout, string.Empty));
         }
+    }
+
+    private sealed class NeverCompletingLedgerGitRunner : ILedgerGitRunner
+    {
+        public Task<LedgerGitResult> RunAsync(
+            string workingDirectory,
+            IReadOnlyList<string> args,
+            CancellationToken cancellationToken) =>
+            new TaskCompletionSource<LedgerGitResult>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+    }
+
+    private sealed class NeverCompletingGhRunner : IGhCliRunner
+    {
+        public Task<GhCliResult> RunAsync(
+            string workingDirectory,
+            IReadOnlyList<string> args,
+            CancellationToken cancellationToken) =>
+            new TaskCompletionSource<GhCliResult>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
     }
 
 }

@@ -63,10 +63,31 @@ public sealed class GhCliRunner : IGhCliRunner
         {
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                throw;
+            }
+
             var stdout = await stdoutTask.ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
             return new GhCliResult(Started: true, process.ExitCode, stdout, stderr);
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)
+        {
+            // The process exited between cancellation and the kill, or the host cannot kill a tree.
         }
     }
 }

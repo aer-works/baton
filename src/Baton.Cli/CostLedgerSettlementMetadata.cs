@@ -57,12 +57,33 @@ internal sealed class LedgerGitRunner : ILedgerGitRunner
         {
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                throw;
+            }
+
             return new LedgerGitResult(
                 true,
                 process.ExitCode,
                 await stdoutTask.ConfigureAwait(false),
                 await stderrTask.ConfigureAwait(false));
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or Win32Exception)
+        {
+            // The process exited between cancellation and the kill, or the host cannot kill a tree.
         }
     }
 }
@@ -75,6 +96,8 @@ internal sealed class LedgerGitRunner : ILedgerGitRunner
 /// </summary>
 internal static partial class CostLedgerSettlementMetadata
 {
+    private static readonly TimeSpan DefaultSpawnTimeout = TimeSpan.FromSeconds(20);
+
     private sealed record BranchFacts(string? Issue, string? PullRequest);
     private sealed record RepositoryProbe(string WorkingDirectory, bool UsesRemoteBranchHead);
 
@@ -85,13 +108,19 @@ internal static partial class CostLedgerSettlementMetadata
         string ledgerFilePath,
         IGhCliRunner ghRunner,
         ILedgerGitRunner? gitRunner = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? spawnTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentException.ThrowIfNullOrEmpty(ledgerFilePath);
         ArgumentNullException.ThrowIfNull(ghRunner);
         gitRunner ??= new LedgerGitRunner();
+        var effectiveSpawnTimeout = spawnTimeout ?? DefaultSpawnTimeout;
+        if (effectiveSpawnTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(spawnTimeout), "The per-spawn timeout must be positive.");
+        }
 
         var bindings = await TryReadBindingsAsync(roomDirectoryPath, cancellationToken).ConfigureAwait(false);
         var priorRows = await CostLedgerStore.ReadAllAsync(ledgerFilePath, cancellationToken).ConfigureAwait(false);
@@ -127,7 +156,7 @@ internal static partial class CostLedgerSettlementMetadata
             var repositoryProbe = ResolveRepositoryProbe(binding);
             var workingDirectory = repositoryProbe?.WorkingDirectory;
             var branch = binding?.WorkspaceBranch
-                ?? await TryReadBranchAsync(workingDirectory, gitRunner, cancellationToken).ConfigureAwait(false);
+                ?? await TryReadBranchAsync(workingDirectory, gitRunner, cancellationToken, effectiveSpawnTimeout).ConfigureAwait(false);
 
             BranchFacts? branchFacts = null;
             if (branch is { Length: > 0 })
@@ -136,7 +165,7 @@ internal static partial class CostLedgerSettlementMetadata
                 {
                     branchFacts = new BranchFacts(
                         IssueFromBranch(branch),
-                        await TryFindPullRequestAsync(ghRunner, workingDirectory, branch, cancellationToken)
+                        await TryFindPullRequestAsync(ghRunner, workingDirectory, branch, cancellationToken, effectiveSpawnTimeout)
                             .ConfigureAwait(false));
                     branchFactsByBranch[branch] = branchFacts;
                 }
@@ -159,7 +188,8 @@ internal static partial class CostLedgerSettlementMetadata
                     branch,
                     repositoryProbe?.UsesRemoteBranchHead == true,
                     gitRunner,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    effectiveSpawnTimeout).ConfigureAwait(false);
             }
 
             result[executionId] = new CostLedgerExecutionMetadata(
@@ -195,13 +225,20 @@ internal static partial class CostLedgerSettlementMetadata
     /// </summary>
     public static Task<string?> TryReadBranchAsync(
         string? workingDirectory, CancellationToken cancellationToken = default) =>
-        TryReadBranchAsync(workingDirectory, new LedgerGitRunner(), cancellationToken);
+        TryReadBranchAsync(workingDirectory, new LedgerGitRunner(), cancellationToken, DefaultSpawnTimeout);
 
     internal static async Task<string?> TryReadBranchAsync(
-        string? workingDirectory, ILedgerGitRunner gitRunner, CancellationToken cancellationToken = default)
+        string? workingDirectory,
+        ILedgerGitRunner gitRunner,
+        CancellationToken cancellationToken = default,
+        TimeSpan? spawnTimeout = null)
     {
         var result = await TryRunGitAsync(
-            workingDirectory, ["rev-parse", "--abbrev-ref", "HEAD"], gitRunner, cancellationToken).ConfigureAwait(false);
+            workingDirectory,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            gitRunner,
+            cancellationToken,
+            spawnTimeout ?? DefaultSpawnTimeout).ConfigureAwait(false);
         if (result is not { ExitCode: 0 } || string.IsNullOrWhiteSpace(result.Value.Output))
         {
             return null;
@@ -254,7 +291,8 @@ internal static partial class CostLedgerSettlementMetadata
         IGhCliRunner ghRunner,
         string? workingDirectory,
         string branch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan spawnTimeout)
     {
         if (workingDirectory is null)
         {
@@ -264,10 +302,14 @@ internal static partial class CostLedgerSettlementMetadata
         GhCliResult result;
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(spawnTimeout);
             result = await ghRunner.RunAsync(
-                workingDirectory,
-                ["pr", "list", "--head", branch, "--state", "all", "--json", "number", "--limit", "1"],
-                cancellationToken).ConfigureAwait(false);
+                    workingDirectory,
+                    ["pr", "list", "--head", branch, "--state", "all", "--json", "number", "--limit", "1"],
+                    timeout.Token)
+                .WaitAsync(timeout.Token)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
         {
@@ -303,19 +345,20 @@ internal static partial class CostLedgerSettlementMetadata
         string branch,
         bool usesRemoteBranchHead,
         ILedgerGitRunner gitRunner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan spawnTimeout)
     {
         var remoteBranch = $"refs/remotes/origin/{branch}";
         var diffHead = usesRemoteBranchHead ? $"origin/{branch}" : "HEAD";
         var remote = await TryRunGitAsync(
-            workingDirectory, ["rev-parse", "--verify", remoteBranch], gitRunner, cancellationToken).ConfigureAwait(false);
+            workingDirectory, ["rev-parse", "--verify", remoteBranch], gitRunner, cancellationToken, spawnTimeout).ConfigureAwait(false);
         if (remote is not { ExitCode: 0 })
         {
             return null;
         }
 
         var pushed = await TryRunGitAsync(
-            workingDirectory, ["merge-base", "--is-ancestor", diffHead, remoteBranch], gitRunner, cancellationToken)
+            workingDirectory, ["merge-base", "--is-ancestor", diffHead, remoteBranch], gitRunner, cancellationToken, spawnTimeout)
             .ConfigureAwait(false);
         if (pushed is not { ExitCode: 0 })
         {
@@ -323,7 +366,7 @@ internal static partial class CostLedgerSettlementMetadata
         }
 
         var numStat = await TryRunGitAsync(
-            workingDirectory, ["diff", "--numstat", $"origin/main...{diffHead}"], gitRunner, cancellationToken)
+            workingDirectory, ["diff", "--numstat", $"origin/main...{diffHead}"], gitRunner, cancellationToken, spawnTimeout)
             .ConfigureAwait(false);
         return numStat is { ExitCode: 0 }
             ? TryParseNumStat(numStat.Value.Output)
@@ -389,7 +432,8 @@ internal static partial class CostLedgerSettlementMetadata
         string? workingDirectory,
         IReadOnlyList<string> args,
         ILedgerGitRunner gitRunner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan spawnTimeout)
     {
         if (workingDirectory is null)
         {
@@ -398,7 +442,11 @@ internal static partial class CostLedgerSettlementMetadata
 
         try
         {
-            var result = await gitRunner.RunAsync(workingDirectory, args, cancellationToken).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(spawnTimeout);
+            var result = await gitRunner.RunAsync(workingDirectory, args, timeout.Token)
+                .WaitAsync(timeout.Token)
+                .ConfigureAwait(false);
             return result.Started ? (result.ExitCode, result.Stdout) : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
