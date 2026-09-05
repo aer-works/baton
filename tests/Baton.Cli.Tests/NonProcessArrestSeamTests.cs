@@ -28,9 +28,8 @@ public class NonProcessArrestSeamTests
     // (that determinism seam is Baton.Tests-internal), and a real sibling dispatch is exactly the
     // "something else keeps the pump alive" shape this seam needs: a lone non-process step with
     // nothing else in flight makes the pump return immediately, with no wait for a mark to wake.
-    private static CoreDispatchTarget Sleep(TimeSpan duration) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"ping -n {(int)duration.TotalSeconds + 1} 127.0.0.1 >nul"])
-        : new CoreDispatchTarget("sh", ["-c", $"sleep {duration.TotalSeconds}"]);
+    private static CoreDispatchTarget Sleep(TimeSpan duration) =>
+        new("cmd", ["/c", $"ping -n {(int)duration.TotalSeconds + 1} 127.0.0.1 >nul"]);
 
     [Fact]
     public async Task A_running_non_process_step_arrested_via_the_cancel_request_file_settles_without_waiting_for_a_sibling_process_dispatch()

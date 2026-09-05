@@ -308,9 +308,7 @@ public class WorktreeProvisioningCommandTests : IDisposable
             await SetupGitRepositoryAsync(repository, "notes.txt", "unused", "review-target");
 
             var workflowFilePath = await WriteSingleStepWorkflowAsync(testRoot);
-            var firstCommand = OperatingSystem.IsWindows()
-                ? "echo marker-from-first-run>marker.txt & echo out_b>%BATON_OUTPUT_DIR%\\output_b"
-                : "echo marker-from-first-run > marker.txt && echo out_b > \"$BATON_OUTPUT_DIR/output_b\"";
+            const string firstCommand = "echo marker-from-first-run>marker.txt & echo out_b>%BATON_OUTPUT_DIR%\\output_b";
             var bindingsFilePath = await WriteWorktreeResumeBindingsAsync(
                 testRoot, repository, "review-target", sessionId: "sess-resume-wt", command: firstCommand);
 
@@ -324,9 +322,7 @@ public class WorktreeProvisioningCommandTests : IDisposable
 
             var firstExecutionId = runResult.State.Steps.Single().LatestExecutionId!.Value;
 
-            var resumeCommand = OperatingSystem.IsWindows()
-                ? "type marker.txt>%BATON_OUTPUT_DIR%\\output_b"
-                : "cat marker.txt > \"$BATON_OUTPUT_DIR/output_b\"";
+            const string resumeCommand = "type marker.txt>%BATON_OUTPUT_DIR%\\output_b";
             var resumeOptions = new ResumeOptions(roomDirectory, "b", resumeCommand, null, bindingsFilePath);
             var resumeResult = await ResumeCommand.ExecuteAsync(resumeOptions, Adapters, TestContext.Current.CancellationToken);
 
@@ -360,9 +356,7 @@ public class WorktreeProvisioningCommandTests : IDisposable
             await SetupGitRepositoryAsync(repository, "notes.txt", "from-worktree-repo", "review-target");
 
             var workflowFilePath = await WriteSingleStepWorkflowAsync(testRoot);
-            var cleanCommand = OperatingSystem.IsWindows()
-                ? "type notes.txt>%BATON_OUTPUT_DIR%\\output_b"
-                : "cat notes.txt > \"$BATON_OUTPUT_DIR/output_b\"";
+            const string cleanCommand = "type notes.txt>%BATON_OUTPUT_DIR%\\output_b";
             var bindingsFilePath = await WriteWorktreeResumeBindingsAsync(
                 testRoot, repository, "review-target", sessionId: "sess-resume-gone", command: cleanCommand);
 
@@ -470,9 +464,7 @@ public class WorktreeProvisioningCommandTests : IDisposable
     private static async Task<string> WriteWorktreeBindingsAsyncForSingleStep(string directory, string repository, string reference)
     {
         Directory.CreateDirectory(directory);
-        var commandB = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output_b"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output_b\"";
+        const string commandB = "type notes.txt>%BATON_OUTPUT_DIR%\\output_b";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
@@ -490,12 +482,8 @@ public class WorktreeProvisioningCommandTests : IDisposable
     private static async Task<string> WriteWorktreeBindingsAsync(string directory, string repository, string reference)
     {
         Directory.CreateDirectory(directory);
-        var commandA = OperatingSystem.IsWindows()
-            ? "echo out_a>%BATON_OUTPUT_DIR%\\output_a"
-            : "echo out_a > \"$BATON_OUTPUT_DIR/output_a\"";
-        var commandB = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output_b"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output_b\"";
+        const string commandA = "echo out_a>%BATON_OUTPUT_DIR%\\output_a";
+        const string commandB = "type notes.txt>%BATON_OUTPUT_DIR%\\output_b";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
@@ -516,15 +504,9 @@ public class WorktreeProvisioningCommandTests : IDisposable
     private static async Task<string> WriteWorktreeBindingsAsyncForTwoGate(string directory, string repository, string reference)
     {
         Directory.CreateDirectory(directory);
-        var commandA = OperatingSystem.IsWindows()
-            ? "echo out_a>%BATON_OUTPUT_DIR%\\output_a"
-            : "echo out_a > \"$BATON_OUTPUT_DIR/output_a\"";
-        var commandB = OperatingSystem.IsWindows()
-            ? "echo out_b>%BATON_OUTPUT_DIR%\\output_b"
-            : "echo out_b > \"$BATON_OUTPUT_DIR/output_b\"";
-        var commandC = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output_c"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output_c\"";
+        const string commandA = "echo out_a>%BATON_OUTPUT_DIR%\\output_a";
+        const string commandB = "echo out_b>%BATON_OUTPUT_DIR%\\output_b";
+        const string commandC = "type notes.txt>%BATON_OUTPUT_DIR%\\output_c";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
@@ -548,12 +530,8 @@ public class WorktreeProvisioningCommandTests : IDisposable
     private static async Task<string> WritePlainBindingsAsync(string directory)
     {
         Directory.CreateDirectory(directory);
-        var commandA = OperatingSystem.IsWindows()
-            ? "echo out_a>%BATON_OUTPUT_DIR%\\output_a"
-            : "echo out_a > \"$BATON_OUTPUT_DIR/output_a\"";
-        var commandB = OperatingSystem.IsWindows()
-            ? "echo out_b>%BATON_OUTPUT_DIR%\\output_b"
-            : "echo out_b > \"$BATON_OUTPUT_DIR/output_b\"";
+        const string commandA = "echo out_a>%BATON_OUTPUT_DIR%\\output_a";
+        const string commandB = "echo out_b>%BATON_OUTPUT_DIR%\\output_b";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
@@ -591,10 +569,8 @@ public class WorktreeProvisioningCommandTests : IDisposable
     private static async Task<string> WriteFailingWorktreeBindingsAsync(string directory, string repository, string reference)
     {
         Directory.CreateDirectory(directory);
-        var commandA = OperatingSystem.IsWindows() ? "cmd /c exit 1" : "exit 1";
-        var commandB = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output_b"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output_b\"";
+        const string commandA = "cmd /c exit 1";
+        const string commandB = "type notes.txt>%BATON_OUTPUT_DIR%\\output_b";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {

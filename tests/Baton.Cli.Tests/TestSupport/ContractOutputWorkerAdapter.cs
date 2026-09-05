@@ -38,14 +38,10 @@ internal sealed class ContractOutputWorkerAdapter(
     public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract)
     {
         var script = satisfyOutputs && contract.ProducedOutputs.Count > 0
-            ? string.Join(
-                OperatingSystem.IsWindows() ? " & " : " && ",
-                contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
+            ? string.Join(" & ", contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
             : $"exit {failureExitCode}";
 
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)
-            : new CoreDispatchTarget("sh", ["-c", script], invocation.WorkingDirectory);
+        return new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory);
     }
 
     private string WriteCommand(string outputName)
@@ -57,13 +53,9 @@ internal sealed class ContractOutputWorkerAdapter(
             // collide and cmd reports a bogus path. The
             // rest of this fake already assumes space-free temp paths (its echo redirects are unquoted
             // too), so this keeps the same assumption rather than adding a new one.
-            return OperatingSystem.IsWindows()
-                ? $"copy /y {source} %BATON_OUTPUT_DIR%\\{outputName}"
-                : $"cp \"{source}\" \"$BATON_OUTPUT_DIR/{outputName}\"";
+            return $"copy /y {source} %BATON_OUTPUT_DIR%\\{outputName}";
         }
 
-        return OperatingSystem.IsWindows()
-            ? $"echo x>%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"echo x > \"$BATON_OUTPUT_DIR/{outputName}\"";
+        return $"echo x>%BATON_OUTPUT_DIR%\\{outputName}";
     }
 }

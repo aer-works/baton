@@ -117,7 +117,6 @@ public class FlowEventLogWriterTests
     [Fact]
     public void Constructing_over_a_journal_already_held_open_by_another_writer_throws_FlowJournalHeldException_not_a_raw_IOException()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; on Unix the second open succeeds (see FlowJournalHeldException docs)");
         // #816: a live 'baton run' engine holds flow.jsonl open (FileAccess.Write, FileShare.Read)
         // for its whole pump duration, so a second command opening the same path the same way
         // must get the typed refusal, not the raw sharing-violation IOException that used to

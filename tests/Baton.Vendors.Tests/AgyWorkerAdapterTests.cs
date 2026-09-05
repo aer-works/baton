@@ -31,7 +31,7 @@ public class AgyWorkerAdapterTests
         Assert.Equal("accept-edits", target.Args[3]);
         Assert.Equal("--add-dir", target.Args[4]);
 
-        var artifactsRootVar = OperatingSystem.IsWindows() ? "%BATON_ARTIFACTS_ROOT%" : "$BATON_ARTIFACTS_ROOT";
+        const string artifactsRootVar = "%BATON_ARTIFACTS_ROOT%";
         Assert.Equal(artifactsRootVar, target.Args[5]);
     }
 
@@ -180,7 +180,7 @@ public class AgyWorkerAdapterTests
 
         // Composes with the artifacts root rather than replacing it — --add-dir is repeatable on agy,
         // and the worker needs both its outputs and the project it is reasoning about.
-        var artifactsRootVar = OperatingSystem.IsWindows() ? "%BATON_ARTIFACTS_ROOT%" : "$BATON_ARTIFACTS_ROOT";
+        const string artifactsRootVar = "%BATON_ARTIFACTS_ROOT%";
         Assert.Contains(artifactsRootVar, addDirValues);
     }
 
@@ -211,7 +211,7 @@ public class AgyWorkerAdapterTests
             .Select(pair => target.Args[pair.i + 1])
             .ToList();
 
-        var artifactsRootVar = OperatingSystem.IsWindows() ? "%BATON_ARTIFACTS_ROOT%" : "$BATON_ARTIFACTS_ROOT";
+        const string artifactsRootVar = "%BATON_ARTIFACTS_ROOT%";
 
         Assert.Equal(2, addDirValues.Count);
         Assert.Equal(artifactsRootVar, addDirValues[0]);
@@ -416,8 +416,8 @@ public class AgyWorkerAdapterTests
         var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), contract);
 
         var prompt = GetPrompt(target);
-        var outputVar = OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
-        var separator = OperatingSystem.IsWindows() ? '\\' : '/';
+        const string outputVar = "%BATON_OUTPUT_DIR%";
+        const char separator = '\\';
         Assert.Contains($"plan.md: {outputVar}{separator}plan.md", prompt);
         Assert.Contains($"summary.md: {outputVar}{separator}summary.md", prompt);
     }
@@ -431,8 +431,8 @@ public class AgyWorkerAdapterTests
         var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Review the plan."), contract);
 
         var prompt = GetPrompt(target);
-        var inputVar0 = OperatingSystem.IsWindows() ? "%BATON_INPUT_0%" : "$BATON_INPUT_0";
-        var inputVar1 = OperatingSystem.IsWindows() ? "%BATON_INPUT_1%" : "$BATON_INPUT_1";
+        const string inputVar0 = "%BATON_INPUT_0%";
+        const string inputVar1 = "%BATON_INPUT_1%";
         Assert.Contains($"plan: {inputVar0}", prompt);
         Assert.Contains($"guidelines: {inputVar1}", prompt);
     }
@@ -1220,28 +1220,15 @@ public class AgyWorkerAdapterTests
     // that the code does what it says there.
 
     [Fact]
-    public void The_hook_token_is_the_bare_forward_slash_path_when_it_is_clean_on_windows()
+    public void The_hook_token_is_the_bare_forward_slash_path_when_it_is_clean()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "the bare-token rule is cmd's, not sh's");
-
         Assert.Equal("C:/plain/Baton.Cli.dll",
             AgyWorkerAdapter.HookAssemblyToken(@"C:\plain\Baton.Cli.dll"));
     }
 
     [Fact]
-    public void The_hook_token_is_single_quoted_on_unix()
-    {
-        Assert.SkipWhen(OperatingSystem.IsWindows(), "sh strips single quotes; cmd does not");
-
-        Assert.Equal("'/opt/baton flow/Baton.Cli.dll'",
-            AgyWorkerAdapter.HookAssemblyToken("/opt/baton flow/Baton.Cli.dll"));
-    }
-
-    [Fact]
     public void A_spaced_windows_directory_yields_a_clean_token_for_the_same_file()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "the 8.3 detour is a Windows mechanism");
-
         var (directory, assemblyPath) = TempHookAssemblyUnder("baton flow probe-");
         try
         {
@@ -1273,8 +1260,6 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void An_ampersand_directory_is_never_emitted_as_a_token_cmd_would_split()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "`&` is an operator to cmd, not to sh");
-
         // `&` is legal in an 8.3 name, so unlike a space the short form may keep it -- Windows
         // preserves it when it falls inside the retained prefix and drops it with the truncated
         // tail otherwise. Both outcomes honour the contract; what the contract forbids is the
@@ -1319,8 +1304,6 @@ public class AgyWorkerAdapterTests
     [Fact]
     public void A_spaced_path_with_no_directory_to_shorten_is_refused_loudly()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "on sh the quotes make the same input fine");
-
         // No directory component, so the 8.3 remedy has nothing to shorten -- the contract is a
         // loud refusal, never a command that is emitted and then silently reads as an allow.
         var refusal = Assert.Throws<InvalidOperationException>(
@@ -1353,27 +1336,22 @@ public class AgyWorkerAdapterTests
             .GetProperty("hooks")[0]
             .GetProperty("command").GetString()!;
 
-        // The pattern pins the shape PER SHELL, deliberately strict rather than permissive, because
-        // the token the assembly path may wear is a measured constraint of the shell agy uses on
-        // each platform, not a style. On Windows the token must be bare: `cmd /c` resolves neither a
-        // quoted path nor a bare one containing a space once an argument follows, so a command that
-        // grew a quote here would be one that never starts -- and on this vendor a hook that never
-        // starts is an ALLOW. A tolerant regex would let that through silently, which is what
-        // happened twice: `"` until #706, then `'` until #710. On Unix the token must be
-        // single-quoted, because `sh -c` strips those quotes and a space then needs no special
-        // handling -- and the capture is the text INSIDE them, which is what `sh` hands `dotnet`.
-        // Passing the quotes through to ArgumentList would feed `dotnet` a literal quoted filename
-        // no shell ever produces, which is how this pair first went red on the Linux CI leg.
+        // The pattern pins the shape cmd resolves, deliberately strict rather than permissive,
+        // because the token the assembly path may wear is a measured constraint of the shell agy
+        // uses, not a style. The token must be bare: `cmd /c` resolves neither a quoted path nor a
+        // bare one containing a space once an argument follows, so a command that grew a quote here
+        // would be one that never starts -- and on this vendor a hook that never starts is an ALLOW.
+        // A tolerant regex would let that through silently, which is what happened twice: `"` until
+        // #706, then `'` until #710.
         //
         // This assertion pins the SHAPE. Whether agy's shell really resolves it is a vendor question
         // this test cannot reach -- see the note above the pair, and
         // `agy.hook-command-survives-a-metacharacter-in-its-path`, which runs it through agy.
-        var pattern = OperatingSystem.IsWindows() ? @"^(\S+) (\S+) (\S+)$" : @"^(\S+) '([^']+)' (\S+)$";
+        const string pattern = @"^(\S+) (\S+) (\S+)$";
         var match = System.Text.RegularExpressions.Regex.Match(command, pattern);
         Assert.True(match.Success,
-            $"hook command does not have the shape this platform's shell was measured to resolve "
-            + $"(bare on Windows, single-quoted on Unix) -- the wrong token here is a command agy's "
-            + $"shell cannot start, which reads as an allow: {command}");
+            $"hook command does not have the bare shape cmd was measured to resolve -- the wrong "
+            + $"token here is a command agy's shell cannot start, which reads as an allow: {command}");
 
         var startInfo = new ProcessStartInfo(match.Groups[1].Value)
         {
@@ -1660,7 +1638,7 @@ public class AgyWorkerAdapterTests
         var target = new AgyWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan.", PermissionGrant: nonShellGrant), ArchitectContract);
 
         var home = target.Environment!.Single(e => e.Name == "HOME").Value;
-        var expectedRef = OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
+        const string expectedRef = "%BATON_OUTPUT_DIR%";
         Assert.StartsWith(expectedRef, home);
     }
 
@@ -1711,7 +1689,7 @@ public class AgyWorkerAdapterTests
         using var doc = JsonDocument.Parse(seed.Content);
         var allow = doc.RootElement.GetProperty("permissions").GetProperty("allow");
         var rule = Assert.Single(allow.EnumerateArray()).GetString();
-        var expectedRef = OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
+        const string expectedRef = "%BATON_OUTPUT_DIR%";
         Assert.Equal($"write_file({expectedRef}/plan.md)", rule);
     }
 
@@ -1729,7 +1707,7 @@ public class AgyWorkerAdapterTests
         using var doc = JsonDocument.Parse(seed.Content);
         var rules = doc.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(e => e.GetString()!).ToArray();
-        var expectedRef = OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
+        const string expectedRef = "%BATON_OUTPUT_DIR%";
         Assert.Equal([$"write_file({expectedRef}/plan.md)", $"write_file({expectedRef}/risks.md)"], rules);
     }
 

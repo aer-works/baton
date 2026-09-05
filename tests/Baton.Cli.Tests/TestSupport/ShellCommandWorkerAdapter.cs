@@ -15,7 +15,6 @@ namespace Baton.Cli.Tests.TestSupport;
 /// </summary>
 internal sealed class ShellCommandWorkerAdapter : IWorkerAdapter
 {
-    public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", invocation.PromptTemplate], invocation.WorkingDirectory)
-        : new CoreDispatchTarget("sh", ["-c", invocation.PromptTemplate], invocation.WorkingDirectory);
+    public CoreDispatchTarget Resolve(WorkerInvocation invocation, WorkerContract contract) =>
+        new("cmd", ["/c", invocation.PromptTemplate], invocation.WorkingDirectory);
 }

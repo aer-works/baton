@@ -654,13 +654,11 @@ public class RunCommandEndToEndTests
         return path;
     }
 
-    private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
-        ? $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteFileCommand(string outputName, string content) =>
+        $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}";
 
-    private static string CopyFirstInputCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string CopyFirstInputCommand(string outputName) =>
+        $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}";
 
     private static async Task AssertOutputAsync(string artifactsRoot, StepState stepState, string outputName, string expectedContent)
     {
@@ -795,9 +793,7 @@ public class RunCommandEndToEndTests
     private static async Task<string> WriteEchoBindingsAsync(string directory, string echoMessage)
     {
         Directory.CreateDirectory(directory);
-        var echoCmd = OperatingSystem.IsWindows()
-            ? $"echo {echoMessage} & echo the-plan>%BATON_OUTPUT_DIR%\\plan"
-            : $"echo {echoMessage}; echo the-plan > \"$BATON_OUTPUT_DIR/plan\"";
+        var echoCmd = $"echo {echoMessage} & echo the-plan>%BATON_OUTPUT_DIR%\\plan";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {

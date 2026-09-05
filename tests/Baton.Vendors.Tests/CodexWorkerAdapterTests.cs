@@ -15,10 +15,9 @@ public sealed class CodexWorkerAdapterTests
     private static readonly WorkerContract NoOutputContract = new(
         "chat", [], [], []);
 
-    private static string OutputDirectory =>
-        OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
+    private const string OutputDirectory = "%BATON_OUTPUT_DIR%";
 
-    private static char DirectorySeparator => OperatingSystem.IsWindows() ? '\\' : '/';
+    private const char DirectorySeparator = '\\';
 
     [Fact]
     public void Windows_npm_shim_resolves_to_its_native_platform_binary_without_a_shell()
@@ -152,8 +151,8 @@ public sealed class CodexWorkerAdapterTests
 
         Assert.Equal(target.PromptText, target.Args[^1]);
         Assert.StartsWith("Implement exactly this change.", target.PromptText);
-        Assert.Contains($"goal: {(OperatingSystem.IsWindows() ? "%BATON_INPUT_0%" : "$BATON_INPUT_0")}", target.PromptText);
-        Assert.Contains($"brief: {(OperatingSystem.IsWindows() ? "%BATON_INPUT_1%" : "$BATON_INPUT_1")}", target.PromptText);
+        Assert.Contains("goal: %BATON_INPUT_0%", target.PromptText);
+        Assert.Contains("brief: %BATON_INPUT_1%", target.PromptText);
         Assert.Contains($"patch.diff: {OutputDirectory}{DirectorySeparator}patch.diff", target.PromptText);
         Assert.Contains($"notes.md: {OutputDirectory}{DirectorySeparator}notes.md", target.PromptText);
     }

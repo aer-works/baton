@@ -698,9 +698,7 @@ public class ResolveCommandEndToEndTests
     private static async Task<string> WriteTwoStepBindingsAsync(string directory)
     {
         Directory.CreateDirectory(directory);
-        var writeBCommand = OperatingSystem.IsWindows()
-            ? "echo done>%BATON_OUTPUT_DIR%\\b.md"
-            : "echo done > \"$BATON_OUTPUT_DIR/b.md\"";
+        const string writeBCommand = "echo done>%BATON_OUTPUT_DIR%\\b.md";
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(

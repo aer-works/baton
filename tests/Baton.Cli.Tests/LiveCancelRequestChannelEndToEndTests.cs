@@ -184,7 +184,7 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
         // the redispatch assertion below reruns this exact command uncancelled, so it must actually
         // finish quickly. CommandWorkerAdapter (production's "command" adapter) takes argv directly,
         // no shell -- Architecture Rule 1.
-        var argv = OperatingSystem.IsWindows() ? new[] { "ping", "-n", "6", "127.0.0.1" } : ["sleep", "5"];
+        var argv = new[] { "ping", "-n", "6", "127.0.0.1" };
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(

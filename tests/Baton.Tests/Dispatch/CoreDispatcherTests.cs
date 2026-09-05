@@ -206,9 +206,8 @@ public class CoreDispatcherTests
         }
     }
 
-    private static CoreDispatchTarget EchoLineToStdout(string line) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"echo {line}"])
-        : new CoreDispatchTarget("sh", ["-c", $"echo {line}"]);
+    private static CoreDispatchTarget EchoLineToStdout(string line) =>
+        new("cmd", ["/c", $"echo {line}"]);
 
     [Fact]
     public async Task DispatchAsync_records_Started_and_Exited_CoreEvents_to_the_log()
@@ -258,9 +257,7 @@ public class CoreDispatcherTests
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
             var distinctiveStderr = "DISTINCTIVE_STDERR_TAIL_759";
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStderr} 1>&2 & exit 1"])
-                : new CoreDispatchTarget("sh", ["-c", $"echo {distinctiveStderr} >&2; exit 1"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStderr} 1>&2 & exit 1"]);
 
             await using (var writer = new FlowEventLogWriter(logPath))
             {
@@ -288,9 +285,7 @@ public class CoreDispatcherTests
         try
         {
             var request = MakeRequest([]);
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 7"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 7"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 7"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
@@ -313,9 +308,7 @@ public class CoreDispatcherTests
         try
         {
             var request = MakeRequest([new EnvironmentVariable.PassThrough("SOME_SECRET")]);
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 0"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(request, target, TestContext.Current.CancellationToken);
@@ -357,9 +350,9 @@ public class CoreDispatcherTests
             Assert.Equal(0, result.ExitCode);
             var printedCwd = (await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "hello.txt"), TestContext.Current.CancellationToken)).Trim();
-            var expected = NormalizeRealPath(configuredWorkingDirectory);
-            var actual = NormalizeRealPath(printedCwd);
-            Assert.Equal(expected, actual, ignoreCase: OperatingSystem.IsWindows());
+            var expected = Path.TrimEndingDirectorySeparator(Path.GetFullPath(configuredWorkingDirectory));
+            var actual = Path.TrimEndingDirectorySeparator(Path.GetFullPath(printedCwd));
+            Assert.Equal(expected, actual, ignoreCase: true);
         }
         finally
         {
@@ -367,24 +360,6 @@ public class CoreDispatcherTests
             DirectoryCleanup.DeleteRecursively(configuredWorkingDirectory);
             FileCleanup.Delete(logPath);
         }
-    }
-
-    /// <summary>
-    /// macOS resolves <c>/tmp</c>/<c>/var</c> (and therefore the default <see cref="Path.GetTempPath"/>
-    /// root this test's directories live under) through a <c>/private</c> symlink at the OS level —
-    /// a spawned shell's <c>pwd</c> reports the fully-resolved path even though the configured cwd
-    /// was the pre-resolution one <see cref="Directory.CreateDirectory(string)"/> itself accepted.
-    /// <see cref="Path.GetFullPath(string)"/> never resolves symlinks, so without this, "the same
-    /// directory" fails a naive string comparison purely on this one OS. Only strips the prefix that
-    /// specific symlink introduces — not a general realpath resolution — so this stays exact
-    /// everywhere else.
-    /// </summary>
-    private static string NormalizeRealPath(string path)
-    {
-        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-        return OperatingSystem.IsMacOS() && normalized.StartsWith("/private/", StringComparison.Ordinal)
-            ? normalized["/private".Length..]
-            : normalized;
     }
 
     /// <summary>
@@ -403,9 +378,7 @@ public class CoreDispatcherTests
         {
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
-            var noop = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
+            var noop = new CoreDispatchTarget("cmd", ["/c", "exit 0"]);
             // Path template references BATON_OUTPUT_DIR and a not-yet-existing parent; content embeds the
             // same variable in a JSON string, the shape a raw backslash substitution would void.
             var target = noop with
@@ -446,9 +419,8 @@ public class CoreDispatcherTests
         Environment: environment,
         UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
 
-    private static CoreDispatchTarget EchoHelloToOutputFile() => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", "echo hello > %BATON_OUTPUT_DIR%\\hello.txt"])
-        : new CoreDispatchTarget("sh", ["-c", "echo hello > \"$BATON_OUTPUT_DIR/hello.txt\""]);
+    private static CoreDispatchTarget EchoHelloToOutputFile() =>
+        new("cmd", ["/c", "echo hello > %BATON_OUTPUT_DIR%\\hello.txt"]);
 
     /// <summary>
     /// #549: a variable the operator's shell exports must NOT reach a worker unless it is
@@ -555,15 +527,12 @@ public class CoreDispatcherTests
     }
 
     private static CoreDispatchTarget EchoEnvVarToOutputFile(
-        string variableName, IReadOnlyList<(string Name, string Value)>? environment) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget(
-            "cmd", ["/c", $"echo %{variableName}% > %BATON_OUTPUT_DIR%\\hello.txt"], Environment: environment)
-        : new CoreDispatchTarget(
-            "sh", ["-c", $"echo \"${variableName}\" > \"$BATON_OUTPUT_DIR/hello.txt\""], Environment: environment);
+        string variableName, IReadOnlyList<(string Name, string Value)>? environment) =>
+        new(
+            "cmd", ["/c", $"echo %{variableName}% > %BATON_OUTPUT_DIR%\\hello.txt"], Environment: environment);
 
-    private static CoreDispatchTarget PrintCwdToOutputFile(string workingDirectory) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", "cd > %BATON_OUTPUT_DIR%\\hello.txt"], workingDirectory)
-        : new CoreDispatchTarget("sh", ["-c", "pwd > \"$BATON_OUTPUT_DIR/hello.txt\""], workingDirectory);
+    private static CoreDispatchTarget PrintCwdToOutputFile(string workingDirectory) =>
+        new("cmd", ["/c", "cd > %BATON_OUTPUT_DIR%\\hello.txt"], workingDirectory);
 
     // Issue #292: durable capture of an ordinary step's resolved prompt, written into the execution's
     // own output directory before the worker ever spawns.
@@ -578,9 +547,7 @@ public class CoreDispatcherTests
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var environment = ArtifactManager.BuildEnvironment(["/inputs/goal.md"], outputDirectory, artifactsRoot);
             var request = MakeRequest(environment);
-            var promptText = OperatingSystem.IsWindows()
-                ? "Use %BATON_INPUT_0% and write to %BATON_OUTPUT_DIR%."
-                : "Use $BATON_INPUT_0 and write to $BATON_OUTPUT_DIR.";
+            var promptText = "Use %BATON_INPUT_0% and write to %BATON_OUTPUT_DIR%.";
             var target = EchoHelloToOutputFile() with { PromptText = promptText };
 
             await using var writer = new FlowEventLogWriter(logPath);
@@ -657,9 +624,7 @@ public class CoreDispatcherTests
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var environment = ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot);
             var request = MakeRequest(environment);
-            var target = (OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 7"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 7"])) with
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 7"]) with
             { PromptText = "Draft a plan." };
 
             await using var writer = new FlowEventLogWriter(logPath);
@@ -741,9 +706,7 @@ public class CoreDispatcherTests
         try
         {
             var request = MakeRequest([]);
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 1"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 1"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(
@@ -766,9 +729,7 @@ public class CoreDispatcherTests
         {
             var request = MakeRequest([]);
             const string distinctiveStdout = "BOILER-PLATE-STDOUT-DIAGNOSTIC";
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStdout}& exit 1"])
-                : new CoreDispatchTarget("sh", ["-c", $"echo {distinctiveStdout}; exit 1"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStdout}& exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(
@@ -791,9 +752,7 @@ public class CoreDispatcherTests
         try
         {
             var request = MakeRequest([]);
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 1"])
-                : new CoreDispatchTarget("sh", ["-c", "exit 1"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 1"]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(
@@ -821,9 +780,7 @@ public class CoreDispatcherTests
             await File.WriteAllTextAsync(
                 Path.Combine(payloadDirectory, payloadFileName), payload, TestContext.Current.CancellationToken);
 
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} & exit 1"], payloadDirectory)
-                : new CoreDispatchTarget("sh", ["-c", $"cat {payloadFileName}; exit 1"], payloadDirectory);
+            var target = new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} & exit 1"], payloadDirectory);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(
@@ -871,9 +828,7 @@ public class CoreDispatcherTests
             await File.WriteAllTextAsync(
                 Path.Combine(payloadDirectory, payloadFileName), payload, TestContext.Current.CancellationToken);
 
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} 1>&2 & exit 1"], payloadDirectory)
-                : new CoreDispatchTarget("sh", ["-c", $"cat {payloadFileName} >&2; exit 1"], payloadDirectory);
+            var target = new CoreDispatchTarget("cmd", ["/c", $"type {payloadFileName} 1>&2 & exit 1"], payloadDirectory);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer).DispatchAsync(
@@ -1242,9 +1197,7 @@ public class CoreDispatcherTests
     }
 
     private static CoreDispatchTarget WriteToStderrAndExit(string message, int exitCode) =>
-        OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", $"echo {message} 1>&2 & exit {exitCode}"])
-            : new CoreDispatchTarget("sh", ["-c", $"echo {message} >&2; exit {exitCode}"]);
+        new("cmd", ["/c", $"echo {message} 1>&2 & exit {exitCode}"]);
 
     // Issue #598: an over-long command line is refused by AER, naming its size and the limit, rather
     // than reaching BatonTask and coming back as an OS-authored complaint about a filename.
@@ -1422,9 +1375,7 @@ public class CoreDispatcherTests
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
             var ordinaryPrompt = new string('x', 1_000);
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "exit 0", ordinaryPrompt])
-                : new CoreDispatchTarget("sh", ["-c", "exit 0", ordinaryPrompt]);
+            var target = new CoreDispatchTarget("cmd", ["/c", "exit 0", ordinaryPrompt]);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var result = await new CoreDispatcher(writer)
@@ -1448,11 +1399,6 @@ public class CoreDispatcherTests
     [Fact]
     public async Task DispatchAsync_still_captures_the_prompt_when_the_command_line_guard_fires()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("No command-line ceiling is claimed off Windows, so the guard never fires here.");
-        }
-
         var artifactsRoot = Path.Combine(Path.GetTempPath(), $"artifacts-{Guid.NewGuid():N}");
         var logPath = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
@@ -1495,9 +1441,7 @@ public class CoreDispatcherTests
             var prompt = new string('a', CoreDispatcher.OversizePromptThreshold - 100);
             var wrapper = "Read prompt at %BATON_PROMPT_FILE%";
 
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "echo %BATON_PROMPT_FILE% > %BATON_OUTPUT_DIR%\\hello.txt", prompt], PromptText: prompt, OversizePromptWrapper: wrapper)
-                : new CoreDispatchTarget("sh", ["-c", "echo $BATON_PROMPT_FILE > \"$BATON_OUTPUT_DIR/hello.txt\"", prompt], PromptText: prompt, OversizePromptWrapper: wrapper);
+            var target = new CoreDispatchTarget("cmd", ["/c", "echo %BATON_PROMPT_FILE% > %BATON_OUTPUT_DIR%\\hello.txt", prompt], PromptText: prompt, OversizePromptWrapper: wrapper);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var dispatcher = new CoreDispatcher(writer);
@@ -1524,16 +1468,12 @@ public class CoreDispatcherTests
             var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, ExecutionId);
             var request = MakeRequest(ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot));
 
-            var baseCmd = OperatingSystem.IsWindows()
-                ? "echo %BATON_PROMPT_FILE% > %BATON_OUTPUT_DIR%\\hello.txt"
-                : "echo $BATON_PROMPT_FILE > \"$BATON_OUTPUT_DIR/hello.txt\"";
+            var baseCmd = "echo %BATON_PROMPT_FILE% > %BATON_OUTPUT_DIR%\\hello.txt";
             var oversizedPrompt = baseCmd + new string(' ', CoreDispatcher.WindowsCommandLineCeiling + 1_000);
             var wrapper = baseCmd;
             var promptFilePath = Path.Combine(outputDirectory, ArtifactManager.PromptFileName);
 
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: wrapper)
-                : new CoreDispatchTarget("sh", ["-c", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: wrapper);
+            var target = new CoreDispatchTarget("cmd", ["/c", oversizedPrompt], PromptText: oversizedPrompt, OversizePromptWrapper: wrapper);
 
             await using var writer = new FlowEventLogWriter(logPath);
             var dispatcher = new CoreDispatcher(writer);

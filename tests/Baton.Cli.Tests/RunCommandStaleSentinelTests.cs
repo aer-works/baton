@@ -24,10 +24,6 @@ public class RunCommandStaleSentinelTests
     [Fact]
     public async Task A_stale_sentinel_that_cannot_be_deleted_refuses_the_run_instead_of_pumping_behind_it()
     {
-        Assert.SkipUnless(
-            OperatingSystem.IsWindows(),
-            "a delete against an open handle is OS-enforced only on Windows; TerminalSentinelWriterDeletionTests pins the Unix arm");
-
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-run-sentinel-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -98,9 +94,7 @@ public class RunCommandStaleSentinelTests
         var workflowFilePath = Path.Combine(testRoot, "workflow.json");
         await File.WriteAllTextAsync(workflowFilePath, JsonSerializer.Serialize(definition));
 
-        var writeCommand = OperatingSystem.IsWindows()
-            ? "echo done>%BATON_OUTPUT_DIR%\\a.md"
-            : "echo done > \"$BATON_OUTPUT_DIR/a.md\"";
+        const string writeCommand = "echo done>%BATON_OUTPUT_DIR%\\a.md";
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(

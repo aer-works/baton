@@ -346,9 +346,7 @@ public sealed class RoomDetailToolTests : IDisposable
             1,
             [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
-        var cmdLine = OperatingSystem.IsWindows()
-            ? "powershell -NoProfile -Command \"Write-Output 'live worker stdout line 1'; Write-Output 'live worker stdout line 2'\" & echo output > %BATON_OUTPUT_DIR%\\out.txt"
-            : "echo 'live worker stdout line 1' && echo 'live worker stdout line 2' && echo output > \"$BATON_OUTPUT_DIR/out.txt\"";
+        const string cmdLine = "powershell -NoProfile -Command \"Write-Output 'live worker stdout line 1'; Write-Output 'live worker stdout line 2'\" & echo output > %BATON_OUTPUT_DIR%\\out.txt";
 
         var adapters = new Dictionary<string, IWorkerAdapter> { ["shell"] = new ShellCommandWorkerAdapter() };
         var bindings = new Dictionary<string, WorkerBindingConfigEntry>

@@ -38,17 +38,12 @@ internal sealed class BaseRefCapturingWorkerAdapter : IWorkerAdapter
         }
 
         var script = contract.ProducedOutputs.Count > 0
-            ? string.Join(
-                OperatingSystem.IsWindows() ? " & " : " && ",
-                contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
+            ? string.Join(" & ", contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
             : "exit 0";
 
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)
-            : new CoreDispatchTarget("sh", ["-c", script], invocation.WorkingDirectory);
+        return new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory);
     }
 
-    private static string WriteCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"echo x>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo x > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteCommand(string outputName) =>
+        $"echo x>%BATON_OUTPUT_DIR%\\{outputName}";
 }

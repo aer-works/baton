@@ -170,11 +170,6 @@ public class WorkerBindingConfigWriterTests
     [Fact]
     public void A_replace_loses_to_an_open_handle_whatever_share_mode_it_used()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("POSIX renames over an open handle regardless of share mode; there is nothing to discriminate.");
-        }
-
         var directory = Path.Combine(Path.GetTempPath(), $"bindings-share-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
 
@@ -225,11 +220,6 @@ public class WorkerBindingConfigWriterTests
     [Fact]
     public async Task A_transient_holder_outlasting_the_old_attempt_count_budget_no_longer_fails_the_write()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("Only on Windows does a default-share reader block the replace at all.");
-        }
-
         var directory = Path.Combine(Path.GetTempPath(), $"bindings-hold-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "bindings.json");

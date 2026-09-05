@@ -3,38 +3,33 @@ using Baton.Dispatch;
 namespace Baton.Tests.TestSupport;
 
 /// <summary>
-/// Tiny cross-platform shell <see cref="CoreDispatchTarget"/>s standing in for real workers in
-/// integration tests that dispatch through the real, managed <c>BatonTask</c> engine (no mocking of
-/// Baton.Core itself, per M7 Phase 7's acceptance criteria).
+/// Tiny <c>cmd</c> <see cref="CoreDispatchTarget"/>s standing in for real workers in integration
+/// tests that dispatch through the real, managed <c>BatonTask</c> engine (no mocking of Baton.Core
+/// itself, per M7 Phase 7's acceptance criteria). Windows-only, like the product and its CI (#1405).
 /// </summary>
 internal static class ShellWorkerCommands
 {
-    public static CoreDispatchTarget WriteFile(string outputName, string content) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"])
-        : new CoreDispatchTarget("sh", ["-c", $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\""]);
+    public static CoreDispatchTarget WriteFile(string outputName, string content) =>
+        new("cmd", ["/c", $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"]);
 
-    public static CoreDispatchTarget CopyFirstInputTo(string outputName) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"])
-        : new CoreDispatchTarget("sh", ["-c", $"cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\""]);
+    public static CoreDispatchTarget CopyFirstInputTo(string outputName) =>
+        new("cmd", ["/c", $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"]);
 
     /// <summary>Concatenates both resolved inputs (declaration order) into one output — the diamond DAG's join step.</summary>
-    public static CoreDispatchTarget ConcatBothInputsTo(string outputName) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"copy /b %BATON_INPUT_0%+%BATON_INPUT_1% %BATON_OUTPUT_DIR%\\{outputName}"])
-        : new CoreDispatchTarget("sh", ["-c", $"cat \"$BATON_INPUT_0\" \"$BATON_INPUT_1\" > \"$BATON_OUTPUT_DIR/{outputName}\""]);
+    public static CoreDispatchTarget ConcatBothInputsTo(string outputName) =>
+        new("cmd", ["/c", $"copy /b %BATON_INPUT_0%+%BATON_INPUT_1% %BATON_OUTPUT_DIR%\\{outputName}"]);
 
-    public static CoreDispatchTarget ExitCleanlyWithoutWriting() => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", "exit 0"])
-        : new CoreDispatchTarget("sh", ["-c", "exit 0"]);
+    public static CoreDispatchTarget ExitCleanlyWithoutWriting() =>
+        new("cmd", ["/c", "exit 0"]);
 
-    public static CoreDispatchTarget ExitWithFailureCode(int exitCode = 1) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", $"exit {exitCode}"])
-        : new CoreDispatchTarget("sh", ["-c", $"exit {exitCode}"]);
+    public static CoreDispatchTarget ExitWithFailureCode(int exitCode = 1) =>
+        new("cmd", ["/c", $"exit {exitCode}"]);
 
     /// <summary>
     /// Sleeps for at least <paramref name="duration"/> before writing <paramref name="outputName"/>
     /// and exiting 0 — M10 Phase 4's real long-running worker, giving a test enough real wall-clock
     /// time to observe it genuinely still executing (via <c>CoreEvent.ExecutionStarted</c>) before
-    /// cancelling or otherwise acting on it. Windows uses <c>ping</c> as the sleep primitive, not
+    /// cancelling or otherwise acting on it. Uses <c>ping</c> as the sleep primitive, not
     /// <c>timeout</c>: the latter requires an interactive console on stdin and fails immediately
     /// ("Input redirection is not supported") under a spawned, non-console process — and chained
     /// with <c>&amp;</c> rather than <c>&amp;&amp;</c>, that failure was silently swallowed and the
@@ -42,29 +37,24 @@ internal static class ShellWorkerCommands
     /// <c>ping -n</c> has no such dependency and reliably blocks for approximately one second per
     /// echo request regardless of how the process was spawned.
     /// </summary>
-    public static CoreDispatchTarget SleepThenWriteFile(TimeSpan duration, string outputName, string content) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget(
+    public static CoreDispatchTarget SleepThenWriteFile(TimeSpan duration, string outputName, string content) =>
+        new(
             "cmd",
-            ["/c", $"ping -n {(int)duration.TotalSeconds + 1} 127.0.0.1 >nul & echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"])
-        : new CoreDispatchTarget("sh", ["-c", $"sleep {duration.TotalSeconds} && echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\""]);
+            ["/c", $"ping -n {(int)duration.TotalSeconds + 1} 127.0.0.1 >nul & echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"]);
 
     /// <summary>
     /// Fails its first invocation and succeeds every one after, keyed off a marker file at a fixed
     /// path outside <c>BATON_OUTPUT_DIR</c> — each attempt's output directory is fresh by design,
     /// so durable state across attempts has to live somewhere else.
     /// </summary>
-    public static CoreDispatchTarget FailOnFirstAttemptThenSucceed(string markerFilePath, string outputName, string content) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget(
-            // No quotes around markerFilePath: BatonTask's spawn path assembles each ArgumentList
-            // entry through .NET's own Windows quoting rules, which would rewrite an embedded '"'
-            // rather than pass it through untouched -- and a GUID-based temp path never contains
-            // spaces, so quoting buys nothing here — matches
-            // this file's other Windows commands, none of which quote a path either.
+    // No quotes around markerFilePath: BatonTask's spawn path assembles each ArgumentList entry
+    // through .NET's own Windows quoting rules, which would rewrite an embedded '"' rather than pass
+    // it through untouched -- and a GUID-based temp path never contains spaces, so quoting buys
+    // nothing here — matches this file's other commands, none of which quote a path either.
+    public static CoreDispatchTarget FailOnFirstAttemptThenSucceed(string markerFilePath, string outputName, string content) =>
+        new(
             "cmd",
-            ["/c", $"if exist {markerFilePath} (echo {content}>%BATON_OUTPUT_DIR%\\{outputName}) else (echo marker>{markerFilePath} & exit 1)"])
-        : new CoreDispatchTarget(
-            "sh",
-            ["-c", $"if [ -f \"{markerFilePath}\" ]; then echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"; else touch \"{markerFilePath}\"; exit 1; fi"]);
+            ["/c", $"if exist {markerFilePath} (echo {content}>%BATON_OUTPUT_DIR%\\{outputName}) else (echo marker>{markerFilePath} & exit 1)"]);
 
     /// <summary>
     /// Writes <paramref name="body"/> to a script file under <paramref name="scriptDirectory"/> and
@@ -77,13 +67,10 @@ internal static class ShellWorkerCommands
     private static CoreDispatchTarget FromScript(string scriptDirectory, string body)
     {
         Directory.CreateDirectory(scriptDirectory);
-        var extension = OperatingSystem.IsWindows() ? ".cmd" : ".sh";
-        var scriptPath = Path.Combine(scriptDirectory, $"{Guid.NewGuid():N}{extension}");
+        var scriptPath = Path.Combine(scriptDirectory, $"{Guid.NewGuid():N}.cmd");
         File.WriteAllText(scriptPath, body);
 
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", scriptPath])
-            : new CoreDispatchTarget("sh", [scriptPath]);
+        return new CoreDispatchTarget("cmd", ["/c", scriptPath]);
     }
 
     /// <summary>
@@ -101,25 +88,15 @@ internal static class ShellWorkerCommands
     public static CoreDispatchTarget WriteVerdictNeedsRevisionThenApproved(
         string scriptDirectory, string markerFilePath, string verdictFileName)
     {
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{verdictFileName}"
-            : $"$BATON_OUTPUT_DIR/{verdictFileName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{verdictFileName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              $"if exist \"{markerFilePath}\" (\n" +
-              $"  echo {{\"status\":\"approved\"}}>\"{outputPath}\"\n" +
-              ") else (\n" +
-              $"  echo marker>\"{markerFilePath}\"\n" +
-              $"  echo {{\"status\":\"needs_revision\"}}>\"{outputPath}\"\n" +
-              ")\n"
-            : "#!/bin/sh\n" +
-              $"if [ -f \"{markerFilePath}\" ]; then\n" +
-              $"  echo '{{\"status\":\"approved\"}}' > \"{outputPath}\"\n" +
-              "else\n" +
-              $"  touch \"{markerFilePath}\"\n" +
-              $"  echo '{{\"status\":\"needs_revision\"}}' > \"{outputPath}\"\n" +
-              "fi\n";
+        var body = "@echo off\n" +
+            $"if exist \"{markerFilePath}\" (\n" +
+            $"  echo {{\"status\":\"approved\"}}>\"{outputPath}\"\n" +
+            ") else (\n" +
+            $"  echo marker>\"{markerFilePath}\"\n" +
+            $"  echo {{\"status\":\"needs_revision\"}}>\"{outputPath}\"\n" +
+            ")\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -131,17 +108,11 @@ internal static class ShellWorkerCommands
     /// </summary>
     public static CoreDispatchTarget FailPermanently(string scriptDirectory, string metadataFileName)
     {
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{metadataFileName}"
-            : $"$BATON_OUTPUT_DIR/{metadataFileName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{metadataFileName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              $"echo {{\"FailureClassification\":\"Permanent\"}}>\"{outputPath}\"\n" +
-              "exit /b 1\n"
-            : "#!/bin/sh\n" +
-              $"echo '{{\"FailureClassification\":\"Permanent\"}}' > \"{outputPath}\"\n" +
-              "exit 1\n";
+        var body = "@echo off\n" +
+            $"echo {{\"FailureClassification\":\"Permanent\"}}>\"{outputPath}\"\n" +
+            "exit /b 1\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -156,26 +127,15 @@ internal static class ShellWorkerCommands
     public static CoreDispatchTarget ConsumeSupplementaryInputElseFail(
         string scriptDirectory, string outputName, string supplementaryFileName)
     {
-        var supplementaryPath = OperatingSystem.IsWindows()
-            ? $"%BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName}"
-            : $"$BATON_SUPPLEMENTARY_INPUT/{supplementaryFileName}";
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"$BATON_OUTPUT_DIR/{outputName}";
+        var supplementaryPath = $"%BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{outputName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              "if defined BATON_SUPPLEMENTARY_INPUT (\n" +
-              $"  copy /y \"{supplementaryPath}\" \"{outputPath}\" >nul\n" +
-              ") else (\n" +
-              "  exit /b 1\n" +
-              ")\n"
-            : "#!/bin/sh\n" +
-              "if [ -n \"$BATON_SUPPLEMENTARY_INPUT\" ]; then\n" +
-              $"  cp \"{supplementaryPath}\" \"{outputPath}\"\n" +
-              "else\n" +
-              "  exit 1\n" +
-              "fi\n";
+        var body = "@echo off\n" +
+            "if defined BATON_SUPPLEMENTARY_INPUT (\n" +
+            $"  copy /y \"{supplementaryPath}\" \"{outputPath}\" >nul\n" +
+            ") else (\n" +
+            "  exit /b 1\n" +
+            ")\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -190,26 +150,15 @@ internal static class ShellWorkerCommands
     public static CoreDispatchTarget ConsumeSupplementaryInputElseWrite(
         string scriptDirectory, string outputName, string supplementaryFileName, string baseContent)
     {
-        var supplementaryPath = OperatingSystem.IsWindows()
-            ? $"%BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName}"
-            : $"$BATON_SUPPLEMENTARY_INPUT/{supplementaryFileName}";
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"$BATON_OUTPUT_DIR/{outputName}";
+        var supplementaryPath = $"%BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{outputName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              "if defined BATON_SUPPLEMENTARY_INPUT (\n" +
-              $"  copy /y \"{supplementaryPath}\" \"{outputPath}\" >nul\n" +
-              ") else (\n" +
-              $"  echo {baseContent}>\"{outputPath}\"\n" +
-              ")\n"
-            : "#!/bin/sh\n" +
-              "if [ -n \"$BATON_SUPPLEMENTARY_INPUT\" ]; then\n" +
-              $"  cp \"{supplementaryPath}\" \"{outputPath}\"\n" +
-              "else\n" +
-              $"  echo {baseContent} > \"{outputPath}\"\n" +
-              "fi\n";
+        var body = "@echo off\n" +
+            "if defined BATON_SUPPLEMENTARY_INPUT (\n" +
+            $"  copy /y \"{supplementaryPath}\" \"{outputPath}\" >nul\n" +
+            ") else (\n" +
+            $"  echo {baseContent}>\"{outputPath}\"\n" +
+            ")\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -228,13 +177,9 @@ internal static class ShellWorkerCommands
     {
         const string resultLine = """{"event":"result","result":{"conversation_id":"test","status":"SUCCESS","response":"did real work","duration_seconds":1.0,"num_turns":4,"usage":{"input_tokens":100,"output_tokens":500,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":600}}}""";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              $"echo {resultLine}\n" +
-              "exit /b 0\n"
-            : "#!/bin/sh\n" +
-              $"echo '{resultLine}'\n" +
-              "exit 0\n";
+        var body = "@echo off\n" +
+            $"echo {resultLine}\n" +
+            "exit /b 0\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -253,19 +198,12 @@ internal static class ShellWorkerCommands
         var usageLine = "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":2,"
             + $"\"cache_creation_input_tokens\":{cacheCreationInputTokens},\"cache_read_input_tokens\":0,\"output_tokens\":3"
             + "}}}";
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"$BATON_OUTPUT_DIR/{outputName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{outputName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              $"echo {usageLine}\n" +
-              $"echo {content}>\"{outputPath}\"\n" +
-              "exit /b 0\n"
-            : "#!/bin/sh\n" +
-              $"echo '{usageLine}'\n" +
-              $"echo {content} > \"{outputPath}\"\n" +
-              "exit 0\n";
+        var body = "@echo off\n" +
+            $"echo {usageLine}\n" +
+            $"echo {content}>\"{outputPath}\"\n" +
+            "exit /b 0\n";
 
         return FromScript(scriptDirectory, body);
     }
@@ -277,17 +215,11 @@ internal static class ShellWorkerCommands
     /// </summary>
     public static CoreDispatchTarget AppendSuffixToFirstInput(string scriptDirectory, string outputName, string suffix)
     {
-        var outputPath = OperatingSystem.IsWindows()
-            ? $"%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"$BATON_OUTPUT_DIR/{outputName}";
+        var outputPath = $"%BATON_OUTPUT_DIR%\\{outputName}";
 
-        var body = OperatingSystem.IsWindows()
-            ? "@echo off\n" +
-              "set /p content=<%BATON_INPUT_0%\n" +
-              $"echo %content%{suffix}>\"{outputPath}\"\n"
-            : "#!/bin/sh\n" +
-              "content=$(cat \"$BATON_INPUT_0\")\n" +
-              $"echo \"${{content}}{suffix}\" > \"{outputPath}\"\n";
+        var body = "@echo off\n" +
+            "set /p content=<%BATON_INPUT_0%\n" +
+            $"echo %content%{suffix}>\"{outputPath}\"\n";
 
         return FromScript(scriptDirectory, body);
     }

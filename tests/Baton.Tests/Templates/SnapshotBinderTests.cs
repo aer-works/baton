@@ -316,11 +316,6 @@ public class SnapshotBinderTests
     [Fact]
     public async Task PersistAsync_survives_a_transient_holder_that_outlasts_the_old_attempt_count_budget()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("A default-share reader only blocks the overwrite-rename's delete requirement on Windows.");
-        }
-
         // The regression guard for the wall-clock retry (#398 class): a foreign handle (OS indexer/AV)
         // holds the just-written destination without FileShare.Delete for longer than the old
         // attempt-count budget (10 attempts, ~675ms of backoff) could survive. The wall-clock budget

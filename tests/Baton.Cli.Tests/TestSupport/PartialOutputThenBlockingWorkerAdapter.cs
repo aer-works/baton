@@ -25,15 +25,10 @@ internal sealed class PartialOutputThenBlockingWorkerAdapter : IWorkerAdapter, I
         ArgumentNullException.ThrowIfNull(contract);
 
         var outputName = contract.ProducedOutputs[0].Name;
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget(
-                "cmd",
-                ["/c", $"echo half-written>%BATON_OUTPUT_DIR%\\{outputName} & ping -n 120 127.0.0.1 >nul"],
-                invocation.WorkingDirectory)
-            : new CoreDispatchTarget(
-                "sh",
-                ["-c", $"echo half-written > \"$BATON_OUTPUT_DIR/{outputName}\"; sleep 120"],
-                invocation.WorkingDirectory);
+        return new CoreDispatchTarget(
+            "cmd",
+            ["/c", $"echo half-written>%BATON_OUTPUT_DIR%\\{outputName} & ping -n 120 127.0.0.1 >nul"],
+            invocation.WorkingDirectory);
     }
 
     public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)

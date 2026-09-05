@@ -15,10 +15,6 @@ public class TerminalSentinelWriterDeletionTests
     [Fact]
     public void An_undeletable_sentinel_refuses_with_a_typed_exception_naming_it_by_default()
     {
-        Assert.SkipUnless(
-            OperatingSystem.IsWindows(),
-            "a delete against an open handle is OS-enforced only on Windows; the Unix arm below pins that it just succeeds there");
-
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"sentinel-delete-{Guid.NewGuid():N}");
         try
         {
@@ -41,10 +37,6 @@ public class TerminalSentinelWriterDeletionTests
     [Fact]
     public void An_undeletable_sentinel_is_swallowed_when_the_caller_asks_for_best_effort()
     {
-        Assert.SkipUnless(
-            OperatingSystem.IsWindows(),
-            "a delete against an open handle is OS-enforced only on Windows; the Unix arm below pins that it just succeeds there");
-
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"sentinel-delete-{Guid.NewGuid():N}");
         try
         {
@@ -81,30 +73,6 @@ public class TerminalSentinelWriterDeletionTests
 
             // Absent is a silent no-op on both settings, unchanged by this finding.
             TerminalSentinelWriter.DeleteStaleSentinel(roomDirectory);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(roomDirectory);
-        }
-    }
-
-    [Fact]
-    public void An_open_handle_does_not_block_the_delete_off_Windows()
-    {
-        Assert.SkipWhen(
-            OperatingSystem.IsWindows(),
-            "Windows OS-enforces the sharing violation; the refusal/best-effort arms above pin that half");
-
-        var roomDirectory = Path.Combine(Path.GetTempPath(), $"sentinel-delete-{Guid.NewGuid():N}");
-        try
-        {
-            var path = SeedSentinel(roomDirectory);
-            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                TerminalSentinelWriter.DeleteStaleSentinel(roomDirectory);
-            }
-
-            Assert.False(File.Exists(path));
         }
         finally
         {

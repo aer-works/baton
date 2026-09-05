@@ -222,12 +222,11 @@ public class CrashRecoveryEndToEndTests
         }
         finally
         {
-            // Best-effort: on Linux the orphan genuinely outlives the killed host and would
-            // otherwise leak a sleeping process past this test. On Windows the OS Job Object backing
-            // BatonTask's process-tree containment already took it down alongside the host process
+            // Best-effort belt-and-braces: the OS Job Object backing BatonTask's process-tree
+            // containment already took the orphan down alongside the host process
             // (KILL_ON_JOB_CLOSE fires when the host's last handle to the job closes, which happens
             // automatically as part of the OS tearing down the killed host's own handle table) — so
-            // there this is reliably already a no-op, not a real cleanup.
+            // this is reliably already a no-op, not a real cleanup.
             if (orphanedChildPid > 0)
             {
                 TryKillOrphanedChild(orphanedChildPid);

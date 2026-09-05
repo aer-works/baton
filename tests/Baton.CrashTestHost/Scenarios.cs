@@ -31,15 +31,13 @@ public static class Scenarios
     {
         var target = worker switch
         {
-            ScenarioWorker.QuickSuccess => OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "echo done>%BATON_OUTPUT_DIR%\\result"])
-                : new CoreDispatchTarget("sh", ["-c", "echo done > \"$BATON_OUTPUT_DIR/result\""]),
+            ScenarioWorker.QuickSuccess =>
+                new CoreDispatchTarget("cmd", ["/c", "echo done>%BATON_OUTPUT_DIR%\\result"]),
             // ping, not timeout: timeout requires an interactive console on stdin and fails
             // immediately under a spawned, non-console process, which would make this "sleep" exit
             // almost instantly instead of staying genuinely alive until killed.
-            ScenarioWorker.LongSleep => OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", "ping -n 121 127.0.0.1 >nul"])
-                : new CoreDispatchTarget("sh", ["-c", "sleep 120"]),
+            ScenarioWorker.LongSleep =>
+                new CoreDispatchTarget("cmd", ["/c", "ping -n 121 127.0.0.1 >nul"]),
             _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "Unknown ScenarioWorker."),
         };
 

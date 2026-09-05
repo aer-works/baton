@@ -15,14 +15,6 @@ public class FileHolderProbeTests
     [Fact]
     public void Names_the_process_that_holds_a_file_open_exclusively()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            // Off Windows the class of violation cannot arise (FileShare is not enforced), so the probe
-            // is a deliberate marker, not a real query.
-            Assert.Contains("Windows-only", FileHolderProbe.DescribeHolders("irrelevant"));
-            return;
-        }
-
         var path = Path.Combine(Path.GetTempPath(), $"holder-probe-{Guid.NewGuid():N}.tmp");
         using (new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
         {
@@ -38,11 +30,6 @@ public class FileHolderProbeTests
     [Fact]
     public void Does_not_name_this_process_for_a_file_it_does_not_hold()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         var path = Path.Combine(Path.GetTempPath(), $"holder-probe-{Guid.NewGuid():N}.tmp");
         File.WriteAllText(path, "x"); // written and closed — this process holds no handle to it now
         try

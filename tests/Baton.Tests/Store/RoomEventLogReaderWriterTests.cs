@@ -91,17 +91,6 @@ public class RoomEventLogReaderWriterTests : IDisposable
     [Fact]
     public async Task A_second_writer_waits_for_the_first_to_release_rather_than_throwing()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            // Measured on the CI Linux leg, which reported "opened in 5ms, inside the 250ms hold":
-            // FileShare is only OS-enforced on Windows, so on POSIX the second open just succeeds
-            // and there is no violation to wait out. The defect this pins does not exist there, and
-            // an arm that cannot fail is worse than one that says it did not run. The uncontended
-            // open path stays covered everywhere by the other tests in this class.
-            Assert.Skip("FileShare is advisory on POSIX; this contention cannot occur there. See #880.");
-            return;
-        }
-
         var hold = TimeSpan.FromMilliseconds(250);
         var first = new RoomEventLogWriter(_roomLogPath);
 

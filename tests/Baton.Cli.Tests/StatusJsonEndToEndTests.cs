@@ -456,9 +456,8 @@ public class StatusJsonEndToEndTests
         return path;
     }
 
-    private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
-        ? $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteFileCommand(string outputName, string content) =>
+        $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}";
 
     // #1360: writes the declared output AND echoes a claude-shaped stream-json result line to
     // stdout, which ExecutionStreamLogger captures verbatim -- proving ExecutionUsageProjector reads
@@ -481,23 +480,13 @@ public class StatusJsonEndToEndTests
     /// </summary>
     private static string WriteFileAndEchoClaudeResultCommand(string scriptDirectory, string outputName, string content)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            var scriptPath = Path.Combine(scriptDirectory, "echo-claude-result.cmd");
-            File.WriteAllText(
-                scriptPath,
-                $"@echo off\r\necho {ClaudeResultLine}\r\necho {content}>%BATON_OUTPUT_DIR%\\{outputName}\r\n");
-            return $"call {scriptPath}";
-        }
-
-        var shScriptPath = Path.Combine(scriptDirectory, "echo-claude-result.sh");
+        var scriptPath = Path.Combine(scriptDirectory, "echo-claude-result.cmd");
         File.WriteAllText(
-            shScriptPath,
-            $"#!/bin/sh\necho '{ClaudeResultLine}'\necho {content} > \"$BATON_OUTPUT_DIR/{outputName}\"\n");
-        return $"sh {shScriptPath}";
+            scriptPath,
+            $"@echo off\r\necho {ClaudeResultLine}\r\necho {content}>%BATON_OUTPUT_DIR%\\{outputName}\r\n");
+        return $"call {scriptPath}";
     }
 
-    private static string SleepThenWriteCommand(string outputName, int seconds) => OperatingSystem.IsWindows()
-        ? $"ping -n {seconds + 1} 127.0.0.1>nul & echo done>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"sleep {seconds}; echo done > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string SleepThenWriteCommand(string outputName, int seconds) =>
+        $"ping -n {seconds + 1} 127.0.0.1>nul & echo done>%BATON_OUTPUT_DIR%\\{outputName}";
 }

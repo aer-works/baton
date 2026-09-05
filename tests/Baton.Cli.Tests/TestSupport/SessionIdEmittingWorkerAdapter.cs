@@ -40,32 +40,23 @@ internal sealed class SessionIdEmittingWorkerAdapter(
         ResolveCallCount++;
 
         var writeCommands = contract.ProducedOutputs.Count > 0
-            ? string.Join(
-                OperatingSystem.IsWindows() ? " & " : " && ",
-                contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
+            ? string.Join(" & ", contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
             : "exit 0";
 
         var reportedIds = new[] { sessionId, laterSessionId }.Where(id => id is not null).ToList();
         var echoLine = reportedIds.Count == 0
             ? null
-            : string.Join(
-                OperatingSystem.IsWindows() ? " & " : "; ",
-                reportedIds.Select(id => EchoCommand($"{SessionPrefix}{id}")));
+            : string.Join(" & ", reportedIds.Select(id => EchoCommand($"{SessionPrefix}{id}")));
 
         var script = echoLine is null
             ? writeCommands
-            : string.Join(OperatingSystem.IsWindows() ? " & " : "; ", [echoLine, writeCommands]);
+            : string.Join(" & ", [echoLine, writeCommands]);
 
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)
-            : new CoreDispatchTarget("sh", ["-c", script], invocation.WorkingDirectory);
+        return new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory);
     }
 
-    private static string EchoCommand(string text) => OperatingSystem.IsWindows()
-        ? $"echo {text}"
-        : $"echo '{text}'";
+    private static string EchoCommand(string text) => $"echo {text}";
 
-    private static string WriteCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"echo x>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo x > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteCommand(string outputName) =>
+        $"echo x>%BATON_OUTPUT_DIR%\\{outputName}";
 }
