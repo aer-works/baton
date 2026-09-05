@@ -83,7 +83,9 @@ public static class MutationInterface
         // declares a FallbackOnExhaustion, already resolved through the same adapter/ceiling gates as
         // workerBindings. Null (every caller that hasn't been updated to build one) behaves exactly
         // like today: a quota-parked step waits out the vendor's own reset instant.
-        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null)
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null,
+        Func<uint, EngineLivenessResult>? workerLivenessProbe = null,
+        TimeSpan? workerLivenessProbeInterval = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -99,7 +101,7 @@ public static class MutationInterface
                 workflowId, roomDirectoryPath, snapshot, workerBindings, artifactsRootPath, eventLogReader, eventLogWriter, dispatcher,
                 inFlightExecutions ?? new InFlightExecutionRegistry(), cancellationToken,
                 timeProvider ?? TimeProvider.System, jitterSource ?? (() => Random.Shared.NextDouble()), onVendorQuotaPark, settleOnVendorExhaustion,
-                onDeferralWaitArmed, fallbackWorkerBindings)
+                onDeferralWaitArmed, fallbackWorkerBindings, workerLivenessProbe, workerLivenessProbeInterval)
             .ConfigureAwait(false);
     }
 
@@ -979,12 +981,21 @@ public static class MutationInterface
         Action<DateTimeOffset>? onVendorQuotaPark = null,
         bool settleOnVendorExhaustion = false,
         Action? onDeferralWaitArmed = null,
-        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null)
+        IReadOnlyDictionary<string, WorkerBinding>? fallbackWorkerBindings = null,
+        Func<uint, EngineLivenessResult>? workerLivenessProbe = null,
+        TimeSpan? workerLivenessProbeInterval = null)
     {
         inFlightExecutions.Bind(eventLogWriter);
 
         var inFlight = new List<Task>();
         var hostStopRequested = false;
+        var workerPidByExecutionId = new Dictionary<ExecutionId, uint>();
+        Func<uint, EngineLivenessResult> effectiveWorkerLivenessProbe = workerLivenessProbe ?? ProbeWorkerPid;
+        var effectiveWorkerLivenessProbeInterval = workerLivenessProbeInterval ?? TimeSpan.FromSeconds(2);
+        if (effectiveWorkerLivenessProbeInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(workerLivenessProbeInterval), "Worker liveness interval must be positive.");
+        }
 
         // #1094: dedupes the vendor-quota park notice to the reset instant currently being waited on,
         // so re-projection loops do not reprint it. Surfacing only — see onVendorQuotaPark.
@@ -1070,6 +1081,11 @@ public static class MutationInterface
                     latestCheckpoint.State.CoreExitedByExecutionId,
                     log.CoreEvents);
 
+                foreach (var started in log.CoreEvents.OfType<CoreEvent.ExecutionStarted>())
+                {
+                    workerPidByExecutionId[started.ExecutionId] = started.Pid;
+                }
+
                 // Folded back into the working checkpoint immediately, not only at the save site:
                 // each round reads the log from the previous round's offset, so a later round's
                 // merge must start from these aggregates or the earlier tail's core events vanish
@@ -1088,6 +1104,34 @@ public static class MutationInterface
                     },
                 };
                 currentCheckpoint = latestCheckpoint;
+
+                var wroteDeadWorkerFailure = false;
+                foreach (var executionId in registeredExecutionIds)
+                {
+                    if (!workerPidByExecutionId.TryGetValue(executionId, out var workerPid)
+                        || mergedExited.ContainsKey(executionId)
+                        || effectiveWorkerLivenessProbe(workerPid).Status != EngineLivenessStatus.Dead)
+                    {
+                        continue;
+                    }
+
+                    if (inFlightExecutions.TryMarkWorkerDead(executionId))
+                    {
+                        await eventLogWriter.AppendAsync(
+                                new FlowEvent.ExecutionFailed(
+                                    executionId,
+                                    FailureClassification.Permanent,
+                                    $"Worker PID {workerPid} is no longer alive and no ExecutionExited was recorded."),
+                                ioCancellationToken)
+                            .ConfigureAwait(false);
+                        wroteDeadWorkerFailure = true;
+                    }
+                }
+
+                if (wroteDeadWorkerFailure)
+                {
+                    continue;
+                }
 
                 var crashRecovery = ProcessCrashRecoveryDetector.GetObligations(
                     state, snapshot, workerBindings, mergedStarted, mergedExited, registeredExecutionIds);
@@ -1258,15 +1302,34 @@ public static class MutationInterface
                 // cross-process re-attach capability, not a new mechanism this phase introduces.
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
+                    // A checkpoint carries the Core started/exited sets but deliberately not PID
+                    // metadata. Recover it only for this terminal-recovery branch, so a later pump
+                    // can name a confirmed-dead worker rather than leave the room looking quietly
+                    // live. This reuses EngineLivenessProbe; it is a journal recovery read, not a
+                    // second PID polling mechanism.
+                    if (crashRecovery.ToFinalizeAsAbandoned.Any(executionId => !workerPidByExecutionId.ContainsKey(executionId)))
+                    {
+                        var allCoreEvents = await eventLogReader.ReadAllCoreEventsAsync(ioCancellationToken).ConfigureAwait(false);
+                        foreach (var started in allCoreEvents.OfType<CoreEvent.ExecutionStarted>())
+                        {
+                            workerPidByExecutionId[started.ExecutionId] = started.Pid;
+                        }
+                    }
+
                     foreach (var executionId in crashRecovery.ToFinalizeAsAbandoned)
                     {
-                        await eventLogWriter.AppendAsync(
-                                new FlowEvent.ExecutionFailed(
-                                    executionId,
-                                    FailureClassification.Retryable,
-                                    "Abandoned during crash recovery: no ExecutionExited was recorded for this execution before Flow restarted."),
-                                ioCancellationToken)
-                            .ConfigureAwait(false);
+                        var failure = workerPidByExecutionId.TryGetValue(executionId, out var workerPid)
+                            && effectiveWorkerLivenessProbe(workerPid).Status == EngineLivenessStatus.Dead
+                            ? new FlowEvent.ExecutionFailed(
+                                executionId,
+                                FailureClassification.Permanent,
+                                $"Worker PID {workerPid} is no longer alive and no ExecutionExited was recorded.")
+                            : new FlowEvent.ExecutionFailed(
+                                executionId,
+                                FailureClassification.Retryable,
+                                "Abandoned during crash recovery: no ExecutionExited was recorded for this execution before Flow restarted.");
+
+                        await eventLogWriter.AppendAsync(failure, ioCancellationToken).ConfigureAwait(false);
                     }
 
                     continue;
@@ -1760,6 +1823,15 @@ public static class MutationInterface
                 // every entry into this wait, same as the idle branch, so a mark landing anywhere
                 // before capture is never lost.
                 var waitArrestWake = inFlightExecutions.NextArrestWake();
+                // This is a pump re-projection wake, not a second PID poller: the next round uses
+                // EngineLivenessProbe through effectiveWorkerLivenessProbe to classify a recorded worker PID.
+                Task? workerLivenessWake = null;
+                if (!hostStopRequested)
+                {
+                    workerLivenessWake = Task.Delay(effectiveWorkerLivenessProbeInterval, timeProvider, ioCancellationToken);
+                    waitCandidates.Add(workerLivenessWake);
+                }
+
                 waitCandidates.Add(waitArrestWake);
 
                 // A deferral deadline must wake this wait too, not only the idle branch above: a
@@ -1800,6 +1872,11 @@ public static class MutationInterface
                 // candidate list, and a cancelled-token append refuses before any post-stop
                 // dispatch could land) — the guard buys symmetry and one round of latency, not a
                 // hang fix.
+                if (completed == workerLivenessWake && !cancellationToken.IsCancellationRequested)
+                {
+                    continue;
+                }
+
                 if (completed == deferralWakeup && !cancellationToken.IsCancellationRequested)
                 {
                     continue;
@@ -1925,6 +2002,9 @@ public static class MutationInterface
     private static (bool? HookCanaryArmed, string? HookVerdictLedgerFileName) CaptureHookCanaryArmingFields(
         WorkerBinding.Process? processBinding) =>
         (processBinding?.Target.CountHookVerdicts is not null, processBinding?.Target.HookVerdictLedgerFileName);
+
+    private static EngineLivenessResult ProbeWorkerPid(uint pid) =>
+        pid > int.MaxValue ? new EngineLivenessResult(EngineLivenessStatus.Unknown, "invalid process identity") : EngineLivenessProbe.Probe((int)pid);
 
     private static (int Pid, DateTimeOffset StartTime) GetCurrentEngineIdentity()
     {
@@ -2062,6 +2142,11 @@ public static class MutationInterface
             // into a fabricated outcome.
             var dispatchResult = await dispatcher.DispatchAsync(prepared.Request, target, effectiveCancellationToken)
                 .ConfigureAwait(false);
+
+            if (inFlightExecutions.IsWorkerDead(prepared.Request.ExecutionId))
+            {
+                return;
+            }
 
             if (budgetMonitor is { Arrested: true })
             {

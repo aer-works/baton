@@ -58,30 +58,60 @@ public static class EngineLivenessProbe
                 return new EngineLivenessResult(EngineLivenessStatus.Dead);
             }
 
-            bool hasExited;
-            try
-            {
-                hasExited = process.HasExited;
-            }
-            catch (InvalidOperationException)
-            {
-                return new EngineLivenessResult(EngineLivenessStatus.Dead);
-            }
-            catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
-            {
-                return new EngineLivenessResult(EngineLivenessStatus.Unknown, ex.Message);
-            }
-
-            if (hasExited)
-            {
-                return new EngineLivenessResult(EngineLivenessStatus.Dead);
-            }
-
-            return new EngineLivenessResult(EngineLivenessStatus.Alive);
+            return ProbeProcess(process);
         }
         catch (ArgumentException)
         {
             return new EngineLivenessResult(EngineLivenessStatus.Dead);
+        }
+        catch (InvalidOperationException)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Dead);
+        }
+        catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Unknown, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Checks the existing process liveness probe without a start timestamp. Core lifecycle events
+    /// carry a worker PID but not its start time, so this only declares a worker dead when the OS
+    /// confirms that PID is absent or exited.
+    /// </summary>
+    public static EngineLivenessResult Probe(int pid)
+    {
+        if (pid <= 0)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Unknown, "invalid process identity");
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return ProbeProcess(process);
+        }
+        catch (ArgumentException)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Dead);
+        }
+        catch (InvalidOperationException)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Dead);
+        }
+        catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
+        {
+            return new EngineLivenessResult(EngineLivenessStatus.Unknown, ex.Message);
+        }
+    }
+
+    private static EngineLivenessResult ProbeProcess(Process process)
+    {
+        try
+        {
+            return process.HasExited
+                ? new EngineLivenessResult(EngineLivenessStatus.Dead)
+                : new EngineLivenessResult(EngineLivenessStatus.Alive);
         }
         catch (InvalidOperationException)
         {

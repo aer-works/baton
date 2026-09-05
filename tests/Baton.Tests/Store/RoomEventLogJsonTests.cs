@@ -54,6 +54,10 @@ public class RoomEventLogJsonTests
         // null is the implicit first assignment, "operator" an explicit reassignment.
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant),
         new RoomEvent.OrchestratorAssigned(new WorkerId("chat-worker"), FixedInstant, "operator"),
+        new RoomEvent.ArrestRequested("request-1", "latest", "cli", FixedInstant),
+        new RoomEvent.ArrestDelivered("request-1", new ExecutionId("ex-1"), FixedInstant),
+        new RoomEvent.ArrestRejected("request-2", new ExecutionId("ex-2"), "ambiguous target", FixedInstant),
+        new RoomEvent.ArrestExpired("request-3", null, "target settled", FixedInstant),
     ];
 
 

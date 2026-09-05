@@ -1,5 +1,7 @@
 using Baton.Domain;
 using Baton.Mutation;
+using Baton.Projection;
+using Baton.Status;
 using Baton.Store;
 
 namespace Baton.Cli.Tests;
@@ -54,6 +56,13 @@ public class CancelRequestPollerTests
             Environment: [],
             UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
 
+    private static async Task<ArrestRecord> ReadOnlyArrestAsync(string roomDirectoryPath, CancellationToken cancellationToken)
+    {
+        var roomLogPath = Path.Combine(roomDirectoryPath, BatonPaths.RoomLogFileName);
+        var events = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken);
+        return Assert.Single(RoomProjector.Project(events).Arrests);
+    }
+
     [Fact]
     public async Task Successful_delivery_when_registry_holds_target_delivers_and_consumes()
     {
@@ -80,6 +89,14 @@ public class CancelRequestPollerTests
                 Assert.False(File.Exists(requestPath), "expected the request to be consumed");
                 Assert.True(File.Exists($"{requestPath}.consumed"), "expected .consumed sibling to exist");
                 Assert.True(token.IsCancellationRequested, "expected registry to signal cancellation");
+
+                var arrest = await ReadOnlyArrestAsync(roomDirectory, TestContext.Current.CancellationToken);
+                Assert.Equal(ArrestLedgerStates.Delivered, arrest.State);
+                Assert.Equal(execId, arrest.ExecutionId);
+                Assert.Equal("cli", arrest.RequestedBy);
+                Assert.NotEqual(default(DateTimeOffset), arrest.RequestedAt);
+                Assert.NotNull(arrest.DeliveredAt);
+                Assert.Null(arrest.Reason);
             }
         }
         finally
@@ -96,10 +113,10 @@ public class CancelRequestPollerTests
         try
         {
             var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var execId = new ExecutionId("exec-settled");
             // Settled execution in log (Succeeded):
             await using (var writer = new FlowEventLogWriter(logPath))
             {
-                var execId = new ExecutionId("exec-settled");
                 await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execId, new StepId("a"))), TestContext.Current.CancellationToken);
                 await writer.AppendAsync(new FlowEvent.ExecutionSucceeded(execId), TestContext.Current.CancellationToken);
             }
@@ -115,6 +132,12 @@ public class CancelRequestPollerTests
             var requestPath = CancelRequestFile.GetPath(roomDirectory);
             Assert.False(File.Exists(requestPath), "expected the request to be consumed, not left pending");
             Assert.True(File.Exists($"{requestPath}.consumed"));
+
+            var arrest = await ReadOnlyArrestAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Equal(ArrestLedgerStates.Expired, arrest.State);
+            Assert.Equal(execId, arrest.ExecutionId);
+            Assert.NotNull(arrest.ExpiredAt);
+            Assert.Contains("already settled", arrest.Reason ?? string.Empty);
         }
         finally
         {
@@ -163,6 +186,12 @@ public class CancelRequestPollerTests
             Assert.False(File.Exists($"{requestPath}.consumed"));
             Assert.False(File.Exists($"{requestPath}.rejected"));
             Assert.DoesNotContain("too late", stderr.ToString(), StringComparison.Ordinal);
+
+            var arrest = await ReadOnlyArrestAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Equal(ArrestLedgerStates.Requested, arrest.State);
+            Assert.Equal(execId.Value, arrest.Target);
+            Assert.NotEqual(default(DateTimeOffset), arrest.RequestedAt);
+            Assert.Null(arrest.ExecutionId);
         }
         finally
         {
@@ -309,6 +338,12 @@ public class CancelRequestPollerTests
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
             Assert.Equal(execId, cancellationRejected.ExecutionId);
+
+            var arrest = await ReadOnlyArrestAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Equal(ArrestLedgerStates.Rejected, arrest.State);
+            Assert.Equal(execId, arrest.ExecutionId);
+            Assert.NotNull(arrest.RejectedAt);
+            Assert.Contains("after 5 polls", arrest.Reason ?? string.Empty);
         }
         finally
         {
@@ -536,6 +571,12 @@ public class CancelRequestPollerTests
             // quota-parked" and a prefix-only assertion here would pass unchanged against the
             // pre-widening message too, which would defeat the point of this test.
             Assert.Contains("'latest' requested, but no execution is currently Running or quota-parked", rejected.Reason);
+
+            var arrest = await ReadOnlyArrestAsync(roomDirectory, TestContext.Current.CancellationToken);
+            Assert.Equal(ArrestLedgerStates.Rejected, arrest.State);
+            Assert.Null(arrest.ExecutionId);
+            Assert.NotNull(arrest.RejectedAt);
+            Assert.Equal(rejected.Reason, arrest.Reason);
         }
         finally
         {

@@ -23,7 +23,8 @@ public sealed record RoomState(
     bool IsDormant = false,
     IReadOnlyList<PermissionAnswer>? PermissionAnswers = null,
     IReadOnlyList<DormancyTransition>? DormancyTransitions = null,
-    bool IsWorkflowOff = false)
+    bool IsWorkflowOff = false,
+    IReadOnlyList<ArrestRecord>? Arrests = null)
 {
     public IReadOnlyDictionary<GrantId, GrantState> ActiveGrants { get; init; } = ActiveGrants ?? new Dictionary<GrantId, GrantState>();
 
@@ -46,6 +47,12 @@ public sealed record RoomState(
     /// </summary>
     public IReadOnlyList<DormancyTransition> DormancyTransitions { get; init; } = DormancyTransitions ?? [];
 
+    /// <summary>
+    /// One projection per <c>cancel.request</c>, in request order. Empty for rooms whose history
+    /// predates the arrest ledger.
+    /// </summary>
+    public IReadOnlyList<ArrestRecord> Arrests { get; init; } = Arrests ?? [];
+
     public bool Equals(RoomState? other)
     {
         if (other is null)
@@ -66,7 +73,8 @@ public sealed record RoomState(
             !UnmatchedEntries.SequenceEqual(other.UnmatchedEntries) ||
             !OpenEscalations.SequenceEqual(other.OpenEscalations) ||
             !PermissionAnswers.SequenceEqual(other.PermissionAnswers) ||
-            !DormancyTransitions.SequenceEqual(other.DormancyTransitions))
+            !DormancyTransitions.SequenceEqual(other.DormancyTransitions) ||
+            !Arrests.SequenceEqual(other.Arrests))
         {
             return false;
         }
@@ -128,7 +136,11 @@ public sealed record RoomState(
             hash.Add(transition);
         }
 
+        foreach (var arrest in Arrests)
+        {
+            hash.Add(arrest);
+        }
+
         return hash.ToHashCode();
     }
 }
-

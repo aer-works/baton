@@ -84,7 +84,8 @@ public static class StatusCommand
             var sentinel = await TerminalSentinelWriter.TryReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
             if (sentinel is not null)
             {
-                PrintSentinel(output, options.Json, sentinel);
+                var arrests = await ArrestStatus.ReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
+                PrintSentinel(output, options.Json, sentinel with { Arrests = arrests.Count > 0 ? arrests : null });
                 return;
             }
         }
@@ -116,18 +117,19 @@ public static class StatusCommand
 
             var checkpoint = ProjectionCheckpointStore.Load(options.RoomDirectoryPath);
             var state = StateProjector.Project(events, snapshot, checkpoint);
+            var arrests = await ArrestStatus.ReadAsync(options.RoomDirectoryPath, cancellationToken).ConfigureAwait(false);
 
             if (options.Json)
             {
                 // #1356 point 1: the SAME state just projected above, not a second read of the
                 // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
                 // #1360: entries is the same list already read above, not a second ledger read.
-                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default);
+                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default, arrests);
                 output.WriteLine(JsonSerializer.Serialize(view));
                 return;
             }
 
-            PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath);
+            PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath, arrests);
 
             var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
             var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
@@ -533,11 +535,13 @@ public static class StatusCommand
         {
             output.WriteLine($"  {sentinel.Error}");
         }
+
+        ArrestStatus.WriteText(output, sentinel.Arrests ?? []);
     }
 
     private static void PrintState(
         TextWriter output, FlowState state, string logPath, IReadOnlyList<FlowEvent> events, IReadOnlyList<LogEntry> entries,
-        string roomDirectoryPath)
+        string roomDirectoryPath, IReadOnlyList<ArrestRecord> arrests)
     {
         output.WriteLine($"Workflow status: {state.Status}");
         output.WriteLine($"Log last updated: {ResolveLogUpdatedAt(logPath)}");
@@ -558,6 +562,8 @@ public static class StatusCommand
         {
             output.WriteLine($"  (supplementary) {stepLess.Worker}: execution={stepLess.ExecutionId} pending");
         }
+
+        ArrestStatus.WriteText(output, arrests);
 
         // #1360: one rolled-up line for the whole room, never per step here -- a machine consumer
         // wanting per-execution figures already has them from `--json`'s usage/linkedFromUsage.

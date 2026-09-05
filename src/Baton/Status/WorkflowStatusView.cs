@@ -198,7 +198,10 @@ public sealed record WorkflowStatusView(
     // absent in: spec/baton.md §3.
     [property: JsonPropertyName("terminalAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? TerminalAt = null);
+    string? TerminalAt = null,
+    [property: JsonPropertyName("arrests")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ArrestRecord>? Arrests = null);
 
 /// <summary>
 /// Builds <see cref="WorkflowStatusView"/> from the same <see cref="FlowState"/>
@@ -229,15 +232,17 @@ public static class WorkflowStatusProjector
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
-        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null) =>
-        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters);
+        IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
+        IReadOnlyList<ArrestRecord>? arrests = null) =>
+        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters, arrests);
 
     public static WorkflowStatusView Project<TParser>(
         FlowState state,
         WorkflowDefinitionSnapshot snapshot,
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
-        IReadOnlyDictionary<string, TParser>? adapters = null)
+        IReadOnlyDictionary<string, TParser>? adapters = null,
+        IReadOnlyList<ArrestRecord>? arrests = null)
         where TParser : IWorkerUsageParser
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -404,7 +409,7 @@ public static class WorkflowStatusProjector
 
         return new WorkflowStatusView(
             WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected,
-            ResolvedBy: resolvedBy, TerminalAt: terminalAt);
+            ResolvedBy: resolvedBy, TerminalAt: terminalAt, Arrests: arrests is { Count: > 0 } ? arrests : null);
     }
 
     /// <summary>

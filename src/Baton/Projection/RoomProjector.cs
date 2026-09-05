@@ -23,6 +23,8 @@ public static class RoomProjector
         var askedPermissions = new Dictionary<string, (string ToolName, string Category)>(StringComparer.Ordinal);
         var permissionAnswers = new List<PermissionAnswer>();
         var dormancyTransitions = new List<DormancyTransition>();
+        var arrests = new List<ArrestRecord>();
+        var arrestIndexByRequestId = new Dictionary<string, int>(StringComparer.Ordinal);
 
         foreach (var roomEvent in events)
         {
@@ -216,9 +218,120 @@ public static class RoomProjector
                 case RoomEvent.WorkflowSwitched switched:
                     isWorkflowOff = !switched.IsOn;
                     break;
+
+                case RoomEvent.ArrestRequested requested:
+                    if (!arrestIndexByRequestId.ContainsKey(requested.RequestId))
+                    {
+                        arrestIndexByRequestId[requested.RequestId] = arrests.Count;
+                        arrests.Add(new ArrestRecord(
+                            requested.RequestId,
+                            requested.Target,
+                            requested.RequestedBy,
+                            requested.RequestedAt));
+                    }
+
+                    break;
+
+                case RoomEvent.ArrestDelivered delivered:
+                    CompleteArrest(
+                        delivered.RequestId,
+                        delivered.ExecutionId,
+                        ArrestLedgerStates.Delivered,
+                        delivered.DeliveredAt,
+                        reason: null,
+                        arrestIndexByRequestId,
+                        arrests,
+                        unmatchedEntries);
+                    break;
+
+                case RoomEvent.ArrestRejected rejected:
+                    CompleteArrest(
+                        rejected.RequestId,
+                        rejected.ExecutionId,
+                        ArrestLedgerStates.Rejected,
+                        rejected.RejectedAt,
+                        rejected.Reason,
+                        arrestIndexByRequestId,
+                        arrests,
+                        unmatchedEntries);
+                    break;
+
+                case RoomEvent.ArrestExpired expired:
+                    CompleteArrest(
+                        expired.RequestId,
+                        expired.ExecutionId,
+                        ArrestLedgerStates.Expired,
+                        expired.ExpiredAt,
+                        expired.Reason,
+                        arrestIndexByRequestId,
+                        arrests,
+                        unmatchedEntries);
+                    break;
             }
         }
 
-        return new RoomState(heldWork, unmatchedEntries, activeGrants, openEscalations, isDormant, permissionAnswers, dormancyTransitions, isWorkflowOff);
+        return new RoomState(
+            heldWork,
+            unmatchedEntries,
+            activeGrants,
+            openEscalations,
+            isDormant,
+            permissionAnswers,
+            dormancyTransitions,
+            isWorkflowOff,
+            arrests);
+    }
+
+    private static void CompleteArrest(
+        string requestId,
+        ExecutionId? executionId,
+        string terminalState,
+        DateTimeOffset at,
+        string? reason,
+        IReadOnlyDictionary<string, int> arrestIndexByRequestId,
+        IList<ArrestRecord> arrests,
+        ICollection<string> unmatchedEntries)
+    {
+        if (!ArrestLedgerStates.Terminal.Contains(terminalState))
+        {
+            throw new ArgumentOutOfRangeException(nameof(terminalState), terminalState, "Unknown arrest terminal state.");
+        }
+
+        if (!arrestIndexByRequestId.TryGetValue(requestId, out var index))
+        {
+            unmatchedEntries.Add($"{terminalState} arrest outcome for unknown request '{requestId}'");
+            return;
+        }
+
+        var record = arrests[index];
+        if (ArrestLedgerStates.IsTerminal(record.State))
+        {
+            return;
+        }
+
+        arrests[index] = terminalState switch
+        {
+            ArrestLedgerStates.Delivered => record with
+            {
+                State = terminalState,
+                ExecutionId = executionId,
+                DeliveredAt = at,
+            },
+            ArrestLedgerStates.Rejected => record with
+            {
+                State = terminalState,
+                ExecutionId = executionId,
+                RejectedAt = at,
+                Reason = reason,
+            },
+            ArrestLedgerStates.Expired => record with
+            {
+                State = terminalState,
+                ExecutionId = executionId,
+                ExpiredAt = at,
+                Reason = reason,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(terminalState), terminalState, "Unknown arrest terminal state."),
+        };
     }
 }

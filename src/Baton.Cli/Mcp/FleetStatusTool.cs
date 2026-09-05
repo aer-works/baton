@@ -306,6 +306,7 @@ public sealed class FleetStatusTool : IMcpTool
             var (terminalRole, terminalAdapter, terminalModel, terminalEffort, terminalTimeoutMs) =
                 ProjectBindingFields(terminalBinding);
             var terminalLineage = await TryReadLineageAsync(roomDir, cancellationToken).ConfigureAwait(false);
+            var terminalArrests = await TryReadArrestsAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             return new FleetRoomStatusView(
                 Name: roomName,
@@ -328,7 +329,8 @@ public sealed class FleetStatusTool : IMcpTool
                 ParentExecutionId: terminalLineage.ParentExecutionId,
                 ContinuedSessionId: terminalLineage.ContinuedSessionId,
                 TerminalAt: sentinel.TerminalAt,
-                Delivery: await TryResolveDeliveryAsync(roomDir, sentinel.Outputs, cancellationToken).ConfigureAwait(false));
+                Delivery: await TryResolveDeliveryAsync(roomDir, sentinel.Outputs, cancellationToken).ConfigureAwait(false),
+                Arrests: terminalArrests);
         }
 
         // 2. Active room: load snapshot + flow events and project
@@ -377,6 +379,7 @@ public sealed class FleetStatusTool : IMcpTool
 
             var checkpoint = ProjectionCheckpointStore.Load(roomDir);
             var state = StateProjector.Project(events, snapshot, checkpoint);
+            var arrests = await TryReadArrestsAsync(roomDir, cancellationToken).ConfigureAwait(false);
 
             if (!includeTerminal && state.Status == WorkflowStatus.Terminal)
             {
@@ -388,7 +391,7 @@ public sealed class FleetStatusTool : IMcpTool
             // StandardWorkerUsageParsers.Default internally (#1590), so this argument is redundant
             // rather than load-bearing, but names the parser set the tool's usage figures depend on.
             var view = WorkflowStatusProjector.Project(
-                state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default);
+                state, snapshot, roomDir, entries, StandardWorkerUsageParsers.Default, arrests);
             var eventTimestamps = WorkflowStatusProjector.ExtractEventTimestamps(entries);
 
             var steps = new List<FleetStepStatusView>(view.Steps.Count);
@@ -462,7 +465,8 @@ public sealed class FleetStatusTool : IMcpTool
                 // no gate of its own here -- including on the #1513 `Stalled` display downgrade above,
                 // which never turns a terminal room into a Running one.
                 TerminalAt: view.TerminalAt,
-                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false));
+                Delivery: await TryResolveDeliveryAsync(roomDir, view.Outputs, cancellationToken).ConfigureAwait(false),
+                Arrests: arrests);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -473,6 +477,27 @@ public sealed class FleetStatusTool : IMcpTool
                 Name: roomName,
                 Path: roomDir,
                 Error: ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Reads the append-only room arrest ledger independently of the Flow projection. A missing or
+    /// unreadable room journal is absent-safe for Fleet Glass: it omits <c>arrests</c> rather than
+    /// hiding the room's ordinary status.
+    /// </summary>
+    private static async Task<IReadOnlyList<ArrestRecord>?> TryReadArrestsAsync(
+        string roomDir, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var roomLogPath = Path.Combine(roomDir, BatonPaths.RoomLogFileName);
+            var events = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+            var arrests = RoomProjector.Project(events).Arrests;
+            return arrests.Count > 0 ? arrests : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
         }
     }
 
@@ -738,7 +763,10 @@ public sealed record FleetRoomStatusView(
     // #734: spec/baton.md §6 schema states this field's shape and its absence rule -- see there.
     [property: JsonPropertyName("delivery")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DeliveryStatusView? Delivery = null);
+    DeliveryStatusView? Delivery = null,
+    [property: JsonPropertyName("arrests")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ArrestRecord>? Arrests = null);
 
 /// <summary>
 /// Status of a single workflow step within a fleet room status report.

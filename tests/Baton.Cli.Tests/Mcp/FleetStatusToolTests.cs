@@ -264,6 +264,11 @@ public sealed class FleetStatusToolTests : IDisposable
         await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(req), TestContext.Current.CancellationToken);
         await writer.AppendAsync(new CoreEvent.ExecutionStarted(execId, Pid: 4242), TestContext.Current.CancellationToken);
         await writer.DisposeAsync();
+        await using (var roomWriter = new RoomEventLogWriter(Path.Combine(room, BatonPaths.RoomLogFileName)))
+        {
+            await roomWriter.AppendAsync(new RoomEvent.ArrestRequested("request-active", "latest", "cli", DateTimeOffset.UtcNow), TestContext.Current.CancellationToken);
+            await roomWriter.AppendAsync(new RoomEvent.ArrestDelivered("request-active", execId, DateTimeOffset.UtcNow), TestContext.Current.CancellationToken);
+        }
 
         var tool = new FleetStatusTool();
         var result = await tool.CallAsync(Parse("{}"), TestContext.Current.CancellationToken);
@@ -280,6 +285,9 @@ public sealed class FleetStatusToolTests : IDisposable
         Assert.Equal("Running", singleStep.State);
         Assert.Equal("exec-active-1", singleStep.Execution);
         Assert.NotNull(singleStep.Timestamp);
+        var arrest = Assert.Single(singleRoom.Arrests!);
+        Assert.Equal("delivered", arrest.State);
+        Assert.Equal("exec-active-1", arrest.ExecutionId!.Value.Value);
         // #1522: attempt is derived from lifetime execution count (1 on first execution), while
         // failure fields (failureKind, retryEligible) stay omitted for a step that hasn't failed.
         Assert.Equal(1, singleStep.Attempt);

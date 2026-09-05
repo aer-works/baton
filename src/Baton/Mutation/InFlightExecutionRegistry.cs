@@ -20,6 +20,7 @@ public sealed class InFlightExecutionRegistry
 {
     private readonly Lock _lock = new();
     private readonly Dictionary<ExecutionId, CancellationTokenSource> _entries = new();
+    private readonly HashSet<ExecutionId> _deadWorkers = [];
     private readonly Dictionary<ExecutionId, string> _arrestIntents = new();
     private TaskCompletionSource _arrestWake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IEventLogWriter? _eventLogWriter;
@@ -247,6 +248,30 @@ public sealed class InFlightExecutionRegistry
     /// through <see cref="RequestStopAsync"/>, which records intent before it ever signals, rather
     /// than letting cancellation reach Core passively with nothing recorded.
     /// </summary>
+    /// <summary>Marks an in-flight worker as externally dead and interrupts its dispatcher once.</summary>
+    internal bool TryMarkWorkerDead(ExecutionId executionId)
+    {
+        CancellationTokenSource? cancellationTokenSource;
+        lock (_lock)
+        {
+            if (!_entries.TryGetValue(executionId, out cancellationTokenSource) || !_deadWorkers.Add(executionId))
+            {
+                return false;
+            }
+        }
+
+        TryCancel(cancellationTokenSource);
+        return true;
+    }
+
+    internal bool IsWorkerDead(ExecutionId executionId)
+    {
+        lock (_lock)
+        {
+            return _deadWorkers.Contains(executionId);
+        }
+    }
+
     internal CancellationToken Register(ExecutionId executionId)
     {
         var cancellationTokenSource = new CancellationTokenSource();
@@ -280,6 +305,7 @@ public sealed class InFlightExecutionRegistry
         lock (_lock)
         {
             _entries.Remove(executionId, out cancellationTokenSource);
+            _deadWorkers.Remove(executionId);
         }
 
         cancellationTokenSource?.Dispose();

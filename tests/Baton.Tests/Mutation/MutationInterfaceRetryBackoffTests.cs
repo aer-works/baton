@@ -307,6 +307,8 @@ public class MutationInterfaceRetryBackoffTests
             var reader = new FlowEventLogReader(logPath);
             var dispatcher = new CoreDispatcher(writer, writer);
 
+            // Control: a started execution with no recorded exit is not labelled as a dead
+            // worker unless the shared probe confirms that fact.
             var pumpTask = MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-7"),
                 roomDirectory,
@@ -318,7 +320,8 @@ public class MutationInterfaceRetryBackoffTests
                 dispatcher,
                 timeProvider: fakeTime,
                 jitterSource: () => 0.0,
-                cancellationToken: TestContext.Current.CancellationToken);
+                cancellationToken: TestContext.Current.CancellationToken,
+                workerLivenessProbe: _ => new EngineLivenessResult(EngineLivenessStatus.Alive));
 
             // StepRetryScheduled is appended after the abandonment's ExecutionFailed, so its
             // presence proves both halves of the recovery happened.
@@ -329,6 +332,98 @@ public class MutationInterfaceRetryBackoffTests
             Assert.Contains(events, e => e is FlowEvent.ExecutionFailed f && f.ExecutionId == execId && f.Reason!.Contains("Abandoned"));
 
             await AdvanceUntilPumpCompletesAsync(fakeTime, pumpTask, TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+
+    [Fact]
+    public async Task Test7_Dead_worker_pid_is_recorded_as_terminal_failure_with_a_fake_probe()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
+        var artifactsRoot = Path.Combine(roomDirectory, "artifacts");
+        var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+        const uint deadWorkerPid = 4242;
+
+        try
+        {
+            var executionId = new ExecutionId("dead-worker-exec");
+            var snapshot = new WorkflowDefinitionSnapshot(
+                new WorkflowDefinitionSnapshotId("snapshot-dead-worker"),
+                new WorkflowTemplateId("template-dead-worker"),
+                WorkflowTemplateVersion: 1,
+                Steps:
+                [
+                    new WorkflowStepDefinition(
+                        StepA,
+                        "worker-a",
+                        [],
+                        ["out.txt"],
+                        DependsOn: [],
+                        RetryPolicy: new RetryPolicy(MaxAttempts: 2, Backoff: BackoffPolicy.Steady)),
+                ]);
+            var bindings = new Dictionary<string, WorkerBinding>
+            {
+                ["worker-a"] = new WorkerBinding.Process(
+                    new WorkerContract("worker-a", [], [new ProducedOutput("out.txt")], []),
+                    ExitWithFailureCode(),
+                    TimeSpan.FromSeconds(30)),
+            };
+
+            await using (var initialWriter = new FlowEventLogWriter(logPath))
+            {
+                var request = new ExecutionRequest(
+                    executionId,
+                    new WorkflowId("wf-dead-worker"),
+                    StepA,
+                    "worker-a",
+                    [],
+                    ["out.txt"],
+                    TimeSpan.FromSeconds(30),
+                    [],
+                    new Dictionary<StepId, ExecutionId>());
+                await initialWriter.AppendAsync(
+                    new FlowEvent.ExecutionRequestAccepted(request),
+                    TestContext.Current.CancellationToken);
+                await initialWriter.AppendAsync(
+                    new CoreEvent.ExecutionStarted(executionId, deadWorkerPid),
+                    TestContext.Current.CancellationToken);
+            }
+
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var probedPids = new List<uint>();
+
+            var finalState = await MutationInterface.StartWorkflowAsync(
+                new WorkflowId("wf-dead-worker"),
+                roomDirectory,
+                snapshot,
+                bindings,
+                artifactsRoot,
+                reader,
+                writer,
+                new CoreDispatcher(writer, writer),
+                cancellationToken: TestContext.Current.CancellationToken,
+                workerLivenessProbe: pid =>
+                {
+                    probedPids.Add(pid);
+                    return new EngineLivenessResult(EngineLivenessStatus.Dead);
+                });
+
+            Assert.Equal([deadWorkerPid], probedPids);
+            Assert.Equal(WorkflowStatus.Terminal, finalState.Status);
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var failure = Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
+            Assert.Equal(executionId, failure.ExecutionId);
+            Assert.Equal(FailureClassification.Permanent, failure.FailureClassification);
+            Assert.Equal(
+                $"Worker PID {deadWorkerPid} is no longer alive and no ExecutionExited was recorded.",
+                failure.Reason);
+            Assert.Empty(events.OfType<FlowEvent.StepRetryScheduled>());
         }
         finally
         {

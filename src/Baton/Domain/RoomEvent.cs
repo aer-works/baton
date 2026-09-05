@@ -24,6 +24,10 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(WorkerJoined), "workerJoined")]
 [JsonDerivedType(typeof(WorkerRenamed), "workerRenamed")]
 [JsonDerivedType(typeof(OrchestratorAssigned), "orchestratorAssigned")]
+[JsonDerivedType(typeof(ArrestRequested), "arrestRequested")]
+[JsonDerivedType(typeof(ArrestDelivered), "arrestDelivered")]
+[JsonDerivedType(typeof(ArrestRejected), "arrestRejected")]
+[JsonDerivedType(typeof(ArrestExpired), "arrestExpired")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -133,7 +137,7 @@ public abstract record RoomEvent
     /// <summary>
     /// Records that a worker's standing permission (0055's object — a durable grant living in
     /// <c>bindings.json</c>, not an in-flight ask) was withdrawn (#1251). Deliberately a different
-    /// family from <see cref="RuntimePermissionRevoked"/> above, which fires when a *pending ask*
+    /// family from <see cref="RuntimePermissionRevoked"/> above, which fires when a <c>pending ask</c>
     /// is revoked or times out — reusing that noun for a standing withdrawal would put two meanings
     /// on one event, which 0002 forbids.
     /// <para>
@@ -201,5 +205,35 @@ public abstract record RoomEvent
         WorkerId WorkerId,
         DateTimeOffset Timestamp,
         string? AssignedBy = null) : RoomEvent;
-}
 
+    /// <summary>
+    /// The request half of the room-side arrest ledger. This is a room event rather than a Flow
+    /// event because <c>baton cancel</c> writes it while a live pump owns <c>flow.lock</c>; the
+    /// room journal has its own writer/lock and Fleet Glass only copies the CLI verb that asks.
+    /// </summary>
+    public sealed record ArrestRequested(
+        string RequestId,
+        string Target,
+        string RequestedBy,
+        DateTimeOffset RequestedAt) : RoomEvent;
+
+    /// <summary>Terminal room fact: the request reached its named execution's delivery path.</summary>
+    public sealed record ArrestDelivered(
+        string RequestId,
+        ExecutionId ExecutionId,
+        DateTimeOffset DeliveredAt) : RoomEvent;
+
+    /// <summary>Terminal room fact: the request was refused, with its operator-readable reason.</summary>
+    public sealed record ArrestRejected(
+        string RequestId,
+        ExecutionId? ExecutionId,
+        string Reason,
+        DateTimeOffset RejectedAt) : RoomEvent;
+
+    /// <summary>Terminal room fact: the request could no longer affect a settled or superseded target.</summary>
+    public sealed record ArrestExpired(
+        string RequestId,
+        ExecutionId? ExecutionId,
+        string Reason,
+        DateTimeOffset ExpiredAt) : RoomEvent;
+}

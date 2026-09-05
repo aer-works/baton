@@ -1,85 +1,96 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Domain;
 using Baton.Outcomes;
 
 namespace Baton.Cli;
 
-/// <summary>
-/// <c>cancel.request</c> (#1495): the out-of-band arrest channel a live <c>baton run</c> pump polls
-/// without ever touching <c>flow.lock</c> — the whole point, since the pump already holds that guard
-/// for its entire duration (<see cref="Baton.Concurrency.ConcurrencyGuard.Acquire"/>), which is exactly
-/// what makes <see cref="MutationInterface.RequestCancellationAsync"/> unreachable from a second
-/// process. <see cref="CancelCommand"/> writes this file when it catches
-/// <see cref="Baton.Concurrency.WorkflowLockedException"/> from that path; <see cref="CancelRequestPoller"/>
-/// is the pump-side reader.
-/// </summary>
-/// <remarks>
-/// Same atomic-write discipline as <see cref="Baton.Status.TerminalSentinelWriter"/>: serialize to a
-/// per-call-GUID <c>.tmp</c> sibling, then <see cref="File.Move(string, string, bool)"/> into place, so
-/// a poller mid-tick never observes a torn write. Consumed by renaming to <c>.consumed</c> (a settled
-/// request, delivered or a too-late no-op), <c>.swept</c> (a stale pending request cleared at pump start),
-/// or <c>.rejected</c> (malformed content or undeliverable target, written with reason in body) rather
-/// than deleting outright — any rename lets a second, later <c>cancel.request</c> write land clean, and
-/// leaves the acted-on one on disk for a bystander to inspect.
-/// </remarks>
+/// <summary>Atomic room-side <c>cancel.request</c> file operations.</summary>
 public static class CancelRequestFile
 {
     public const string FileName = "cancel.request";
-
-    /// <summary>The literal <see cref="Content.Target"/> meaning "whichever single execution is the room's target lane right now" (Running, or #1607's quota-parked candidate) — resolved at poll time by <see cref="RunningExecutionResolver"/>, not at write time.</summary>
     public const string LatestTarget = "latest";
-
     private static readonly JsonSerializerOptions JsonOptions = new();
 
-    /// <param name="Target">Either <see cref="LatestTarget"/> or an explicit <c>ExecutionId</c> value.</param>
-    /// <param name="WriterPid">
-    /// #1649: the writing process's own pid, stamped by <see cref="WriteAsync"/> — together with
-    /// <paramref name="WriterProcessStartTimeUtc"/>, what <see cref="DeleteStalePendingRequestAsync"/>
-    /// feeds <see cref="EngineLivenessProbe"/> to tell a still-plausibly-live writer apart from a
-    /// crashed prior pump's leftover. <c>null</c> for a request written before this field existed.
-    /// </param>
-    /// <param name="WriterProcessStartTimeUtc">The writer's own process start time, the same pid-recycling discriminator <see cref="EngineLivenessProbe"/> uses everywhere else in this codebase.</param>
-    /// <param name="WrittenAtUtc">
-    /// #1649: when this request was written, stamped by <see cref="WriteAsync"/>. The primary
-    /// discriminant <see cref="DeleteStalePendingRequestAsync"/> uses: a request written at or after
-    /// the sweeping process's own start cannot be a leftover from a PRIOR pump.
-    /// </param>
-    public sealed record Content(string Target, int? WriterPid = null, DateTimeOffset? WriterProcessStartTimeUtc = null, DateTimeOffset? WrittenAtUtc = null);
+    public sealed record Content(
+        string Target,
+        int? WriterPid = null,
+        DateTimeOffset? WriterProcessStartTimeUtc = null,
+        DateTimeOffset? WrittenAtUtc = null,
+        string? RequestId = null,
+        string? RequestedBy = null);
 
-    /// <param name="Target">The original target (either <see cref="LatestTarget"/>, an explicit <c>ExecutionId</c>, or empty if unparsed).</param>
-    /// <param name="Reason">The diagnostic explanation of why the request was rejected.</param>
-    public sealed record RejectedContent(string Target, string Reason);
+    public sealed record RejectedContent(
+        string Target,
+        string Reason,
+        string? RequestId = null,
+        string? ExecutionId = null,
+        string? RequestedBy = null,
+        DateTimeOffset? RequestedAtUtc = null,
+        DateTimeOffset? RejectedAtUtc = null);
+
+    internal sealed record RequestDetails(
+        string RequestId,
+        string Target,
+        string RequestedBy,
+        DateTimeOffset RequestedAt);
 
     public static string GetPath(string roomDirectoryPath) => Path.Combine(roomDirectoryPath, FileName);
 
-    /// <summary>Atomic write (temp + rename) of a fresh request. Overwrites any prior file at this path.</summary>
     public static async Task WriteAsync(string roomDirectoryPath, string target, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         ArgumentException.ThrowIfNullOrEmpty(target);
-
         Directory.CreateDirectory(roomDirectoryPath);
+
         var path = GetPath(roomDirectoryPath);
+        var previousLastWriteUtc = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : (DateTime?)null;
+        var previous = previousLastWriteUtc is { } ? await TryReadAsync(path, cancellationToken).ConfigureAwait(false) : null;
+        var now = DateTimeOffset.UtcNow;
+        var content = new Content(
+            target,
+            Environment.ProcessId,
+            new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime(),
+            now,
+            Guid.NewGuid().ToString("N"),
+            "cli");
         var tempPath = Path.Combine(roomDirectoryPath, $"{FileName}.{Guid.NewGuid():N}.tmp");
-        var writerProcessStartTimeUtc = new DateTimeOffset(Process.GetCurrentProcess().StartTime).ToUniversalTime();
-        var content = new Content(target, Environment.ProcessId, writerProcessStartTimeUtc, DateTimeOffset.UtcNow);
-        var json = JsonSerializer.Serialize(content, JsonOptions);
-        await File.WriteAllTextAsync(tempPath, json, cancellationToken).ConfigureAwait(false);
+
+        await File.WriteAllTextAsync(tempPath, JsonSerializer.Serialize(content, JsonOptions), cancellationToken).ConfigureAwait(false);
         File.Move(tempPath, path, overwrite: true);
+
+        if (previous is not null && previousLastWriteUtc is { } previousWrite)
+        {
+            var prior = Describe(previous, previousWrite);
+            await ArrestLedger.RecordExpiredAsync(
+                    roomDirectoryPath,
+                    prior.RequestId,
+                    prior.Target,
+                    prior.RequestedBy,
+                    prior.RequestedAt,
+                    executionId: null,
+                    "superseded by a newer cancel.request",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var details = Describe(content, File.GetLastWriteTimeUtc(path));
+        await ArrestLedger.RecordRequestedAsync(
+                roomDirectoryPath,
+                details.RequestId,
+                details.Target,
+                details.RequestedBy,
+                details.RequestedAt,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Reads and parses the request file at <paramref name="path"/>. Returns <c>null</c> for anything
-    /// malformed — invalid JSON, no <c>Target</c> field, or a blank one — fail closed: a caller sees
-    /// "no valid request", never an exception, so a malformed file can never crash the pump's poll loop.
-    /// </summary>
     public static async Task<Content?> TryReadAsync(string path, CancellationToken cancellationToken)
     {
         try
         {
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var content = await JsonSerializer.DeserializeAsync<Content>(stream, JsonOptions, cancellationToken)
-                .ConfigureAwait(false);
+            var content = await JsonSerializer.DeserializeAsync<Content>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
             return content is null || string.IsNullOrWhiteSpace(content.Target) ? null : content;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
@@ -88,17 +99,12 @@ public static class CancelRequestFile
         }
     }
 
-    /// <summary>
-    /// Reads and parses a rejected request file at <paramref name="path"/>. Returns <c>null</c> if
-    /// absent or malformed.
-    /// </summary>
     public static async Task<RejectedContent?> TryReadRejectedAsync(string path, CancellationToken cancellationToken)
     {
         try
         {
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return await JsonSerializer.DeserializeAsync<RejectedContent>(stream, JsonOptions, cancellationToken)
-                .ConfigureAwait(false);
+            return await JsonSerializer.DeserializeAsync<RejectedContent>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
@@ -106,37 +112,62 @@ public static class CancelRequestFile
         }
     }
 
-    /// <summary>Marks a request as settled (delivered, or a too-late no-op) so a fresh write is expressible.</summary>
+    internal static RequestDetails Describe(Content content, DateTime lastWriteUtc) =>
+        new(
+            string.IsNullOrWhiteSpace(content.RequestId) ? $"legacy-{lastWriteUtc.Ticks:x}" : content.RequestId,
+            content.Target,
+            string.IsNullOrWhiteSpace(content.RequestedBy) ? "cli" : content.RequestedBy,
+            content.WrittenAtUtc ?? new DateTimeOffset(lastWriteUtc, TimeSpan.Zero));
+
+    internal static RequestDetails DescribeMalformed(DateTime lastWriteUtc) =>
+        new($"malformed-{lastWriteUtc.Ticks:x}", "(malformed)", "unknown", new DateTimeOffset(lastWriteUtc, TimeSpan.Zero));
+
     public static void Consume(string path) => RenameBestEffort(path, $"{path}.consumed");
 
-    /// <summary>
-    /// Best-effort rename to <c>.swept</c> of any PENDING request left over from a prior pump (#1495 review finding 5, F8):
-    /// a crash-recovery resubmission (<c>ProcessCrashRecoveryDetector</c>) can re-dispatch a step under
-    /// the SAME <c>ExecutionId</c> a stale request already named — letting that request survive into
-    /// the fresh pump risks arresting the resubmission instead of whatever it was actually asking to
-    /// cancel. Called once, at pump start, before this pump's own <see cref="CancelRequestPoller"/>
-    /// begins — renames to <c>.swept</c> rather than deleting outright to keep the inspect-the-record
-    /// discipline, and never touches an already-settled <c>.consumed</c>/<c>.rejected</c>/<c>.swept</c>
-    /// sibling, which is historical record, not a pending request.
-    /// </summary>
-    /// <param name="invocationStartUtc">
-    /// #1649: this pump's own start, captured BEFORE <c>WorktreeWorkspaces.Provision</c> runs — i.e.
-    /// before this call. <c>RunCommand.ExecuteAsync</c>'s transient worktree-provisioning lock
-    /// acquire/release happens between that capture and this sweep, and a concurrent <c>baton cancel</c>
-    /// that observes the released lock can land its own, live <c>cancel.request</c> write in that same
-    /// narrow window — indistinguishable from a crashed prior pump's leftover by file existence alone.
-    /// A request whose own <see cref="Content.WrittenAtUtc"/> is at or after this value cannot be that
-    /// leftover (it was written no earlier than THIS invocation started), so it is left for the poller
-    /// rather than swept.
-    /// </param>
-    /// <remarks>
-    /// A request with no <see cref="Content.WrittenAtUtc"/>/<see cref="Content.WriterPid"/> recorded
-    /// (malformed content, or written before #1649) cannot be discriminated at all — swept
-    /// unconditionally, matching the pre-#1649 behaviour, since a live <see cref="WriteAsync"/> write
-    /// always stamps both fields and so never reaches that branch.
-    /// </remarks>
+    internal static async Task ConsumeDeliveredAsync(
+        string roomDirectoryPath,
+        string path,
+        RequestDetails request,
+        ExecutionId executionId,
+        CancellationToken cancellationToken)
+    {
+        await ArrestLedger.RecordDeliveredAsync(
+                roomDirectoryPath,
+                request.RequestId,
+                request.Target,
+                request.RequestedBy,
+                request.RequestedAt,
+                executionId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        Consume(path);
+    }
+
+    internal static async Task ConsumeExpiredAsync(
+        string roomDirectoryPath,
+        string path,
+        RequestDetails request,
+        ExecutionId? executionId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await ArrestLedger.RecordExpiredAsync(
+                roomDirectoryPath,
+                request.RequestId,
+                request.Target,
+                request.RequestedBy,
+                request.RequestedAt,
+                executionId,
+                reason,
+                cancellationToken)
+            .ConfigureAwait(false);
+        Consume(path);
+    }
+
     public static async Task DeleteStalePendingRequestAsync(
-        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default)
+        string roomDirectoryPath,
+        DateTimeOffset invocationStartUtc,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = GetPath(roomDirectoryPath);
@@ -145,50 +176,86 @@ public static class CancelRequestFile
             return;
         }
 
+        var lastWriteUtc = File.GetLastWriteTimeUtc(path);
         var content = await TryReadAsync(path, cancellationToken).ConfigureAwait(false);
         if (content is not { WrittenAtUtc: { } writtenAtUtc, WriterPid: { } writerPid })
         {
+            var malformed = content is null ? DescribeMalformed(lastWriteUtc) : Describe(content, lastWriteUtc);
+            await ArrestLedger.RecordExpiredAsync(
+                    roomDirectoryPath,
+                    malformed.RequestId,
+                    malformed.Target,
+                    malformed.RequestedBy,
+                    malformed.RequestedAt,
+                    executionId: null,
+                    "stale pending cancel.request was swept at pump start",
+                    cancellationToken)
+                .ConfigureAwait(false);
             RenameBestEffort(path, $"{path}.swept");
             return;
         }
 
-        // Fail closed toward NOT sweeping: only a request that both predates this invocation's own
-        // start AND whose recorded writer process is confirmed no longer running is provably a
-        // leftover, not a live concurrent write racing the window above. Unknown liveness (no
-        // confirmable process identity) is deliberately NOT treated as "not alive" here — the same
-        // direction CancelCommand's own dead-holder gate takes, just aimed at the opposite outcome
-        // (there, Unknown blocks an action; here, it blocks a deletion).
-        var predatesThisInvocation = writtenAtUtc < invocationStartUtc;
-        var writerConfirmedDead = EngineLivenessProbe.Probe(writerPid, content.WriterProcessStartTimeUtc).Status
-            == EngineLivenessStatus.Dead;
-
-        if (!predatesThisInvocation || !writerConfirmedDead)
+        var deadWriter = EngineLivenessProbe.Probe(writerPid, content.WriterProcessStartTimeUtc).Status == EngineLivenessStatus.Dead;
+        if (writtenAtUtc < invocationStartUtc && deadWriter)
         {
-            return;
+            var request = Describe(content, lastWriteUtc);
+            await ArrestLedger.RecordExpiredAsync(
+                    roomDirectoryPath,
+                    request.RequestId,
+                    request.Target,
+                    request.RequestedBy,
+                    request.RequestedAt,
+                    executionId: null,
+                    "stale pending cancel.request was swept at pump start",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            RenameBestEffort(path, $"{path}.swept");
         }
-
-        RenameBestEffort(path, $"{path}.swept");
     }
 
-    /// <summary>Fail-closed outcome for unresolvable or undeliverable requests: logs why and records a rejected record with reason in body.</summary>
-    public static void Reject(string path, string? target, string reason)
+    public static void Reject(string path, string? target, string reason) =>
+        Reject(path, target, reason, requestId: null, executionId: null, requestedBy: null, requestedAtUtc: null);
+
+    public static void Reject(string path, string reason) => Reject(path, null, reason);
+
+    internal static async Task RejectAsync(
+        string roomDirectoryPath,
+        string path,
+        RequestDetails request,
+        ExecutionId? executionId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        await ArrestLedger.RecordRejectedAsync(
+                roomDirectoryPath,
+                request.RequestId,
+                request.Target,
+                request.RequestedBy,
+                request.RequestedAt,
+                executionId,
+                reason,
+                cancellationToken)
+            .ConfigureAwait(false);
+        Reject(path, request.Target, reason, request.RequestId, executionId?.Value, request.RequestedBy, request.RequestedAt);
+    }
+
+    private static void Reject(
+        string path,
+        string? target,
+        string reason,
+        string? requestId,
+        string? executionId,
+        string? requestedBy,
+        DateTimeOffset? requestedAtUtc)
     {
         try
         {
             Console.Error.WriteLine($"cancel.request at '{path}' rejected: {reason}");
-        }
-        catch
-        {
-            // F6: swallow broken stderr pipe
-        }
-
-        var rejectedPath = $"{path}.rejected";
-        var roomDirectory = Path.GetDirectoryName(path) ?? string.Empty;
-        var tempPath = Path.Combine(roomDirectory, $"{FileName}.{Guid.NewGuid():N}.rejected.tmp");
-        try
-        {
-            var json = JsonSerializer.Serialize(new RejectedContent(target ?? string.Empty, reason), JsonOptions);
-            File.WriteAllText(tempPath, json);
+            var roomDirectory = Path.GetDirectoryName(path) ?? string.Empty;
+            var tempPath = Path.Combine(roomDirectory, $"{FileName}.{Guid.NewGuid():N}.rejected.tmp");
+            var rejectedPath = $"{path}.rejected";
+            var body = new RejectedContent(target ?? string.Empty, reason, requestId, executionId, requestedBy, requestedAtUtc, DateTimeOffset.UtcNow);
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(body, JsonOptions));
             File.Move(tempPath, rejectedPath, overwrite: true);
             File.Delete(path);
         }
@@ -196,16 +263,13 @@ public static class CancelRequestFile
         {
             try
             {
-                Console.Error.WriteLine($"Could not write rejected cancel.request at '{rejectedPath}': {ex.Message}");
+                Console.Error.WriteLine($"Could not write rejected cancel.request: {ex.Message}");
             }
             catch
             {
             }
         }
     }
-
-    /// <summary>Fail-closed outcome for malformed content: logs why, then gets it out of the poller's way.</summary>
-    public static void Reject(string path, string reason) => Reject(path, null, reason);
 
     private static void RenameBestEffort(string path, string destinationPath)
     {
@@ -215,10 +279,6 @@ public static class CancelRequestFile
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort, the same shape TerminalSentinelWriter.DeleteStaleSentinel's opt-in
-            // `bestEffort: true` takes (its default fails closed): a rename that cannot land
-            // (the file vanished, or is transiently held) must not crash the poll loop —
-            // the worst case is this same request being read again next tick.
             try
             {
                 Console.Error.WriteLine($"Could not rename '{path}' to '{destinationPath}': {ex.Message}");
