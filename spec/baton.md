@@ -2630,6 +2630,22 @@ cadence and the operator-approved rules behind it (its own doc comment states th
 from that call's own room scan — `vendors[]` is never itself a live vendor spawn. **Advisory only**:
 nothing in this slice reads `vendors[]` to hold, warn, or reject a dispatch.
 
+**`source: vendor|derived` (#1904).** Every entry declares whether its windows are the vendor's own
+counter or Baton's own derivation, and no reader may infer it from the adapter tag. #1391 settled that
+a source reads the vendor CLI's own report and is *"never a `QuotaLedgerStore`-derived estimate, never
+an operator-declared ceiling"*; #1904 **narrows** that clause rather than deleting it — a derivation is
+admitted only for a vendor with no plan counter Baton has measured, and only while it carries
+`source: derived` all the way out to the glass. For a vendor whose own counter is readable, #1391
+stands unchanged. `codex` is the one derived entry today (`CodexUsageSource`, aggregating the
+`quota-ledger.jsonl` burn rows over a **rolling** 5h and 7d lookback — that type's own doc comment owns
+the window rule, what the total misses, and why `percentUsed` is absent unless
+`DaemonSettings.CodexPlanCeiling` declares one). It is interim: codex-cli *does* expose an app-server
+`account/rateLimits/read` surface, whose payload shape is unrecorded —
+`docs/vendor-codex-probe-2026-09-04.md`'s known-unknowns is the register for that, and for what
+retires the derivation. Being on `RunwayGate.MeasuredVendors` is what gives codex a snapshot file and
+a glass block; it is **not** what gates it, and codex is deliberately absent from
+`RunwayGate`'s window-name table (that list's own doc comment states why).
+
 **Burn rate and minutes-to-exhaustion (#1746).** A single harvest carries no rate, so the persisted
 snapshot file keeps a bounded ring of the last `VendorUsageBurn.RingCapacity` readings per window
 (`Baton.Cli.Mcp.PersistedVendorUsage` — the file gained the ring flat beside #1869's four snapshot
@@ -3654,10 +3670,15 @@ gate's table recognises, a recognised window whose percentage did not parse, or 
 `maxSnapshotAgeHours` (default 6). Stale holds for the same reason unreadable does, stated once on
 `RunwayThresholds.EffectiveMaxSnapshotAge`'s own doc comment: a stale counter is not evidence of
 headroom. claude's **`week (Fable)`** counter is deliberately not a gate while no worker runs on Fable,
-which is why the window table matches vendor window names exactly rather than by prefix. A vendor with
-no `IVendorUsageSource` at all (codex today) is admitted, recorded as `runway: unmeasured` — unmeasured
-is a different claim from unreadable, and holding on a vendor Baton has never been able to read would
-block work the counters say nothing about.
+which is why the window table matches vendor window names exactly rather than by prefix. A vendor
+outside that window table is admitted, recorded as `runway: unmeasured` — unmeasured is a different
+claim from unreadable, and holding on a vendor Baton has never been able to read would block work the
+counters say nothing about. **`codex` is still that vendor after #1904**, and deliberately: it now has
+an `IVendorUsageSource` and a snapshot file, but a *derived* one whose `percentUsed` is absent unless
+the operator declared a plan ceiling (§6, `source: vendor|derived`). Putting its window names in the
+table would route every ceiling-less codex dispatch down the "recognised window, no percentage" Hold
+arm — holding the newest vendor on the fleet for the same absence this paragraph chose to admit.
+Gating on the derived counters is a separate decision, not a consequence of the source existing.
 
 **The harvest is a prerequisite, and its absence is a Hold.** On a machine where the daemon has never
 run (or has not harvested within `maxSnapshotAgeHours`), every `claude` and `agy` dispatch is refused

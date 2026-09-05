@@ -27,15 +27,20 @@ public sealed record VendorUsageSample(DateTimeOffset At, int PercentUsed);
 /// </summary>
 /// <param name="Rings">Sample ring per <see cref="VendorUsageWindow.Name"/>, oldest first, bounded at
 /// <see cref="VendorUsageBurn.RingCapacity"/>. Null on a pre-#1746 file.</param>
+/// <param name="Source">#1904: <see cref="VendorUsageSnapshot.Source"/>, persisted. Trailing with a
+/// <see cref="VendorUsageProvenance.Vendor"/> default, so a pre-#1904 file (no <c>Source</c> key,
+/// written only by the two vendor-reported sources) deserializes to exactly what it always was rather
+/// than needing a migration to say so.</param>
 public sealed record PersistedVendorUsage(
     string Vendor,
     DateTimeOffset HarvestedAt,
     string? Caveat,
     IReadOnlyList<VendorUsageWindow> Windows,
-    IReadOnlyDictionary<string, IReadOnlyList<VendorUsageSample>>? Rings)
+    IReadOnlyDictionary<string, IReadOnlyList<VendorUsageSample>>? Rings,
+    VendorUsageProvenance Source = VendorUsageProvenance.Vendor)
 {
     /// <summary>The snapshot half, for a caller that wants #1869's record shape back.</summary>
-    public VendorUsageSnapshot ToSnapshot() => new(Vendor, HarvestedAt, Caveat, Windows);
+    public VendorUsageSnapshot ToSnapshot() => new(Vendor, HarvestedAt, Caveat, Windows, Source);
 }
 
 /// <summary>
