@@ -156,11 +156,31 @@ public class ReviewVerdictSchemaTests
     [InlineData("""{"reviewedRef": "main", "findings": [{"claim": "x", "status": "confirmed"}]}""", "severity")]
     [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x", "status": "confirmed", "anchor": {"file": "f", "line": 0}}]}""", "line")]
     [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x", "status": "confirmed", "anchor": {"line": 3}}]}""", "anchor.file")]
+    [InlineData("""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x"}]}""", "status")]
     public void Documents_below_the_semantic_floor_are_refused_with_a_reason_naming_the_field(
         string json, string expectedInError)
     {
         Assert.False(ReviewVerdictSchema.TryParse(Encoding.UTF8.GetBytes(json), out _, out var error));
         Assert.Contains(expectedInError, error);
+    }
+
+    /// <summary>
+    /// The discriminating other half of the status arm above (#1919): refusing an absent
+    /// <c>status</c> must not cost the members a worker actually writes. Without this, a refusal
+    /// that rejected every status would pass the arm above just as well.
+    /// </summary>
+    [Theory]
+    [InlineData("confirmed", ReviewFindingStatus.Confirmed)]
+    [InlineData("refuted", ReviewFindingStatus.Refuted)]
+    [InlineData("unverified", ReviewFindingStatus.Unverified)]
+    public void Every_explicit_status_member_still_parses(string written, ReviewFindingStatus expected)
+    {
+        var bytes = Encoding.UTF8.GetBytes(
+            $$"""{"reviewedRef": "main", "findings": [{"severity": "high", "claim": "x", "status": "{{written}}"}]}""");
+
+        Assert.True(ReviewVerdictSchema.TryParse(bytes, out var verdict, out var error));
+        Assert.Null(error);
+        Assert.Equal(expected, verdict!.Findings[0].Status);
     }
 
     [Theory]
