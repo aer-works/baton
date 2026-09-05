@@ -58,6 +58,96 @@ public class DispatchCapabilitiesTests
         }
     }
 
+    /// <summary>
+    /// #1875: the Codex note claimed "No built-in role currently has a grant Codex can express
+    /// exactly; all fail closed." #1871 made that false (see `DispatchCapabilitiesPrinter`) and no test
+    /// noticed, because nothing tied the sentence to the adapter. It is derived now, and this pins the
+    /// derived half against the shipped translator.
+    /// </summary>
+    [Fact]
+    public void Codex_note_names_the_built_in_roles_whose_grants_the_shipped_translator_accepts()
+    {
+        var text = DispatchCapabilitiesPrinter.BuildText();
+
+        Assert.DoesNotContain("No built-in role", text);
+        // The exact list, not a loose "patch" substring: a role id that merely contains another's name
+        // would satisfy the loose form, and the sentence's job is to name every role that translates.
+        var expressible = WorkerRoleCatalog.All.Select(r => r.Id);
+        Assert.Contains(
+            $"Codex expresses these built-in roles' grants exactly: {string.Join(", ", expressible)}.",
+            RoleSentence(text));
+        Assert.Contains("patch", WorkerRoleCatalog.All.Select(r => r.Id));
+    }
+
+    /// <summary>
+    /// The control arm: with a translator that refuses, the same code must print the fail-closed half
+    /// instead. Without it the assertion above passes for a printer that hardcodes the new sentence
+    /// just as it did the old one — the shipped translator accepts every grant today, so the accepting
+    /// branch alone cannot discriminate.
+    /// </summary>
+    [Fact]
+    public void Codex_note_reports_every_role_as_fail_closed_when_the_translator_refuses()
+    {
+        var text = DispatchCapabilitiesPrinter.BuildText(new RefusingTranslator());
+
+        Assert.Contains("No built-in role has a grant Codex can express exactly; all fail closed.", text);
+        Assert.DoesNotContain("Codex expresses these built-in roles' grants exactly:", text);
+    }
+
+    /// <summary>
+    /// The partition itself, on a translator that accepts some grants and refuses others: each role
+    /// has to land on the side its own grant puts it on, so a printer that lists every role on one
+    /// side (as the old sentence did) fails here.
+    /// </summary>
+    [Fact]
+    public void Codex_note_separates_the_roles_that_translate_from_the_roles_that_fail_closed()
+    {
+        var text = DispatchCapabilitiesPrinter.BuildText(new WriteGrantOnlyTranslator());
+
+        var sentence = RoleSentence(text);
+        var split = sentence.IndexOf("Fails closed for:", StringComparison.Ordinal);
+        Assert.True(split > 0, sentence);
+        var accepted = sentence[..split];
+        var refused = sentence[split..];
+
+        var writers = WorkerRoleCatalog.All.Where(r => r.Grant.WriteFiles).Select(r => r.Id).ToList();
+        var others = WorkerRoleCatalog.All.Where(r => !r.Grant.WriteFiles).Select(r => r.Id).ToList();
+        Assert.NotEmpty(writers);
+        Assert.NotEmpty(others);
+        Assert.Contains($"Codex expresses these built-in roles' grants exactly: {string.Join(", ", writers)}.", accepted);
+        Assert.Contains($"Fails closed for: {string.Join(", ", others)}.", refused);
+    }
+
+    private static string RoleSentence(string text) =>
+        text.Split('\n').Single(line => line.Contains("Efforts are model-specific.", StringComparison.Ordinal));
+
+    private sealed class RefusingTranslator : IPermissionGrantTranslator
+    {
+        public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)
+        {
+            resolvedValue = null;
+            gapReason = "synthetic refusal";
+            return false;
+        }
+    }
+
+    private sealed class WriteGrantOnlyTranslator : IPermissionGrantTranslator
+    {
+        public bool TryTranslatePermissionGrant(PermissionGrant grant, out string? resolvedValue, out string? gapReason)
+        {
+            if (grant.WriteFiles)
+            {
+                resolvedValue = "baton-broker";
+                gapReason = null;
+                return true;
+            }
+
+            resolvedValue = null;
+            gapReason = "synthetic refusal";
+            return false;
+        }
+    }
+
     [Fact]
     public void Print_writes_capabilities_to_writer()
     {

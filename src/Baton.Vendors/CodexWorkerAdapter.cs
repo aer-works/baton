@@ -23,18 +23,27 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     private const string BrokerConfigFileName = "codex-broker.json";
     private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(5);
 
-    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> KnownEffortsByModel =
-        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
-        {
-            ["gpt-6-astra"] = Efforts("low", "medium", "high", "xhigh", "max", "ultra"),
-            ["gpt-5.6-sol"] = Efforts("low", "medium", "high", "xhigh", "max", "ultra"),
-            ["gpt-5.6-terra"] = Efforts("low", "medium", "high", "xhigh", "max", "ultra"),
-            ["gpt-5.6-luna"] = Efforts("low", "medium", "high", "xhigh", "max"),
-            ["gpt-5.5"] = Efforts("low", "medium", "high", "xhigh"),
-            ["gpt-5.4"] = Efforts("low", "medium", "high", "xhigh"),
-            ["gpt-5.4-mini"] = Efforts("low", "medium", "high", "xhigh"),
-            ["gpt-5.3-codex-spark"] = Efforts("low", "medium", "high", "xhigh"),
-        };
+    /// <summary>
+    /// The embedded recording that is the sole source of <see cref="KnownEffortsByModel"/> — one real
+    /// <c>codex app-server model/list</c> answer, named for the day it was taken. Its provenance and
+    /// what it settles are recorded once, in <c>docs/vendor-capabilities.md</c>'s effort table section
+    /// (#1875); before that the table was hand-written while <see cref="ValidateModel"/> called it a
+    /// probed snapshot.
+    /// </summary>
+    internal const string ModelCatalogResourceName = "Baton.Vendors.codex-model-list-2026-09-04.jsonl";
+
+    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyList<string>>> RecordedEffortsByModel =
+        new(LoadRecordedEffortTable);
+
+    /// <summary>
+    /// Which reasoning efforts each model advertised in <see cref="ModelCatalogResourceName"/>.
+    /// A model absent from the recording is unknown, and <see cref="ValidateModel"/> refuses it —
+    /// that is how <c>gpt-5.4</c> left the table in #1875: the 2026-09-04 visible catalog no longer
+    /// carries it. This is a recorded snapshot, not live discovery: it is what dispatch validates
+    /// against before a process is ever started, while <see cref="DiscoverCapabilitiesAsync"/> asks
+    /// the installed CLI what it offers right now.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> KnownEffortsByModel => RecordedEffortsByModel.Value;
 
     /// <summary>
     /// The app-server broker exposes one output-only dynamic tool whose schema and host-side check
@@ -425,39 +434,20 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         capabilities = EmptyCapabilities;
         try
         {
-            using var document = JsonDocument.Parse(rawLine);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("id", out var id) || !id.TryGetInt32(out var requestId) || requestId != 2
-                || !root.TryGetProperty("result", out var result)
-                || !result.TryGetProperty("data", out var data)
-                || data.ValueKind != JsonValueKind.Array)
+            if (!TryReadModelCatalog(rawLine, out var catalog))
             {
                 return false;
             }
 
             List<string> models = [];
             List<WorkerCapabilityItem> items = [];
-            foreach (var model in data.EnumerateArray())
+            foreach (var entry in catalog)
             {
-                if (StringProperty(model, "model") is not { Length: > 0 } modelName)
+                models.Add(entry.Model);
+                foreach (var (effort, description) in entry.Efforts)
                 {
-                    continue;
-                }
-
-                models.Add(modelName);
-                if (!model.TryGetProperty("supportedReasoningEfforts", out var efforts)
-                    || efforts.ValueKind != JsonValueKind.Array)
-                {
-                    continue;
-                }
-
-                foreach (var option in efforts.EnumerateArray())
-                {
-                    if (StringProperty(option, "reasoningEffort") is { Length: > 0 } effort)
-                    {
-                        items.Add(new WorkerCapabilityItem(
-                            $"{modelName}[{effort}]", "mode", StringProperty(option, "description") ?? $"{modelName} reasoning effort {effort}"));
-                    }
+                    items.Add(new WorkerCapabilityItem(
+                        $"{entry.Model}[{effort}]", "mode", description ?? $"{entry.Model} reasoning effort {effort}"));
                 }
             }
 
@@ -470,6 +460,110 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         }
     }
 
+    /// <summary>
+    /// One model's entry in a <c>model/list</c> result: its id and, in advertised order, each
+    /// reasoning effort with the vendor's own description of it. The single shape both consumers of a
+    /// <c>model/list</c> line read — live discovery (<see cref="TryParseModelListResponse"/>) and the
+    /// recorded validation table (<see cref="LoadRecordedEffortTable"/>) — so the two cannot come to
+    /// different conclusions about the same bytes.
+    /// </summary>
+    private sealed record RecordedModel(string Model, IReadOnlyList<(string Effort, string? Description)> Efforts);
+
+    private static bool TryReadModelCatalog(string rawLine, out IReadOnlyList<RecordedModel> catalog)
+    {
+        catalog = Array.Empty<RecordedModel>();
+        using var document = JsonDocument.Parse(rawLine);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("id", out var id) || !id.TryGetInt32(out var requestId) || requestId != 2
+            || !root.TryGetProperty("result", out var result)
+            || !result.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        List<RecordedModel> entries = [];
+        foreach (var model in data.EnumerateArray())
+        {
+            if (StringProperty(model, "model") is not { Length: > 0 } modelName)
+            {
+                continue;
+            }
+
+            List<(string, string?)> efforts = [];
+            if (model.TryGetProperty("supportedReasoningEfforts", out var advertised)
+                && advertised.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var option in advertised.EnumerateArray())
+                {
+                    if (StringProperty(option, "reasoningEffort") is { Length: > 0 } effort)
+                    {
+                        efforts.Add((effort, StringProperty(option, "description")));
+                    }
+                }
+            }
+
+            entries.Add(new RecordedModel(modelName, efforts));
+        }
+
+        catalog = entries;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads <see cref="ModelCatalogResourceName"/> and derives the model/effort validation table from
+    /// it. Fails loudly rather than degrading to an empty table — see
+    /// <see cref="VendorCapabilitySnapshotException"/> for why that would be worse than fail-closed.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> LoadRecordedEffortTable()
+    {
+        using var stream = typeof(CodexWorkerAdapter).Assembly.GetManifestResourceStream(ModelCatalogResourceName)
+            ?? throw new VendorCapabilitySnapshotException(
+                "codex", ModelCatalogResourceName, "the embedded resource is missing from Baton.Vendors.dll");
+
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return BuildEffortTable(reader.ReadToEnd().Trim(), ModelCatalogResourceName);
+    }
+
+    /// <summary>
+    /// The derivation itself, split from resource loading so each way a recording can be unusable is
+    /// reachable from a test — the guarantee is that none of them yields a silently empty table.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> BuildEffortTable(
+        string rawLine, string resourceName)
+    {
+        IReadOnlyList<RecordedModel> catalog;
+        try
+        {
+            if (!TryReadModelCatalog(rawLine, out catalog))
+            {
+                throw new VendorCapabilitySnapshotException(
+                    "codex", resourceName, "it is not a `model/list` result line (id 2 with a result.data array)");
+            }
+        }
+        catch (JsonException ex)
+        {
+            throw new VendorCapabilitySnapshotException(
+                "codex", resourceName, "it is not valid JSON", ex);
+        }
+
+        // Advertised order is preserved: it is the order the vendor listed the efforts in, and it is
+        // the order a rejection message shows the operator.
+        var table = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var entry in catalog.Where(e => e.Efforts.Count > 0))
+        {
+            table[entry.Model] = [.. entry.Efforts.Select(e => e.Effort)];
+        }
+
+        if (table.Count == 0)
+        {
+            throw new VendorCapabilitySnapshotException(
+                "codex", resourceName, "it advertises no model with a reasoning-effort set");
+        }
+
+        return table;
+    }
+
     internal static bool IsTerminalSuccessLine(string rawLine) =>
         IsEventType(rawLine, "turn.completed");
 
@@ -479,9 +573,6 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
     private static readonly CodexUsageParser UsageParser = new();
     private static readonly WorkerCapabilities EmptyCapabilities =
         new("codex", Array.Empty<WorkerCapabilityItem>(), Array.Empty<string>());
-
-    private static IReadOnlySet<string> Efforts(params string[] values) =>
-        new HashSet<string>(values, StringComparer.Ordinal);
 
     private static void AddConfig(List<string> args, string value)
     {
@@ -567,7 +658,8 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
         if (model is { Length: > 0 } && !KnownEffortsByModel.ContainsKey(model))
         {
             throw new IncoherentVendorEffortException(
-                "codex", $"model '{model}' is absent from the current probed Codex capability snapshot.");
+                "codex",
+                $"model '{model}' is absent from the recorded Codex capability snapshot ({ModelCatalogResourceName}).");
         }
     }
 
@@ -579,8 +671,15 @@ public sealed class CodexWorkerAdapter : IWorkerAdapter, IPermissionGrantTransla
                 "codex", "an explicit effort requires an explicit model so the model-specific combination can be validated.");
         }
 
-        var known = KnownEffortsByModel[model];
-        if (!known.Contains(effort))
+        // Every caller validates the model first, so an unknown one has already been refused; this
+        // stays a lookup that fails closed rather than an indexer that throws KeyNotFoundException.
+        if (!KnownEffortsByModel.TryGetValue(model, out var known))
+        {
+            ValidateModel(model);
+            return;
+        }
+
+        if (!known.Contains(effort, StringComparer.Ordinal))
         {
             throw new IncoherentVendorEffortException(
                 "codex", $"model '{model}' does not advertise '{effort}' (available: {string.Join(", ", known)}).");

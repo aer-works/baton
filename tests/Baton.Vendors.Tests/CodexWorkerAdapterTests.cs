@@ -446,7 +446,96 @@ public sealed class CodexWorkerAdapterTests
                 new WorkerInvocation("Inspect.", Model: "gpt-future", Effort: "high"),
                 NoOutputContract));
 
-        Assert.Contains("absent from the current probed", exception.Message);
+        Assert.Contains("absent from the recorded Codex capability snapshot", exception.Message);
+        Assert.Contains("codex-model-list-2026-09-04.jsonl", exception.Message);
+    }
+
+    /// <summary>
+    /// #1875: the validation table is derived from the embedded recording, so these are values a reader
+    /// checks against that file by eye rather than by re-running the parser the table itself uses.
+    /// Why `gpt-6-astra` keeps `ultra` despite the vendor's web page: `docs/vendor-capabilities.md`.
+    /// </summary>
+    [Fact]
+    public void Astra_accepts_ultra_because_the_recorded_catalog_advertises_it()
+    {
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Conduct.", Model: "gpt-6-astra", Effort: "ultra", AllowsSubagents: true),
+            NoOutputContract);
+
+        Assert.Equal("gpt-6-astra", ArgValue(target, "--model"));
+        Assert.Contains("model_reasoning_effort=\"ultra\"", ArgValues(target, "--config"));
+    }
+
+    [Fact]
+    public void Luna_rejection_lists_exactly_the_efforts_the_recording_advertises_for_it()
+    {
+        var exception = Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation("Conduct.", Model: "gpt-5.6-luna", Effort: "ultra"),
+                NoOutputContract));
+
+        Assert.Contains("(available: low, medium, high, xhigh, max)", exception.Message);
+    }
+
+    /// <summary>
+    /// The polarity partner of the two tests above and the behaviour change #1875 shipped: `gpt-5.4`
+    /// was in the hand-written table but is not in the 2026-09-04 visible catalog, so deriving the
+    /// table from the recording refuses it locally instead of sending it to fail at the vendor.
+    /// `gpt-5.4-mini`, which the recording does carry, still resolves.
+    /// </summary>
+    [Fact]
+    public void A_model_the_recording_does_not_carry_is_refused_while_its_mini_sibling_resolves()
+    {
+        Assert.Throws<IncoherentVendorEffortException>(
+            () => new CodexWorkerAdapter().Resolve(
+                new WorkerInvocation("Inspect.", Model: "gpt-5.4", Effort: "high"),
+                NoOutputContract));
+
+        var target = new CodexWorkerAdapter().Resolve(
+            new WorkerInvocation("Inspect.", Model: "gpt-5.4-mini", Effort: "high"),
+            NoOutputContract);
+
+        Assert.Equal("gpt-5.4-mini", ArgValue(target, "--model"));
+    }
+
+    [Fact]
+    public void The_recorded_capability_snapshot_ships_inside_the_vendors_assembly()
+    {
+        using var stream = typeof(CodexWorkerAdapter).Assembly
+            .GetManifestResourceStream(CodexWorkerAdapter.ModelCatalogResourceName);
+
+        Assert.NotNull(stream);
+    }
+
+    /// <summary>
+    /// Every way a recording can be unusable, against the positive arm above: none may degrade to an
+    /// empty table, because an empty one would still fail closed while blaming the model instead of the
+    /// recording. `[]` is the case that would otherwise pass silently — it parses, and it is a valid
+    /// `model/list` result shape.
+    /// </summary>
+    [Theory]
+    [InlineData("not json at all")]
+    [InlineData("{\"id\":1,\"result\":{\"data\":[]}}")]
+    [InlineData("{\"id\":2,\"result\":{\"data\":[]}}")]
+    [InlineData("{\"id\":2,\"result\":{\"data\":[{\"model\":\"gpt-6-astra\"}]}}")]
+    public void An_unusable_recording_throws_rather_than_yielding_an_empty_table(string rawLine)
+    {
+        var exception = Assert.Throws<VendorCapabilitySnapshotException>(
+            () => CodexWorkerAdapter.BuildEffortTable(rawLine, "synthetic-recording.jsonl"));
+
+        Assert.Equal("codex", exception.AdapterName);
+        Assert.Equal("synthetic-recording.jsonl", exception.ResourceName);
+        Assert.Contains("synthetic-recording.jsonl", exception.Message);
+    }
+
+    [Fact]
+    public void A_usable_recording_builds_the_table_it_advertises()
+    {
+        var table = CodexWorkerAdapter.BuildEffortTable(RecordedModelListLine(), "recording.jsonl");
+
+        Assert.Equal(["low", "medium", "high", "xhigh", "max", "ultra"], table["gpt-6-astra"]);
+        Assert.Equal(["low", "medium", "high", "xhigh", "max"], table["gpt-5.6-luna"]);
+        Assert.False(table.ContainsKey("gpt-5.4"));
     }
 
     [Fact]
@@ -716,22 +805,32 @@ public sealed class CodexWorkerAdapterTests
         Assert.Equal(DateTimeOffset.Parse("2030-01-01T00:00:00Z"), retryNotBefore);
     }
 
+    /// <summary>
+    /// Re-pinned in #1875 from the dated recording the adapter now ships, instead of the fully
+    /// sanitized fixture this used to read. That file could not vouch for any effort set — every
+    /// option in it was "Sanitized option" — so an assertion that `gpt-6-astra` advertises `ultra`
+    /// rested on a value someone had typed. This reads the same bytes the validation table comes from.
+    /// </summary>
     [Fact]
-    public void App_server_model_list_fixture_discovers_visible_models_and_every_effort_pair()
+    public void Recorded_model_list_discovers_the_visible_models_and_every_effort_pair()
     {
-        var line = Assert.Single(FixtureLines("codex-app-server-model-list.jsonl"));
+        var line = RecordedModelListLine();
 
         Assert.True(CodexWorkerAdapter.TryParseModelListResponse(line, out var capabilities));
         Assert.Equal("codex", capabilities.Vendor);
         Assert.Equal(
-            ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+            [
+                "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+                "gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+            ],
             capabilities.Models);
-        Assert.Equal(23, capabilities.Items.Count);
+        Assert.Equal(35, capabilities.Items.Count);
         Assert.Contains(capabilities.Items, item => item.Name == "gpt-6-astra[ultra]" && item.Kind == "mode");
         Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-sol[high]" && item.Kind == "mode");
         Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-terra[max]" && item.Kind == "mode");
         Assert.Contains(capabilities.Items, item => item.Name == "gpt-5.6-luna[max]" && item.Kind == "mode");
         Assert.DoesNotContain(capabilities.Items, item => item.Name == "gpt-5.6-luna[ultra]");
+        Assert.DoesNotContain(capabilities.Models, model => model == "gpt-5.4");
     }
 
     [Theory]
@@ -780,6 +879,14 @@ public sealed class CodexWorkerAdapterTests
         }
 
         return -1;
+    }
+
+    private static string RecordedModelListLine()
+    {
+        using var stream = typeof(CodexWorkerAdapter).Assembly
+            .GetManifestResourceStream(CodexWorkerAdapter.ModelCatalogResourceName)!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd().Trim();
     }
 
     private static string[] FixtureLines(string fileName) =>
