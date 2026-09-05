@@ -400,11 +400,37 @@ public sealed class LedgerViewCommandTests : IDisposable
             Assert.Null(metadata["exec-review"].Deletions);
             Assert.Null(metadata["exec-review"].TestFilesChanged);
 
-            Assert.Contains(git.Calls, args => args.SequenceEqual(
-                ["diff", "--shortstat", "origin/main...origin/1901-sol"]));
+            Assert.DoesNotContain(git.Calls, args => args.Contains("--shortstat", StringComparer.Ordinal));
             Assert.Contains(git.Calls, args => args.SequenceEqual(
                 ["diff", "--numstat", "origin/main...origin/1901-sol"]));
 
+            git.NumStatOutput = "not a numstat row";
+            var unrecognizedDiff = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Null(unrecognizedDiff["exec-implement"].FilesChanged);
+            Assert.Null(unrecognizedDiff["exec-implement"].Additions);
+            Assert.Null(unrecognizedDiff["exec-implement"].Deletions);
+            Assert.Null(unrecognizedDiff["exec-implement"].TestFilesChanged);
+
+            git.NumStatOutput = string.Empty;
+            var zeroLineDiff = await CostLedgerSettlementMetadata.BuildAsync(
+                entries,
+                room,
+                ledgerPath,
+                gh,
+                git,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(0, zeroLineDiff["exec-implement"].FilesChanged);
+            Assert.Equal(0, zeroLineDiff["exec-implement"].Additions);
+            Assert.Equal(0, zeroLineDiff["exec-implement"].Deletions);
+            Assert.Equal(0, zeroLineDiff["exec-implement"].TestFilesChanged);
+
+            git.NumStatOutput = RecordingLedgerGitRunner.DefaultNumStatOutput;
             gh.Stdout = "[]";
             var withoutPr = await CostLedgerSettlementMetadata.BuildAsync(
                 entries,
@@ -550,6 +576,11 @@ public sealed class LedgerViewCommandTests : IDisposable
 
     private sealed class RecordingLedgerGitRunner : ILedgerGitRunner
     {
+        public const string DefaultNumStatOutput =
+            "8\t1\tsrc/Baton/Feature.cs\n3\t2\ttests/Baton.Tests/FeatureTests.cs\n1\t1\ttests/Baton.Cli.Tests/FeatureTests.cs\n";
+
+        public string NumStatOutput { get; set; } = DefaultNumStatOutput;
+
         public List<IReadOnlyList<string>> Calls { get; } = [];
 
         public Task<LedgerGitResult> RunAsync(
@@ -561,9 +592,7 @@ public sealed class LedgerViewCommandTests : IDisposable
             var command = string.Join(' ', args);
             var stdout = command switch
             {
-                "diff --shortstat origin/main...origin/1901-sol" => " 3 files changed, 12 insertions(+), 4 deletions(-)\n",
-                "diff --numstat origin/main...origin/1901-sol" =>
-                    "8\t1\tsrc/Baton/Feature.cs\n3\t2\ttests/Baton.Tests/FeatureTests.cs\n1\t1\ttests/Baton.Cli.Tests/FeatureTests.cs\n",
+                "diff --numstat origin/main...origin/1901-sol" => NumStatOutput,
                 _ => string.Empty,
             };
             return Task.FromResult(new LedgerGitResult(true, 0, stdout, string.Empty));

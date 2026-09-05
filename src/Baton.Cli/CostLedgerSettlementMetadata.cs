@@ -322,36 +322,60 @@ internal static partial class CostLedgerSettlementMetadata
             return null;
         }
 
-        var shortStat = await TryRunGitAsync(
-            workingDirectory, ["diff", "--shortstat", $"origin/main...{diffHead}"], gitRunner, cancellationToken)
-            .ConfigureAwait(false);
         var numStat = await TryRunGitAsync(
             workingDirectory, ["diff", "--numstat", $"origin/main...{diffHead}"], gitRunner, cancellationToken)
             .ConfigureAwait(false);
-        if (shortStat is not { ExitCode: 0 } || numStat is not { ExitCode: 0 })
+        return numStat is { ExitCode: 0 }
+            ? TryParseNumStat(numStat.Value.Output)
+            : null;
+    }
+
+    private static CostLedgerExecutionMetadata? TryParseNumStat(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
         {
-            return null;
+            return new CostLedgerExecutionMetadata(
+                FilesChanged: 0,
+                Additions: 0,
+                Deletions: 0,
+                TestFilesChanged: 0);
         }
 
-        var filesChanged = ReadStat(ShortStatFilesPattern(), shortStat.Value.Output);
-        var additions = ReadStat(ShortStatAdditionsPattern(), shortStat.Value.Output);
-        var deletions = ReadStat(ShortStatDeletionsPattern(), shortStat.Value.Output);
-        var testFilesChanged = numStat.Value.Output
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Split('\t', 3))
-            .Count(parts => parts.Length == 3 && IsTestPath(parts[2]));
+        var filesChanged = 0;
+        var additions = 0;
+        var deletions = 0;
+        var testFilesChanged = 0;
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = line.Split('\t', 3);
+            if (parts.Length != 3
+                || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var fileAdditions)
+                || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var fileDeletions))
+            {
+                return null;
+            }
+
+            try
+            {
+                filesChanged = checked(filesChanged + 1);
+                additions = checked(additions + fileAdditions);
+                deletions = checked(deletions + fileDeletions);
+                if (IsTestPath(parts[2]))
+                {
+                    testFilesChanged = checked(testFilesChanged + 1);
+                }
+            }
+            catch (OverflowException)
+            {
+                return null;
+            }
+        }
 
         return new CostLedgerExecutionMetadata(
             FilesChanged: filesChanged,
             Additions: additions,
             Deletions: deletions,
             TestFilesChanged: testFilesChanged);
-    }
-
-    private static int ReadStat(Regex pattern, string shortStat)
-    {
-        var match = pattern.Match(shortStat);
-        return match.Success && int.TryParse(match.Groups["count"].Value, out var count) ? count : 0;
     }
 
     private static bool IsTestPath(string path)
@@ -386,12 +410,4 @@ internal static partial class CostLedgerSettlementMetadata
     [GeneratedRegex(@"^(?<issue>[1-9]\d*)-", RegexOptions.CultureInvariant)]
     private static partial Regex LeadingIssuePattern();
 
-    [GeneratedRegex(@"(?<count>\d+) files? changed", RegexOptions.CultureInvariant)]
-    private static partial Regex ShortStatFilesPattern();
-
-    [GeneratedRegex(@"(?<count>\d+) insertions?\(\+\)", RegexOptions.CultureInvariant)]
-    private static partial Regex ShortStatAdditionsPattern();
-
-    [GeneratedRegex(@"(?<count>\d+) deletions?\(-\)", RegexOptions.CultureInvariant)]
-    private static partial Regex ShortStatDeletionsPattern();
 }
