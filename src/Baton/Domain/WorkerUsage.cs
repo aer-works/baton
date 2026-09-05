@@ -77,6 +77,17 @@ namespace Baton.Domain;
 /// the fuller statement and the exact reader gate this trips.
 /// True/false for claude's own sub-agent vs. non-sub-agent turns.
 /// </param>
+/// <param name="ModelsObserved">
+/// #1883 (review F1): the model names the reading's own token figures were summed ACROSS — claude's
+/// terminal <c>modelUsage</c> keys, one per model the whole execution tree used, which
+/// <c>ClaudeUsageParser.TryParseFinalUsage</c> previously discarded after summing. Set only when that
+/// whole-tree read actually supplied the figures; null on every other reading (agy and codex report no
+/// per-model breakdown, and claude's top-level <c>usage</c> fallback carries no model name either), and
+/// null is therefore "this reading names no model", never "one model". Exists so a consumer pricing
+/// these tokens can tell a single-model total from a multi-model sum instead of pricing the sum at one
+/// model's rate — <c>Accounting.CostLedgerStore</c> is the consumer that does, and refuses rather than
+/// guessing. Never a routing input: Architecture Rule 1 keeps model choice on the workflow config.
+/// </param>
 public sealed record WorkerUsage(
     long? TokensIn = null,
     long? TokensOut = null,
@@ -89,4 +100,5 @@ public sealed record WorkerUsage(
     long? BilledTokens = null,
     string? MessageId = null,
     bool BilledIsFloor = false,
-    bool IsSubAgentTurn = false);
+    bool IsSubAgentTurn = false,
+    IReadOnlyList<string>? ModelsObserved = null);

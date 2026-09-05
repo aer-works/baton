@@ -2,6 +2,7 @@ using System.Reflection;
 using Baton.Vendors;
 using Baton.Cli;
 using Baton;
+using Baton.Accounting;
 using Baton.Domain;
 using Baton.Status;
 using Baton.Store;
@@ -369,6 +370,35 @@ try
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
         {
             Console.Error.WriteLine($"Could not append to the quota ledger at '{BatonPaths.QuotaLedgerFile}': {ex.Message}.");
+        }
+
+        // #1849 phase A: the repository-keyed cost ledger, appended from the SAME terminalEntries the
+        // burn ledger above just read -- it consumes that ledger's per-execution source rather than
+        // replacing it (CostLedgerStore's own remarks state the split). Its own try/catch, not the
+        // block above's: a failure here must not also lose the burn-ledger append, and vice versa.
+        // Same fail-open contract either way -- an accounting write never gates a settled run.
+        try
+        {
+            var repository = await RepositoryIdentityResolver
+                .TryResolveForRoomAsync(terminalRoomDirectoryPath, CancellationToken.None).ConfigureAwait(false);
+            if (repository is not null)
+            {
+                var costLedgerPath = BatonPaths.CostLedgerFile(repository.FileSlug);
+                var costEntries = CostLedgerStore.BuildEntries(terminalEntries, terminalRoomDirectoryPath, repository);
+                await CostLedgerStore.AppendAsync(costEntries, costLedgerPath, CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                // The one path that writes no row without raising anything -- said out loud, because an
+                // empty cost ledger is otherwise indistinguishable from a fleet that spent nothing.
+                Console.Error.WriteLine(
+                    $"No repository identity for room '{terminalRoomDirectoryPath}' (git found no origin remote "
+                    + "or repository for its recorded project root), so no cost ledger row was written for it.");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            Console.Error.WriteLine($"Could not append to the cost ledger: {ex.Message}.");
         }
     }
     else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
