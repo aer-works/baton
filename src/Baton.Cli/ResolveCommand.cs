@@ -103,7 +103,9 @@ public static class ResolveCommand
         // message naming the right remedy, rather than deeper in as a bare "no unresolved indeterminate
         // capture". --close admits exactly the four producers --reject does NOT: VerifyFailed,
         // Arrested, BuildLockBusy (#1796), and null (a step Indeterminate for no producer at all, the
-        // legacy pre-#1593 shape).
+        // legacy pre-#1593 shape). Since #1877 --close also admits one shape that is not a producer
+        // at all: a capture ALREADY resolved-rejected whose step is still the dangling one
+        // (IsDanglingRejected below).
         var admitsAccept = namedStep is { IndeterminateAwaitingResolution: true }
             && namedStep.IndeterminateProducer == IndeterminateProducer.CapturedResponse;
         var admitsReject = namedStep is { IndeterminateAwaitingResolution: true }
@@ -124,7 +126,14 @@ public static class ResolveCommand
                 .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == namedStep.StepId)
             is { Accepted: true };
 
-        if (!isAwaitingResolution && !isRepairableAccepted)
+        // #1877: --close also admits an already-rejected capture whose step is still the dangling one
+        // — see MutationInterface.RecordCaptureResolutionAsync's own arm for why the predicate keys on
+        // the journal fact rather than on retry-eligibility, and IsDanglingRejected below for the
+        // predicate itself. Mirrored here so the refusal (or the admission) lands at the same layer
+        // every other resolve target's does.
+        var isDanglingRejected = close && IsDanglingRejected(namedStep, executionId, events);
+
+        if (!isAwaitingResolution && !isRepairableAccepted && !isDanglingRejected)
         {
             // #1623 merge / F1 (#1593 review): stated as its own case rather than folded into the
             // generic refusal below, because the generic one's advice ("confirm 'state' reads
@@ -197,6 +206,33 @@ public static class ResolveCommand
 
         if (candidates.Count == 0)
         {
+            // #1877: before refusing on "no unresolved capture", look for the step this --close would
+            // actually close — an already-rejected capture left dangling by the pre-#1877 rule. The
+            // refusal below is honest for --accept-capture/--reject, and was the exact dead end the
+            // issue reported for --close: the verb refused on the absence of the very thing its target
+            // no longer has.
+            if (close)
+            {
+                var dangling = state.Steps
+                    .Where(step => step.LatestExecutionId is not null
+                        && IsDanglingRejected(step, step.LatestExecutionId.Value, events))
+                    .ToList();
+
+                if (dangling.Count == 1)
+                {
+                    return dangling[0].LatestExecutionId!.Value;
+                }
+
+                if (dangling.Count > 1)
+                {
+                    throw new CliArgumentException(
+                        $"No --execution given, and room '{roomDirectoryPath}' has {dangling.Count} already-rejected " +
+                        $"steps to close ({string.Join(", ", dangling.Select(step => step.LatestExecutionId!.Value.Value))}) " +
+                        "— 'baton resolve' refuses to guess which one.",
+                        "pass --execution explicitly, naming the one to close.");
+                }
+            }
+
             throw new CliArgumentException(
                 $"No --execution given, and room '{roomDirectoryPath}' has no unresolved indeterminate " +
                 "capture to resolve — 'baton resolve' refuses to guess.",
@@ -209,6 +245,24 @@ public static class ResolveCommand
             "— 'baton resolve' refuses to guess which one.",
             "pass --execution explicitly, naming the one to resolve.");
     }
+
+    /// <summary>
+    /// #1877: "this step is an already-rejected capture nobody can close any other way" — the one
+    /// predicate both target-resolution paths above share, so an explicit <c>--execution</c> and a
+    /// room-level <c>--close</c> cannot drift on what counts. Every clause is a durable journal fact,
+    /// deliberately NOT the step's retry-eligibility: #1877's projector fix already forecloses retry
+    /// on any rejection, so a predicate keyed on "still retry-eligible" would be dead code on every
+    /// room the fix has re-projected, and a test written against it would pass while asserting
+    /// nothing. <see cref="MutationInterface.RecordCaptureResolutionAsync"/>'s own mirror of this arm
+    /// is what actually records the close.
+    /// </summary>
+    private static bool IsDanglingRejected(
+        StepState? step, ExecutionId executionId, IReadOnlyList<FlowEvent> events)
+        => step is { IndeterminateAwaitingResolution: false, Status: StepStatus.Failed }
+            && step.LatestExecutionId == executionId
+            && events.OfType<FlowEvent.CaptureResolved>()
+                .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == step.StepId)
+                is { Accepted: false };
 
     /// <summary>
     /// F1 (#1593 review), widened by #1622 (d)/#1700: the shared refusal text for a step that settled

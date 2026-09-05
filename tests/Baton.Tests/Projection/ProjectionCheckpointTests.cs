@@ -901,6 +901,81 @@ public class ProjectionCheckpointTests
         }
     }
 
+    /// <summary>
+    /// #1877: the arm the previous bump's test cannot cover. A Version-4 checkpoint was written under
+    /// the OLD rule, where a rejected CapturedResponse capture stayed retry-eligible, so its
+    /// <c>RetryForeclosedStepIds</c> is empty for a step the current projector forecloses. Serving it
+    /// would leave exactly the symptom #1877 exists to end — a settled room reading Running forever —
+    /// on precisely the rooms the fix was written for. Without this arm, reverting the gate to
+    /// <c>&lt; 4</c> passes the whole suite while silently un-fixing every already-checkpointed room.
+    /// </summary>
+    [Fact]
+    public async Task Version4_checkpoint_written_under_the_pre_1877_rule_is_rejected_and_replays_foreclosed()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "baton_v4_checkpoint_test_" + Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var snapshot = TestSnapshot();
+            var logPath = Path.Combine(tempDir, "flow.jsonl");
+            var writer = new FlowEventLogWriter(logPath);
+            var exec1 = new ExecutionId("exec-1");
+
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(MakeRequest(exec1, Step1), 100, DateTimeOffset.UtcNow),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionIndeterminate(
+                    exec1, "captured, awaiting conductor resolution.", OutputMaterializer.CapturedResponseFileName, ["output1"]),
+                TestContext.Current.CancellationToken);
+            await writer.AppendAsync(
+                new FlowEvent.CaptureResolved(Step1, exec1, Accepted: false, "prose, not output1", ["output1"]),
+                TestContext.Current.CancellationToken);
+
+            var reader = new FlowEventLogReader(logPath);
+            var fullSnapshot = await reader.ReadSnapshotAsync(TestContext.Current.CancellationToken);
+            var (_, checkpoint) = StateProjector.ProjectAndCheckpoint(
+                fullSnapshot.FlowEvents, snapshot, logByteOffset: fullSnapshot.ByteOffset);
+
+            // The pre-#1877 file, reconstructed: same events, same offsets, Version 4, and the
+            // foreclosure the old projector never recorded. Cleared explicitly rather than assumed --
+            // this assertion is what makes the reject below discriminating rather than a tautology.
+            var legacyCheckpoint = checkpoint with { Version = 4 };
+            legacyCheckpoint.State.RetryForeclosedStepIds.Clear();
+            Assert.Empty(legacyCheckpoint.State.RetryForeclosedStepIds);
+            ProjectionCheckpointStore.Save(tempDir, legacyCheckpoint);
+
+            using var sw = new StringWriter();
+            var originalErr = Console.Error;
+            Console.SetError(sw);
+            ProjectionCheckpoint? loaded;
+            try
+            {
+                loaded = ProjectionCheckpointStore.Load(tempDir);
+            }
+            finally
+            {
+                Console.SetError(originalErr);
+            }
+
+            Assert.Null(loaded);
+            Assert.Contains("Fallback to full replay LOUDLY", sw.ToString());
+
+            var replayedSnapshot = await reader.ReadSnapshotFromOffsetAsync(
+                loaded?.ByteOffset ?? 0, TestContext.Current.CancellationToken);
+            var (replayedState, _) = StateProjector.ProjectAndCheckpoint(
+                replayedSnapshot.FlowEvents, snapshot, loaded, replayedSnapshot.ByteOffset);
+
+            var step1 = Assert.Single(replayedState.Steps, s => s.StepId == Step1);
+            Assert.Equal(1, step1.ConsecutiveFailureCount);
+            Assert.True(step1.RetryForeclosed);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(tempDir);
+        }
+    }
+
     [Fact]
     public async Task Scope1b_CoreAggregatesInCheckpoint_Determinism_DeleteCheckpointYieldsIdenticalObligations()
     {

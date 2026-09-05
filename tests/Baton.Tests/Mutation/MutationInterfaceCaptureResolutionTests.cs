@@ -726,11 +726,14 @@ public class MutationInterfaceCaptureResolutionTests
             var step = state.Steps.Single();
             Assert.False(step.IndeterminateAwaitingResolution);
 
-            // F8 (#1593 review) polarity control: unlike a ContractFailure producer's reject (asserted
-            // above in An_exit_0_worker_with_missing_contract_...), a CapturedResponse producer's reject
-            // stays retry-eligible -- #1608's own ruling. That shape is "substantial work happened",
-            // never "the workspace may have been mutated", so nothing here needs foreclosing.
-            Assert.False(step.RetryForeclosed);
+            // #1877 (was the F8/#1593 polarity control the other way round): a CapturedResponse
+            // producer's reject now forecloses retry exactly like a ContractFailure one. Leaving it
+            // retry-eligible is what let a rejected room project Running with no worker and no pump
+            // alive. The polarity control this test still is, one condition apart from the refusal
+            // above: the call is ADMITTED (a CaptureResolved really was appended) rather than refused.
+            Assert.True(step.RetryForeclosed);
+            Assert.False(Baton.Scheduling.RetryEngine.MayRetry(step, snapshot.Steps[0].RetryPolicy));
+            Assert.Equal(WorkflowStatus.Terminal, state.Status);
         }
         finally
         {

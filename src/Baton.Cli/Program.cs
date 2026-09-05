@@ -109,6 +109,10 @@ if (args.Length == 0 || !knownSubcommands.Contains(args[0]))
     Console.Error.WriteLine(
         "       baton resolve <room-dir> [--execution <execution-id>] --accept-capture | --reject --reason <text> " +
         "| --close --reason <text>");
+    // #1877: the one thing an operator cannot infer from the grammar — what a rejection LEAVES BEHIND.
+    Console.Error.WriteLine(
+        "              (--reject and --close settle the step terminally: no retry, room settles; " +
+        "re-dispatch the work explicitly if you want it redone)");
     Console.Error.WriteLine(
         "       baton supply <room-dir> --worker <role> --output <name> --file <source-path> " +
         "--bindings <bindings-file> [--workflow-id <id>]");
@@ -369,10 +373,13 @@ try
     }
     else if (args[0] == "resolve" && result.RoomDirectoryPath is { } resolvedNonTerminalRoomDirectoryPath)
     {
-        // #1608 review finding 1: `baton resolve --reject` on a step with retry budget remaining
-        // clears IndeterminateAwaitingResolution and re-arms RetryEngine.MayRetry's ordinary
-        // predicate, so DeriveWorkflowStatus can read Running again on a room whose LAST write above
-        // (back when it first settled Indeterminate) left a Terminal sentinel on disk. Left in place,
+        // #1608 review finding 1, narrowed by #1877: `baton resolve --accept-capture` in a multi-step
+        // room clears IndeterminateAwaitingResolution and can make a DOWNSTREAM step newly
+        // deliverable, so DeriveWorkflowStatus reads Running again on a room whose LAST write above
+        // (back when it first settled Indeterminate) left a Terminal sentinel on disk. (#1877: the
+        // RESOLVED step itself can no longer put the room here — a rejection now forecloses its own
+        // retry — but another still-deliverable step in the same DAG can, so this stays branch-scoped
+        // to `resolve` rather than to a verb.) Left in place,
         // that stale terminal.json both fools FleetStatusTool's sentinel-first fast path into a frozen
         // "Indeterminate" reading and permanently blocks RedispatchCommand's own sentinel-gated refusal
         // from ever clearing — a resolved-but-reopened room a harness can never redispatch again. No
@@ -383,9 +390,9 @@ try
         // DeleteStaleSentinel's own remarks for the opposite choice at RunCommand's call site).
         TerminalSentinelWriter.DeleteStaleSentinel(resolvedNonTerminalRoomDirectoryPath, bestEffort: true);
 
-        // #1608 review finding 4: `resolve` never re-drives the DAG itself (spec/baton.md §3) — a
-        // rejected, retry-eligible step OR an accepted step that just made a downstream step
-        // deliverable both leave this room genuinely non-Terminal with nothing left to notice, unless
+        // #1608 review finding 4, narrowed by #1877: `resolve` never re-drives the DAG itself
+        // (spec/baton.md §3, which enumerates the two shapes that reach here after #1877 narrowed
+        // them) — either leaves this room genuinely non-Terminal with nothing left to notice, unless
         // told. Named here rather than left implicit so a harness never has to infer the follow-up.
         //
         // #1608 re-review finding 1: branched on the returned state, because `baton run` is the wrong

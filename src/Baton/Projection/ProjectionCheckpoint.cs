@@ -20,7 +20,24 @@ public sealed record ProjectionCheckpoint(
     // resolution room's checkpoint would otherwise deserialize as permanently unresolvable.
     // ProjectionCheckpointStore.Load's version gate is what actually forces the full replay this
     // depends on.
-    int Version = 4);
+    // #1877: bumped 4 -> 5 (see CurrentVersion below) for the same reason at one remove. The change there is to how an ALREADY
+    // JOURNALLED CaptureResolved(Accepted: false) projects (it now forecloses retry for every
+    // producer, not just ContractFailure/null), so the fix is retroactive on replay — but a room
+    // that already holds a Version-4 checkpoint written under the old rule would keep serving the
+    // stale non-foreclosed RetryForeclosedStepIds and read Running forever, which is exactly the
+    // symptom #1877 exists to end. The gate below forces the full replay that re-derives it.
+    int Version = ProjectionCheckpoint.CurrentVersion)
+{
+    /// <summary>
+    /// #1877 (record-once): the version number, written once. It was previously spelled as a bare
+    /// literal in three places — this record's own default, <c>StateProjector</c>'s explicit
+    /// <c>Version:</c> argument, and <c>ProjectionCheckpointStore.Load</c>'s gate — and the bump this
+    /// issue needed silently left the second one behind, which made every checkpoint written be
+    /// rejected by the gate on the next read (six checkpoint tests, caught only because they assert
+    /// a saved checkpoint loads back). One const, three readers.
+    /// </summary>
+    public const int CurrentVersion = 5;
+}
 
 /// <summary>
 /// Serializable snapshot of <see cref="StateProjector"/>'s internal working dictionaries and sets.

@@ -1024,12 +1024,43 @@ different producer set. **The settle-shape table, stated once:**
 
 | Producer | `--accept-capture` | `--reject --reason` | `--close --reason` |
 |---|---|---|---|
-| `CapturedResponse` | admits — writes the capture, settles `Succeeded` | admits — settles resolved-`Failed` | refused |
-| `ContractFailure` | refused (nothing captured to accept) | admits — settles resolved-`Failed` | refused |
-| `VerifyFailed` | refused | refused | admits — settles resolved-`Failed` |
-| `ExecutionArrested` | refused | refused | admits — settles resolved-`Failed` |
-| `BuildLockBusy` (#1796) | refused | refused | admits — settles resolved-`Failed` |
-| no producer recorded (legacy) | refused | refused | admits — settles resolved-`Failed` |
+| `CapturedResponse` | admits — writes the capture, settles `Succeeded` | admits — settles resolved-`Failed`, terminal | refused |
+| `ContractFailure` | refused (nothing captured to accept) | admits — settles resolved-`Failed`, terminal | refused |
+| `VerifyFailed` | refused | refused | admits — settles resolved-`Failed`, terminal |
+| `ExecutionArrested` | refused | refused | admits — settles resolved-`Failed`, terminal |
+| `BuildLockBusy` (#1796) | refused | refused | admits — settles resolved-`Failed`, terminal |
+| no producer recorded (legacy) | refused | refused | admits — settles resolved-`Failed`, terminal |
+| already resolved-rejected, still the step's latest (#1877) | refused | refused | admits — records `StepRetryForeclosed`, re-projects terminal |
+
+**Ruled (#1877): rejecting a captured response with `baton resolve --reject --reason <text>` leaves the
+step FAILED-TERMINAL, the workflow settled (never `Running`), `retryEligible: false`, and
+`resolvedBy: conductor` with `rejected: true` and the conductor's reason recorded — an operator who
+wants the work redone says so explicitly with a fresh `baton dispatch`/`baton redispatch`, which the
+resolution itself unblocks (the room no longer reads `Indeterminate`, so `RedispatchCommand`'s
+Indeterminate-parent refusal no longer bites).** Before this, a `CapturedResponse` reject deliberately
+left the step retry-eligible: measured 9/4 on room `codex-1853-readonly-20260904-02`, where `baton
+resolve --reject` recorded `rejected: true`/`resolvedBy: conductor` and the projection still read
+`Running` with `retryEligible: true`, no worker and no pump alive, `--close` refusing ("no unresolved
+indeterminate capture") and `cancel` refusing (nothing `Running` to target) — a room whose only
+remaining closes were redispatching real vendor work, deleting the evidence, or hand-editing the
+ledger. `Projection.StateProjector`'s `CaptureResolved(Accepted: false)` arm now forecloses retry for
+**every** producer, and `ProjectionCheckpoint.Version` is bumped to 5 so an already-checkpointed room
+replays under the new rule instead of serving the stale non-foreclosed state. **Follow-up:** there is
+deliberately no `--reject --redispatch` flag — the retry intent is expressed by the separate
+`redispatch`/`dispatch` verb, and adding one to `resolve` would need its own ruling, since `resolve`
+never dispatches (§3, this section's opening claim).
+
+**`--close` also closes a capture already rejected under the pre-#1877 rule.** An existing room whose
+step is left dangling — a rejected `CaptureResolved` for what is still the step's latest execution,
+no unresolved capture left to target — is admitted by `--close` and settled with a
+`Domain.FlowEvent.StepRetryForeclosed(ForeclosedBy: "resolve --close")`, not a second
+`CaptureResolved` (that event is recorded exactly once per `ExecutionIndeterminate`). The admission
+predicate keys on that durable journal fact rather than on the step's retry-eligibility, which the
+projector fix above has already removed by the time the verb runs — keyed the other way it would be
+dead code, and a test of it would pass while asserting nothing. `StateProjector`'s
+`StepRetryForeclosed` arm applies an event naming the step's latest execution when no retry is
+scheduled for it, in addition to the pre-existing "matches the scheduled retry" arm; a stale name
+still no-ops both ways.
 
 **Both `--reject` and `--close` clear the "awaiting conductor resolution" text (#1622 (c)/(d)).** Before
 this fix a resolved step's `error`/`LatestFailureReason` kept the pre-resolution sentence verbatim, and
@@ -1079,10 +1110,11 @@ capture at all already proves `OutputMaterializer.TryCaptureFinalResponse`'s gat
 in that list, at capture time. `RetryEngine.MayRetry` refuses an unresolved capture unconditionally,
 via its own explicit arm on `StepState.IndeterminateAwaitingResolution` — deliberately not by reusing
 `FailureClassification.Permanent`'s semantics, since `Indeterminate` carries no classification at all;
-once resolved (accepted, or rejected with retry budget remaining), the step's ordinary retry
-eligibility applies again. `baton resolve` never re-drives the DAG itself, in either direction — a
-rejected, retry-eligible step, *and* an accepted step that leaves a downstream step newly deliverable
-in a multi-step room, both need a follow-up `baton run --room-dir` to dispatch again, the same recovery
+once resolved by an **accept**, the step's ordinary retry eligibility applies again. A **reject** or
+**close** forecloses retry instead (#1877, the ruling above), so the resolved step itself is terminal.
+`baton resolve` never re-drives the DAG itself, in either direction — an accepted step that leaves a
+downstream step newly deliverable in a multi-step room, or any other still-deliverable step in the
+same DAG, needs a follow-up `baton run --room-dir` to dispatch again, the same recovery
 §7 already describes for a stalled room (F4, #1608 review — the acceptance case was previously
 undocumented, reading as though only rejection needed it). `baton resolve` names that follow-up
 invocation on stdout whenever the state it returns is not `WorkflowStatus.Terminal`, so a harness never

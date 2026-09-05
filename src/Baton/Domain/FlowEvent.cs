@@ -474,9 +474,10 @@ public abstract record FlowEvent
     /// capture on the next matching <c>--execution</c>, rather than the mirror gap the opposite order
     /// left open: an orphaned file on disk with no fact and a room still reading Indeterminate).
     /// <c>false</c>: rejected — the step stays
-    /// <see cref="StepStatus.Failed"/>, no file is written, and <see cref="Scheduling.RetryEngine.MayRetry"/>
-    /// re-applies its ordinary predicate rather than refusing unconditionally, since the conductor
-    /// has now made the call this room was blocked on.
+    /// <see cref="StepStatus.Failed"/>, no file is written, and (#1877) retry is foreclosed for every
+    /// producer, so the step is terminal and the room settles rather than re-opening as retry-eligible
+    /// with no worker or pump alive. An operator who wants the work redone dispatches it fresh; see
+    /// spec/baton.md §3's settle-shape table.
     /// </param>
     /// <param name="Reason">
     /// The conductor's own justification — required by <c>ResolveOptionsParser</c> for a rejection,
