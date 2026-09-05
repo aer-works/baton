@@ -30,11 +30,6 @@ public sealed class RetryingFileMoveTests : IDisposable
     [Fact]
     public async Task Retries_and_succeeds_when_destination_lock_is_released_within_budget()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("FileShare.None only blocks a move's delete-share requirement on Windows.");
-        }
-
         var src = Path_("source.txt");
         var dst = Path_("dest.txt");
         File.WriteAllText(src, "transient source content");
@@ -64,11 +59,6 @@ public sealed class RetryingFileMoveTests : IDisposable
     [Fact]
     public void Throws_when_destination_lock_is_held_longer_than_retry_budget()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("FileShare.None only blocks a move's delete-share requirement on Windows.");
-        }
-
         var src = Path_("source.txt");
         var dst = Path_("dest.txt");
         File.WriteAllText(src, "expiry source content");
@@ -95,11 +85,6 @@ public sealed class RetryingFileMoveTests : IDisposable
         // Red arm note (second-reader finding on #985): with the cleanup branch removed from the
         // helper's deadline path, the source survives the throw and the File.Exists assert fails —
         // the uniquely-named orphan the finding describes.
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("FileShare.None only blocks a move's delete-share requirement on Windows.");
-        }
-
         var src = Path_("source.txt");
         var dst = Path_("dest.txt");
         File.WriteAllText(src, "cleanup source content");

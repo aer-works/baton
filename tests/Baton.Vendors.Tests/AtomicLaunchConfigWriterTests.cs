@@ -88,7 +88,7 @@ public sealed class AtomicLaunchConfigWriterTests : IDisposable
 
     /// <summary>
     /// A file the probe cannot read counts as differing, so the call falls through to the write
-    /// instead of throwing out of the comparison. Windows arm.
+    /// instead of throwing out of the comparison.
     /// </summary>
     /// <remarks>
     /// The content is <b>identical</b> to what is on disk, which is what discriminates: a probe that
@@ -97,13 +97,8 @@ public sealed class AtomicLaunchConfigWriterTests : IDisposable
     /// did. Control run, not assumed: removing the catch in <c>AlreadyHolds</c> turns this red.
     /// </remarks>
     [Fact]
-    public void A_destination_the_probe_cannot_read_falls_through_to_the_write_on_windows()
+    public void A_destination_the_probe_cannot_read_falls_through_to_the_write()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("FileShare.None is advisory off Windows, so this cannot make a read fail here.");
-        }
-
         var path = Path_("settings.json");
         const string content = """{"hooks":"canonical"}""";
         AtomicLaunchConfigWriter.Write(path, content);
@@ -124,18 +119,9 @@ public sealed class AtomicLaunchConfigWriterTests : IDisposable
     /// denying the rename, so the comparison runs against real, differing content instead of being
     /// skipped for being unreadable.
     /// </summary>
-    /// <remarks>
-    /// Windows arm, for the same reason as its sibling: the sharing violation this depends on is not
-    /// established as portable (see this type's own remarks).
-    /// </remarks>
     [Fact]
     public void A_destination_holding_different_content_still_throws_when_the_rename_cannot_land()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("FileShare.Read only blocks a rename's delete-share requirement on Windows.");
-        }
-
         var path = Path_("settings.json");
         const string stale = """{"hooks":{"PreToolUse":[{"stale":"pre-543-content"}]}}""";
         File.WriteAllText(path, stale);
@@ -169,10 +155,6 @@ public sealed class AtomicLaunchConfigWriterTests : IDisposable
     [Fact]
     public void Many_concurrent_cold_start_writers_with_identical_content_do_not_throw()
     {
-        // Deliberately NOT skipped off Windows, unlike the siblings above: "no writer throws" is a
-        // claim worth holding on every platform. But the CONTENTION only reproduces where renames
-        // take the sharing violation (#682 was measured on Windows), so off Windows this asserts
-        // the happy path, not the retry path -- the reproduction is Windows-only.
         var path = Path_("settings.json");
         const string content = """{"hooks":"canonical"}""";
         const int writerCount = 40;
@@ -205,40 +187,5 @@ public sealed class AtomicLaunchConfigWriterTests : IDisposable
 
         Assert.Empty(exceptions);
         Assert.Equal(content, File.ReadAllText(path));
-    }
-
-    /// <summary>
-    /// The same claim on Unix, where the observable differs: a mode-000 file fails the probe's read
-    /// but not the rename, so the call has to <i>succeed</i> rather than throw from somewhere else.
-    /// </summary>
-    /// <remarks>
-    /// Skips when the read succeeds anyway — running as root defeats the permission bits, and a pass
-    /// under those conditions would prove nothing.
-    /// </remarks>
-    [Fact]
-    public void A_destination_the_probe_cannot_read_falls_through_to_the_write_on_unix()
-    {
-        // Guarded with else rather than an early return so CA1416 can see that SetUnixFileMode is
-        // unreachable on Windows -- Assert.Skip throws, but nothing tells the analyzer that.
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Skip("Unix mode bits do not apply; the Windows arm covers this platform.");
-        }
-        else
-        {
-            var path = Path_("settings.json");
-            const string content = """{"hooks":"canonical"}""";
-            AtomicLaunchConfigWriter.Write(path, content);
-            File.SetUnixFileMode(path, UnixFileMode.None);
-
-            if (Record.Exception(() => File.ReadAllText(path)) is null)
-            {
-                Assert.Skip("The mode-000 file is still readable (running as root?), so the probe cannot fail.");
-            }
-
-            AtomicLaunchConfigWriter.Write(path, content);
-
-            Assert.Equal(content, File.ReadAllText(path));
-        }
     }
 }

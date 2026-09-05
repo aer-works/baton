@@ -91,37 +91,17 @@ internal static class CrashTestHostLauncher
     /// <summary>
     /// Best-effort cleanup for a real orphaned child a crash test's killed run may have left
     /// running. <paramref name="processId"/> is the PID <see cref="CoreEvent.ExecutionStarted"/>
-    /// recorded for the worker's immediate child, spawned by <c>BatonTask</c>. This Unix branch
-    /// describes the pre-#1474 aer-core engine's own containment on that platform: that process
-    /// called <c>setsid()</c>, making it its own process group leader, so a shell worker command
-    /// like <c>sh -c "sleep 120"</c> that forks rather than execs directly (as this platform's
-    /// <c>/bin/sh</c> does) leaves a grandchild sharing that same PGID — killing only
-    /// <paramref name="processId"/> itself would leave that grandchild running. Killing the whole
-    /// process group (a negative PID in POSIX <c>kill</c>) takes down the leader and every
-    /// descendant sharing its group in one call — the same tree-kill outcome <c>BatonTask</c>'s own
-    /// Windows-only containment (a Job Object; see
-    /// <see cref="Baton.Core.Internal.SafeJobObjectHandle"/>) achieves on this repo's actual
-    /// platform, rather than reimplementing tree discovery here.
+    /// recorded for the worker's immediate child, spawned by <c>BatonTask</c>. <c>BatonTask</c>'s
+    /// own containment (a Job Object; see <see cref="Baton.Core.Internal.SafeJobObjectHandle"/>)
+    /// already takes the whole tree down alongside the killed host process, so this is expected to
+    /// be a no-op rather than a real cleanup path — see CrashRecoveryEndToEndTests' orphan test
+    /// remarks.
     /// </summary>
     public static void TryKillOrphanedChild(int processId)
     {
         try
         {
-            if (OperatingSystem.IsWindows())
-            {
-                // No POSIX process-group equivalent; Windows' own Job Object containment already
-                // reliably took the whole tree down alongside the killed host process (see
-                // CrashRecoveryEndToEndTests' orphan test remarks), so this is expected to be a
-                // no-op here, not a real cleanup path.
-                Process.GetProcessById(processId).Kill();
-                return;
-            }
-
-            using var killProcessGroup = Process.Start(new ProcessStartInfo("kill", ["-9", "--", $"-{processId}"])
-            {
-                UseShellExecute = false,
-            });
-            killProcessGroup?.WaitForExit(TimeSpan.FromSeconds(5));
+            Process.GetProcessById(processId).Kill();
         }
         catch (ArgumentException)
         {

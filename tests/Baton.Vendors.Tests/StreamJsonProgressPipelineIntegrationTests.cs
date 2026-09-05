@@ -36,9 +36,8 @@ public class StreamJsonProgressPipelineIntegrationTests
         """{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":29,"duration_api_ms":0,"num_turns":1,"result":"Not logged in · Please run /login","stop_reason":"stop_sequence","session_id":"16ab91d3-511f-46ad-ade5-c946b7c9e2f7","total_cost_usd":0,"modelUsage":{},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","uuid":"f9febda5-1240-4853-a32e-1dba6c60c012"}""",
     ];
 
-    private static CoreDispatchTarget BuildEmitterTarget(string fixturePath) => OperatingSystem.IsWindows()
-        ? new CoreDispatchTarget("cmd", ["/c", "type", fixturePath])
-        : new CoreDispatchTarget("sh", ["-c", $"cat \"{fixturePath}\""]);
+    private static CoreDispatchTarget BuildEmitterTarget(string fixturePath) =>
+        new("cmd", ["/c", "type", fixturePath]);
 
     [Fact]
     public async Task A_real_spawned_process_emitting_the_captured_fixture_survives_dispatch_channel_and_parser_intact()

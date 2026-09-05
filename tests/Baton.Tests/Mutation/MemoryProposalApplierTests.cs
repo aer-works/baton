@@ -119,7 +119,7 @@ public class MemoryProposalApplierTests : IDisposable
     [Fact]
     public async Task A_rooted_targetPath_is_refused()
     {
-        var rooted = OperatingSystem.IsWindows() ? "C:\\evil.md" : "/etc/evil.md";
+        var rooted = "C:\\evil.md";
         var capture = Path.Combine(_tempDirectory, "proposal-rooted.json");
         File.WriteAllText(capture, JsonSerializer.Serialize(
             new MemoryProposalCapture("add", rooted, "pwned", "malicious")));
@@ -148,9 +148,7 @@ public class MemoryProposalApplierTests : IDisposable
     /// pointing outside it passes that string check -- proven red here against unmodified code
     /// (before the fix, this test fails: the write lands in <c>outsideDirectory</c>). On
     /// Windows, directory junctions are creatable with plain filesystem write access (no admin,
-    /// no Developer Mode) via <c>mklink /J</c>; that's the mechanism actually measured here. On
-    /// Linux/macOS, `Directory.CreateSymbolicLink` for a directory symlink needs no elevation
-    /// either, so the same escape shape is provable with a real symlink instead.
+    /// no Developer Mode) via <c>mklink /J</c>; that's the mechanism actually measured here.
     /// </summary>
     [Fact]
     public async Task A_reparse_point_under_memory_that_resolves_outside_it_is_refused()
@@ -239,10 +237,11 @@ public class MemoryProposalApplierTests : IDisposable
     /// directory itself is reached through a junction here, not just a path under memory/.
     /// <para>
     /// This is also the arm that proved the fixed-point resolution necessary, and it is worth
-    /// saying where: it passes on Windows either way, and went red on the CI Linux leg of this PR
-    /// because the two platforms disagree about whether <c>ResolveLinkTarget</c> normalises its own
-    /// result. So the control run for that half is CI itself, red before and green after -- not a
-    /// local one, because the defect cannot be reproduced on this host at all.
+    /// saying where: it passes on Windows either way, and went red on the then-extant CI Linux leg
+    /// of #856's PR because the two platforms disagree about whether <c>ResolveLinkTarget</c>
+    /// normalises its own result. That control run was CI's, red before and green after — a
+    /// historical record, not a claim about today: CI has been Windows-only since #1405/#1424, so
+    /// nothing now discriminates that half, and the assertion below runs as a Windows regression pin.
     /// </para>
     /// </summary>
     [Fact]
@@ -372,12 +371,6 @@ public class MemoryProposalApplierTests : IDisposable
     [Fact]
     public async Task A_cyclic_reparse_point_is_refused_as_an_invalid_mutation_not_a_raw_io_error()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("The cyclic-junction behaviour this pins was measured on Windows only; see #874.");
-            return;
-        }
-
         Directory.CreateDirectory(_memoryRoot);
         var loopA = Path.Combine(_memoryRoot, "loopA");
         var loopB = Path.Combine(_memoryRoot, "loopB");
@@ -421,10 +414,10 @@ public class MemoryProposalApplierTests : IDisposable
 
     /// <summary>
     /// Covers the file half of <c>ResolveIfReparsePoint</c>'s <c>isDirectory ? Directory... :
-    /// File...</c> branch, which the directory tests above leave unexercised. A file symlink is
-    /// unprivileged on Linux/macOS but needs admin or Developer Mode on Windows, so this skips
-    /// rather than fakes where it cannot be created -- it is expected to be the CI Linux/macOS legs
-    /// that actually run it.
+    /// File...</c> branch, which the directory tests above leave unexercised. A file symlink
+    /// needs admin or Developer Mode on Windows, so this skips rather than fakes where it cannot be
+    /// created. That is a host-capability guard, not a platform one: it runs wherever symlink
+    /// creation is permitted and asserts nothing about which OS is underneath.
     /// </summary>
     [Fact]
     public async Task A_file_reparse_point_under_memory_that_resolves_outside_it_is_refused()
@@ -520,12 +513,6 @@ public class MemoryProposalApplierTests : IDisposable
     [Fact]
     public async Task A_reparse_point_this_process_cannot_read_is_refused_as_an_invalid_mutation()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("The denied-reparse-point behaviour this pins is a Windows ACL mechanism; see #874.");
-            return;
-        }
-
         var roomDirectory = Path.Combine(Path.GetTempPath(), "baton_memory_applier_denied_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(roomDirectory);
 
@@ -700,27 +687,11 @@ public class MemoryProposalApplierTests : IDisposable
     /// Creates a directory reparse point at <paramref name="linkPath"/> pointing at <paramref
     /// name="targetPath"/>: a junction on Windows (via <c>mklink /J</c>, spawned directly rather
     /// than through a shell so path quoting cannot mangle it -- unprivileged, unlike a Windows
-    /// directory symlink which needs admin or Developer Mode), or a directory symlink elsewhere
-    /// (unprivileged on Linux/macOS). Returns false with a reason if the environment cannot host
-    /// either -- the caller must skip rather than fake the arm.
+    /// directory symlink which needs admin or Developer Mode). Returns false with a reason if the
+    /// environment cannot host one -- the caller must skip rather than fake the arm.
     /// </summary>
     private static bool TryCreateDirectoryReparsePoint(string linkPath, string targetPath, out string skipReason)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            try
-            {
-                Directory.CreateSymbolicLink(linkPath, targetPath);
-                skipReason = "";
-                return true;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                skipReason = $"Could not create a directory symlink in this environment: {ex.Message}";
-                return false;
-            }
-        }
-
         var startInfo = new ProcessStartInfo("cmd.exe")
         {
             RedirectStandardOutput = true,

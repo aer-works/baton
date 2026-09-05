@@ -885,7 +885,6 @@ public sealed class ExecutionUsageProjectorTests
         // changed, or if the guard folded this case into "no-live-billed-figure" instead -- a consumer
         // needs to tell "the replay found nothing" from "the replay could not even read its own input"
         // apart, since only the second is retryable by fixing the file's sharing state.
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare.None is only OS-enforced on Windows; CI is Windows-only (#1405)");
         var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1724-unreadable-{Guid.NewGuid():N}");
         try
         {

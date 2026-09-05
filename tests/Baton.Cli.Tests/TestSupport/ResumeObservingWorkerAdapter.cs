@@ -32,9 +32,7 @@ internal sealed class ResumeObservingWorkerAdapter : IWorkerAdapter
         }
 
         var writeCommands = contract.ProducedOutputs.Count > 0
-            ? string.Join(
-                OperatingSystem.IsWindows() ? " & " : " && ",
-                contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
+            ? string.Join(" & ", contract.ProducedOutputs.Select(o => WriteCommand(o.Name)))
             : "exit 0";
 
         // A resume runs measurably longer than the original dispatch (#1360 F2's review finding): the
@@ -43,19 +41,14 @@ internal sealed class ResumeObservingWorkerAdapter : IWorkerAdapter
         // than the two near-instant scripts coincidentally producing indistinguishable millisecond
         // deltas.
         var script = invocation.ResumeSession
-            ? string.Join(OperatingSystem.IsWindows() ? " & " : "; ", [SleepCommand(), writeCommands])
+            ? string.Join(" & ", [SleepCommand(), writeCommands])
             : writeCommands;
 
-        return OperatingSystem.IsWindows()
-            ? new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory)
-            : new CoreDispatchTarget("sh", ["-c", script], invocation.WorkingDirectory);
+        return new CoreDispatchTarget("cmd", ["/c", script], invocation.WorkingDirectory);
     }
 
-    private static string SleepCommand() => OperatingSystem.IsWindows()
-        ? "ping -n 3 127.0.0.1>nul"
-        : "sleep 2";
+    private static string SleepCommand() => "ping -n 3 127.0.0.1>nul";
 
-    private static string WriteCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"echo x>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo x > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteCommand(string outputName) =>
+        $"echo x>%BATON_OUTPUT_DIR%\\{outputName}";
 }

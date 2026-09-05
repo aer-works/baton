@@ -967,13 +967,11 @@ public class StatusCommandEndToEndTests
         return path;
     }
 
-    private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
-        ? $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteFileCommand(string outputName, string content) =>
+        $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}";
 
-    private static string CopyFirstInputCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string CopyFirstInputCommand(string outputName) =>
+        $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}";
 
     private static string GatedCopyFirstInputCommand(string outputName, string signalFilePath)
     {
@@ -984,9 +982,7 @@ public class StatusCommandEndToEndTests
         // The wait loop's timeout-expiry path still exits 0, so best-effort semantics after 60s
         // are unchanged.
         var normalizedPath = signalFilePath.Replace("\\", "/");
-        return OperatingSystem.IsWindows()
-            ? $"powershell -NoProfile -Command \"for ($i=0; $i -lt 1200; $i++) {{ if (Test-Path '{normalizedPath}') {{ break }}; Start-Sleep -Milliseconds 50 }}\" && type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"
-            : $"sh -c \"for i in \\$(seq 1 1200); do if [ -f \\\"{normalizedPath}\\\" ]; then break; fi; sleep 0.05; done\" && cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\"";
+        return $"powershell -NoProfile -Command \"for ($i=0; $i -lt 1200; $i++) {{ if (Test-Path '{normalizedPath}') {{ break }}; Start-Sleep -Milliseconds 50 }}\" && type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}";
     }
 }
 

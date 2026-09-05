@@ -173,7 +173,7 @@ public class CancelCommandRoomLevelRefusalMessageTests
     private static async Task<string> WriteOneQuickStepBindingsAsync(string directory)
     {
         Directory.CreateDirectory(directory);
-        var writeCommand = OperatingSystem.IsWindows() ? "echo done>%BATON_OUTPUT_DIR%\\out" : "echo done > \"$BATON_OUTPUT_DIR/out\"";
+        const string writeCommand = "echo done>%BATON_OUTPUT_DIR%\\out";
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
             ["a"] = new WorkerBindingConfigEntry(

@@ -325,9 +325,9 @@ public class AgyHookCheckCommandTests
             Decide(Payload("list_dir").Replace("CommandLine", "AbsolutePath"), "agy:run_command", Outbox, Workspace));
     }
 
-    // Real rooted paths for this platform, not literals: `C:/...` is not rooted on Linux, so a
-    // hardcoded Windows path would make every containment answer false and the allow arms would fail
-    // on the Linux CI leg for a reason that has nothing to do with the gate.
+    // Real rooted paths from the host, not hardcoded literals: containment is answered against paths
+    // the filesystem actually roots, so the allow arms cannot pass or fail for a reason that has
+    // nothing to do with the gate.
     private static readonly string Workspace = Path.Combine(Path.GetTempPath(), "baton-workspace");
 
     private static readonly string Outbox =

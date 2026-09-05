@@ -57,7 +57,6 @@ public class DecideCommandEndToEndTests
     public async Task Deciding_against_a_task_whose_journal_is_held_open_by_another_process_throws_FlowJournalHeldException_not_a_raw_IOException()
     {
         // #816's measured crash, decide's half; see FlowEventLogWriterTests for the mechanism.
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; the Unix arm below proves the open just succeeds there");
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -103,7 +102,6 @@ public class DecideCommandEndToEndTests
     [Fact]
     public async Task Decide_lands_when_the_journal_is_released_shortly_after_it_starts_waiting()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; on Unix the second open never blocks at all (see the Unix arm below)");
         var cancellationToken = TestContext.Current.CancellationToken;
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
@@ -153,7 +151,6 @@ public class DecideCommandEndToEndTests
     [Fact]
     public async Task Decide_lands_when_the_flow_lock_is_released_shortly_after_it_starts_waiting()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "ConcurrencyGuard rests on FileShare.None, which .NET only OS-enforces on Windows; CI is Windows-only (#1405)");
         var cancellationToken = TestContext.Current.CancellationToken;
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
@@ -191,46 +188,6 @@ public class DecideCommandEndToEndTests
     }
 
     [Fact]
-    public async Task On_unix_a_held_open_journal_does_not_block_decide_the_open_succeeds_and_validation_answers()
-    {
-        // The other polarity of the platform gate above: .NET's FileStream stopped enforcing
-        // FileShare on Unix (the .NET 6 rewrite), so the #816 crash class cannot arise there --
-        // the second open succeeds and the command proceeds to ordinary validation, which is the
-        // discriminating claim this arm pins. If this test ever starts failing on Unix with
-        // FlowJournalHeldException, the runtime's sharing semantics changed and the gate above
-        // (plus FlowJournalHeldException's platform note) must be revisited together.
-        Assert.SkipWhen(OperatingSystem.IsWindows(), "Windows OS-enforces the sharing violation; the tests above pin that arm");
-        var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-unix-{Guid.NewGuid():N}");
-        var roomDirectory = Path.Combine(testRoot, "task");
-        try
-        {
-            var workflowFilePath = await WriteApprovalGateWorkflowAsync(testRoot);
-            var bindingsFilePath = await WriteApprovalGateBindingsAsync(testRoot);
-            var runOptions = new RunOptions(workflowFilePath, bindingsFilePath, roomDirectory);
-
-            var pausedResult = await RunCommand.ExecuteAsync(runOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
-            var pausedExecutionId = pausedResult.State.Steps.Single(s => s.StepId.Value == "a").LatestExecutionId!.Value;
-
-            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
-            using var liveEngineHolder = new FileStream(
-                logPath, FileMode.Append, FileAccess.Write, FileShare.Read, bufferSize: 1, useAsync: true);
-
-            var decideOptions = new DecideOptions(
-                roomDirectory, pausedExecutionId.Value, DecisionType.Resume, TargetStepId: null,
-                SupplementaryExecutionId: null, bindingsFilePath);
-
-            // No FlowJournalHeldException, no raw IOException: the decision against the genuinely
-            // paused attempt just works, exactly as it would with no holder at all.
-            var result = await DecideCommand.ExecuteAsync(decideOptions, Adapters, cancellationToken: TestContext.Current.CancellationToken);
-            Assert.NotNull(result);
-        }
-        finally
-        {
-            DirectoryCleanup.DeleteRecursively(testRoot);
-        }
-    }
-
-    [Fact]
     public async Task Decide_against_a_held_open_journal_through_the_real_CLI_process_exits_1_with_one_line_and_no_stack_trace()
     {
         // The full claim #816 makes is about Program.cs's top-level exception handling and the
@@ -238,7 +195,6 @@ public class DecideCommandEndToEndTests
         // DecideCommand.ExecuteAsync tests above can observe, since Program.cs's top-level
         // statements aren't otherwise reachable from a unit test. This spawns the real built
         // Baton.Cli executable, the same way an operator would invoke 'baton decide'.
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; the Unix arm below proves the open just succeeds there");
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-decide-proc-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -611,19 +567,15 @@ public class DecideCommandEndToEndTests
         return path;
     }
 
-    private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
-        ? $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteFileCommand(string outputName, string content) =>
+        $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}";
 
-    private static string CopyFirstInputCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string CopyFirstInputCommand(string outputName) =>
+        $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}";
 
-    private static string ConsumeSupplementaryInputElseFailCommand(string outputName, string supplementaryFileName) => OperatingSystem.IsWindows()
-        ? $"if defined BATON_SUPPLEMENTARY_INPUT (copy /y %BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName} %BATON_OUTPUT_DIR%\\{outputName} >nul) else (exit /b 1)"
-        : $"if [ -n \"$BATON_SUPPLEMENTARY_INPUT\" ]; then cp \"$BATON_SUPPLEMENTARY_INPUT/{supplementaryFileName}\" \"$BATON_OUTPUT_DIR/{outputName}\"; else exit 1; fi";
+    private static string ConsumeSupplementaryInputElseFailCommand(string outputName, string supplementaryFileName) =>
+        $"if defined BATON_SUPPLEMENTARY_INPUT (copy /y %BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName} %BATON_OUTPUT_DIR%\\{outputName} >nul) else (exit /b 1)";
 
-    private static string ConsumeSupplementaryInputElseWriteCommand(string outputName, string supplementaryFileName, string baseContent) => OperatingSystem.IsWindows()
-        ? $"if defined BATON_SUPPLEMENTARY_INPUT (copy /y %BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName} %BATON_OUTPUT_DIR%\\{outputName} >nul) else (echo {baseContent}>%BATON_OUTPUT_DIR%\\{outputName})"
-        : $"if [ -n \"$BATON_SUPPLEMENTARY_INPUT\" ]; then cp \"$BATON_SUPPLEMENTARY_INPUT/{supplementaryFileName}\" \"$BATON_OUTPUT_DIR/{outputName}\"; else echo {baseContent} > \"$BATON_OUTPUT_DIR/{outputName}\"; fi";
+    private static string ConsumeSupplementaryInputElseWriteCommand(string outputName, string supplementaryFileName, string baseContent) =>
+        $"if defined BATON_SUPPLEMENTARY_INPUT (copy /y %BATON_SUPPLEMENTARY_INPUT%\\{supplementaryFileName} %BATON_OUTPUT_DIR%\\{outputName} >nul) else (echo {baseContent}>%BATON_OUTPUT_DIR%\\{outputName})";
 }

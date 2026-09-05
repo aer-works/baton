@@ -163,16 +163,12 @@ public class OutboxWriteExemptionTests
                 return;
             }
 
-            // The premise, and it is platform-split — measured, not assumed. On POSIX, Exists calls
+            // The defect's premise is platform-split — measured, not assumed. On POSIX, Exists calls
             // stat, which follows the link, so a dangling one reports false and a resolver keyed on
             // Exists treats it as "not a link". Windows reports the reparse point itself as existing,
-            // so the hole never opens there. The assertion is scoped to the platforms where it is the
-            // premise; CI's Linux and macOS legs are what actually exercise this case.
-            if (!OperatingSystem.IsWindows())
-            {
-                Assert.False(Directory.Exists(link));
-            }
-
+            // so the hole never opens here; the assertions below pin that the resolver still denies
+            // through the link on this platform. Nothing asserts the POSIX premise any more — #1872
+            // deleted that arm with the Unix CI legs that used to run it.
             Assert.False(OutboxPath.IsInside(Path.Combine(link, "Program.cs"), outbox));
             Assert.True(OutboxPath.IsInside(Path.Combine(outbox, "review.md"), outbox));
         }
@@ -232,8 +228,8 @@ public class OutboxWriteExemptionTests
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Windows needs Developer Mode or elevation to create one. The Linux and macOS CI
-                // legs carry this assertion; skipping here beats asserting nothing anywhere.
+                // Windows needs Developer Mode or elevation to create one, so this is a host
+                // capability check: where symlink creation is refused, nothing asserts this.
                 return;
             }
 
@@ -283,7 +279,7 @@ public class OutboxWriteExemptionTests
                 // Windows needs Developer Mode or elevation. Skipped LOUDLY rather than returning
                 // silently like the two tests above: this is the only arm covering a measured escape,
                 // and a silent return makes an uncovered run look identical to a covered one.
-                Assert.Skip("this host cannot create symbolic links; the Linux and macOS legs assert it");
+                Assert.Skip("this host cannot create symbolic links (Developer Mode or elevation), so this escape cannot be planted here");
                 return;
             }
 
@@ -322,7 +318,7 @@ public class OutboxWriteExemptionTests
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Assert.Skip("this host cannot create symbolic links; the Linux and macOS legs assert it");
+                Assert.Skip("this host cannot create symbolic links (Developer Mode or elevation), so the cycle cannot be planted here");
                 return;
             }
 

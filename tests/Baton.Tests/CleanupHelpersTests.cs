@@ -38,11 +38,6 @@ public class CleanupHelpersTests
     [Fact]
     public async Task Delete_retries_past_a_transient_lock_and_succeeds_once_the_holder_releases()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("POSIX unlink ignores open handles; the transient share-lock is Windows-only (#295).");
-        }
-
         var path = TempPath();
         await File.WriteAllTextAsync(path, "x", TestContext.Current.CancellationToken);
 
@@ -65,11 +60,6 @@ public class CleanupHelpersTests
     [Fact]
     public async Task Under_a_persistent_lock_Delete_swallows_but_EnsureDeleted_and_a_bare_delete_surface()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            Assert.Skip("POSIX unlink ignores open handles; the transient share-lock is Windows-only (#295).");
-        }
-
         var path = TempPath();
         await File.WriteAllTextAsync(path, "x", TestContext.Current.CancellationToken);
 

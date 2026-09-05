@@ -969,7 +969,7 @@ public sealed class DispatchCommandEndToEndTests : IDisposable
     {
         // R3 (#1354/#1380, finding 3): the red test for the copy crashing before Program's
         // terminal-sentinel write. File.Copy(src, existingDirectoryPath, overwrite: true) throws
-        // (UnauthorizedAccessException on Windows, IOException on Linux/macOS) -- neither derives from
+        // (UnauthorizedAccessException on Windows) -- which does not derive from
         // BatonFlowException, so before the fix this escaped ExecuteAsync raw. The run must still reach
         // Terminal and ExecuteAsync must still return normally, since that return is what lets Program
         // go on to write terminal.json.

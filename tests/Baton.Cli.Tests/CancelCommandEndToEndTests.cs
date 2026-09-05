@@ -31,7 +31,6 @@ public class CancelCommandEndToEndTests
         // raw IOException, but still a crash). #1646: CancelCommand's live-pump fall-through (#1495)
         // now catches this append-open collision the same way it already caught WorkflowLockedException
         // — see CancelCommand's own remarks for why both name the same "this room is busy" fact.
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; see DecideCommandEndToEndTests' Unix arm");
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-e2e-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -400,7 +399,7 @@ public class CancelCommandEndToEndTests
                 "irrelevant — never dispatched",
                 TimeSpan.FromSeconds(30), // wait-ok: test config timeout
                 Worktree: new WorktreeWorkspace(
-                    OperatingSystem.IsWindows() ? "C:\\nonexistent\\repo" : "/nonexistent/repo",
+                    "C:\\nonexistent\\repo",
                     "nonexistent-ref")),
         };
 
@@ -409,11 +408,9 @@ public class CancelCommandEndToEndTests
         return path;
     }
 
-    private static string WriteFileCommand(string outputName, string content) => OperatingSystem.IsWindows()
-        ? $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"echo {content} > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string WriteFileCommand(string outputName, string content) =>
+        $"echo {content}>%BATON_OUTPUT_DIR%\\{outputName}";
 
-    private static string CopyFirstInputCommand(string outputName) => OperatingSystem.IsWindows()
-        ? $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}"
-        : $"cat \"$BATON_INPUT_0\" > \"$BATON_OUTPUT_DIR/{outputName}\"";
+    private static string CopyFirstInputCommand(string outputName) =>
+        $"type %BATON_INPUT_0% >%BATON_OUTPUT_DIR%\\{outputName}";
 }

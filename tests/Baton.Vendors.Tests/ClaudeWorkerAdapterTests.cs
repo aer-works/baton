@@ -82,7 +82,7 @@ public class ClaudeWorkerAdapterTests
         var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), ArchitectContract);
 
         Assert.Equal("--add-dir", target.Args[4]);
-        var artifactsRootVar = OperatingSystem.IsWindows() ? "%BATON_ARTIFACTS_ROOT%" : "$BATON_ARTIFACTS_ROOT";
+        const string artifactsRootVar = "%BATON_ARTIFACTS_ROOT%";
         Assert.Equal(artifactsRootVar, target.Args[5]);
     }
 
@@ -160,8 +160,8 @@ public class ClaudeWorkerAdapterTests
         var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Draft a plan."), contract);
 
         var prompt = GetPrompt(target);
-        var outputVar = OperatingSystem.IsWindows() ? "%BATON_OUTPUT_DIR%" : "$BATON_OUTPUT_DIR";
-        var separator = OperatingSystem.IsWindows() ? '\\' : '/';
+        const string outputVar = "%BATON_OUTPUT_DIR%";
+        const char separator = '\\';
         Assert.Contains($"plan.md: {outputVar}{separator}plan.md", prompt);
         Assert.Contains($"summary.md: {outputVar}{separator}summary.md", prompt);
     }
@@ -175,8 +175,8 @@ public class ClaudeWorkerAdapterTests
         var target = new ClaudeWorkerAdapter().Resolve(new WorkerInvocation("Review the plan."), contract);
 
         var prompt = GetPrompt(target);
-        var inputVar0 = OperatingSystem.IsWindows() ? "%BATON_INPUT_0%" : "$BATON_INPUT_0";
-        var inputVar1 = OperatingSystem.IsWindows() ? "%BATON_INPUT_1%" : "$BATON_INPUT_1";
+        const string inputVar0 = "%BATON_INPUT_0%";
+        const string inputVar1 = "%BATON_INPUT_1%";
         Assert.Contains($"plan: {inputVar0}", prompt);
         Assert.Contains($"guidelines: {inputVar1}", prompt);
     }
@@ -1254,7 +1254,7 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void Claude_config_root_set_injects_CLAUDE_CONFIG_DIR_for_batch_and_gate()
     {
-        var testPath = OperatingSystem.IsWindows() ? @"C:\baton\claude-root" : "/baton/claude-root";
+        const string testPath = @"C:\baton\claude-root";
         // See the sibling test above: scope from Current so the redirected BATON_HOME survives.
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = testPath });
@@ -1276,9 +1276,7 @@ public class ClaudeWorkerAdapterTests
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
-        var roomDirectory = OperatingSystem.IsWindows()
-            ? @"C:\repo\.claude\worktrees\room1"
-            : "/repo/.claude/worktrees/room1";
+        const string roomDirectory = @"C:\repo\.claude\worktrees\room1";
 
         var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
 
@@ -1293,11 +1291,11 @@ public class ClaudeWorkerAdapterTests
     [Fact]
     public void HasSensitiveOutputPathComponent_allows_a_room_under_a_non_dot_claude_config_root_override()
     {
-        var configRoot = OperatingSystem.IsWindows() ? @"C:\baton\cfg" : "/baton/cfg";
+        const string configRoot = @"C:\baton\cfg";
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = configRoot });
 
-        var roomDirectory = OperatingSystem.IsWindows() ? @"C:\baton\cfg\room1" : "/baton/cfg/room1";
+        const string roomDirectory = @"C:\baton\cfg\room1";
 
         var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
 
@@ -1315,9 +1313,7 @@ public class ClaudeWorkerAdapterTests
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 
-        var roomDirectory = OperatingSystem.IsWindows()
-            ? @"C:\repo\.claudex\room1"
-            : "/repo/.claudex/room1";
+        const string roomDirectory = @"C:\repo\.claudex\room1";
 
         var matched = new ClaudeWorkerAdapter().HasSensitiveOutputPathComponent(roomDirectory, out var offendingComponent);
 
@@ -1327,14 +1323,12 @@ public class ClaudeWorkerAdapterTests
 
     /// <summary>
     /// #1834's measurement: comparison is case-insensitive on Windows (matching claude's own
-    /// filesystem-backed refusal there) and Windows-only -- a case variant is a different, case-sensitive
-    /// file name elsewhere, so this is skipped rather than asserted false on Unix.
+    /// filesystem-backed refusal there). A case variant would be a different, case-sensitive file name
+    /// on other filesystems; this suite runs only on Windows, so the refusal is asserted unconditionally.
     /// </summary>
     [Fact]
     public void HasSensitiveOutputPathComponent_refuses_a_windows_case_variant()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "the refusal's case-insensitivity is a Windows-filesystem fact only (#1834)");
-
         using var scope = BatonEnvironmentSnapshot.BeginScope(
             BatonEnvironmentSnapshot.Current with { ClaudeConfigRootOverride = null });
 

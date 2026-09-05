@@ -573,9 +573,7 @@ public class WorkflowEndToEndTests
             await SnapshotBinder.PersistAsync(snapshot, snapshotPath, TestContext.Current.CancellationToken);
 
             var distinctiveStderr = "DISTINCTIVE_STDERR_FAILURE_FRAGMENT_759";
-            var target = OperatingSystem.IsWindows()
-                ? new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStderr} 1>&2 & exit 1"])
-                : new CoreDispatchTarget("sh", ["-c", $"echo {distinctiveStderr} >&2; exit 1"]);
+            var target = new CoreDispatchTarget("cmd", ["/c", $"echo {distinctiveStderr} 1>&2 & exit 1"]);
 
             var bindings = new Dictionary<string, WorkerBinding>
             {

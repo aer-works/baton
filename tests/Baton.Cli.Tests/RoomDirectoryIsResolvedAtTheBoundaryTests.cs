@@ -114,13 +114,9 @@ public class RoomDirectoryIsResolvedAtTheBoundaryTests
 
         // The drive-relative arm, and the reason the predicate is IsPathFullyQualified rather than
         // IsPathRooted: on Windows `IsPathRooted("C:task2")` is true while GetFullPath resolves it
-        // against the current directory — the very defect, passing the weaker check. Skipped off
-        // Windows, where the shape does not exist rather than being handled.
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Throws<ArgumentException>(
-                () => Baton.Artifacts.ArtifactManager.BuildEnvironment([], "C:task2", root));
-        }
+        // against the current directory — the very defect, passing the weaker check.
+        Assert.Throws<ArgumentException>(
+            () => Baton.Artifacts.ArtifactManager.BuildEnvironment([], "C:task2", root));
 
         // The control: the same call, both fully qualified, must still build — or the guard has
         // disabled the method and every assertion above it means nothing.

@@ -315,7 +315,6 @@ public class FlowEventLogReaderTests
     [Fact]
     public async Task Reading_a_journal_held_with_conflicting_share_throws_FlowJournalHeldException_naming_holder()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows; on Unix the second open succeeds");
         var path = Path.Combine(Path.GetTempPath(), $"flow-{Guid.NewGuid():N}.jsonl");
         try
         {

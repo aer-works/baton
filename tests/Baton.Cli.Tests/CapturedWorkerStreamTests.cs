@@ -299,15 +299,11 @@ public class CapturedWorkerStreamTests
                 1,
                 [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
-            // printf, not echo: C# has no octal escapes, so a "\033" literal is NUL + "33" -- the
-            // embedded NUL truncated the spawned command line and no stream file was ever written
-            // (caught by this test's first Linux CI run). "\\033" hands printf a literal backslash
-            // sequence, and printf -- unlike POSIX echo -- is required to interpret it as ESC.
-            var cmdLine = OperatingSystem.IsWindows()
-                ? "powershell -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAoAFsAYwBoAGEAcgBdADIANwAgACsAIAAnAFsAMwAxAG0AUgBlAGQAJwAgACsAIABbAGMAaABhAHIAXQAyADcAIAArACAAJwBbADAAbQAnACkA & echo Red > %BATON_OUTPUT_DIR%\\out.txt"
-                : "printf '\\033[31mRed\\033[0m\\n' && echo Red > \"$BATON_OUTPUT_DIR/out.txt\"";
+            // A base64-encoded PowerShell command: it carries the ESC byte as [char]27 inside the
+            // encoded script, so no escape sequence has to survive cmd's command-line parsing.
+            const string cmdLine = "powershell -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAoAFsAYwBoAGEAcgBdADIANwAgACsAIAAnAFsAMwAxAG0AUgBlAGQAJwAgACsAIABbAGMAaABhAHIAXQAyADcAIAArACAAJwBbADAAbQAnACkA & echo Red > %BATON_OUTPUT_DIR%\\out.txt";
 
-            // #945: this budget only bounds how long the test waits for a trivial echo/printf, never
+            // #945: this budget only bounds how long the test waits for a trivial echo, never
             // a behaviour this test verifies (round-trip byte capture + render escaping) -- unlike a
             // wait this repo's v-and-v gate rightly protects, widening it trades no coverage away.
             // Measured before widening, not guessed: the real subprocess itself completes in ~200ms
@@ -361,9 +357,7 @@ public class CapturedWorkerStreamTests
 
             // Polarity 2: Normal printable text from a real worker process
             var roomDirectory2 = Path.Combine(testRoot, "task2");
-            var cmdLineNormal = OperatingSystem.IsWindows()
-                ? "powershell -NoProfile -Command \"Write-Output 'Normal text'\" & echo Red > %BATON_OUTPUT_DIR%\\out.txt"
-                : "echo 'Normal text' && echo Red > \"$BATON_OUTPUT_DIR/out.txt\"";
+            const string cmdLineNormal = "powershell -NoProfile -Command \"Write-Output 'Normal text'\" & echo Red > %BATON_OUTPUT_DIR%\\out.txt";
 
             var bindings2 = new Dictionary<string, WorkerBindingConfigEntry>
             {
@@ -535,9 +529,7 @@ public class CapturedWorkerStreamTests
                 1,
                 [new WorkflowStepDefinition(new StepId("worker"), "worker", [], ["out.txt"], [], new RetryPolicy(1))]);
 
-            var cmdLine = OperatingSystem.IsWindows()
-                ? "powershell -NoProfile -Command \"Write-Output 'Hello from failing-logger worker'\" & echo done > %BATON_OUTPUT_DIR%\\out.txt"
-                : "echo 'Hello from failing-logger worker' && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+            const string cmdLine = "powershell -NoProfile -Command \"Write-Output 'Hello from failing-logger worker'\" & echo done > %BATON_OUTPUT_DIR%\\out.txt";
 
             var bindings = new Dictionary<string, WorkerBindingConfigEntry>
             {
@@ -613,9 +605,7 @@ public class CapturedWorkerStreamTests
             // this long costs nothing on the passing path -- it only guards against the marker-wait
             // ever taking so long that the child would have finished naturally and written out.txt on
             // its own, which is exactly what the #1550 discriminator above checks for.
-            var cmdLine = OperatingSystem.IsWindows()
-                ? "echo pre-cancel output line & ping -n 301 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt"
-                : "echo 'pre-cancel output line' && sleep 300 && echo done > \"$BATON_OUTPUT_DIR/out.txt\"";
+            const string cmdLine = "echo pre-cancel output line & ping -n 301 127.0.0.1 > nul & echo done > %BATON_OUTPUT_DIR%\\out.txt";
 
             var bindings = new Dictionary<string, WorkerBindingConfigEntry>
             {

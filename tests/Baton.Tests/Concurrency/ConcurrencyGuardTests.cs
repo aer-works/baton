@@ -356,7 +356,6 @@ public class ConcurrencyGuardTests
     [Fact]
     public void Only_the_exhausted_wait_enriches_the_locked_message_with_the_probed_holder()
     {
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "FileShare contention is OS-enforced only on Windows");
         var roomDirectory = Path.Combine(Path.GetTempPath(), $"task-{Guid.NewGuid():N}");
         try
         {
@@ -389,8 +388,8 @@ public class ConcurrencyGuardTests
             var invalidRoomDirectory = Path.Combine(rootFile, "subfolder");
 
             // ThrowsAny: the exact subtype is the OS's choice (Windows throws plain IOException
-            // here, Linux DirectoryNotFoundException); the claim is only that a non-sharing
-            // failure stays a raw IOException-family throw with no probe text.
+            // here); the claim is only that a non-sharing failure stays a raw IOException-family
+            // throw with no probe text.
             var ex = Assert.ThrowsAny<IOException>(() => ConcurrencyGuard.Acquire(invalidRoomDirectory));
 
             Assert.DoesNotContain("Current holder:", ex.Message);

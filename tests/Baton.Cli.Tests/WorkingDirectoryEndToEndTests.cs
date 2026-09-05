@@ -158,9 +158,7 @@ public class WorkingDirectoryEndToEndTests
     private static async Task<string> WriteReadRelativeFileBindingsAsync(string directory, string workingDirectory)
     {
         Directory.CreateDirectory(directory);
-        var readRelativeFileCommand = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output\"";
+        const string readRelativeFileCommand = "type notes.txt>%BATON_OUTPUT_DIR%\\output";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
@@ -180,9 +178,7 @@ public class WorkingDirectoryEndToEndTests
     private static async Task<string> WriteWorktreeBindingsAsync(string directory, string repository, string reference)
     {
         Directory.CreateDirectory(directory);
-        var readRelativeFileCommand = OperatingSystem.IsWindows()
-            ? "type notes.txt>%BATON_OUTPUT_DIR%\\output"
-            : "cat notes.txt > \"$BATON_OUTPUT_DIR/output\"";
+        const string readRelativeFileCommand = "type notes.txt>%BATON_OUTPUT_DIR%\\output";
 
         var config = new Dictionary<string, WorkerBindingConfigEntry>
         {
