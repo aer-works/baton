@@ -2233,13 +2233,34 @@ their remedies are: a rollover gap is at the head of the retained window and is 
 the ceiling above, while a write-failure gap is at an unknown offset and means the host obstructed the
 writer.
 
-**When the bytes are gone, the token counts are not.** A declared gap withholds the *reconciliation*,
-never the *reading*: the per-dimension fields fall back to the usage the live monitor observed in memory
-and journalled on `FlowEvent.ExecutionArrested`, which never went near the disk. That fallback stops at
-the dimensions and never reaches `billedTokens` — a live Σ is a floor, and standing it in for the
-authoritative terminal figure would fabricate the very under-read the triple exists to expose. So the
-shape of a lost stream is: dimensions present, triple absent, reason set. Never zero-filled, never
-silent.
+**A retry has to be idempotent on disk, and the announcement has to outlive its first attempt**
+(#1879 review). A write can throw *after* persisting some of its bytes, so each attempt is rolled back
+to the file's pre-append length before the chunk is retried; an append that cannot be rolled back is
+surrendered as a declared loss rather than replayed on top of its own prefix, because a duplicated or
+half-written record is a corruption no marker announces and a reader cannot see. The loss itself is
+latched **in memory** and the marker is retried after every later successful append and again at
+terminal — the marker file is created in the same directory whose writes just failed, so treating its
+first refusal as final is how a real gap goes unannounced while later chunks land around it. When the
+marker still cannot be written, that fact goes to stderr; a reader of the files alone cannot recover
+what was never written down, and the engine's guarantee is that it never stops trying. An
+initialization failure — the logger that never opened, whose capture is therefore empty rather than
+partial — declares the same loss for both streams.
+
+**When the bytes are gone, the token counts are not — for an arrest.** A declared gap withholds the
+*reconciliation*, never the *reading*: the per-dimension fields fall back to the usage the live monitor
+observed in memory and journalled on `FlowEvent.ExecutionArrested`, which never went near the disk. That
+fallback stops at the dimensions and never reaches `billedTokens` — a live Σ is a floor, and standing it
+in for the authoritative terminal figure would fabricate the very under-read the triple exists to
+expose. So the shape of a lost stream is: dimensions present, triple absent, reason set. Never
+zero-filled, never silent.
+
+**And the limit of that, which is the arrest** (#1879 review): `ExecutionArrested` is the only outcome
+event carrying a `WorkerUsage` at all — `ExecutionSucceeded`/`ExecutionFailed` carry
+`PeakBilledInWindow` and nothing else — so an execution that reached a normal terminal outcome and whose
+capture was surrendered has no in-memory reading to fall back to, and its shape is dimensions **absent**,
+triple absent, reason set. The engine omits rather than fabricates, which is the right failure, but a
+consumer (#1849's ledger included) must read the fallback as "the arrest population keeps its
+dimensions", not as "a declared gap always keeps them".
 
 **A failure the buffer absorbed gets no reason string at all**, and that silence is the contract rather
 than an omission: nothing was lost, so the triple is PRESENT, and this field's whole job is to explain

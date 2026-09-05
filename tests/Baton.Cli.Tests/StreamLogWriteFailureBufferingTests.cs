@@ -21,14 +21,19 @@ namespace Baton.Cli.Tests;
 /// proving something about the fake appender rather than about the logger.
 /// </para>
 /// </summary>
+[Collection(ConsoleErrorCaptureCollection.Name)]
 public sealed class StreamLogWriteFailureBufferingTests
 {
     /// <summary>
     /// The Windows shape the issue reported — <c>UnauthorizedAccessException("Access to the path is
-    /// denied")</c> on an append — made deterministic. Non-failing calls do the real append, so the
-    /// assertions below read actual file bytes rather than a recording of intended writes.
+    /// denied")</c> on an append, with nothing written — made deterministic. Non-failing calls do the
+    /// real append, so the assertions below read actual file bytes rather than a recording of intended
+    /// writes. <paramref name="failWhen"/> (#1879 review MEDIUM) picks WHICH chunk fails rather than
+    /// only how many do: an arm about the terminal usage record has to fail the chunk carrying it, and
+    /// a count alone silently consumed the failure on whatever chunk came first. It takes the path too,
+    /// so an arm can fail one stream and leave the other healthy.
     /// </summary>
-    private sealed class FlakyAppender(int failuresToInject)
+    private sealed class FlakyAppender(int failuresToInject, Func<string, byte[], bool>? failWhen = null)
     {
         private int _remaining = failuresToInject;
 
@@ -39,7 +44,7 @@ public sealed class StreamLogWriteFailureBufferingTests
         public void Append(string path, byte[] data)
         {
             Attempts++;
-            if (_remaining > 0)
+            if (_remaining > 0 && (failWhen is null || failWhen(path, data)))
             {
                 _remaining--;
                 throw new UnauthorizedAccessException($"Access to the path '{path}' is denied.");
@@ -48,6 +53,72 @@ public sealed class StreamLogWriteFailureBufferingTests
             using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
             fs.Write(data, 0, data.Length);
             fs.Flush();
+        }
+    }
+
+    /// <summary>
+    /// #1879 review HIGH 1: the failure shape the fixtures above CANNOT produce — a write that throws
+    /// after some (or all) of its bytes have already reached the file. <see cref="FlakyAppender"/>
+    /// throws at method entry, so every "written exactly once" assertion in this file was, before this,
+    /// a statement about a sink that never touched the disk. Real sinks are not that tidy: a
+    /// <c>FileStream.Write</c>/<c>Flush</c> pair can persist a prefix and then fail (ENOSPC, a removed
+    /// device, a dropped network path).
+    /// </summary>
+    private sealed class PartialWriteAppender(int failuresToInject, int bytesToWriteBeforeThrowing = 1)
+    {
+        private int _remaining = failuresToInject;
+
+        public void Append(string path, byte[] data)
+        {
+            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var count = _remaining > 0 ? Math.Min(bytesToWriteBeforeThrowing, data.Length) : data.Length;
+                fs.Write(data, 0, count);
+                fs.Flush();
+            }
+
+            if (_remaining > 0)
+            {
+                _remaining--;
+                throw new IOException($"There is not enough space on the disk. ('{path}')");
+            }
+        }
+    }
+
+    /// <summary>
+    /// #1879 review HIGH 1, the other polarity: a partial write whose ROLLBACK is also refused. The
+    /// sink keeps its own exclusive handle open, so the logger can still stat the file (metadata reads
+    /// survive an exclusive lock) but cannot open it for write to cut it back — the on-disk tail is
+    /// then of unknown shape, and the only honest move is to surrender the chunk as a declared loss
+    /// rather than duplicate it into the stream.
+    /// </summary>
+    private sealed class ExclusivelyLockedPartialAppender : IDisposable
+    {
+        private FileStream? _held;
+
+        public void Append(string path, byte[] data)
+        {
+            if (_held is not null)
+            {
+                // The lock is only taken for the first attempt; a later retry writes normally.
+                _held.Dispose();
+                _held = null;
+                using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                fs.Write(data, 0, data.Length);
+                fs.Flush();
+                return;
+            }
+
+            _held = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+            _held.Write(data, 0, 1);
+            _held.Flush(flushToDisk: true);
+            throw new IOException($"The process cannot access the file '{path}' because it is being used by another process.");
+        }
+
+        public void Dispose()
+        {
+            _held?.Dispose();
+            _held = null;
         }
     }
 
@@ -145,6 +216,84 @@ public sealed class StreamLogWriteFailureBufferingTests
         }
         finally
         {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
+    public void A_write_that_throws_after_persisting_a_prefix_is_rolled_back_before_the_retry()
+    {
+        var dir = NewDir("partial");
+        try
+        {
+            // #1879 review HIGH 1. The sink persists "aa" of "aaaa\n" and then throws. Without the
+            // rollback the retry appends the whole chunk on top of that prefix and the file reads
+            // "aaaaaa\nb\n" -- a duplicated prefix, a malformed first line, and no marker to announce
+            // either, since the retry ultimately "succeeded". The assertion is the polarity: exactly
+            // the bytes the worker emitted, once.
+            var appender = new PartialWriteAppender(failuresToInject: 1, bytesToWriteBeforeThrowing: 2);
+            var logger = new ExecutionStreamLogger(dir, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes("aaaa\n"));
+            logger.AppendStdout(Bytes("b\n"));
+            logger.MarkTerminal();
+
+            Assert.Equal("aaaa\nb\n", StdoutText(dir));
+            Assert.All(File.ReadAllLines(Path.Combine(dir, ExecutionStreamLogger.StdoutLogFileName)),
+                line => Assert.Contains(line, new[] { "aaaa", "b" }));
+            Assert.False(WriteFailureMarked(dir), "the rollback made the retry clean, so nothing was lost");
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
+    public void A_write_that_throws_after_persisting_every_byte_is_not_written_twice()
+    {
+        var dir = NewDir("all-then-throw");
+        try
+        {
+            // The ambiguous case the pre-#1879 catch could not tell from "nothing landed": all the
+            // bytes reached the file and the failure came after. Rolled back to the pre-append length,
+            // so the retry produces one copy rather than two.
+            var appender = new PartialWriteAppender(failuresToInject: 1, bytesToWriteBeforeThrowing: int.MaxValue);
+            var logger = new ExecutionStreamLogger(dir, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes("only-once\n"));
+            logger.MarkTerminal();
+
+            Assert.Equal("only-once\n", StdoutText(dir));
+            Assert.False(WriteFailureMarked(dir));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
+    public void A_partial_write_that_cannot_be_rolled_back_is_declared_lost_rather_than_duplicated()
+    {
+        var dir = NewDir("no-rollback");
+        using var appender = new ExclusivelyLockedPartialAppender();
+        try
+        {
+            // The polarity of the two arms above: bytes landed and the file cannot be cut back, so a
+            // retry would replay on top of them. Surrendering the chunk is the honest outcome -- a gap
+            // a reader is TOLD about, rather than a duplicate it cannot see.
+            var logger = new ExecutionStreamLogger(dir, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes("hello\n"));
+            logger.AppendStdout(Bytes("after\n"));
+            logger.MarkTerminal();
+
+            Assert.True(WriteFailureMarked(dir), "an unrollbackable partial write is a gap and must be announced");
+            var text = StdoutText(dir);
+            Assert.DoesNotContain("hello\n", text, StringComparison.Ordinal);
+            Assert.EndsWith("after\n", text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            appender.Dispose();
             DirectoryCleanup.DeleteRecursively(dir);
         }
     }
@@ -256,9 +405,10 @@ public sealed class StreamLogWriteFailureBufferingTests
         var dir = NewDir("split");
         try
         {
-            // The bound and the loss declaration are per-stream: a stderr sink that never recovers must
-            // not cost stdout -- the reconcilable stream -- its own bytes. Same cross-stream coupling
-            // #1525 F4 removed one layer down.
+            // A stderr failure costs neither stream its bytes: stderr's own chunk is recovered and
+            // stdout's write is unaffected. Same cross-stream coupling #1525 F4 removed one layer down.
+            // The BOUND and the LOSS DECLARATION being per-stream is the separate claim, and this arm
+            // exercises neither of them (#1879 review LOW) -- the arm below it does.
             var appender = new FlakyAppender(failuresToInject: 1);
             var logger = new ExecutionStreamLogger(dir, appendBytes: appender.Append);
 
@@ -277,19 +427,71 @@ public sealed class StreamLogWriteFailureBufferingTests
     }
 
     [Fact]
+    public void The_bound_and_the_loss_declaration_are_per_stream()
+    {
+        var dir = NewDir("split-bound");
+        try
+        {
+            // #1879 review LOW: the claim the arm above was credited with but did not make. Only the
+            // stderr sink is broken, and permanently, so stderr passes its (deliberately tiny) bound
+            // and is declared lost -- while stdout, sharing the same logger and the same bound, keeps
+            // its bytes and stays unmarked. Both polarities of the marker, one per stream.
+            var appender = new FlakyAppender(
+                failuresToInject: int.MaxValue,
+                failWhen: (path, _) => path.EndsWith(ExecutionStreamLogger.StderrLogFileName, StringComparison.Ordinal));
+            var logger = new ExecutionStreamLogger(dir, maxPendingBytes: 4, appendBytes: appender.Append);
+
+            logger.AppendStderr(Bytes("eeeeeeee\n")); // 9 bytes against a bound of 4: surrendered
+            logger.AppendStdout(Bytes("o1\n"));
+            logger.MarkTerminal();
+
+            Assert.True(File.Exists(Path.Combine(dir, ExecutionStreamLogger.StderrWriteFailureMarkerFileName)),
+                "the stream that lost bytes must be marked");
+            Assert.False(WriteFailureMarked(dir), "the stream that lost nothing must not be");
+            Assert.Equal("o1\n", StdoutText(dir));
+            Assert.Equal(string.Empty, File.ReadAllText(Path.Combine(dir, ExecutionStreamLogger.StderrLogFileName)));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
     public void Token_dimensions_survive_a_failure_on_the_chunk_carrying_the_terminal_usage_line()
+    {
+        // #1879 review MEDIUM: the failure is injected on the chunk that actually carries the terminal
+        // usage record. The previous shape counted failures rather than choosing one, so it fired on
+        // the assistant line and the terminal line -- the one every token dimension below comes from --
+        // was written after recovery, never traversing the failed path at all.
+        AssertTokenDimensionsSurviveAFailureOn(ClaudeTerminalLine, "terminal");
+    }
+
+    [Fact]
+    public void Token_dimensions_survive_a_failure_on_an_earlier_chunk_of_the_same_stream()
+    {
+        // The second case, kept: the failure lands on the assistant line, whose LOSS is what would cost
+        // the attempt its live-billed Σ (and so its whole reconciliation triple) rather than its
+        // dimensions. Two chunks, two arms, one for each thing a lost chunk can take away.
+        AssertTokenDimensionsSurviveAFailureOn(ClaudeAssistantLine, "assistant");
+    }
+
+    private static void AssertTokenDimensionsSurviveAFailureOn(string failingLine, string tag)
     {
         // The end-to-end claim the issue is actually about: a transient write failure on the chunk that
         // happens to carry the vendor's terminal usage record must not cost the attempt its token
         // reconciliation. Written through the real logger, read through the real projector.
-        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1876-{Guid.NewGuid():N}");
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1876-{tag}-{Guid.NewGuid():N}");
         try
         {
             var executionId = new ExecutionId("exec-1876");
             var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
             Directory.CreateDirectory(outputDir);
 
-            var appender = new FlakyAppender(failuresToInject: 1);
+            var target = Bytes(failingLine + "\n");
+            var appender = new FlakyAppender(
+                failuresToInject: 1,
+                failWhen: (_, data) => data.AsSpan().SequenceEqual(target));
             var logger = new ExecutionStreamLogger(outputDir, appendBytes: appender.Append);
             logger.AppendStdout(Bytes(ClaudeAssistantLine + "\n"));
             logger.AppendStdout(Bytes(ClaudeTerminalLine + "\n"));
@@ -310,6 +512,154 @@ public sealed class StreamLogWriteFailureBufferingTests
             Assert.Equal(500, view.TokensOut);
             Assert.Equal(5500, view.BilledTokens);
             Assert.Equal(700, view.LiveBilledTokens);
+            Assert.Null(view.BilledReconciliationUnavailable);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_marker_write_that_fails_is_retried_on_the_next_successful_append_until_it_lands()
+    {
+        var dir = NewDir("marker-retry");
+        var markerPath = Path.Combine(dir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName);
+        try
+        {
+            // #1879 review HIGH 2. The obstruction is real rather than injected: a DIRECTORY sitting on
+            // the marker's own path, which File.Exists reads as absent and File.WriteAllBytes refuses
+            // with UnauthorizedAccessException -- the same shape an ACL on the output directory
+            // produces, and the reason the marker write cannot be assumed to succeed just because it is
+            // small.
+            Directory.CreateDirectory(markerPath);
+
+            var appender = new FlakyAppender(failuresToInject: 1);
+            var logger = new ExecutionStreamLogger(dir, maxPendingBytes: 0, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes("lost\n"));
+
+            // The loss is real and the announcement did not land. Pre-#1879 the latch was set here and
+            // this was permanent: every later chunk landed around an unannounced gap.
+            Assert.False(WriteFailureMarked(dir));
+
+            Directory.Delete(markerPath);
+            logger.AppendStdout(Bytes("kept\n"));
+            logger.MarkTerminal();
+
+            Assert.True(WriteFailureMarked(dir), "the pending announcement must be retried once writes work again");
+            Assert.Equal(0, new FileInfo(markerPath).Length); // the marker's existence is its whole payload
+            Assert.Equal("kept\n", StdoutText(dir));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
+    public void A_marker_that_never_lands_is_said_on_stderr_exactly_once()
+    {
+        // The limit of the retry above, stated rather than papered over: when the marker can never be
+        // created, the projector -- an out-of-process reader of these files -- has nothing to read and
+        // will report the reconciliation as complete. The only remaining channel is the operator's, so
+        // the logger says so there, once, rather than per attempt.
+        var dir = NewDir("marker-never");
+        var markerPath = Path.Combine(dir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName);
+        var originalError = Console.Error;
+        using var stderr = new StringWriter();
+        try
+        {
+            Directory.CreateDirectory(markerPath);
+            Console.SetError(stderr);
+
+            var appender = new FlakyAppender(failuresToInject: int.MaxValue);
+            var logger = new ExecutionStreamLogger(dir, maxPendingBytes: 0, appendBytes: appender.Append);
+            logger.AppendStdout(Bytes("lost\n"));
+            logger.AppendStdout(Bytes("lost too\n"));
+            logger.MarkTerminal();
+
+            Console.SetError(originalError);
+
+            Assert.False(WriteFailureMarked(dir));
+            var written = stderr.ToString();
+            Assert.Contains(ExecutionStreamLogger.StdoutWriteFailureMarkerFileName, written, StringComparison.Ordinal);
+            Assert.Equal(1, written.Split("unannounced gap", StringSplitOptions.None).Length - 1);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+            DirectoryCleanup.DeleteRecursively(dir);
+        }
+    }
+
+    [Fact]
+    public void A_logger_that_could_not_initialize_reports_the_write_failure_reason()
+    {
+        // #1879 review HIGH 2, the other unrecorded path: initialization failed, so every append for
+        // the whole execution is a silent no-op and the capture is empty rather than partial. Before
+        // this the attempt reported wall-clock alone, indistinguishable from a worker that emitted
+        // nothing -- which is a different fact with a different remedy.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1879-init-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1879-init");
+            var outputDir = ArtifactManager.ResolveOutputDirectory(testRoot, executionId);
+            Directory.CreateDirectory(outputDir);
+            // A directory where the stream file has to go: the eager create throws, the logger disables
+            // itself, and no .stdout.log will ever exist.
+            Directory.CreateDirectory(Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName));
+
+            var logger = new ExecutionStreamLogger(outputDir);
+            logger.AppendStdout(Bytes(ClaudeTerminalLine + "\n"));
+            logger.MarkTerminal();
+
+            Assert.True(WriteFailureMarked(outputDir));
+
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+            };
+
+            var view = Assert.Single(
+                ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default)).Value;
+
+            Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
+            Assert.Null(view.TokensIn);
+            Assert.Null(view.BilledTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void CONTROL_an_execution_with_no_stream_and_no_marker_reports_no_reason_at_all()
+    {
+        // The polarity of the arm above, one condition apart: same missing .stdout.log, no marker. This
+        // is the pre-#1706 "nothing was read" case and it must stay reasonless -- a projector that
+        // reported a write failure whenever a stream was absent would relabel every execution whose
+        // vendor wrote nothing.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-1879-nostream-{Guid.NewGuid():N}");
+        try
+        {
+            var executionId = new ExecutionId("exec-1879-nostream");
+            Directory.CreateDirectory(ArtifactManager.ResolveOutputDirectory(testRoot, executionId));
+
+            var start = DateTime.UtcNow;
+            var entries = new List<LogEntry>
+            {
+                new LogEntry.FlowLogEntry(new FlowEvent.ExecutionRequestAccepted(AcceptedRequest(executionId))),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionStarted(executionId, Pid: 1), start),
+                new LogEntry.CoreLogEntry(new CoreEvent.ExecutionExited(executionId, 0, CoreExitReason.Natural), start.AddSeconds(1)),
+            };
+
+            var view = Assert.Single(
+                ExecutionUsageProjector.BuildByExecutionId(entries, testRoot, WorkerAdapterRegistry.Default)).Value;
+
             Assert.Null(view.BilledReconciliationUnavailable);
         }
         finally

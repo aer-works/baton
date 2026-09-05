@@ -82,8 +82,9 @@ public sealed record ExecutionUsageView(
     string? BilledReconciliationUnavailable = null,
     /// <summary>
     /// #1709: <c>FlowEvent.ExecutionSucceeded.PeakBilledInWindow</c>/<c>FlowEvent.ExecutionFailed.PeakBilledInWindow</c>
-    /// off this execution's own terminal outcome event, read back verbatim — see that field's own doc
-    /// comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
+    /// — and, since #1876, <c>FlowEvent.ExecutionArrested.PeakBilledInWindow</c>, the same journalled
+    /// figure off the third way an execution ends — read back verbatim off this execution's own
+    /// outcome event; see that field's own doc comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
     /// this one is a JOURNALLED measurement from the live execution itself, where <see cref="LiveBilledTokens"/>
     /// is this projector's own REPLAY over the captured stream (this type's own remarks, above, state
     /// that distinction for the whole reconciliation triple).
@@ -399,6 +400,27 @@ public static class ExecutionUsageProjector
             stdoutPath = Path.Combine(ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id), ExecutionStreamLogger.StdoutLogFileName);
             if (!File.Exists(stdoutPath))
             {
+                // #1879 review HIGH 2: no stream file is normally the pre-#1706 "nothing was read"
+                // case, which carries no reason -- but the write-failure marker can be there WITHOUT
+                // one, and that combination means something quite different: the logger declared the
+                // capture lost before a single byte of it existed (an initialization failure disables
+                // it for the whole execution). Reported rather than swallowed, so an operator can tell
+                // "this worker emitted nothing" from "the host would not let us record what it
+                // emitted". Deliberately not memoized: there is no stream file to key the memo on, and
+                // the rollover marker is not consulted first the way it is below -- with no stream
+                // file there is nothing for a rollover to be a gap IN.
+                foreach (var directory in new[]
+                         {
+                             ArtifactManager.ResolveOutputDirectory(artifactsRootPath, id),
+                             ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id),
+                         })
+                {
+                    if (File.Exists(Path.Combine(directory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)))
+                    {
+                        return new UsageReading(null, null, "stream-truncated-by-write-failure");
+                    }
+                }
+
                 return null;
             }
         }

@@ -142,7 +142,25 @@ public sealed class ExecutionStreamLogger
         public int Rollovers;
         public readonly List<PendingChunk> Pending = [];
         public long PendingBytes;
-        public bool WriteLossDeclared;
+
+        /// <summary>
+        /// #1879 review HIGH 2: the IN-MEMORY latch. "This stream has provably lost bytes" is decided
+        /// here and is never re-derived from whether the marker file exists, because the marker write
+        /// can fail in exactly the conditions that caused the loss. <see cref="MarkerWritten"/> is the
+        /// separate question of whether the announcement has landed yet; while it is false the marker
+        /// is retried on every later successful append and again at terminal.
+        /// </summary>
+        public bool LossDeclared;
+        public bool MarkerWritten;
+        public bool MarkerFailureWarned;
+
+        /// <summary>
+        /// #1879 review HIGH 1: set when a failed append left the file at a length this logger could
+        /// not restore, so re-appending the same chunk would land on top of a prefix the failed attempt
+        /// already persisted. Such a chunk is surrendered as a declared loss instead of retried; the
+        /// ruling behind that trade is <c>spec/baton.md</c> §3's, cited rather than repeated here.
+        /// </summary>
+        public bool RetryUnsafe;
     }
 
     private readonly string _outputDirectory;
@@ -221,6 +239,17 @@ public sealed class ExecutionStreamLogger
             _disabled = true;
             _failedOnce = true;
             Console.Error.WriteLine($"Warning: Failed to initialize execution stream logger for '{outputDirectory}': {ex.Message}. Stream logging disabled for this execution.");
+
+            // #1879 review HIGH 2: a logger that never opened captures NOTHING, which is the largest
+            // possible gap -- and the pre-#1879 code recorded no reason for it at all, so a reader saw
+            // an execution with no stream and could not tell "this vendor emitted nothing" from "the
+            // host refused us the file". Both streams are declared lost here, on the same in-memory
+            // latch as a mid-run loss; whether the announcement can be written is a separate question
+            // the retry below owns.
+            _stdout.LossDeclared = true;
+            _stderr.LossDeclared = true;
+            RetryPendingMarker(_stdout);
+            RetryPendingMarker(_stderr);
         }
     }
 
@@ -262,20 +291,37 @@ public sealed class ExecutionStreamLogger
                 FlushAtTerminal(_stderr);
             }
 
+            // #1879 review HIGH 2: the last retry of an announcement that has not landed yet — reached
+            // even when the logger is disabled, since an initialization failure declares the loss in
+            // the constructor and no append will ever run to carry the retry.
+            RetryPendingMarker(_stdout);
+            RetryPendingMarker(_stderr);
+
             _isTerminal = true;
         }
     }
 
     /// <summary>
     /// THE INVARIANT (#1876): what this logger writes to disk is a PREFIX of what the worker emitted —
-    /// every byte in order, with no interior gap — unless a marker file beside it says otherwise. A
-    /// failed write therefore queues its chunk rather than skipping it, and the only two ways a gap can
-    /// appear are announced: <see cref="StdoutTruncationMarkerFileName"/> (rollover discarded a
-    /// segment) and <see cref="StdoutWriteFailureMarkerFileName"/> (the retry queue overflowed, or was
-    /// still full at terminal). That invariant is what
+    /// every byte in order, with no interior gap, and no chunk written twice — unless a marker file
+    /// beside it says otherwise. A failed write therefore queues its chunk rather than skipping it, and
+    /// restores the file to its pre-append length before that retry (#1879 review), so a write that
+    /// threw after persisting some of its bytes cannot be replayed on top of its own prefix. The only
+    /// two ways a gap can appear are announced: <see cref="StdoutTruncationMarkerFileName"/> (rollover
+    /// discarded a segment) and <see cref="StdoutWriteFailureMarkerFileName"/> (the retry queue
+    /// overflowed, was still full at terminal, or a failed append could not be rolled back). That
+    /// invariant is what
     /// <see cref="Baton.Status.ExecutionUsageProjector"/>'s replay rests on: a Σ accumulated over a
     /// stream with a silent hole is a fabricated under-read, indistinguishable from a real one, and it
     /// is the partial-attempt token count #1849's ledger is being built to consume.
+    /// <para>
+    /// The honest limit of "unless a marker says otherwise" (#1879 review): the loss itself is latched
+    /// in memory and retried onto disk until it lands (<see cref="StreamState.LossDeclared"/>,
+    /// <see cref="RetryPendingMarker"/>), but a host that refuses this logger every file create for the
+    /// whole run leaves the announcement unwritten. What this logger guarantees is that it never STOPS
+    /// trying, which is what the pre-#1879 latch broke; what it cannot guarantee, and what an operator
+    /// is told on stderr instead, is stated in <c>spec/baton.md</c> §3.
+    /// </para>
     /// </summary>
     private void AppendChunk(StreamState stream, byte[] data)
     {
@@ -309,9 +355,11 @@ public sealed class ExecutionStreamLogger
 
     /// <summary>
     /// Writes queued chunks oldest-first, dropping each from the queue only after ITS OWN write and
-    /// flush have both returned. A chunk that throws stays queued and stops the drain, so a partial
-    /// write can never be replayed on top of itself — "never duplicates a chunk" is a property of this
-    /// per-chunk commit point, not of the caller.
+    /// flush have both returned. A chunk that throws stays queued and stops the drain; what makes
+    /// retrying it safe is <see cref="AppendAtomically"/>, which restores the file to its pre-append
+    /// length first (#1879 review HIGH 1 — keeping the chunk queued is what would otherwise PERMIT a
+    /// partial write to be replayed on top of itself). "Never duplicates a chunk" is that pairing:
+    /// a per-chunk commit point plus a rollback that makes each attempt all-or-nothing on disk.
     /// </summary>
     private void FlushPending(StreamState stream)
     {
@@ -336,6 +384,11 @@ public sealed class ExecutionStreamLogger
 
             stream.Pending.RemoveAt(0);
             stream.PendingBytes -= chunk.Bytes.Length;
+
+            // #1879 review HIGH 2: a write just succeeded, so a marker create may now succeed too.
+            // This is the retry path for an announcement that was declared earlier and could not be
+            // written at the time -- without it, the first failed marker write was permanent.
+            RetryPendingMarker(stream);
         }
     }
 
@@ -365,15 +418,107 @@ public sealed class ExecutionStreamLogger
                 // fabricating an under-read out of a partial replay. Fail-closed: the marker's
                 // ABSENCE is only trustworthy for streams written since this landed, which the
                 // projector's own comment states.
-                WriteMarker(TruncationMarkerFileNameFor(stream.LogFileName));
+                _ = TryWriteMarker(TruncationMarkerFileNameFor(stream.LogFileName));
             }
 
             stream.Size = 0;
         }
 
         Directory.CreateDirectory(_outputDirectory);
-        _appendBytes(logPath, data);
+        AppendAtomically(stream, logPath, data);
         stream.Size += data.Length;
+    }
+
+    /// <summary>
+    /// #1879 review HIGH 1: one append, made all-or-nothing from the FILE's point of view so that the
+    /// retry above is idempotent. <c>FileStream.Write</c>/<c>Flush</c> can throw after some or all of
+    /// the bytes have reached the file (ENOSPC, a removed device, a dropped network path), and the
+    /// pre-#1879 catch re-appended the whole chunk on top of that prefix — a malformed JSONL record
+    /// followed by its own retry, which <c>TryParseFinalUsage</c> then reads as no terminal usage at all
+    /// on an execution that completed normally. Nothing else writes these files, so restoring the
+    /// length is this logger's to do.
+    /// <para>
+    /// The order matters and is the whole discrimination: the length is RE-READ first and a truncate is
+    /// attempted only when bytes actually landed. The reported #1876 shape — an
+    /// <c>UnauthorizedAccessException</c> on the open, nothing written — must reach a plain retry, and
+    /// would not if this opened the file for write unconditionally, because the same condition that
+    /// denied the append denies that open too. A metadata read survives an exclusive lock; a write open
+    /// does not.
+    /// </para>
+    /// </summary>
+    private void AppendAtomically(StreamState stream, string logPath, byte[] data)
+    {
+        var lengthBefore = TryReadLength(logPath);
+        try
+        {
+            _appendBytes(logPath, data);
+        }
+        catch (Exception ex) when (ex is not InvalidOperationException)
+        {
+            // InvalidOperationException is excluded deliberately: FlushPending rethrows that shape as a
+            // caller/contract error rather than a write failure, and nothing may be truncated for it.
+            stream.RetryUnsafe = !RetryIsSafeAfter(logPath, lengthBefore, out var lengthNow);
+            if (stream.RetryUnsafe && lengthNow is { } persisted)
+            {
+                // The prefix that could not be cut back is still on disk, and `Size` is only advanced
+                // by a successful append -- so without this the rollover guard would count the file as
+                // shorter than it is and roll late by that many bytes, for the rest of the execution.
+                stream.Size = persisted;
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>The file's current length, or null when the host will not even tell us that.</summary>
+    private static long? TryReadLength(string logPath)
+    {
+        try
+        {
+            return File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when re-appending the same chunk cannot land on top of bytes the failed attempt already
+    /// persisted — either because none did, or because the file was successfully cut back to where it
+    /// started. False means the on-disk tail is of unknown shape and the chunk must be surrendered as a
+    /// declared loss rather than duplicated into the stream.
+    /// </summary>
+    private static bool RetryIsSafeAfter(string logPath, long? lengthBefore, out long? lengthNow)
+    {
+        lengthNow = TryReadLength(logPath);
+        if (lengthBefore is not { } before || lengthNow is not { } after)
+        {
+            return false;
+        }
+
+        if (after == before)
+        {
+            return true;
+        }
+
+        if (after < before)
+        {
+            // Something outside this logger shortened the file mid-append; `Size` no longer describes
+            // it and a retry would write into an unknown offset.
+            return false;
+        }
+
+        try
+        {
+            using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            fs.SetLength(before);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -394,7 +539,10 @@ public sealed class ExecutionStreamLogger
             Console.Error.WriteLine($"Warning: Failed to persist execution stream log in '{_outputDirectory}': {ex.Message}. Buffering the chunk and retrying on subsequent chunks.");
         }
 
-        if (stream.PendingBytes > _maxPendingBytes)
+        // #1879 review HIGH 1: an append that could not be rolled back is not retryable at all, whatever
+        // room the bound still has. Why that trade goes this way -- surrender rather than replay -- is
+        // spec/baton.md §3's ruling, not restated here.
+        if (stream.RetryUnsafe || stream.PendingBytes > _maxPendingBytes)
         {
             DeclareWriteLoss(stream);
             return;
@@ -423,12 +571,47 @@ public sealed class ExecutionStreamLogger
     {
         stream.Pending.Clear();
         stream.PendingBytes = 0;
+        // A later chunk starts a fresh attempt against whatever the file now is; the unknown tail it
+        // may be appending after is the gap this call is announcing.
+        stream.RetryUnsafe = false;
 
-        if (!stream.WriteLossDeclared)
+        if (!stream.LossDeclared)
         {
-            stream.WriteLossDeclared = true;
-            WriteMarker(WriteFailureMarkerFileNameFor(stream.LogFileName));
+            stream.LossDeclared = true;
             Console.Error.WriteLine($"Warning: Discarding buffered '{stream.LogFileName}' chunks in '{_outputDirectory}' after repeated write failures — this stream log now has a gap and its token reconciliation will report as unavailable.");
+        }
+
+        RetryPendingMarker(stream);
+    }
+
+    /// <summary>
+    /// #1879 review HIGH 2: writes the write-failure marker for a stream whose loss is already latched
+    /// in memory, if it has not landed yet. Called after every successful append and at terminal, so a
+    /// marker create that failed while the host was obstructing writes is retried the moment writes
+    /// start working again — the pre-#1879 code set the latch and called the marker writer once, so a
+    /// single swallowed failure there left a real gap permanently unannounced while later chunks landed
+    /// around it and the projector reported a clean reconciliation over a holed stream.
+    /// </summary>
+    private void RetryPendingMarker(StreamState stream)
+    {
+        if (!stream.LossDeclared || stream.MarkerWritten)
+        {
+            return;
+        }
+
+        if (TryWriteMarker(WriteFailureMarkerFileNameFor(stream.LogFileName)))
+        {
+            stream.MarkerWritten = true;
+            return;
+        }
+
+        if (!stream.MarkerFailureWarned)
+        {
+            stream.MarkerFailureWarned = true;
+            // #1879 review LOW: the marker is the only durable channel a later reader has, and this is
+            // the one case where it is unavailable -- so the fact goes to the operator directly rather
+            // than being lost with it. Retrying continues regardless; this says it once.
+            Console.Error.WriteLine($"Warning: Could not write the '{WriteFailureMarkerFileNameFor(stream.LogFileName)}' marker in '{_outputDirectory}'. Until it lands, '{stream.LogFileName}' has an unannounced gap and a reader of these files alone will report its token reconciliation as complete.");
         }
     }
 
@@ -458,9 +641,11 @@ public sealed class ExecutionStreamLogger
     /// failure — a stream log that cannot write its own chunks is already handled by the caller's
     /// warning arm, and throwing here would turn a retention detail into a dispatch failure. The cost
     /// of a missing marker is a reader that reports a live Σ it should have withheld, which is the
-    /// pre-#1706 behaviour, not a worse one.
+    /// pre-#1706 behaviour, not a worse one — but for the write-failure marker that cost is much more
+    /// likely to be paid, because it is created in the very directory whose appends just failed, so its
+    /// caller retries rather than accepting the first refusal (<see cref="RetryPendingMarker"/>).
     /// </summary>
-    private void WriteMarker(string markerFileName)
+    private bool TryWriteMarker(string markerFileName)
     {
         try
         {
@@ -469,10 +654,15 @@ public sealed class ExecutionStreamLogger
             {
                 File.WriteAllBytes(markerPath, []);
             }
+
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Intentionally not rethrown -- see this method's own doc for why.
+            // Intentionally not rethrown -- see this method's own doc for why. #1879 review: the
+            // OUTCOME is returned rather than discarded, so the write-failure caller can keep the
+            // announcement pending and try again; the rollover caller still ignores it.
+            return false;
         }
     }
 }
