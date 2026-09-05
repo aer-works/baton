@@ -947,8 +947,9 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter) : ICo
                     }
                     catch (Exception ex)
                     {
-                        // CLAUDE.md: no silent catch. MarkTerminal only takes a lock and sets a bool,
-                        // so this is not expected to fire -- best-effort terminal marking means the
+                        // CLAUDE.md: no silent catch. MarkTerminal drains the retry queue and retries a
+                        // pending loss marker (#1879), both of which swallow their own IO failures, so
+                        // this is not expected to fire -- best-effort terminal marking means the
                         // dispatch must not fail over it, not that a genuine exception here disappears
                         // unlogged.
                         Console.Error.WriteLine($"Warning: Failed to mark stream logger terminal: {ex.Message}.");

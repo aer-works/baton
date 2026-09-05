@@ -14,7 +14,10 @@ namespace Baton.Status;
 /// <see cref="CoreEvent.ExecutionStarted"/>/<see cref="CoreEvent.ExecutionExited"/> timestamps, which
 /// every completed execution has. Every other field is independently omitted from the serialized JSON
 /// (never emitted as <c>null</c>, never fabricated as zero) when the vendor's captured stdout carried
-/// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. These fields are
+/// no such figure — see <see cref="ExecutionUsageProjector"/> for how they are read. #1876 widened
+/// "no such figure" by one source (the in-memory fallback off <see cref="FlowEvent.ExecutionArrested"/>,
+/// which reaches these six fields and nothing below); <c>spec/baton.md</c> §3 has the rule and its
+/// limit, and <see cref="ExecutionUsageProjector"/> the code that draws it. These fields are
 /// per-execution attribution, not a complete burn figure — see <c>spec/baton.md</c> §3/§7 for why.
 /// <para>
 /// #1706's reconciliation triple. <see cref="BilledTokens"/> is the AUTHORITATIVE per-execution billed
@@ -66,6 +69,9 @@ public sealed record ExecutionUsageView(
     /// #1706 review M3: why the reconciliation triple above is absent, when it is absent for a reason a
     /// consumer can act on. One of <c>stream-truncated-by-rollover</c> (the capture is provably not the
     /// whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>),
+    /// <c>stream-truncated-by-write-failure</c> (#1876 — provably not the whole stream for the other
+    /// reason: the host obstructed the writer past its retry buffer,
+    /// <see cref="Dispatch.ExecutionStreamLogger.StdoutWriteFailureMarkerFileName"/>),
     /// <c>rollover-segment-unreadable</c>, <c>no-live-billed-figure</c> (the replay parsed no usage line
     /// carrying a billed component) or <c>no-terminal-billed-figure</c> (the terminal line reported
     /// none). Absent — like the triple itself — when the execution simply has no captured stream at
@@ -76,8 +82,9 @@ public sealed record ExecutionUsageView(
     string? BilledReconciliationUnavailable = null,
     /// <summary>
     /// #1709: <c>FlowEvent.ExecutionSucceeded.PeakBilledInWindow</c>/<c>FlowEvent.ExecutionFailed.PeakBilledInWindow</c>
-    /// off this execution's own terminal outcome event, read back verbatim — see that field's own doc
-    /// comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
+    /// — and, since #1876, <c>FlowEvent.ExecutionArrested.PeakBilledInWindow</c>, the same journalled
+    /// figure off the third way an execution ends — read back verbatim off this execution's own
+    /// outcome event; see that field's own doc comment for when it is null. NOT the same kind of figure as <see cref="LiveBilledTokens"/> above:
     /// this one is a JOURNALLED measurement from the live execution itself, where <see cref="LiveBilledTokens"/>
     /// is this projector's own REPLAY over the captured stream (this type's own remarks, above, state
     /// that distinction for the whole reconciliation triple).
@@ -129,6 +136,12 @@ public static class ExecutionUsageProjector
         // ExecutionUsageView.PeakBilledInWindow's own doc comment for what this is and is not the same
         // figure as.
         var peakBilledInWindowByExecutionId = new Dictionary<string, long>(StringComparer.Ordinal);
+        // #1876: the usage the LIVE monitor accumulated in memory, journalled on the arrest event. This
+        // is the only token reading that exists for an execution whose captured stream cannot supply
+        // one -- it never touched the disk, so a disk problem cannot erase it. Read below only when the
+        // stream yielded no terminal reading of its own; see that site for why it is deliberately not
+        // allowed to stand in for the AUTHORITATIVE terminal figure.
+        var arrestedUsageByExecutionId = new Dictionary<string, WorkerUsage>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
@@ -143,11 +156,20 @@ public static class ExecutionUsageProjector
                 {
                     FlowEvent.ExecutionSucceeded { PeakBilledInWindow: { } p } succeeded => (succeeded.ExecutionId, p),
                     FlowEvent.ExecutionFailed { PeakBilledInWindow: { } p } failed => (failed.ExecutionId, p),
+                    // #1876: an ARREST carries one too, and was being dropped -- so the execution shape
+                    // most likely to have no usable captured stream (killed mid-turn, terminal line
+                    // never emitted) was also the one shape whose journalled figure went unread.
+                    FlowEvent.ExecutionArrested { PeakBilledInWindow: { } p } arrested => (arrested.ExecutionId, p),
                     _ => null,
                 };
                 if (peak is { } recorded)
                 {
                     peakBilledInWindowByExecutionId[recorded.Item1.Value] = recorded.Item2;
+                }
+
+                if (flowEntry.Event is FlowEvent.ExecutionArrested { Usage: { } arrestedUsage } arrestedEvent)
+                {
+                    arrestedUsageByExecutionId[arrestedEvent.ExecutionId.Value] = arrestedUsage;
                 }
             }
 
@@ -203,6 +225,18 @@ public static class ExecutionUsageProjector
                 : (usage.TokensIn ?? 0) + (usage.TokensOut ?? 0) + (usage.CacheCreationTokens ?? 0);
             var liveBilled = reading?.LiveBilled;
 
+            // #1876: the in-memory fallback, and the exact line at which it stops. The per-dimension
+            // fields fall back to what the live monitor observed and journalled on the arrest when the
+            // captured stream yielded NO terminal reading -- because a disk problem (or an arrest that
+            // preempted the vendor's terminal line) must not be able to erase token counts that were
+            // already observed in memory. It deliberately does NOT feed `billed` above: that figure's
+            // documented meaning is "off the terminal line", a live Σ is a floor rather than an
+            // authoritative total, and pairing a floor with the replay Σ as though it were the terminal
+            // figure would fabricate exactly the under-read the reconciliation triple exists to expose.
+            // So a fallback reading reports dimensions, never a reconciliation -- the triple stays
+            // withheld and the reason string stays whatever it already was.
+            var dimensions = usage ?? (arrestedUsageByExecutionId.TryGetValue(executionId, out var fromArrest) ? fromArrest : null);
+
             // #1706 review M2: ALL THREE or none. The previous shape emitted `billedTokens` alone
             // whenever the terminal figure was computable but the replay was not -- which is exactly
             // the case the rollover guard below exists to SIGNAL, so a consumer following the
@@ -222,12 +256,12 @@ public static class ExecutionUsageProjector
 
             result[executionId] = new ExecutionUsageView(
                 wallClockMs,
-                usage?.TokensIn,
-                usage?.TokensOut,
-                usage?.Turns,
-                usage?.CacheReadTokens,
-                usage?.CacheCreationTokens,
-                usage?.ThinkingTokens,
+                dimensions?.TokensIn,
+                dimensions?.TokensOut,
+                dimensions?.Turns,
+                dimensions?.CacheReadTokens,
+                dimensions?.CacheCreationTokens,
+                dimensions?.ThinkingTokens,
                 reconciled ? billed : null,
                 reconciled ? liveBilled : null,
                 reconciled ? billed!.Value - liveBilled!.Value : null,
@@ -366,12 +400,34 @@ public static class ExecutionUsageProjector
             stdoutPath = Path.Combine(ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id), ExecutionStreamLogger.StdoutLogFileName);
             if (!File.Exists(stdoutPath))
             {
+                // #1879 review HIGH 2: no stream file is normally the pre-#1706 "nothing was read"
+                // case, which carries no reason -- but the write-failure marker can be there WITHOUT
+                // one, and that combination means something quite different: the logger declared the
+                // capture lost before a single byte of it existed (an initialization failure disables
+                // it for the whole execution). Reported rather than swallowed, so an operator can tell
+                // "this worker emitted nothing" from "the host would not let us record what it
+                // emitted". Deliberately not memoized: there is no stream file to key the memo on, and
+                // the rollover marker is not consulted first the way it is below -- with no stream
+                // file there is nothing for a rollover to be a gap IN.
+                foreach (var directory in new[]
+                         {
+                             ArtifactManager.ResolveOutputDirectory(artifactsRootPath, id),
+                             ArtifactManager.ResolvePrunedOutputDirectory(artifactsRootPath, id),
+                         })
+                {
+                    if (File.Exists(Path.Combine(directory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)))
+                    {
+                        return new UsageReading(null, null, "stream-truncated-by-write-failure");
+                    }
+                }
+
                 return null;
             }
         }
 
         var rolloverPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutRolloverFileName);
         var truncationMarkerPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutTruncationMarkerFileName);
+        var writeFailureMarkerPath = Path.Combine(Path.GetDirectoryName(stdoutPath)!, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName);
 
         // #1706 review L3: see UsageReading's own doc. Stat both stream files before reading either --
         // a completed execution's pair is byte-identical poll to poll, and re-parsing megabytes of JSON
@@ -381,7 +437,13 @@ public static class ExecutionUsageProjector
         // comment below -- so keying on `adapter` alone would let two calls that pass different
         // `adapters` registries for the same stream collide and serve each other's reading.
         var replayParser = StandardWorkerUsageParsers.Default.TryGetValue(adapterName, out var liveParser) ? liveParser : adapter;
-        var cacheKey = BuildReadingCacheKey(stdoutPath, rolloverPath, adapterName, adapter, replayParser);
+        // #1876: the marker paths join the key because the write-failure marker can appear while the
+        // stream files' own (length, last-write) pair does not move -- the whole point of that marker is
+        // that bytes went MISSING -- so a memo keyed on the bytes alone would keep serving a reading
+        // taken before the writer admitted the gap. The rollover marker is redundant here (a rollover
+        // always moves both files) and is included anyway rather than relying on that coincidence.
+        var cacheKey = BuildReadingCacheKey(
+            stdoutPath, rolloverPath, truncationMarkerPath, writeFailureMarkerPath, adapterName, adapter, replayParser);
         if (cacheKey is not null && ReadingCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -434,6 +496,15 @@ public static class ExecutionUsageProjector
         if (File.Exists(truncationMarkerPath))
         {
             return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-rollover"));
+        }
+
+        // #1876: the other announced gap -- same posture as the rollover branch above, deliberately a
+        // DIFFERENT reason string. Why the two are kept apart, and why a failure the retry buffer
+        // absorbed writes no marker and so reaches this branch as an ordinary whole stream, is in
+        // spec/baton.md §3.
+        if (File.Exists(writeFailureMarkerPath))
+        {
+            return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-write-failure"));
         }
 
         string[] rolledLines = [];
@@ -492,6 +563,8 @@ public static class ExecutionUsageProjector
     private static string? BuildReadingCacheKey(
         string stdoutPath,
         string rolloverPath,
+        string truncationMarkerPath,
+        string writeFailureMarkerPath,
         string adapterName,
         IWorkerUsageParser adapter,
         IWorkerUsageParser replayParser)
@@ -503,12 +576,16 @@ public static class ExecutionUsageProjector
             var rolledPart = rolled.Exists
                 ? $"{rolled.Length}:{rolled.LastWriteTimeUtc.Ticks}"
                 : "none";
+            // #1876: presence only -- both markers are empty by design, so there is nothing else about
+            // them to key on, and their appearance is the whole state change.
+            var markersPart = $"{(File.Exists(truncationMarkerPath) ? 'r' : '-')}{(File.Exists(writeFailureMarkerPath) ? 'w' : '-')}";
             return string.Join(
                 '|',
                 stdoutPath,
                 current.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 current.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 rolledPart,
+                markersPart,
                 adapterName,
                 adapter.GetType().FullName ?? adapter.GetType().Name,
                 replayParser.GetType().FullName ?? replayParser.GetType().Name);

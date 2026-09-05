@@ -560,7 +560,8 @@ public sealed class ExecutionUsageProjectorTests
         string adapter,
         IReadOnlyList<string> currentLines,
         IReadOnlyList<string>? rolledLines = null,
-        bool truncatedByRollover = false)
+        bool truncatedByRollover = false,
+        bool truncatedByWriteFailure = false)
     {
         var executionId = new ExecutionId("exec-1706");
         var start = DateTime.UtcNow;
@@ -584,6 +585,13 @@ public sealed class ExecutionUsageProjectorTests
             // What ExecutionStreamLogger itself writes on the roll that DESTROYS a segment -- an empty
             // sentinel, its existence the whole payload.
             File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutTruncationMarkerFileName), []);
+        }
+
+        if (truncatedByWriteFailure)
+        {
+            // #1876: the other empty sentinel -- what the logger writes when its retry buffer overflows
+            // or is still full at terminal.
+            File.WriteAllBytes(Path.Combine(outputDir, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName), []);
         }
 
         File.WriteAllLines(Path.Combine(outputDir, ExecutionStreamLogger.StdoutLogFileName), currentLines);
@@ -809,6 +817,38 @@ public sealed class ExecutionUsageProjectorTests
             Assert.Null(view.BilledTokens);
             Assert.Null(view.LiveBilledTokens);
             Assert.Null(view.BilledUnderReadTokens);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(testRoot);
+        }
+    }
+
+    [Fact]
+    public void A_write_failure_gap_reports_its_OWN_reason_not_the_rollover_one()
+    {
+        // #1876. Two gaps, two remedies -- see spec/baton.md §3. What this arm discriminates is the
+        // collapse: reporting the rollover reason for both would send an operator to the retention
+        // bound for a problem that is a sharing conflict. The terminal figures are withheld either way,
+        // so the reason string is the only thing that tells them apart.
+        var testRoot = Path.Combine(Path.GetTempPath(), $"usage-projector-1876-{Guid.NewGuid():N}");
+        try
+        {
+            var view = ProjectStream(
+                testRoot,
+                "claude",
+                [ClaudeAssistantLine("msg_2", 500), ClaudeTerminalLine],
+                truncatedByWriteFailure: true);
+
+            Assert.Equal("stream-truncated-by-write-failure", view.BilledReconciliationUnavailable);
+            Assert.Null(view.BilledTokens);
+            Assert.Null(view.LiveBilledTokens);
+            Assert.Null(view.BilledUnderReadTokens);
+
+            // Polarity, and the half #1876 exists to protect: the terminal line's own dimensions are
+            // still reported. A gap withholds the RECONCILIATION, never the reading itself.
+            Assert.Equal(1000, view.TokensIn);
+            Assert.Equal(500, view.TokensOut);
         }
         finally
         {
