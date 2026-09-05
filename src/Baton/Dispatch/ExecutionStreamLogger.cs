@@ -40,8 +40,12 @@ public sealed class ExecutionStreamLogger
     /// <summary>
     /// #1876: the same "these files are not the whole stream" sentinel as
     /// <see cref="StdoutTruncationMarkerFileName"/>, for the OTHER way this logger can lose bytes —
-    /// chunks whose write failed and whose retry queue then hit <see cref="DefaultMaxPendingBytes"/>
-    /// (or which were still queued when the execution went terminal). A separate file rather than a
+    /// chunks whose write failed and whose retry queue then hit <see cref="DefaultMaxPendingBytes"/>,
+    /// which were still queued when the execution went terminal, or whose failed append persisted a
+    /// prefix that could not be rolled back (<see cref="StreamState.RetryUnsafe"/>). That third cause
+    /// has a different on-disk shape from the other two: the orphan prefix stays and the next chunk is
+    /// appended onto it, so the reader sees one FUSED line rather than a clean gap — for JSONL that
+    /// destroys the following record as well as the surrendered one. A separate file rather than a
     /// second use of the rollover marker so a reader can tell the two apart: a rollover gap is at a
     /// known place (the head of the retained window) and a write-failure gap is at an unknown one, and
     /// the two have different operator remedies. Empty by design, like the rollover marker.

@@ -279,17 +279,18 @@ public sealed class StreamLogWriteFailureBufferingTests
         try
         {
             // The polarity of the two arms above: bytes landed and the file cannot be cut back, so a
-            // retry would replay on top of them. Surrendering the chunk is the honest outcome -- a gap
-            // a reader is TOLD about, rather than a duplicate it cannot see.
+            // retry would replay on top of them. Surrendering the chunk avoids the duplicate, not the
+            // orphan prefix: the persisted "h" stays and the next chunk fuses onto it. That fused line
+            // is what the marker announces -- pinned exactly, so a future rollback that DOES cut the
+            // prefix back (a clean "after\n") shows up here as the behaviour change it is.
             var logger = new ExecutionStreamLogger(dir, appendBytes: appender.Append);
             logger.AppendStdout(Bytes("hello\n"));
             logger.AppendStdout(Bytes("after\n"));
             logger.MarkTerminal();
 
-            Assert.True(WriteFailureMarked(dir), "an unrollbackable partial write is a gap and must be announced");
+            Assert.True(WriteFailureMarked(dir), "an unrollbackable partial write is a loss and must be announced");
             var text = StdoutText(dir);
-            Assert.DoesNotContain("hello\n", text, StringComparison.Ordinal);
-            Assert.EndsWith("after\n", text, StringComparison.Ordinal);
+            Assert.Equal("hafter\n", text);
         }
         finally
         {
@@ -299,7 +300,7 @@ public sealed class StreamLogWriteFailureBufferingTests
     }
 
     [Fact]
-    public void The_truncation_marker_appears_only_once_the_buffer_bound_is_passed()
+    public void The_write_failure_marker_appears_only_once_the_buffer_bound_is_passed()
     {
         var dir = NewDir("bound");
         try

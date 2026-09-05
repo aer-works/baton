@@ -2236,13 +2236,18 @@ writer.
 **A retry has to be idempotent on disk, and the announcement has to outlive its first attempt**
 (#1879 review). A write can throw *after* persisting some of its bytes, so each attempt is rolled back
 to the file's pre-append length before the chunk is retried; an append that cannot be rolled back is
-surrendered as a declared loss rather than replayed on top of its own prefix, because a duplicated or
-half-written record is a corruption no marker announces and a reader cannot see. The loss itself is
+surrendered as a declared loss rather than replayed on top of its own prefix, because a duplicated
+record is a corruption no marker announces and a reader cannot see. Surrendering avoids the duplicate,
+not the half-written prefix: the bytes that landed stay on disk and the next chunk is appended onto them,
+so the reader sees one fused line, announced by the write-failure marker (for JSONL that costs the
+following record too, which is why the marker, not the file, is the authority). The loss itself is
 latched **in memory** and the marker is retried after every later successful append and again at
 terminal — the marker file is created in the same directory whose writes just failed, so treating its
 first refusal as final is how a real gap goes unannounced while later chunks land around it. When the
 marker still cannot be written, that fact goes to stderr; a reader of the files alone cannot recover
-what was never written down, and the engine's guarantee is that it never stops trying. An
+what was never written down, and the engine's guarantee is that it never stops trying. A channel that
+survives a host refusing every file create — journalling the loss as a flow event through the room's
+own ledger, which the projector already reads — is #1885. An
 initialization failure — the logger that never opened, whose capture is therefore empty rather than
 partial — declares the same loss for both streams.
 
