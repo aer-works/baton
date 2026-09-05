@@ -12,10 +12,10 @@ namespace Baton.Vendors;
 /// </summary>
 /// <remarks>
 /// <b>No fallback tier, ever.</b> #1330 registered <c>claude</c>'s three aliases and deliberately left
-/// <c>agy</c>'s entire column unrecorded: the corpus's single generic label could not be honestly
-/// bridged onto agy's eleven versioned, effort-suffixed catalogue entries. <see cref="TryResolve"/>
-/// therefore returns false for every agy model, every unrecognized claude model string, and every
-/// unrecognized adapter name — never a guessed tier. A caller reads false as "this worker's depth mark
+/// <c>agy</c>'s entire column unrecorded until an operator-run measurement placed it (#1342,
+/// 2026-09-05). <see cref="TryResolve"/> returns false for every model string a table does not carry
+/// (a retired agy id, a raw claude model id) and for every unrecognized adapter name — never a guessed
+/// tier. A caller reads false as "this worker's depth mark
 /// renders nothing," exactly the absence rule <c>EffortTierParsing</c> already applies to effort.
 /// </remarks>
 public static class DepthTierMapping
@@ -42,13 +42,30 @@ public static class DepthTierMapping
         };
 
     /// <summary>
-    /// Deliberately empty. <c>agy models</c> is a real, machine-readable 11-entry catalogue, but no
-    /// entry of it is placed into a purpose here — see <c>docs/vendor-capabilities.md</c>'s "`agy` —
-    /// model set recorded, purpose column left open" for why bridging it would be exactly the guess
-    /// this record's own discipline forbids. Left for a human-run measurement, not this slice.
+    /// <c>agy</c>'s catalogue placed by the operator-run measurement of 2026-09-05 (#1342), from the
+    /// live <c>agy models</c> output of that day. The placement RULE is stated once, in
+    /// <c>docs/vendor-capabilities.md</c>'s "`agy` — placed by family and effort"; this table is that
+    /// rule applied to the fourteen ids the catalogue carried; the same paragraph says what happens
+    /// to an id this table does not carry (nothing here guesses).
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> AgyByModel =
-        new Dictionary<string, string>(StringComparer.Ordinal);
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["gemini-3.1-pro-high"] = Deep,
+            ["claude-opus-4-6-thinking"] = Deep,
+            ["gemini-3.8-flash-high"] = Balanced,
+            ["gemini-3.7-flash-high"] = Balanced,
+            ["gemini-3.6-flash-high"] = Balanced,
+            ["gemini-3.1-pro-low"] = Balanced,
+            ["claude-sonnet-4-6"] = Balanced,
+            ["gemini-3.8-flash-medium"] = Fast,
+            ["gemini-3.8-flash-low"] = Fast,
+            ["gemini-3.7-flash-medium"] = Fast,
+            ["gemini-3.7-flash-low"] = Fast,
+            ["gemini-3.6-flash-medium"] = Fast,
+            ["gemini-3.6-flash-low"] = Fast,
+            ["gpt-oss-120b-medium"] = Fast,
+        };
 
     private static readonly IReadOnlyDictionary<string, string> CodexByModel =
         new Dictionary<string, string>(StringComparer.Ordinal)
@@ -63,8 +80,9 @@ public static class DepthTierMapping
     /// True and <paramref name="purpose"/> set only when <paramref name="adapterName"/> is a vendor
     /// this mapping knows and <paramref name="model"/> is one of that vendor's rows in
     /// <c>docs/vendor-capabilities.md</c>'s canonical model-purpose table. False for a null model, an
-    /// unrecognized adapter name, or a model that table does not carry for that adapter (every agy
-    /// model today) — each of those is an absence the caller must render as no mark, never a default.
+    /// unrecognized adapter name, or a model that table does not carry for that adapter (a retired or
+    /// not-yet-placed agy id, a raw claude model id) — each of those is an absence the caller must
+    /// render as no mark, never a default.
     /// </summary>
     public static bool TryResolve(string? adapterName, string? model, out string purpose)
     {

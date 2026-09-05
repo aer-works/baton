@@ -342,12 +342,15 @@ output is one `id<TAB>display name` pair per line (a bare multi-column id grid w
 fence records the id column only, because the checkers that read it take bare whitespace-split ids:
 
 ```
+gemini-3.8-flash-high     gemini-3.8-flash-medium   gemini-3.8-flash-low
 gemini-3.7-flash-high     gemini-3.7-flash-medium   gemini-3.7-flash-low
 gemini-3.6-flash-high     gemini-3.6-flash-medium   gemini-3.6-flash-low
-gemini-3.5-flash-high     gemini-3.5-flash-medium   gemini-3.5-flash-low
 gemini-3.1-pro-high       gemini-3.1-pro-low
 claude-sonnet-4-6         claude-opus-4-6-thinking  gpt-oss-120b-medium
 ```
+
+(Captured 2026-09-05; `gemini-3.5-flash-*` had left the catalogue and `gemini-3.8-flash-*` had joined it
+since the 2026-08-30 capture.)
 
 Two things the design assumed otherwise:
 
@@ -481,9 +484,9 @@ dispatch-tier system, unrelated to this one, and never rendered to a person.
 
 | canonical | `claude` | `agy` | `codex` |
 |---|---|---|---|
-| `deep` | `opus` | *(not recorded — see below)* | `gpt-6-astra`, `gpt-5.6-sol` |
-| `balanced` | `sonnet` | *(not recorded — see below)* | `gpt-5.6-terra` |
-| `fast` | `haiku` | *(not recorded — see below)* | `gpt-5.6-luna` |
+| `deep` | `opus` | `gemini-3.1-pro-high`, `claude-opus-4-6-thinking` | `gpt-6-astra`, `gpt-5.6-sol` |
+| `balanced` | `sonnet` | `gemini-3.8-flash-high`, `gemini-3.7-flash-high`, `gemini-3.6-flash-high`, `gemini-3.1-pro-low`, `claude-sonnet-4-6` | `gpt-5.6-terra` |
+| `fast` | `haiku` | `gemini-3.8/3.7/3.6-flash-medium`, `gemini-3.8/3.7/3.6-flash-low`, `gpt-oss-120b-medium` | `gpt-5.6-luna` |
 
 **`claude` — fully placed, no collapse.** `claude` ships no model-list subcommand: `claude models` is
 answered as a prompt and spends usage rather than enumerating anything
@@ -499,19 +502,26 @@ archived, in the spec v2.0 reset (spec/baton.md §11), so two-thirds of that exa
 `Sonnet 5 · balanced` third is not otherwise recorded. Each canonical purpose lands on a distinct
 alias — nothing here collapses.
 
-**`agy` — model set recorded, purpose column left open.** `agy models` is a real, machine-readable
-subcommand — already shelled out to by `AgyWorkerAdapter.DiscoverCapabilitiesAsync` — and its 11-entry
-catalogue is captured above in § "`agy models`". **No entry of that catalogue is placed into a purpose
-here.** The design corpus labels one generic name — *"Gemini 3 Flash · fast"* — but that string
-predates and does not match the actual catalogued names (`gemini-3.6-flash-*`, `gemini-3.5-flash-*`,
-versioned and effort-suffixed); the corpus leaves *"Gemini 3 Pro"* and *"Codex"* unlabelled, and never
-mentions the catalogue's `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, or `gpt-oss-120b-medium`
-entries at all — three of agy's eleven models are served through vendors with no purpose precedent
-recorded anywhere in this repo, not even in mockup form. Bridging the one generic label onto eleven
-specific, effort-suffixed strings would be exactly the guess this record's own discipline forbids.
-**Left for a human-run measurement**: which canonical purpose each agy model family is offered under,
-and how (if at all) a UI reconciles agy's own effort-suffixed naming (a separate axis, § "`agy
-models`" above) with the purpose axis this table is about.
+**`agy` — placed by family and effort (operator-run, 2026-09-05, #1342).** `agy models` is a real,
+machine-readable subcommand — already shelled out to by `AgyWorkerAdapter.DiscoverCapabilitiesAsync` —
+and its fourteen-entry catalogue of that day is captured above in § "`agy models`". #1330 left this
+column open because the design corpus's single label (*"Gemini 3 Flash · fast"*) could not be bridged
+onto versioned, effort-suffixed ids; the operator ran the catalogue and placed it by one rule, stated
+here once and applied mechanically in `DepthTierMapping.AgyByModel`:
+
+- **deep** — the pro family at high effort and the opus-thinking entry (`gemini-3.1-pro-high`,
+  `claude-opus-4-6-thinking`).
+- **balanced** — every flash family at high effort, the pro family at low effort, and the sonnet entry.
+  The 3.8 Flash placement has an empirical anchor: `benchmarks/deepswe/2026-09-04` has it at 74 % at
+  high, level with Opus at medium (69 %), which is the Claude column's `balanced` operating point.
+- **fast** — every flash family at medium or low effort, and `gpt-oss-120b-medium`.
+
+Two things this placement does not claim. It does not rank the three flash generations against each
+other (they share a tier; the catalogue, not this table, says which is current). And agy's own effort
+suffix stays a separate axis (§ "`agy models`" above): an id's purpose is read from the whole string,
+so `gemini-3.8-flash-high` and `gemini-3.8-flash-low` land in different tiers on purpose. An id the
+table does not carry — a retired family such as `gemini-3.5-flash-*`, or a future one — resolves no tier
+until it is placed here.
 
 **`codex` — placed from the dated visible catalog.** The four current families whose product roles
 were recorded by the 2026-09-04 host catalog map without collapse: Astra and Sol to deep, Terra to

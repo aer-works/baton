@@ -3796,9 +3796,10 @@ def _effort_agy_conflict():
 # family AND an effort suffix into one string -- that is agy's own shape, not a parsing choice made
 # here.
 AGY_MODELS = {
+    # Re-captured 2026-09-05 (#1342): 3.8 Flash joined, 3.5 Flash left.
+    "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
     "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
     "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
-    "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
     "gemini-3.1-pro-high", "gemini-3.1-pro-low",
     "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
 }
