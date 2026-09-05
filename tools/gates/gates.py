@@ -86,6 +86,10 @@ OVERLAP = [
     "launcher-selftest",
     # #1603: pure Python selftest; see diff_shape.py's selftest() for the discrimination arms.
     "diff-shape-selftest",
+    # #1870: the checker only reads committed benchmark inputs/outputs; its selftest invokes that
+    # same production check against a temporary snapshot copy with one derived cell edited.
+    "deepswe-derived-check",
+    "deepswe-derived-check-selftest",
 ]
 
 # The MSBuild owners, strictly sequential: one MSBuild at a time.

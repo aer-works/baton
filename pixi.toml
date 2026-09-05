@@ -289,6 +289,9 @@ flake-watch-selftest = { cmd = "python -u tools/flake-watch/summarize.py --selft
 diff-shape = { cmd = "python -u tools/diff-shape/diff_shape.py" }
 diff-shape-selftest = { cmd = "python -u tools/diff-shape/diff_shape.py --selftest" }
 
+deepswe-derived-check = { cmd = "python -u benchmarks/deepswe/derive_scores.py --check-all" }
+deepswe-derived-check-selftest = { cmd = "python -u benchmarks/deepswe/derive_scores.py --selftest" }
+
 # Every local gate, one exit code. Report THIS command's exit status, never a per-gate line scraped
 # out of the combined output -- see tools/gates/gates.py for the two occasions that went wrong.
 gates = { cmd = "python -u tools/gates/gates.py" }
