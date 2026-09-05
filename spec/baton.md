@@ -361,7 +361,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--expect-pr <true\|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true\|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
@@ -2195,7 +2195,8 @@ where `ExecutionUsageView` is
   "cacheReadTokens"?: number, "cacheCreationTokens"?: number, "thinkingTokens"?: number,
   "billedTokens"?: number, "liveBilledTokens"?: number, "billedUnderReadTokens"?: number,
   "billedReconciliationUnavailable"?: string, "peakBilledInWindow"?: number,
-  "modelsObserved"?: string[] }
+  "modelsObserved"?: string[],
+  "verifyStepMs"?: number, "verifyResultsBytes"?: number }
 ```
 (`src/Baton/Status/ExecutionUsageView.cs` declares the C# record; `WorkflowStatusView.cs` projects it). `wallClockMs` is
 always present when the object is present at all — derived from recorded start/exit timestamps. The
@@ -2244,6 +2245,22 @@ models the whole-tree read summed over, rather than only the total. `WorkerUsage
 the field, including what its absence does and does not say; §7's cost ledger is the consumer whose
 behaviour turns on it. `peakBilledInWindow` (#1709) was already on the record and missing from the shape
 above; both are listed now.
+
+**The two added by #1882 are not token figures at all, and are attributed to ONE execution.**
+`verifyStepMs` and `verifyResultsBytes` are the wall clock of the room's pre-turn verify step (the
+review-role feature below) and the size of the `verify-results.md` it wrote. They carry no tokens
+because the step spends no model — that is its whole point — but it does spend time, and the reviewer
+does spend a read on the file, so #1849's ledger row needs both visible rather than free. Present
+together or not at all, and only on the room's first execution by start time **that also exited**:
+the step ran once, before the first turn, so reporting it on a retried step's second execution too
+would double it. The exit condition is not a second rule — this view is only ever built for an
+execution that recorded an exit (`wallClockMs` is unconditional on it), so an execution still
+running, arrested, or dead without an `ExecutionExited` event has no row to carry the figures, and
+the next one that does is where they land rather than nowhere.
+Derived on read from the step's own sidecar (`artifacts/verify-step.json`), never a ledger event —
+the same derive-over-record-twice preference the rest of this view rests on; an absent, unreadable or
+malformed sidecar reads as "no verify step ran", which is what is true for every room dispatched
+without `--verify-cmd`.
 
 One of them is worth a ruling rather than a field doc, because the bound behind it reads like a
 guarantee and is not. **`ExecutionStreamLogger`'s 8 MiB-plus-one-rollover ceiling is a RETENTION bound,
@@ -3601,6 +3618,7 @@ repeated-settle shapes, and what inflated totals that skip is buying, not restat
 | `modelsObserved` | The models this row's token dimensions were summed ACROSS, off the vendor's own per-model breakdown (§3). Absent = the vendor reported no breakdown, which is *unknown*, never *one model*. |
 | `modelEchoed` | **Reserved, no phase-A writer** — the model as the CLI itself echoed it, which is the one `model` is not. Named now so phase C fills it rather than inventing a competitor. |
 | `tokensIn`, `tokensOut`, `cacheRead`, `cacheCreation`, `thinking`, `turns`, `wallClockMs` | The dimensions `QuotaLedgerEntry` carries, same names and same nullability. Cache-read is first-class here, never folded into a billed figure. |
+| `verifyStepMs`, `verifyResultsBytes` | #1882's two non-token dimensions, carried through from `ExecutionUsageView` under the same names and by the same attribution — §3 above states which execution gets them and why they are present together or not at all. Neither enters either estimate: a zero-token step changes no price. |
 | `billedTokens`, `liveBilledTokens`, `billedUnderReadTokens`, `peakBilledInWindow` | #1706/#1709's vendor-derived figures, carried through under the names `ExecutionUsageView` already defines. |
 | `completeness`, `completenessReason` | `complete` / `partial` / **absent**, plus the stream reader's own reason string. `complete` requires a terminal line to have parsed AND the replay over the same bytes to have reconciled against it (§3's #1706 triple present) — it is *not* the default. **Every** value of `billedReconciliationUnavailable` maps to `partial` — including the two that describe no truncation at all, whose ambiguity `ExecutionUsageView`'s reason constants state — because an undecidable case takes the weaker label. **Absent** is the third state, for an attempt whose usage was never read (no parser registered for its adapter, no captured `.stdout.log`): neither label is true of a row nothing was read for, and calling it `complete` is what put an empty row in #1848's trustworthy set. `CostLedgerStore.ResolveCompleteness` is the one decision point. |
 | `apiEquivalentUsd`, `estimateStatus` | List-price estimate and its status (`estimated` / `unpriced`). |
@@ -3943,6 +3961,81 @@ view`/`diff`/`checks`, `gh issue view`. `denied_shell_command_patterns` closes t
 families (`commit`, `push`, `merge `, `checkout`, `switch`, `reset`, `clean`, `gh pr
 comment`/`edit`/`merge`, `gh issue comment`/`edit`, `gh label`, `gh extension`) as a standing, subtractive "never"
 (0022's DenyAlways) on top of the allowlist. Trailing-`*` shell patterns are matched on word boundaries. **The full accepting set is two branches on whether `P` itself ends in whitespace, five conditions total, not one** (#1683 F1 second round — the prior "three cases" wording silently assumed `P` never ends in whitespace, so it mis-described the branch that `git merge *` and `git -c *` actually take, the same class of defect F4 raised, restated in the correction). `ShellCommandPatternMatcher`'s own class comment is canonical for this rule, states the two branches and five conditions in full, and is what a change to it edits first — not restated here. So `git diff*` matches `git diff --stat` and `git diff`, never `git difftool` or `git diff-index`; `git merge *` matches bare `git merge` and `git merge origin/main` but never `git merge-base`; `git merge*` (no space), unlike `git merge *`, never matches `git merge origin/main` either; and `git log*` does **not** match `git log=x`, the ungated `=` widening #1683 F6 closed.
+
+**That ceiling is why a review's runtime claims arrive as prose — and #1882's answer is a zero-token
+verify step, not a wider grant (operator ruling, 2026-09-04; trigger ruling, 2026-09-05).** The
+allowlist above is correct and stays exactly as it is: a frontier model should not be on the meter
+watching a test runner scroll, and widening the grant reopens the mutation door the allowlist closed.
+But it means "3765 passed" or "selftest exit 0" reaches the reviewer as somebody's sentence, which is
+how four reviews on 2026-09-04 each ended with "nothing was executed here". **The token cost of a test
+run is not the test, it is a model reading the output, so the cheap version is no model, not a cheaper
+one.** `baton dispatch review … --verify-cmd "<command>"` (repeatable) has the ENGINE run the named
+commands before the worker's first turn, sequentially, and the contract is:
+
+- **Explicit, never implicit.** Nothing runs unless the flag is passed; a brief stays prose, and the
+  queue runner passes the flags from a per-item list. There is no inference from the spec text.
+- **Allowlisted shapes only**, refused at parse time with the offending command named: `dotnet
+  build*`, `dotnet test*`, and `python <script under tools/ or benchmarks/>` carrying a `--check*` or
+  `--selftest*` flag (`Mutation.VerifyStepCommandParser`, which is canonical for the grammar). Shell
+  metacharacters are refused rather than passed through, because nothing here would interpret one:
+  each command is spawned through the shell-less launcher, never `cmd /c`, with the review workspace
+  as its cwd and wrapped in `python tools/buildlock.py`. That wrapping is not optional — two
+  concurrent MSBuild runs on one machine kill each other (#1402), and this step launches beside lanes
+  that are already building. **Every argument of every shape must also name something inside the
+  workspace** — the "no escape" rule the python arm applies to its script path, applied to all of them,
+  so `dotnet build ../../elsewhere/Evil.csproj` is refused too. What the gate decides is location, not
+  intent: a script's own handling of the flags after `--check`/`--selftest` stays that script's
+  business, and the grammar's own comment is canonical for the exact spellings refused.
+- **A missing wrapper refuses the step, not the review.** `--workspace` is an arbitrary directory and
+  need not be a Baton checkout at all, so `tools/buildlock.py`'s absence under it is checked before
+  anything is spawned and recorded as the reason on every requested command
+  (`VerifyStepRunner.MissingBuildLockReason`). Spawning anyway put `python`'s own "can't open file"
+  exit under a heading naming the operator's command, which a reviewer told to treat a non-zero exit
+  as evidence reads as a failing build.
+- **A non-zero exit does not abort the review.** It is what the reviewer reads first. Each command
+  gets its own wall-clock bound (`--verify-timeout`, 10 minutes by default); a command that exceeds it
+  has its process tree killed and is recorded with NO exit code, because a killed tree has none and a
+  fabricated `-1` would be indistinguishable from a command that really exited -1. **An absent exit
+  code means only that none was observed** — a timeout, a spawn the OS refused, or a command never run
+  at all — and the three are told apart in `verify-results.md` rather than by the field. Two other
+  outcomes are likewise not command failures and are labelled as such where they appear: a timeout can
+  mean a slow command or a long wait for the build lock, and exit 75 is `tools/buildlock.py`'s own
+  BLOCKED code, meaning the wrapper gave up waiting and never ran the command — the same reading
+  `VerifyRunner` already gives 75 (`VerifyFailedKind.BuildLockBusy`), so the two consumers of that
+  wrapper cannot disagree about what it said.
+- **`<room>/artifacts/verify-results.md`** carries one section per command — the exact command line,
+  the exit code, the wall clock and a 200-line output tail — and the review prompt gains one paragraph
+  pointing at it and requiring the verdict's runtime claims to cite it. The prompt says nothing at all
+  when no step ran; it must not name a file that does not exist. The worker can actually read it
+  because the room's artifacts root is already granted to every worker — the same `BATON_ARTIFACTS_ROOT`
+  grant §3 describes for inputs and outputs, which is why the results file goes there rather than into
+  the execution's own directory: that one is not addressable before the execution exists.
+- **`verdict.json` gains `instruments: [{command, exitCode, wallClockMs}]`,** copied on by the engine
+  after the worker exits — never written by the model, and OVERWRITING anything the model wrote under
+  that key. That overwrite is the whole mechanism: without it the field is a claim rather than a
+  record, and a reviewer could assert an instrument it never had. The bump is additive and optional,
+  and the stamp edits the parsed JSON object in place rather than round-tripping the `ReviewVerdict`
+  record, which would silently delete the unknown extra fields that schema deliberately tolerates.
+  Declaring the field must not narrow that tolerance: a model-written `instruments` of any other shape
+  reads as absent rather than failing the parse, since a declared key that throws where an unknown one
+  was ignored would turn a review dispatched with no `--verify-cmd` at all into a contract failure and
+  a retried frontier run. Nothing is lost — the engine overwrites the key regardless. **"Regardless"
+  is literal, and includes the no-step case**: the stamp runs on every `verdict.json` a `baton
+  dispatch` produced, and when no verify step ran it REMOVES the key rather than leaving what the
+  model wrote. Removal, not an empty array, so that absent keeps its single meaning — no step ran —
+  which is what the field's own doc, `docs/agents/invoking-baton.md` and this bullet all already say.
+  Skipping the stamp when no step ran is what made the field a claim rather than a record on the
+  majority of review lanes: nothing removed a model-written array, and `--notify` carries
+  `verdict.json` verbatim off disk. **Scoped to `dispatch` because that is where the stamp is wired:
+  `baton redispatch` drives the same pump and does not stamp**, so a redispatched review's verdict can
+  still carry a model-written `instruments`. Stated rather than left as a silent second door; it is
+  the same boundary that keeps `--verify-cmd` from being inherited on that path.
+- **The role's shell grant is unchanged**, and `WorkerRoles.json` is untouched. `--verify-cmd` is
+  accepted only for a verdict-producing role (today, `review` alone) and refused for a workflow
+  template. It is **not** `--verify`, which overrides the *post-exit* verify command a mutating role
+  settles on (`WorkerRole.VerifyPixiTask`, §3's "Verify command resolution"); this one runs before the
+  worker and decides nothing. The refusal message says so, because conflating the two is the likeliest
+  reason someone reaches for it on the wrong role.
 
 **A deny pattern can bound a command family; it cannot bound an *option* — #1683 F1/F2, and the reason is `ShellCommandPatternMatcher`'s own, canonical there rather than restated here.** Two things changed in this ceiling as a result. `git grep` **left the allowlist**, taking with it the two deny entries #1679 had added for `-O`/`--open-files-in-pager` (a reviewing harness has its own Grep tool, and three spellings were measured spawning a pager past those entries). And a third deny rung was added alongside the two lists above: **`denied_shell_option_tokens`**, whose matching rule and deliberate over-match are stated on `ShellCommandPatternMatcher.IsDeniedByOptionToken`. `review` carries `--output`, because `git log`/`show`/`diff` all accept `--output=<file>` with `--format=format:<bytes>` — an arbitrary file write, invisible to #659's metacharacter scan because no redirection is involved, under this role's own `shell_commands_are_read_only: true` assertion. That assertion is the author's claim rather than a derived fact (`PermissionGrant.ShellCommandsAreReadOnly` says so), and this is what it took to make it true. **The rung is enforced by the two `PreToolUse` hooks and by nothing else, on either vendor** — see `ClaudeWorkerAdapter.StandingShellDenials` for why no vendor flag carries it, including what stays unmeasured. `gh api` is deliberately **not** granted: its HTTP
 method is a runtime flag/field (`-X`, `-f`), not something `ShellCommandPatternMatcher`'s glob

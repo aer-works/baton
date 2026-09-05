@@ -76,6 +76,19 @@ public static class DispatchCapabilitiesPrinter
             sb.AppendLine($"  {role.Id,-12} {timebox,4}  (tier: {role.Tier}, adapter: {role.Adapter}{modelPart}{effortPart}{subagentsPart})");
         }
 
+        sb.AppendLine();
+        sb.AppendLine("Pre-turn verify step (--verify-cmd, review role only):");
+        sb.AppendLine("  Repeatable. The ENGINE runs each command before the reviewer's first turn, with no model");
+        sb.AppendLine("  involved, in the review workspace and wrapped in `python tools/buildlock.py`, then writes");
+        sb.AppendLine($"  {Baton.Mutation.VerifyStepReport.ResultsFileName} into the room's artifacts and copies the commands");
+        sb.AppendLine("  onto verdict.json's `instruments`. A non-zero exit does not abort the review.");
+        sb.AppendLine("  Allowed shapes: dotnet build ... | dotnet test ... | python <script under tools/ or");
+        sb.AppendLine("                  benchmarks/> --check.../--selftest...");
+        sb.AppendLine($"  Bound:          --verify-timeout <minutes> per command (default {(int)Baton.Mutation.VerifyStepRunner.DefaultTimeout.TotalMinutes}).");
+        sb.AppendLine("  NOT --verify:   --verify overrides the POST-exit verify command (a role's verify_pixi_task,");
+        sb.AppendLine("                  e.g. implement's) that decides whether a mutating execution settles.");
+        sb.AppendLine("                  --verify-cmd runs BEFORE the worker and decides nothing.");
+
         return sb.ToString().TrimEnd();
     }
 

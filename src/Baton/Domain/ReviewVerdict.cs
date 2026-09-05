@@ -17,10 +17,102 @@ namespace Baton.Domain;
 /// </param>
 /// <param name="Findings">Empty is valid and meaningful: the reviewer looked and found nothing.</param>
 /// <param name="Summary">Optional free-text overall assessment.</param>
+/// <param name="Instruments">
+/// #1882: the deterministic commands the ENGINE ran before the reviewer's first turn, copied onto the
+/// verdict by <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> after the worker wrote it. Additive
+/// and optional: absent on every verdict from a review dispatched without <c>--verify-cmd</c>, and on
+/// every verdict written before this field existed. Never a claim the model makes about itself — the
+/// engine overwrites whatever the model put here, which is what makes "a reviewer cannot claim an
+/// instrument it did not have" true rather than merely asked for.
+/// </param>
 public sealed record ReviewVerdict(
     string ReviewedRef,
     IReadOnlyList<ReviewFinding> Findings,
-    string? Summary = null);
+    string? Summary = null,
+    [property: JsonConverter(typeof(TolerantVerifyInstrumentListConverter))]
+    IReadOnlyList<VerifyInstrument>? Instruments = null);
+
+/// <summary>
+/// Reads <c>instruments</c> as null rather than throwing whenever it is not a well-formed array of
+/// <see cref="VerifyInstrument"/> — including when it is a string, a number, an object, or an array
+/// of any of those.
+/// <para>
+/// Why a converter rather than the plain binding: declaring the property at all is what would
+/// otherwise turn a previously-TOLERATED unknown field into a hard parse failure, and
+/// <see cref="ReviewVerdictSchema"/> is the single definition of "valid verdict" whose failure mode
+/// is a contract-not-satisfied and a retried frontier review. Nothing in the prompt asks a model for
+/// this field — the paragraph <c>RoleDispatch.VerifyResultsParagraph</c> adds never names it, and
+/// <c>WorkerRoles.json</c>'s verdict example does not carry it — but a field a model invents unasked
+/// is exactly the failure the engine's overwrite exists for, so the parse must survive it in whatever
+/// shape it was guessed. Nothing is lost by dropping it here:
+/// <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> runs on every dispatch that produced a verdict
+/// and either writes the engine's rows or removes the key, so the model's version is never the one a
+/// reader sees.
+/// </para>
+/// </summary>
+internal sealed class TolerantVerifyInstrumentListConverter : JsonConverter<IReadOnlyList<VerifyInstrument>?>
+{
+    public override IReadOnlyList<VerifyInstrument>? Read(
+        ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        // The element is copied out first so a malformed one can be skipped whole: a partially-consumed
+        // reader would corrupt the parse of every sibling field, which is the failure this exists to
+        // prevent rather than relocate.
+        var element = JsonElement.ParseValue(ref reader);
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        try
+        {
+            return element.Deserialize<List<VerifyInstrument>>(options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <remarks>
+    /// Nothing in the tree serializes a <see cref="ReviewVerdict"/> through STJ today — the engine's
+    /// own stamp edits the parsed <c>JsonObject</c> instead — so this is inert, and written by hand
+    /// rather than as a delegating <c>Serialize(writer, value, options)</c> for that exact reason:
+    /// handing the DECLARED type back to the serializer from inside its own converter is the standard
+    /// re-entry trap, and its failure mode is an uncatchable StackOverflowException that no test can
+    /// be written against. Serializing one ELEMENT cannot re-enter a converter registered for the
+    /// list, so the question does not arise.
+    /// </remarks>
+    public override void Write(
+        Utf8JsonWriter writer, IReadOnlyList<VerifyInstrument>? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartArray();
+        foreach (var instrument in value)
+        {
+            JsonSerializer.Serialize(writer, instrument, options);
+        }
+
+        writer.WriteEndArray();
+    }
+}
+
+/// <summary>
+/// One instrument a review's verdict rests on (#1882): the exact command line the engine ran, the
+/// exit code it observed, and how long it took. <see cref="ExitCode"/> is null when the command was
+/// killed at the verify step's wall-clock bound; spec/baton.md §9 states why that is absence rather
+/// than a sentinel value. Deliberately narrower than <c>Mutation.VerifyCommandResult</c>: no output tail (the room's
+/// <c>verify-results.md</c> holds that), so a verdict stays a verdict rather than a second log.
+/// </summary>
+public sealed record VerifyInstrument(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("exitCode")] int? ExitCode,
+    [property: JsonPropertyName("wallClockMs")] long WallClockMs);
 
 /// <summary>One thing a review claims (#732).</summary>
 /// <param name="Claim">The one-line statement of the finding. Required and non-empty.</param>

@@ -138,6 +138,14 @@ public static class DispatchCommand
                 + $"{DispatchOptionsParser.WarnTimeoutMinutes} minutes (2h) — a typo here can strand a lane for a long time.");
         }
 
+        // #1882: the --verify-cmd lines are re-parsed HERE rather than at the step itself, for the same
+        // placement reason the --continue check above states: a refusal ahead of Directory.CreateDirectory
+        // lands as a clean pre-ledger ValidationRefused with no half-provisioned room behind it.
+        // DispatchOptionsParser.ParseVerifyCommand already validated every line, so this is unreachable
+        // through the CLI -- it is reachable through a hand-built DispatchOptions, which is exactly what
+        // an in-process caller (and every test) constructs.
+        var verifyCommands = ParseVerifyCommands(options.VerifyCommands);
+
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
         // #1381: cross-room provenance -- the same room-marker lineage fields #1441's redispatch
@@ -298,9 +306,27 @@ public static class DispatchCommand
             }
         }
 
+        // #1882: the zero-token verify step, run BEFORE the worker's first turn and after the room
+        // exists, so its results file is already on disk when the reviewer reads the prompt paragraph
+        // that names it. Nothing here can fail the dispatch: a non-zero exit is what the reviewer reads
+        // first, and even an unspawnable command is recorded as a result rather than thrown.
+        Baton.Mutation.VerifyStep.Outcome? verifyStep = null;
+        if (verifyCommands.Count > 0)
+        {
+            verifyStep = await RunVerifyStepAsync(options, verifyCommands, workspace, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var result = await RunCommand.ExecuteAsync(
             runOptions, adapters, cancellationToken: cancellationToken, onWorkerStdoutLine: CaptureSessionId)
             .ConfigureAwait(false);
+
+        // #1882: the engine stamps the instruments onto the verdict the worker just wrote -- see
+        // VerifyStep.InjectInstrumentsAsync for why the engine, and not the model, is the writer.
+        // UNCONDITIONAL, including when no verify step ran: that arm removes a model-written
+        // `instruments` instead of writing one, which is the only thing that makes the field a record
+        // rather than a claim on the majority of review lanes (dispatched without --verify-cmd).
+        await StampInstrumentsOnVerdictAsync(options, result, verifyStep).ConfigureAwait(false);
 
         if (options.OutputPath is not null && result.State.Status == WorkflowStatus.Terminal)
         {
@@ -331,6 +357,156 @@ public static class DispatchCommand
 
         return result;
     }
+
+    /// <summary>
+    /// Re-derives the argv for each <c>--verify-cmd</c> line. Re-parsed rather than carried so the
+    /// string an operator reads back off the room and the argv that actually ran cannot diverge; the
+    /// call site's own comment states why it happens before the room directory exists.
+    /// </summary>
+    private static List<Baton.Mutation.VerifyStepCommand> ParseVerifyCommands(IReadOnlyList<string>? commandLines)
+    {
+        if (commandLines is not { Count: > 0 })
+        {
+            return [];
+        }
+
+        var commands = new List<Baton.Mutation.VerifyStepCommand>(commandLines.Count);
+        foreach (var line in commandLines)
+        {
+            if (!Baton.Mutation.VerifyStepCommandParser.TryParse(line, out var command, out var error))
+            {
+                throw new CliArgumentException(error!);
+            }
+
+            commands.Add(command!);
+        }
+
+        return commands;
+    }
+
+    /// <summary>
+    /// #1882: runs the allowlisted <c>--verify-cmd</c> commands and records them into the room's
+    /// artifacts, printing one line per command so an operator watching the dispatch sees the evidence
+    /// being gathered rather than a silent pause.
+    /// </summary>
+    /// <param name="workspace">
+    /// The commands' working directory — the tree this review was dispatched against. Deliberately the
+    /// workspace and not the worker's own provisioned worktree: that worktree does not exist yet when
+    /// this runs (RunCommand provisions it), and the whole point of running before the first turn is
+    /// that the results are on disk when the worker starts. The gap that leaves is the same one
+    /// <c>workspaceFact</c> already discloses above — a worktree-provisioned worker sees HEAD, while
+    /// these commands see the workspace's actual working tree. It is also what
+    /// <c>VerifyStepRunner.MissingBuildLockReason</c> is measured against: an arbitrary <c>--workspace</c>
+    /// need not be a Baton checkout at all.
+    /// </param>
+    private static async Task<Baton.Mutation.VerifyStep.Outcome?> RunVerifyStepAsync(
+        DispatchOptions options,
+        IReadOnlyList<Baton.Mutation.VerifyStepCommand> commands,
+        string workspace,
+        CancellationToken cancellationToken)
+    {
+        var artifactsRoot = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
+        var timeout = options.VerifyTimeout ?? Baton.Mutation.VerifyStepRunner.DefaultTimeout;
+        Console.Out.WriteLine(
+            $"Verify step: running {commands.Count} command(s) in {workspace} before the worker's first turn "
+            + $"(no model involved, {(int)timeout.TotalMinutes}m per command).");
+
+        try
+        {
+            var outcome = await Baton.Mutation.VerifyStep
+                .RunAndRecordAsync(commands, workspace, artifactsRoot, timeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var commandResult in outcome.Results)
+            {
+                // Same three readings of an absent exit code the results file distinguishes -- "exit
+                // unknown" was the one spelling that told an operator nothing about which happened.
+                var verdict = commandResult switch
+                {
+                    { TimedOut: true } => "timed out",
+                    { ExitCode: null } => "not run",
+                    { ExitCode: Baton.Mutation.VerifyStepReport.BuildLockBlockedExitCode } => "blocked on the build lock",
+                    var r => $"exit {r.ExitCode}",
+                };
+                Console.Out.WriteLine($"  {commandResult.CommandLine} -- {verdict} ({commandResult.WallClockMs} ms)");
+            }
+
+            Console.Out.WriteLine($"Verify results: {outcome.ResultsFilePath}");
+            return outcome;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The commands may well have run; what failed is recording them. Say so and dispatch
+            // anyway -- a review with no results file is the pre-#1882 status quo, not a broken run.
+            // The prompt's paragraph will point at a file that is absent, which the reviewer can see
+            // for itself; fabricating a results file it could not write would be worse.
+            Console.Error.WriteLine(
+                $"Warning: the verify step could not record its results into '{artifactsRoot}': {ex.Message} "
+                + "The review is dispatched without them.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// #1882: makes every <c>verdict.json</c> this dispatch produced say what the ENGINE knows about
+    /// the instruments — the step's rows when one ran, and the key removed when none did. Placed here
+    /// rather than inside the engine's contract check for the same reason
+    /// <see cref="CopyPrimaryOutputToOverride"/> is: the execution-scoped artifact directory is not
+    /// known until the run has produced one.
+    /// <para>
+    /// Every step with an execution is visited, not just the first: a composed template's review phase
+    /// is not necessarily its first step, and the removal arm has to reach a model-written
+    /// <c>instruments</c> wherever a verdict was written. A step whose execution wrote no
+    /// <c>verdict.json</c> — every non-verdict role — is silently skipped, which is why no role check
+    /// is needed here: the file's existence is the population.
+    /// </para>
+    /// </summary>
+    /// <param name="verifyStep">Null when no verify step ran for this dispatch.</param>
+    private static async Task StampInstrumentsOnVerdictAsync(
+        DispatchOptions options, CommandResult result, Baton.Mutation.VerifyStep.Outcome? verifyStep)
+    {
+        foreach (var step in result.State.Steps)
+        {
+            if (step.LatestExecutionId is not { } execId)
+            {
+                continue;
+            }
+
+            var verdictPath = Path.Combine(
+                options.RoomDirectoryPath,
+                Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName,
+                $"execution_{execId}",
+                VerdictOutputName);
+            if (!File.Exists(verdictPath))
+            {
+                continue;
+            }
+
+            // CancellationToken.None: the review is already finished and its outputs are already durable.
+            var stamped = await Baton.Mutation.VerifyStep
+                .InjectInstrumentsAsync(verdictPath, verifyStep?.Instruments, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (stamped)
+            {
+                continue;
+            }
+
+            Console.Error.WriteLine(verifyStep is null
+                ? $"Warning: could not check '{verdictPath}' for a model-written 'instruments' field. No "
+                    + "verify step ran for this dispatch, so any value under that key is the worker's own "
+                    + "claim rather than an engine record."
+                : $"Warning: could not record the verify step's instruments on '{verdictPath}'. The verify "
+                    + $"results themselves are unaffected, at '{verifyStep.ResultsFilePath}'.");
+        }
+    }
+
+    /// <summary>
+    /// The review role's structured output (<c>WorkerRoles.json</c>) — the one file
+    /// <see cref="StampInstrumentsOnVerdictAsync"/> annotates. Named here rather than derived from the
+    /// role's output list because the annotation is specific to the ReviewVerdict schema, not to
+    /// "whatever the first output happens to be called".
+    /// </summary>
+    private const string VerdictOutputName = "verdict.json";
 
     /// <summary>
     /// #1841: persists ids already recovered from live worker stdout by
@@ -584,6 +760,27 @@ public static class DispatchCommand
                 "remove the --verify flag, or dispatch a single role instead of a template.");
         }
 
+        // #1882: the verify step is a REVIEW-role concept (it exists to feed one reviewer's first turn
+        // and to stamp that reviewer's verdict.json), and a template has no single review phase to
+        // attach it to. Refused up front rather than silently discarded, the same as every escape hatch
+        // above it.
+        if (options.VerifyCommands is { Count: > 0 })
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — the pre-turn verify step belongs to one "
+                + "review lane's own first turn, so --verify-cmd does not apply to a template. Pass "
+                + "--verify-cmd only when dispatching the review role.",
+                "remove the --verify-cmd flag, or dispatch the review role directly.");
+        }
+
+        if (options.VerifyTimeout is not null)
+        {
+            throw new CliArgumentException(
+                $"'{options.Name}' is a workflow template — --verify-timeout bounds --verify-cmd, which "
+                + "a template does not accept. Pass both only when dispatching the review role.",
+                "remove the --verify-timeout flag, or dispatch the review role directly.");
+        }
+
         if (options.ExpectPr is not null)
         {
             throw new CliArgumentException(
@@ -633,6 +830,32 @@ public static class DispatchCommand
 
         var role = WorkerRoleCatalog.For(options.Name);
 
+        // #1882: --verify-cmd is a review-role flag. The gate is the role's own ProducesVerdict rather
+        // than a hardcoded "review" string, because the step's other half is stamping `instruments` onto
+        // verdict.json — a role with no verdict has nowhere for that to land, so the two facts are the
+        // same fact. The message names the OTHER verify flag on purpose -- spec/baton.md §9 states why
+        // that disambiguation belongs in the refusal rather than only in the docs.
+        if (options.VerifyCommands is { Count: > 0 } && !role.ProducesVerdict)
+        {
+            throw new CliArgumentException(
+                $"'{role.Id}' does not produce a verdict, so --verify-cmd does not apply to it. The "
+                + "pre-turn verify step runs allowlisted commands with no model involved and records "
+                + "them as the reviewer's instruments — only a verdict-producing role (review) has "
+                + "somewhere to record them. This is NOT the same flag as --verify, which overrides the "
+                + "post-exit verify command (a role's verify_pixi_task) that decides whether a mutating "
+                + "execution settles.",
+                $"drop --verify-cmd to dispatch '{role.Id}', or use --verify <cmd> if you meant the "
+                + "post-exit verify command.");
+        }
+
+        if (options.VerifyTimeout is not null && options.VerifyCommands is not { Count: > 0 })
+        {
+            throw new CliArgumentException(
+                "'--verify-timeout' bounds each --verify-cmd's wall clock, but no --verify-cmd was "
+                + "passed — on its own it would bound nothing.",
+                "add at least one --verify-cmd, or drop --verify-timeout.");
+        }
+
         if (options.OutputPath is not null)
         {
             ValidateOutputOverride(options, role);
@@ -649,8 +872,23 @@ public static class DispatchCommand
             timeoutOverride: options.Timeout, attachments: options.Attachments, roomDirectoryPath: options.RoomDirectoryPath,
             tokenBudgetOverride: options.TokenBudget, maxToolStepsOverride: options.MaxToolSteps,
             billedRateLimitOverride: options.BilledRateLimit,
-            verifyCommandOverride: options.VerifyCommand, expectPrOverride: options.ExpectPr);
+            verifyCommandOverride: options.VerifyCommand, expectPrOverride: options.ExpectPr,
+            verifyResultsPath: VerifyResultsPath(options));
     }
+
+    /// <summary>
+    /// #1882: where this dispatch's <c>verify-results.md</c> will land, or null when no
+    /// <c>--verify-cmd</c> was passed. Computed from the room directory alone — the step runs before
+    /// any execution exists, so the file lives in the ROOM's artifacts directory rather than an
+    /// execution-scoped one, which is also why the prompt can name its path before the step has run.
+    /// </summary>
+    private static string? VerifyResultsPath(DispatchOptions options) =>
+        options.VerifyCommands is { Count: > 0 }
+            ? Path.Combine(
+                options.RoomDirectoryPath,
+                Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName,
+                Baton.Mutation.VerifyStepReport.ResultsFileName)
+            : null;
 
     /// <summary>
     /// Resolves the task-prompt string from whichever of the three <c>--spec</c>/<c>--spec-text</c>

@@ -105,7 +105,24 @@ public sealed record ExecutionUsageView(
     /// </summary>
     [property: JsonPropertyName("modelsObserved")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<string>? ModelsObserved = null)
+    IReadOnlyList<string>? ModelsObserved = null,
+    /// <summary>
+    /// #1882: how long <see cref="Mutation.VerifyStepRunner"/>'s commands took, in milliseconds. NOT a
+    /// token figure and not part of any Σ above. Attribution, the all-or-nothing pairing with
+    /// <see cref="VerifyResultsBytes"/>, and what an absent sidecar means are spec/baton.md §3's
+    /// contract, not restated here.
+    /// </summary>
+    [property: JsonPropertyName("verifyStepMs")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? VerifyStepMs = null,
+    /// <summary>
+    /// #1882: the size in bytes of the <c>verify-results.md</c> that step wrote — the READ cost the
+    /// reviewer pays for its evidence, which is the half of this feature that is not free. Same gate
+    /// as <see cref="VerifyStepMs"/>, never one without the other.
+    /// </summary>
+    [property: JsonPropertyName("verifyResultsBytes")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? VerifyResultsBytes = null)
 {
     /// <summary>The capture is provably not the whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>.</summary>
     public const string StreamTruncatedByRolloverReason = "stream-truncated-by-rollover";
@@ -261,6 +278,25 @@ public static class ExecutionUsageProjector
         // shared with QuotaLedgerStore.BuildEntries -- see ExecutionBindingResolver's own doc comment.
         var resolvedBindings = ExecutionBindingResolver.Resolve(entries);
 
+        // #1882: the room's pre-turn verify step ran ONCE, before the first worker turn, so its cost
+        // belongs to exactly one execution. Attributing it to every execution would double-count it in
+        // #1849's ledger the moment a step retried; attributing it to none would hide a real cost. The
+        // earliest execution with a start/exit pair is the one the step preceded — ties broken by id
+        // so the answer is deterministic rather than dictionary-order. The exit half of that pair is
+        // not an extra rule this projection invented: the loop below emits NO view at all for an
+        // execution that never exited (wallClockMs is unconditional on the view), so an id chosen
+        // without it would attribute the cost to a row that is never written and lose the figures
+        // entirely. spec/baton.md §3 states the same condition, in those terms.
+        var verifyStep = VerifyStepReport.TryReadSidecar(artifactsRootPath);
+        var verifyStepExecutionId = verifyStep is null
+            ? null
+            : startedTimestamps
+                .Where(pair => exitedTimestamps.ContainsKey(pair.Key))
+                .OrderBy(pair => pair.Value)
+                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => pair.Key)
+                .FirstOrDefault();
+
         var result = new Dictionary<string, ExecutionUsageView>(StringComparer.Ordinal);
         foreach (var (executionId, startedAt) in startedTimestamps)
         {
@@ -359,7 +395,10 @@ public static class ExecutionUsageProjector
                 reconciled ? billed!.Value - liveBilled!.Value : null,
                 unavailable,
                 peakBilledInWindow,
-                usage?.ModelsObserved);
+                usage?.ModelsObserved,
+                // #1882: both figures together or neither -- see VerifyStepMs's own remarks.
+                string.Equals(executionId, verifyStepExecutionId, StringComparison.Ordinal) ? verifyStep!.TotalWallClockMs : null,
+                string.Equals(executionId, verifyStepExecutionId, StringComparison.Ordinal) ? verifyStep!.ResultsBytes : null);
         }
 
         return result;
