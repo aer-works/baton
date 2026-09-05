@@ -1211,7 +1211,7 @@ public sealed class CostLedgerStoreTests
             Assert.Contains("\"findingsHigh\":0", approvedJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"reviewedPr\"", approvedJson, StringComparison.Ordinal);
 
-            File.Delete(verdictPath);
+            FileCleanup.Delete(verdictPath);
             var absent = Assert.Single(CostLedgerStore.BuildEntries(settled, room, Repository));
             Assert.Null(absent.Verdict);
             Assert.Null(absent.FindingsHigh);
