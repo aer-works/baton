@@ -45,11 +45,11 @@ public static class VendorUsageProjectionReader
                 continue;
             }
 
-            VendorUsageSnapshot? snapshot;
+            PersistedVendorUsage? snapshot;
             try
             {
                 var json = File.ReadAllText(path);
-                snapshot = JsonSerializer.Deserialize<VendorUsageSnapshot>(json, PersistedSnapshotOptions);
+                snapshot = JsonSerializer.Deserialize<PersistedVendorUsage>(json, PersistedSnapshotOptions);
             }
             catch (Exception ex) when (ex is IOException or JsonException)
             {
@@ -64,8 +64,19 @@ public static class VendorUsageProjectionReader
             }
 
             var liveLanes = liveLanesByVendor.GetValueOrDefault(vendor);
+            var rings = snapshot.Rings;
             var windows = snapshot.Windows
-                .Select(w => new VendorUsageWindowView(w.Name, w.PercentUsed, w.ResetsAt, w.RawLine))
+                .Select(w =>
+                {
+                    // #1746: burn is derived HERE, once, for both callers of this reader -- glass.html
+                    // renders these two fields and never recomputes them. Absence rules live on
+                    // VendorUsageBurn.Derive and, canonically, in spec/baton.md §6's windows[] table.
+                    IReadOnlyList<VendorUsageSample>? ring = null;
+                    rings?.TryGetValue(w.Name, out ring);
+                    var (ratePctPerHour, minutesToExhaustion) = VendorUsageBurn.Derive(ring, w.PercentUsed);
+                    return new VendorUsageWindowView(
+                        w.Name, w.PercentUsed, w.ResetsAt, w.RawLine, ratePctPerHour, minutesToExhaustion);
+                })
                 .ToList();
             entries.Add(new VendorUsageProjectionView(vendor, snapshot.HarvestedAt, snapshot.Caveat, windows, liveLanes));
         }
@@ -107,7 +118,9 @@ public sealed record VendorUsageProjectionView(
 
 /// <summary>One harvested usage window on the wire (issue #1391) — see
 /// <see cref="Baton.Vendors.VendorUsageWindow"/>'s own doc comment for what each field means and when
-/// it is absent.</summary>
+/// it is absent. <c>ratePctPerHour</c>/<c>minutesToExhaustion</c> (#1746) are the only two fields NOT
+/// harvested: they are derived from the persisted sample ring by <see cref="VendorUsageBurn.Derive"/>,
+/// which owns their absence rules.</summary>
 public sealed record VendorUsageWindowView(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("percentUsed")]
@@ -116,7 +129,13 @@ public sealed record VendorUsageWindowView(
     [property: JsonPropertyName("resetsAt")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DateTimeOffset? ResetsAt,
-    [property: JsonPropertyName("rawLine")] string RawLine);
+    [property: JsonPropertyName("rawLine")] string RawLine,
+    [property: JsonPropertyName("ratePctPerHour")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    double? RatePctPerHour = null,
+    [property: JsonPropertyName("minutesToExhaustion")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    double? MinutesToExhaustion = null);
 
 /// <summary>
 /// <c>fleet_status</c>'s top-level response shape since issue #1391 — was a bare JSON array of

@@ -2541,7 +2541,9 @@ anticipated this shape):
           "name": string,            // vendor's own wording, e.g. "session", "week (Fable)", "Gemini Models · Weekly Limit" -- agy's own "Remaining" is stripped so the label cannot contradict the percent-USED number rendered beside it (#1869 review); "rawLine" keeps the vendor's wording verbatim
           "percentUsed"?: number,    // ALWAYS percent USED (agy's own "percent remaining" is converted before this field is populated) -- absent, never a guessed number, when unparsed
           "resetsAt"?: string,       // ISO-8601 UTC instant -- absent when the vendor's own line carried no reset clause, or claude's non-ISO "Jul 25, 12:09am (America/New_York)" format failed to resolve; "rawLine" still carries the vendor's own text either way
-          "rawLine": string          // the vendor's own line, verbatim, for a reader that wants to show what parsing dropped
+          "rawLine": string,         // the vendor's own line, verbatim, for a reader that wants to show what parsing dropped
+          "ratePctPerHour"?: number, // #1746: advisory burn, percentage points of this window consumed per hour, derived over the persisted sample ring (oldest to newest). ABSENT under two samples -- never 0, which would read as "idle" when the truth is "not yet known" -- and absent when the ring spans no time at all. Present as 0 when two or more samples show no movement the two-decimal rounding can see; the ring keeps at most twelve samples and none older than three hours before the newest, so a rate is never averaged across an idle gap the harvester's backoff created
+          "minutesToExhaustion"?: number // #1746: (100 - percentUsed) / ratePctPerHour, in minutes, at that rate. Absent whenever the rate is absent or not positive (nothing is being consumed to run out) and whenever percentUsed itself is absent
         }
       ],
       "liveLanes": number            // count of currently-Running rooms bound to this adapter, computed fresh at read time -- not part of the harvested snapshot itself
@@ -2573,6 +2575,17 @@ cadence and the operator-approved rules behind it (its own doc comment states th
 `FleetProjectionWriter` read through, pairing each snapshot with a `liveLanes` count computed fresh
 from that call's own room scan — `vendors[]` is never itself a live vendor spawn. **Advisory only**:
 nothing in this slice reads `vendors[]` to hold, warn, or reject a dispatch.
+
+**Burn rate and minutes-to-exhaustion (#1746).** A single harvest carries no rate, so the persisted
+snapshot file keeps a bounded ring of the last `VendorUsageBurn.RingCapacity` readings per window
+(`Baton.Cli.Mcp.PersistedVendorUsage` — the file gained the ring flat beside #1869's four snapshot
+fields, so a pre-#1746 file still reads, with no history). `VendorUsageBurn.Advance` owns the ring
+rules — including what a rolled-over window does to the ring, which is why no rate ever spans a reset —
+and `VendorUsageBurn.Derive` owns the two fields' arithmetic and the absence rules the `windows[]`
+table above states. Both fields are **derived at read time, in the projection** — `pusher.py` forwards them
+untouched and `glass.html` renders them without recomputing anything, so there is exactly one
+implementation of the arithmetic. Still advisory: a straight-line extrapolation of the last few
+harvests is not a prediction, and #1848 remains the only thing that may ever gate on any of this.
 
 **`role`/`adapter`/`model`/`effort`/`timeoutMs` (#1503, extended by #1584 and #1613 item 3)** are read from the
 room's own `bindings.json` (`WorkerBindingConfigWriter`/`WorkerBindingConfigParser`,

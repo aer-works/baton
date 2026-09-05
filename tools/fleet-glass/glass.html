@@ -1337,16 +1337,28 @@ function freshLabel(iso, prefix){
 }
 function banner(html){ $("banner").innerHTML = html ? `<div class="banner">${html}</div>` : ""; }
 
-// #1391: advisory per-vendor usage runway -- one row per window per vendor, percent/reset/caveat,
+// #1391: advisory per-vendor usage runway -- one row per window per vendor, percent/reset/burn/caveat,
 // "unknown" whenever the harvester couldn't parse a field. Nothing here gates dispatch (#1848 owns
 // that); this is read-only display of `snap.vendors`, absent-safe like `conductor`/`staleness` above.
+// #1746 adds two DERIVED cells per row -- burn rate and minutes to exhaustion. Both arrive already
+// computed on `windows[]` (the daemon's projection owns the one arithmetic, spec/baton.md §6); this
+// file never derives them from percent history of its own. "unknown" whenever either is absent, on
+// exactly the same freshness footing as the block head's harvest age: these describe the last
+// harvest, not this instant, so an old `harvestedAt` qualifies them just as it qualifies the percent.
 function vendorUsageRowHtml(vendor, w){
   const pct = typeof w.percentUsed === "number" ? `${w.percentUsed}% used` : "unknown";
   const resets = w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString()}` : "reset unknown";
+  const rate = typeof w.ratePctPerHour === "number" ? `${w.ratePctPerHour}%/h` : "rate unknown";
+  const eta = typeof w.minutesToExhaustion === "number"
+    ? `${w.minutesToExhaustion < 90 ? Math.round(w.minutesToExhaustion) + "m"
+        : Math.round(w.minutesToExhaustion / 60) + "h"} to exhaustion`
+    : "exhaustion unknown";
   return `<div class="vendorusage-row"><span class="vendorusage-adapter">${esc(vendor)}</span> `
     + `<span class="vendorusage-window">${esc(w.name)}</span> `
     + `<span class="vendorusage-pct">${esc(pct)}</span> `
-    + `<span class="vendorusage-reset">${esc(resets)}</span></div>`;
+    + `<span class="vendorusage-reset">${esc(resets)}</span> `
+    + `<span class="vendorusage-rate">${esc(rate)}</span> `
+    + `<span class="vendorusage-eta">${esc(eta)}</span></div>`;
 }
 function vendorUsageHtml(vendors){
   if(!Array.isArray(vendors) || vendors.length === 0){ $("vendorusage").innerHTML = ""; return; }

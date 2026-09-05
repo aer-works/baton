@@ -60,6 +60,13 @@ machine-local caveat — as **advisory runway**, harvested by the daemon on a sl
 (`spec/baton.md` §6, "`vendors[]`", issue #1391). Nothing in this reporting slice gates dispatch on
 it.
 
+Each window row also carries two derived cells (#1746): the **burn rate** in percentage points per
+hour and the **minutes to exhaustion** at that rate, both computed by the daemon's projection from a
+short ring of recent harvests rather than by the page. Either reads `unknown` when absent — a rate
+needs two harvests and disappears again when the vendor's window rolls over, and no exhaustion
+estimate exists without a positive rate. `spec/baton.md` §6's `windows[]` table states the absence
+rules in full.
+
 ## Vendor authentication
 
 Baton does not authenticate to any model provider. It spawns the vendor's own first-party CLI
