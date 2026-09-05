@@ -127,6 +127,72 @@ public class VerifyStepInstrumentsTests
         }
     }
 
+    /// <summary>
+    /// Why the stamp renames instead of overwriting in place is stated on
+    /// <see cref="VerifyStep.InjectInstrumentsAsync"/>. What is checkable without a race is only the
+    /// observable residue, and that is all these two arms claim: after a SUCCESSFUL stamp the
+    /// directory holds exactly the verdict and no temporary sibling. Neither arm asserts the mid-write
+    /// window was closed — that is not observable from a test; this pins that the rename happened at
+    /// all rather than a truncate-in-place having quietly replaced it.
+    /// </summary>
+    [Fact]
+    public async Task The_stamp_leaves_no_temporary_file_behind()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"verdict-atomic-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "verdict.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                path, """{"reviewedRef": "main", "findings": []}""", TestContext.Current.CancellationToken);
+
+            Assert.True(await VerifyStep.InjectInstrumentsAsync(path, Instruments, CancellationToken.None));
+
+            Assert.Equal(new[] { path }, Directory.GetFiles(directory));
+            Assert.True(ReviewVerdictSchema.TryParse(
+                await File.ReadAllBytesAsync(path, TestContext.Current.CancellationToken), out var verdict, out _));
+            Assert.Equal(Instruments.Count, verdict!.Instruments!.Count);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
+    /// <summary>
+    /// The other polarity, and the arm that discriminates the cleanup: the destination is held open so
+    /// the read succeeds and the RENAME fails, which is the one path that can strand a
+    /// fully-written temporary in the execution's own output directory. Without the best-effort delete
+    /// this arm finds two files instead of one. The worker's verdict is asserted intact besides.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_rewrite_leaves_no_stranded_temporary()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"verdict-atomic-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "verdict.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                path, """{"reviewedRef": "main", "findings": []}""", TestContext.Current.CancellationToken);
+
+            // Held open for exclusive write: the read succeeds, the rename does not.
+            using (var _ = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Assert.False(await VerifyStep.InjectInstrumentsAsync(path, Instruments, CancellationToken.None));
+            }
+
+            Assert.Equal(new[] { path }, Directory.GetFiles(directory));
+            Assert.Equal(
+                """{"reviewedRef": "main", "findings": []}""",
+                await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(directory);
+        }
+    }
+
     [Fact]
     public void A_verdict_with_no_instruments_still_parses_and_reports_none()
     {

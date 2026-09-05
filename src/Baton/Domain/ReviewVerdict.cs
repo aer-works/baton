@@ -29,7 +29,75 @@ public sealed record ReviewVerdict(
     string ReviewedRef,
     IReadOnlyList<ReviewFinding> Findings,
     string? Summary = null,
+    [property: JsonConverter(typeof(TolerantVerifyInstrumentListConverter))]
     IReadOnlyList<VerifyInstrument>? Instruments = null);
+
+/// <summary>
+/// Reads <c>instruments</c> as null rather than throwing whenever it is not a well-formed array of
+/// <see cref="VerifyInstrument"/> — including when it is a string, a number, an object, or an array
+/// of any of those.
+/// <para>
+/// Why a converter rather than the plain binding: declaring the property at all is what would
+/// otherwise turn a previously-TOLERATED unknown field into a hard parse failure, and
+/// <see cref="ReviewVerdictSchema"/> is the single definition of "valid verdict" whose failure mode
+/// is a contract-not-satisfied and a retried frontier review. Naming <c>instruments</c> in the review
+/// prompt (#1882) makes a model writing its own — in whatever shape it guesses — more likely, not
+/// less. Nothing is lost by dropping it: <c>Mutation.VerifyStep.InjectInstrumentsAsync</c> overwrites
+/// this key unconditionally after the worker exits, so the model's version is never the one a reader
+/// sees.
+/// </para>
+/// </summary>
+internal sealed class TolerantVerifyInstrumentListConverter : JsonConverter<IReadOnlyList<VerifyInstrument>?>
+{
+    public override IReadOnlyList<VerifyInstrument>? Read(
+        ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        // The element is copied out first so a malformed one can be skipped whole: a partially-consumed
+        // reader would corrupt the parse of every sibling field, which is the failure this exists to
+        // prevent rather than relocate.
+        var element = JsonElement.ParseValue(ref reader);
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        try
+        {
+            return element.Deserialize<List<VerifyInstrument>>(options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <remarks>
+    /// Nothing in the tree serializes a <see cref="ReviewVerdict"/> through STJ today — the engine's
+    /// own stamp edits the parsed <c>JsonObject</c> instead — so this is inert, and written by hand
+    /// rather than as a delegating <c>Serialize(writer, value, options)</c> for that exact reason:
+    /// handing the DECLARED type back to the serializer from inside its own converter is the standard
+    /// re-entry trap, and its failure mode is an uncatchable StackOverflowException that no test can
+    /// be written against. Serializing one ELEMENT cannot re-enter a converter registered for the
+    /// list, so the question does not arise.
+    /// </remarks>
+    public override void Write(
+        Utf8JsonWriter writer, IReadOnlyList<VerifyInstrument>? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartArray();
+        foreach (var instrument in value)
+        {
+            JsonSerializer.Serialize(writer, instrument, options);
+        }
+
+        writer.WriteEndArray();
+    }
+}
 
 /// <summary>
 /// One instrument a review's verdict rests on (#1882): the exact command line the engine ran, the

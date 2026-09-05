@@ -61,6 +61,74 @@ public class ReviewVerdictSchemaTests
     }
 
     /// <summary>
+    /// #1882 made <c>instruments</c> a DECLARED field, which is exactly how a previously-tolerated
+    /// unknown field turns into a parse failure: the moment STJ has a type for a key, a worker writing
+    /// that key in some other shape throws instead of being ignored. The regression this guards is a
+    /// contract failure and a retried frontier review on a lane dispatched with no <c>--verify-cmd</c>
+    /// at all — and naming the field in the review prompt makes a model writing it MORE likely, not
+    /// less. The engine overwrites this key unconditionally, so nothing is lost by dropping a
+    /// malformed one.
+    /// </summary>
+    [Theory]
+    [InlineData(""""{"reviewedRef": "main", "findings": [], "instruments": "dotnet build"}"""")]
+    [InlineData(""""{"reviewedRef": "main", "findings": [], "instruments": {"cmd": "dotnet build"}}"""")]
+    [InlineData(""""{"reviewedRef": "main", "findings": [], "instruments": 7}"""")]
+    [InlineData(""""{"reviewedRef": "main", "findings": [], "instruments": ["dotnet build"]}"""")]
+    [InlineData(""""{"reviewedRef": "main", "findings": [], "instruments": [{"command": 3}]}"""")]
+    public void A_model_written_instruments_field_of_the_wrong_shape_is_dropped_not_a_parse_failure(string json)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+
+        Assert.True(ReviewVerdictSchema.TryParse(bytes, out var verdict, out var error));
+        Assert.Null(error);
+        Assert.Null(verdict!.Instruments);
+    }
+
+    /// <summary>
+    /// The discriminating other half of the arm above: dropping a malformed <c>instruments</c> must
+    /// not mean never reading a well-formed one, or the field the engine stamps would be invisible to
+    /// every reader of a verdict.
+    /// </summary>
+    [Fact]
+    public void A_well_formed_instruments_field_still_parses()
+    {
+        var bytes = Encoding.UTF8.GetBytes(
+            """
+            {"reviewedRef": "main", "findings": [],
+             "instruments": [{"command": "dotnet build", "exitCode": 0, "wallClockMs": 34300},
+                             {"command": "dotnet test", "exitCode": null, "wallClockMs": 600000}]}
+            """);
+
+        Assert.True(ReviewVerdictSchema.TryParse(bytes, out var verdict, out _));
+        Assert.Equal(2, verdict!.Instruments!.Count);
+        Assert.Equal("dotnet build", verdict.Instruments[0].Command);
+        Assert.Equal(0, verdict.Instruments[0].ExitCode);
+        Assert.Null(verdict.Instruments[1].ExitCode);
+        Assert.Equal(600000, verdict.Instruments[1].WallClockMs);
+    }
+
+    /// <summary>
+    /// Executes the tolerant converter's write half, which nothing in the tree reaches today (the
+    /// engine's stamp edits the parsed JSON object instead). Without this arm it is unexecuted code,
+    /// and the failure its hand-written form avoids — re-entering the converter from inside itself —
+    /// is a StackOverflowException that cannot be caught or asserted on after the fact. Round-tripping
+    /// is what forces it to run at all.
+    /// </summary>
+    [Fact]
+    public void A_verdict_round_trips_through_the_serializer_with_its_instruments_intact()
+    {
+        var original = new ReviewVerdict(
+            "main",
+            [new ReviewFinding(ReviewFindingSeverity.Low, "x", ReviewFindingStatus.Confirmed)],
+            Instruments: [new VerifyInstrument("dotnet build", 0, 34300), new VerifyInstrument("dotnet test", null, 91002)]);
+
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(original));
+
+        Assert.True(ReviewVerdictSchema.TryParse(bytes, out var verdict, out _));
+        Assert.Equal(original.Instruments, verdict!.Instruments);
+    }
+
+    /// <summary>
     /// Pins the deserializer-leniency fact decision 0043's Rests-on table cites (the why lives on
     /// the null check inside <see cref="ReviewVerdictSchema.TryParse"/>): presence is enforced by
     /// the hand-written floor, not by STJ. If this arm ever starts failing on a JsonException

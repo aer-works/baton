@@ -94,6 +94,7 @@ public static class VerifyStep
         ArgumentException.ThrowIfNullOrEmpty(verdictFilePath);
         ArgumentNullException.ThrowIfNull(instruments);
 
+        string? temporaryPath = null;
         try
         {
             if (!File.Exists(verdictFilePath))
@@ -117,13 +118,39 @@ public static class VerifyStep
             }
 
             verdict["instruments"] = JsonSerializer.SerializeToNode(instruments);
+
+            // Write-then-rename, the same atomic-write discipline TerminalSentinelWriter and
+            // CancelRequestFile already use, and for the same reason: this rewrites a file that is
+            // ALREADY on disk and already advertised as an execution output, so a concurrent reader
+            // (`baton status`, fleet_status, `--notify`'s payload builder) can hit it at any moment.
+            // A truncate-in-place would let one of them read half a verdict and report the whole
+            // document as unparseable, which is a strictly worse outcome than the annotation this is
+            // adding is worth.
+            temporaryPath = verdictFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             await File.WriteAllTextAsync(
-                verdictFilePath, verdict.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
+                temporaryPath, verdict.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
                 .ConfigureAwait(false);
+            File.Move(temporaryPath, verdictFilePath, overwrite: true);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
+            // A half-written sibling left behind by a failed rename would sit in the execution's own
+            // output directory forever, so it is swept here. Best-effort by necessity: this is already
+            // the failure path, and a failure to clean up must not become the exception this method
+            // exists not to throw.
+            if (temporaryPath is not null)
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+                {
+                    // Nothing further to do — the verdict itself is untouched, which is what matters.
+                }
+            }
+
             return false;
         }
     }

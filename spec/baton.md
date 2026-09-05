@@ -3935,13 +3935,20 @@ commands before the worker's first turn, sequentially, and the contract is:
 - **`<room>/artifacts/verify-results.md`** carries one section per command — the exact command line,
   the exit code, the wall clock and a 200-line output tail — and the review prompt gains one paragraph
   pointing at it and requiring the verdict's runtime claims to cite it. The prompt says nothing at all
-  when no step ran; it must not name a file that does not exist.
+  when no step ran; it must not name a file that does not exist. The worker can actually read it
+  because the room's artifacts root is already granted to every worker — the same `BATON_ARTIFACTS_ROOT`
+  grant §3 describes for inputs and outputs, which is why the results file goes there rather than into
+  the execution's own directory: that one is not addressable before the execution exists.
 - **`verdict.json` gains `instruments: [{command, exitCode, wallClockMs}]`,** copied on by the engine
   after the worker exits — never written by the model, and OVERWRITING anything the model wrote under
   that key. That overwrite is the whole mechanism: without it the field is a claim rather than a
   record, and a reviewer could assert an instrument it never had. The bump is additive and optional,
   and the stamp edits the parsed JSON object in place rather than round-tripping the `ReviewVerdict`
   record, which would silently delete the unknown extra fields that schema deliberately tolerates.
+  Declaring the field must not narrow that tolerance: a model-written `instruments` of any other shape
+  reads as absent rather than failing the parse, since a declared key that throws where an unknown one
+  was ignored would turn a review dispatched with no `--verify-cmd` at all into a contract failure and
+  a retried frontier run. Nothing is lost — the engine overwrites the key regardless.
 - **The role's shell grant is unchanged**, and `WorkerRoles.json` is untouched. `--verify-cmd` is
   accepted only for a verdict-producing role (today, `review` alone) and refused for a workflow
   template. It is **not** `--verify`, which overrides the *post-exit* verify command a mutating role

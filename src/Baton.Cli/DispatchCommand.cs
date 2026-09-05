@@ -138,6 +138,14 @@ public static class DispatchCommand
                 + $"{DispatchOptionsParser.WarnTimeoutMinutes} minutes (2h) — a typo here can strand a lane for a long time.");
         }
 
+        // #1882: the --verify-cmd lines are re-parsed HERE rather than at the step itself, for the same
+        // placement reason the --continue check above states: a refusal ahead of Directory.CreateDirectory
+        // lands as a clean pre-ledger ValidationRefused with no half-provisioned room behind it.
+        // DispatchOptionsParser.ParseVerifyCommand already validated every line, so this is unreachable
+        // through the CLI -- it is reachable through a hand-built DispatchOptions, which is exactly what
+        // an in-process caller (and every test) constructs.
+        var verifyCommands = ParseVerifyCommands(options.VerifyCommands);
+
         Directory.CreateDirectory(options.RoomDirectoryPath);
 
         // #1381: cross-room provenance -- the same room-marker lineage fields #1441's redispatch
@@ -303,9 +311,9 @@ public static class DispatchCommand
         // that names it. Nothing here can fail the dispatch: a non-zero exit is what the reviewer reads
         // first, and even an unspawnable command is recorded as a result rather than thrown.
         Baton.Mutation.VerifyStep.Outcome? verifyStep = null;
-        if (options.VerifyCommands is { Count: > 0 } verifyCommandLines)
+        if (verifyCommands.Count > 0)
         {
-            verifyStep = await RunVerifyStepAsync(options, verifyCommandLines, workspace, cancellationToken)
+            verifyStep = await RunVerifyStepAsync(options, verifyCommands, workspace, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -363,28 +371,38 @@ public static class DispatchCommand
     /// <c>workspaceFact</c> already discloses above — a worktree-provisioned worker sees HEAD, while
     /// these commands see the workspace's actual working tree.
     /// </param>
-    private static async Task<Baton.Mutation.VerifyStep.Outcome?> RunVerifyStepAsync(
-        DispatchOptions options,
-        IReadOnlyList<string> commandLines,
-        string workspace,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Re-derives the argv for each <c>--verify-cmd</c> line. Re-parsed rather than carried so the
+    /// string an operator reads back off the room and the argv that actually ran cannot diverge; the
+    /// call site's own comment states why it happens before the room directory exists.
+    /// </summary>
+    private static List<Baton.Mutation.VerifyStepCommand> ParseVerifyCommands(IReadOnlyList<string>? commandLines)
     {
+        if (commandLines is not { Count: > 0 })
+        {
+            return [];
+        }
+
         var commands = new List<Baton.Mutation.VerifyStepCommand>(commandLines.Count);
         foreach (var line in commandLines)
         {
-            // Already validated at parse time (DispatchOptionsParser.ParseVerifyCommand); re-parsed
-            // here because the argv is derived where it is spawned rather than carried, so the string
-            // an operator reads back off the room and the argv that ran cannot diverge.
-            if (Baton.Mutation.VerifyStepCommandParser.TryParse(line, out var command, out var error))
-            {
-                commands.Add(command!);
-            }
-            else
+            if (!Baton.Mutation.VerifyStepCommandParser.TryParse(line, out var command, out var error))
             {
                 throw new CliArgumentException(error!);
             }
+
+            commands.Add(command!);
         }
 
+        return commands;
+    }
+
+    private static async Task<Baton.Mutation.VerifyStep.Outcome?> RunVerifyStepAsync(
+        DispatchOptions options,
+        IReadOnlyList<Baton.Mutation.VerifyStepCommand> commands,
+        string workspace,
+        CancellationToken cancellationToken)
+    {
         var artifactsRoot = Path.Combine(options.RoomDirectoryPath, Baton.Artifacts.ArtifactManager.ArtifactsDirectoryName);
         var timeout = options.VerifyTimeout ?? Baton.Mutation.VerifyStepRunner.DefaultTimeout;
         Console.Out.WriteLine(
