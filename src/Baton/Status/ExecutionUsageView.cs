@@ -111,11 +111,11 @@ public sealed record ExecutionUsageView(
     public const string StreamTruncatedByRolloverReason = "stream-truncated-by-rollover";
 
     /// <summary>
-    /// #1876: the capture is provably not the whole stream for the other reason — the host obstructed
-    /// the writer past its retry buffer. #1885 gave it a SECOND producer, the journalled
-    /// <see cref="FlowEvent.StreamLogLossDeclared"/>, which is why the literal now lives here rather
-    /// than in the two marker-file sites and <c>CoreDispatcher</c>: the two channels agreeing is a
-    /// string comparison, and it is only decidable if both sides read the same const.
+    /// #1876's reason — see <see cref="BilledReconciliationUnavailable"/> above for what it means.
+    /// #1885 gave it a SECOND producer, the journalled <see cref="FlowEvent.StreamLogLossDeclared"/>,
+    /// which is why the literal now lives here rather than being spelled out at each of the three
+    /// production sites: `record-once`, so a rewording cannot silently make one channel's announcement
+    /// stop matching the other's.
     /// </summary>
     public const string StreamTruncatedByWriteFailureReason = "stream-truncated-by-write-failure";
 

@@ -502,7 +502,10 @@ public sealed class CoreDispatcher(ICoreEventLogWriter coreEventLogWriter, IEven
     /// <see cref="FlowEvent.StreamLogLossDeclared.Reason"/>. A logger only ever declares a loss for the
     /// write-failure cause; the rollover cause is announced by its own marker and never reaches here.
     /// An alias, not a second spelling: #1883 made <c>ExecutionUsageView</c> the one place the reason
-    /// vocabulary is written, and a fresh literal here would make that agreement check vacuous.
+    /// vocabulary is written. Sharing the const is what makes the two channels agree BY CONSTRUCTION —
+    /// which is deliberate, and is why <c>WarnOnChannelDisagreement</c>'s own doc says a disagreement
+    /// is unreachable from one execution's writer today. It exists for a hand-edited ledger or a future
+    /// third producer, not to catch a typo this const has now made impossible.
     /// </summary>
     private const string StreamLogLossReason = Status.ExecutionUsageView.StreamTruncatedByWriteFailureReason;
 
