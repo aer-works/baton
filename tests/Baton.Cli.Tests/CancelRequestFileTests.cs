@@ -176,6 +176,42 @@ public class CancelRequestFileTests
         try
         {
             var pendingPath = CancelRequestFile.GetPath(roomDirectory);
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            var invocationStartUtc = DateTimeOffset.UtcNow;
+            var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
+            File.WriteAllText(
+                pendingPath,
+                $$"""{"Target":"stale-exec","WriterPid":999999,"WriterProcessStartTimeUtc":"{{writtenAtUtc:O}}","WrittenAtUtc":"{{writtenAtUtc:O}}"}""");
+
+            await CancelRequestFile.DeleteStalePendingRequestAsync(
+                roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken, roomLogPath);
+
+            Assert.False(File.Exists(pendingPath), "a genuinely stale request must still be swept");
+            Assert.True(File.Exists($"{pendingPath}.swept"));
+
+            // #1530: the swept request is neither delivered nor rejected -- room.jsonl is its only
+            // durable record beyond the renamed .swept sibling.
+            var roomReader = new Baton.Store.RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var expired = Assert.Single(roomEvents.OfType<Baton.Domain.RoomEvent.ArrestRequestExpired>());
+            Assert.Equal("stale-exec", expired.Target);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Polarity control: no roomLogPath given (every caller predating this feature) must not throw
+    // and must not write room.jsonl at all.
+    [Fact]
+    public async Task DeleteStalePendingRequest_with_no_room_log_path_given_does_not_write_room_jsonl()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-file-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var pendingPath = CancelRequestFile.GetPath(roomDirectory);
             var invocationStartUtc = DateTimeOffset.UtcNow;
             var writtenAtUtc = invocationStartUtc.AddMinutes(-10);
             File.WriteAllText(
@@ -185,8 +221,8 @@ public class CancelRequestFileTests
             await CancelRequestFile.DeleteStalePendingRequestAsync(
                 roomDirectory, invocationStartUtc, TestContext.Current.CancellationToken);
 
-            Assert.False(File.Exists(pendingPath), "a genuinely stale request must still be swept");
-            Assert.True(File.Exists($"{pendingPath}.swept"));
+            Assert.False(File.Exists(pendingPath));
+            Assert.False(File.Exists(Path.Combine(roomDirectory, "room.jsonl")));
         }
         finally
         {

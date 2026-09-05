@@ -59,7 +59,8 @@ public static class CancelRequestPoller
         WorkflowDefinitionSnapshot snapshot,
         InFlightExecutionRegistry inFlightExecutions,
         TimeSpan pollInterval,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? roomLogPath = null)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -74,7 +75,7 @@ public static class CancelRequestPoller
 
             try
             {
-                await TickAsync(roomDirectoryPath, logPath, snapshot, inFlightExecutions, cancellationToken)
+                await TickAsync(roomDirectoryPath, logPath, snapshot, inFlightExecutions, cancellationToken, roomLogPath)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -120,7 +121,8 @@ public static class CancelRequestPoller
         string logPath,
         WorkflowDefinitionSnapshot snapshot,
         InFlightExecutionRegistry inFlightExecutions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? roomLogPath = null)
     {
         var requestPath = CancelRequestFile.GetPath(roomDirectoryPath);
         if (!File.Exists(requestPath))
@@ -132,7 +134,13 @@ public static class CancelRequestPoller
         var content = await CancelRequestFile.TryReadAsync(requestPath, cancellationToken).ConfigureAwait(false);
         if (content is null)
         {
-            CancelRequestFile.Reject(requestPath, target: null, "malformed content (not valid JSON, or a blank/missing Target)");
+            const string reason = "malformed content (not valid JSON, or a blank/missing Target)";
+            CancelRequestFile.Reject(requestPath, target: null, reason);
+            // #1530: no Target survives a malformed parse, so there is nothing to key a
+            // FlowEvent.CancellationRejected on -- this is the ONE durable record of this rejection
+            // beyond the ephemeral .rejected file body and a stderr line.
+            await TryRecordUnresolvableAsync(roomLogPath, string.Empty, reason, lastWriteUtc, cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -146,13 +154,14 @@ public static class CancelRequestPoller
 
             if (resolved.Single is not { } single)
             {
-                CancelRequestFile.Reject(
-                    requestPath,
-                    content.Target,
-                    resolved.RunningExecutionIds.Count == 0
-                        ? "'latest' requested, but no execution is currently Running or quota-parked"
-                        : $"'latest' requested, but {resolved.RunningExecutionIds.Count} executions are currently " +
-                            $"Running or quota-parked ({string.Join(", ", resolved.RunningExecutionIds.Select(id => id.Value))}) — ambiguous");
+                var reason = resolved.RunningExecutionIds.Count == 0
+                    ? "'latest' requested, but no execution is currently Running or quota-parked"
+                    : $"'latest' requested, but {resolved.RunningExecutionIds.Count} executions are currently " +
+                        $"Running or quota-parked ({string.Join(", ", resolved.RunningExecutionIds.Select(id => id.Value))}) — ambiguous";
+                CancelRequestFile.Reject(requestPath, content.Target, reason);
+                await TryRecordUnresolvableAsync(
+                        roomLogPath, content.Target, reason, content.WrittenAtUtc?.UtcDateTime ?? lastWriteUtc, cancellationToken)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -273,17 +282,60 @@ public static class CancelRequestPoller
         if (retries >= 5)
         {
             RetryCounters.TryRemove(retryKey, out _);
-            CancelRequestFile.Reject(
-                requestPath,
-                content.Target,
+            const string reason =
                 "arrest requested (#1556) but not yet confirmed settled after 5 polls — the pump may still deliver it on "
-                    + "its own; if the target is a live process that never registers, use Ctrl+C on the pump or wait for it to settle");
+                    + "its own; if the target is a live process that never registers, use Ctrl+C on the pump or wait for it to settle";
+            CancelRequestFile.Reject(requestPath, content.Target, reason);
 
-            // #1549: a concrete targetExecutionId is resolved on this branch (unlike the malformed-content
-            // or ambiguous-'latest' rejections above, which reject before any execution-scoped id exists
-            // to key a journal fact on) — so this is the one rejection shape that can also become a
-            // content-free flow.jsonl fact, not just a file-and-stderr one.
-            await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, cancellationToken).ConfigureAwait(false);
+            // #1549/#1530: a concrete targetExecutionId is resolved on this branch (unlike the
+            // malformed-content or ambiguous-'latest' rejections above, which reject before any
+            // execution-scoped id exists to key a journal fact on) — so this is the one rejection
+            // shape that can also become a durable flow.jsonl fact carrying the SAME reason
+            // CancelRequestFile.Reject wrote to the ephemeral .rejected file, not just a
+            // file-and-stderr one.
+            await inFlightExecutions.RecordCancellationRejectedAsync(targetExecutionId, reason, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// #1530: best-effort append of <see cref="RoomEvent.ArrestRequestUnresolvable"/> to
+    /// <c>room.jsonl</c> — the durable home for the two rejection shapes above that never resolve an
+    /// <see cref="ExecutionId"/> to key a <see cref="FlowEvent.CancellationRejected"/> on.
+    /// <paramref name="roomLogPath"/> is <c>null</c> for every caller that predates this feature or a
+    /// test exercising <see cref="TickAsync"/> directly; a construction or append fault (room.jsonl
+    /// contended by a concurrent room-scoped writer, per <c>BatonPaths.RoomLogFileName</c>'s own
+    /// "the two logs take independent locks" remark) is swallowed the same way every other fault in
+    /// this poller is — this is a supplementary record, never the rejection itself, which the
+    /// <c>.rejected</c> file and stderr line above already recorded unconditionally.
+    /// </summary>
+    private static async Task TryRecordUnresolvableAsync(
+        string? roomLogPath, string target, string reason, DateTime requestedAtUtc, CancellationToken cancellationToken)
+    {
+        if (roomLogPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var roomWriter = new RoomEventLogWriter(roomLogPath);
+            var now = DateTimeOffset.UtcNow;
+            await roomWriter.AppendAsync(
+                    new RoomEvent.ArrestRequestUnresolvable(
+                        target, reason, new DateTimeOffset(DateTime.SpecifyKind(requestedAtUtc, DateTimeKind.Utc)), now),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                Console.Error.WriteLine($"Could not record unresolvable cancel.request to '{roomLogPath}': {ex.Message}");
+            }
+            catch
+            {
+                // F6: swallow broken stderr pipe
+            }
         }
     }
 }

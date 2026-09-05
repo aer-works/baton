@@ -1258,13 +1258,33 @@ public static class MutationInterface
                 // cross-process re-attach capability, not a new mechanism this phase introduces.
                 if (crashRecovery.ToFinalizeAsAbandoned.Count > 0)
                 {
+                    // #1530: name the confirmed-dead engine in the reason, using the SAME
+                    // EnginePid/EngineStartTime pair and EngineLivenessProbe every other liveness
+                    // read in this codebase consults (StatusCommand.FormatStepStatus,
+                    // RecordResumeAsync's STALLED check above) -- never a second, ad-hoc PID check.
+                    // Reaching this branch at all already proves the prior pump released flow.lock
+                    // without recording an exit (a fresh pump only gets here because the guard was
+                    // free), so the probe's verdict only enriches the sentence; an Unknown reading
+                    // (e.g. a since-recycled pid) must not gate the finalization, which stays
+                    // unconditional exactly as it was before this change — this measurement is the
+                    // one that surfaced a "quiet live room" a person had to dig a PID out of by hand
+                    // to explain (2026-09-01 janitor sweep), so the reason should say it outright.
+                    var abandonedEvents = await eventLogReader.ReadAllAsync(ioCancellationToken).ConfigureAwait(false);
                     foreach (var executionId in crashRecovery.ToFinalizeAsAbandoned)
                     {
+                        var accepted = abandonedEvents
+                            .OfType<FlowEvent.ExecutionRequestAccepted>()
+                            .LastOrDefault(e => e.Request.ExecutionId == executionId);
+                        var pidClause = accepted?.EnginePid is { } enginePid
+                            ? $" (engine pid {enginePid} is {EngineLivenessProbe.Probe(accepted.EnginePid, accepted.EngineStartTime).Status.ToString().ToLowerInvariant()})"
+                            : string.Empty;
+
                         await eventLogWriter.AppendAsync(
                                 new FlowEvent.ExecutionFailed(
                                     executionId,
                                     FailureClassification.Retryable,
-                                    "Abandoned during crash recovery: no ExecutionExited was recorded for this execution before Flow restarted."),
+                                    "Abandoned during crash recovery: no ExecutionExited was recorded for this execution before Flow restarted"
+                                        + pidClause + "."),
                                 ioCancellationToken)
                             .ConfigureAwait(false);
                     }

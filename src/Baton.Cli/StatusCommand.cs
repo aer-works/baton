@@ -117,17 +117,27 @@ public static class StatusCommand
             var checkpoint = ProjectionCheckpointStore.Load(options.RoomDirectoryPath);
             var state = StateProjector.Project(events, snapshot, checkpoint);
 
+            // #1530: the room-side arrest ledger — room.jsonl for the two rejection shapes that
+            // never resolve an ExecutionId, flow.jsonl (via `entries`, already read above; no second
+            // ledger read) for every shape that does. See ArrestLedgerProjector's own remarks for why
+            // both logs are read rather than a third, parallel ledger store.
+            var roomLogPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.RoomLogFileName);
+            var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+            var arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+
             if (options.Json)
             {
                 // #1356 point 1: the SAME state just projected above, not a second read of the
                 // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
                 // #1360: entries is the same list already read above, not a second ledger read.
-                var view = WorkflowStatusProjector.Project(state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default);
+                var view = WorkflowStatusProjector.Project(
+                    state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default, arrestLedger);
                 output.WriteLine(JsonSerializer.Serialize(view));
                 return;
             }
 
             PrintState(output, state, logPath, events, entries, options.RoomDirectoryPath);
+            PrintArrestLedger(output, arrestLedger);
 
             var streamOffsets = new Dictionary<string, long>(StringComparer.Ordinal);
             var lineAssemblers = new Dictionary<string, StreamLineAssembler>(StringComparer.Ordinal);
@@ -565,6 +575,32 @@ public static class StatusCommand
         var usageByExecutionId = ExecutionUsageProjector.BuildByExecutionId(
             entries, artifactsRootPath, WorkerAdapterRegistry.Default, roomDirectoryPath);
         output.WriteLine(FormatUsageSummary(usageByExecutionId));
+    }
+
+    /// <summary>
+    /// #1530: the room's arrest history — silent (no header, no blank line) for a room that never
+    /// saw a <c>cancel.request</c>, the same "absent means nothing to say" posture <c>Arrests</c>'
+    /// own <c>--json</c> field takes.
+    /// </summary>
+    private static void PrintArrestLedger(TextWriter output, IReadOnlyList<ArrestLedgerEntry> arrestLedger)
+    {
+        if (arrestLedger.Count == 0)
+        {
+            return;
+        }
+
+        output.WriteLine("Arrests:");
+        foreach (var entry in arrestLedger)
+        {
+            var outcomeText = entry.Outcome switch
+            {
+                ArrestOutcome.Delivered => "delivered",
+                ArrestOutcome.Rejected => $"rejected ({entry.Reason})",
+                ArrestOutcome.Expired => "expired",
+                _ => "requested (pending)",
+            };
+            output.WriteLine($"  {entry.Target} requested by {entry.RequestedBy} @ {entry.RequestedAtUtc:O} — {outcomeText}");
+        }
     }
 
     /// <summary>

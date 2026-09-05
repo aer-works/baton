@@ -303,12 +303,14 @@ public class CancelRequestPollerTests
             Assert.Equal("exec-non-process", rejected.Target);
             Assert.Contains("arrest requested (#1556) but not yet confirmed settled after 5 polls", rejected.Reason);
 
-            // #1549: this rejection resolved a concrete ExecutionId, so it also becomes a content-free
-            // journal fact alongside the file-and-stderr rejection above.
+            // #1549/#1530: this rejection resolved a concrete ExecutionId, so it also becomes a
+            // durable journal fact alongside the file-and-stderr rejection above -- and (#1530)
+            // carries the SAME reason the .rejected file body does, rather than being content-free.
             var reader = new FlowEventLogReader(logPath);
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
             Assert.Equal(execId, cancellationRejected.ExecutionId);
+            Assert.Equal(rejected.Reason, cancellationRejected.Reason);
         }
         finally
         {
@@ -576,6 +578,110 @@ public class CancelRequestPollerTests
             Assert.Equal(CancelRequestFile.LatestTarget, rejected.Target);
             Assert.Contains("2 executions are currently Running or quota-parked", rejected.Reason);
             Assert.Contains("ambiguous", rejected.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // #1530: the two rejection shapes above (malformed content, ambiguous 'latest') never resolve an
+    // ExecutionId, so they have nothing to key a FlowEvent.CancellationRejected on -- room.jsonl,
+    // reachable without ever touching flow.lock (the poller's whole premise, BatonPaths.RoomLogFileName's
+    // own remarks), is their only durable home beyond the ephemeral .rejected file body.
+    [Fact]
+    public async Task Ambiguous_latest_records_an_unresolvable_arrest_to_room_jsonl_when_a_room_log_path_is_given()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var execA = new ExecutionId("exec-a");
+                var execB = new ExecutionId("exec-b");
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execA, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execB, new StepId("b"))), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, CancelRequestFile.LatestTarget, TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, TwoStepSnapshot, registry, TestContext.Current.CancellationToken, roomLogPath);
+
+            var roomReader = new RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var unresolvable = Assert.Single(roomEvents.OfType<RoomEvent.ArrestRequestUnresolvable>());
+            Assert.Equal(CancelRequestFile.LatestTarget, unresolvable.Target);
+            Assert.Contains("ambiguous", unresolvable.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task Malformed_content_records_an_unresolvable_arrest_to_room_jsonl_when_a_room_log_path_is_given()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            var roomLogPath = Path.Combine(roomDirectory, "room.jsonl");
+            await File.WriteAllTextAsync(logPath, string.Empty, TestContext.Current.CancellationToken);
+
+            var requestPath = CancelRequestFile.GetPath(roomDirectory);
+            await File.WriteAllTextAsync(requestPath, "not valid json", TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, Snapshot, registry, TestContext.Current.CancellationToken, roomLogPath);
+
+            var roomReader = new RoomEventLogReader(roomLogPath);
+            var roomEvents = await roomReader.ReadAllRoomEventsAsync(TestContext.Current.CancellationToken);
+            var unresolvable = Assert.Single(roomEvents.OfType<RoomEvent.ArrestRequestUnresolvable>());
+            Assert.Equal(string.Empty, unresolvable.Target);
+            Assert.Contains("malformed content", unresolvable.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    // Polarity control for both arms above: no roomLogPath given (every caller predating this
+    // feature) must not throw and must not write room.jsonl at all.
+    [Fact]
+    public async Task Ambiguous_latest_with_no_room_log_path_given_does_not_write_room_jsonl()
+    {
+        var roomDirectory = Path.Combine(Path.GetTempPath(), $"cancel-request-poller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(roomDirectory);
+        try
+        {
+            var logPath = Path.Combine(roomDirectory, "flow.jsonl");
+            await using (var writer = new FlowEventLogWriter(logPath))
+            {
+                var execA = new ExecutionId("exec-a");
+                var execB = new ExecutionId("exec-b");
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execA, new StepId("a"))), TestContext.Current.CancellationToken);
+                await writer.AppendAsync(new FlowEvent.ExecutionRequestAccepted(MakeRequest(execB, new StepId("b"))), TestContext.Current.CancellationToken);
+            }
+
+            await CancelRequestFile.WriteAsync(roomDirectory, CancelRequestFile.LatestTarget, TestContext.Current.CancellationToken);
+
+            var registry = new InFlightExecutionRegistry();
+
+            await CancelRequestPoller.TickAsync(
+                roomDirectory, logPath, TwoStepSnapshot, registry, TestContext.Current.CancellationToken);
+
+            Assert.False(File.Exists(Path.Combine(roomDirectory, "room.jsonl")));
         }
         finally
         {

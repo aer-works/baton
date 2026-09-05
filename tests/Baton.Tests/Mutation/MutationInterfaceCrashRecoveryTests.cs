@@ -267,6 +267,65 @@ public class MutationInterfaceCrashRecoveryTests
     }
 
     [Fact]
+    public async Task StartWorkflowAsync_names_the_recorded_engine_pid_and_its_liveness_when_finalizing_an_orphan()
+    {
+        // #1530: the 2026-09-01 janitor-sweep measurement's complaint was that an abandoned
+        // room's terminal ExecutionFailed said nothing an operator could act on without digging a
+        // PID out by hand. This pins that the SAME EngineLivenessProbe read StatusCommand/
+        // RecordResumeAsync already consult is what names it here, not a new ad-hoc check.
+        var snapshot = MakeSnapshot(Step(A, dependsOn: [], maxAttempts: 2));
+
+        var (roomDirectory, artifactsRoot, logPath) = MakeTaskPaths();
+        try
+        {
+            await using var writer = new FlowEventLogWriter(logPath);
+            var reader = new FlowEventLogReader(logPath);
+            var bindings = MakeBindings();
+            var workflowId = new WorkflowId("wf");
+
+            // This test process's OWN pid/start time -- deterministically ALIVE for
+            // EngineLivenessProbe, unlike a fabricated integer whose liveness would be
+            // host-dependent (#843's own reasoning for why a genuinely dead identity is spawned
+            // and killed rather than guessed at, in the sibling ProcessIdentityFixture).
+            var enginePid = Environment.ProcessId;
+            var engineStartTime = new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime).ToUniversalTime();
+
+            var executionId = new ExecutionId(Guid.NewGuid().ToString("n"));
+            var outputDirectory = ArtifactManager.AllocateOutputDirectory(artifactsRoot, executionId);
+            var request = new ExecutionRequest(
+                executionId, workflowId, A, "stub-worker", Inputs: [], Outputs: [], Timeout,
+                ArtifactManager.BuildEnvironment([], outputDirectory, artifactsRoot),
+                UpstreamExecutionIds: new Dictionary<StepId, ExecutionId>());
+
+            await writer.AppendAsync(
+                new FlowEvent.ExecutionRequestAccepted(request, EnginePid: enginePid, EngineStartTime: engineStartTime),
+                TestContext.Current.CancellationToken);
+
+            // The third crash state: Core recorded the start, but this pump's predecessor died
+            // before an exit was ever recorded — nothing to classify against.
+            await writer.AppendAsync(new CoreEvent.ExecutionStarted(executionId, Pid: 4242), TestContext.Current.CancellationToken);
+
+            var stub = new StubCoreDispatcher();
+            var retryResult = stub.EnqueueResult(A);
+
+            var runTask = MutationInterface.StartWorkflowAsync(
+                workflowId, roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, stub, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(A, await ReadNextDispatchAsync(stub));
+            retryResult.SetResult(Succeeded);
+            await runTask;
+
+            var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
+            var abandoned = Assert.Single(events.OfType<FlowEvent.ExecutionFailed>());
+            Assert.Equal(executionId, abandoned.ExecutionId);
+            Assert.Contains($"engine pid {enginePid} is alive", abandoned.Reason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(roomDirectory);
+        }
+    }
+
+    [Fact]
     public async Task StartWorkflowAsync_finalizes_an_orphan_as_terminally_failed_once_its_retry_budget_is_exhausted()
     {
         var snapshot = MakeSnapshot(Step(A, dependsOn: [], maxAttempts: 1));

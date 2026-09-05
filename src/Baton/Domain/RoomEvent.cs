@@ -24,6 +24,8 @@ namespace Baton.Domain;
 [JsonDerivedType(typeof(WorkerJoined), "workerJoined")]
 [JsonDerivedType(typeof(WorkerRenamed), "workerRenamed")]
 [JsonDerivedType(typeof(OrchestratorAssigned), "orchestratorAssigned")]
+[JsonDerivedType(typeof(ArrestRequestUnresolvable), "arrestRequestUnresolvable")]
+[JsonDerivedType(typeof(ArrestRequestExpired), "arrestRequestExpired")]
 public abstract record RoomEvent
 {
     private RoomEvent()
@@ -201,5 +203,34 @@ public abstract record RoomEvent
         WorkerId WorkerId,
         DateTimeOffset Timestamp,
         string? AssignedBy = null) : RoomEvent;
+
+    /// <summary>
+    /// #1530: a <c>cancel.request</c> the poller rejected before ever resolving a target
+    /// <see cref="ExecutionId"/> — malformed content, or an ambiguous/absent <c>latest</c> candidate
+    /// (<c>Baton.Cli.CancelRequestPoller.TickAsync</c>). Neither shape has an execution to key a
+    /// <see cref="FlowEvent.CancellationRejected"/> on, so without this, the room's own
+    /// <c>room.jsonl</c> — <c>BatonPaths.RoomLogFileName</c>'s own remarks: a log the poller can
+    /// append to without ever touching <c>flow.lock</c>, which is its whole premise — was the only
+    /// durable home available; before this event, the only record was the ephemeral
+    /// <c>.rejected</c> sibling file, overwritten by the next <c>cancel.request</c> write.
+    /// </summary>
+    public sealed record ArrestRequestUnresolvable(
+        string Target,
+        string Reason,
+        DateTimeOffset RequestedAtUtc,
+        DateTimeOffset RecordedAtUtc) : RoomEvent;
+
+    /// <summary>
+    /// #1530: a pending <c>cancel.request</c> swept at pump start
+    /// (<c>CancelRequestFile.DeleteStalePendingRequestAsync</c>'s <c>.swept</c> outcome) because its
+    /// recorded writer process is confirmed dead — a request neither delivered nor rejected, just
+    /// aged out with the pump that would have serviced it gone. Same "no execution to key a
+    /// <c>flow.jsonl</c> fact on" reasoning as <see cref="ArrestRequestUnresolvable"/> applies here
+    /// too: a swept request may never have resolved a target at all.
+    /// </summary>
+    public sealed record ArrestRequestExpired(
+        string Target,
+        DateTimeOffset RequestedAtUtc,
+        DateTimeOffset RecordedAtUtc) : RoomEvent;
 }
 

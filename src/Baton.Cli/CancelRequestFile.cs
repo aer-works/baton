@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Baton.Domain;
 using Baton.Outcomes;
+using Baton.Store;
 
 namespace Baton.Cli;
 
@@ -136,7 +138,7 @@ public static class CancelRequestFile
     /// always stamps both fields and so never reaches that branch.
     /// </remarks>
     public static async Task DeleteStalePendingRequestAsync(
-        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default)
+        string roomDirectoryPath, DateTimeOffset invocationStartUtc, CancellationToken cancellationToken = default, string? roomLogPath = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomDirectoryPath);
         var path = GetPath(roomDirectoryPath);
@@ -149,6 +151,12 @@ public static class CancelRequestFile
         if (content is not { WrittenAtUtc: { } writtenAtUtc, WriterPid: { } writerPid })
         {
             RenameBestEffort(path, $"{path}.swept");
+            // #1530: a request with no WrittenAtUtc recorded has no reliable "requested at" instant —
+            // the file's own mtime is the least-wrong stand-in, same fallback TickAsync's own record
+            // uses for a malformed request it can't otherwise date.
+            await TryRecordExpiredAsync(
+                    roomLogPath, content?.Target ?? string.Empty, new FileInfo(path).LastWriteTimeUtc, cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -168,6 +176,48 @@ public static class CancelRequestFile
         }
 
         RenameBestEffort(path, $"{path}.swept");
+        await TryRecordExpiredAsync(roomLogPath, content.Target, writtenAtUtc.UtcDateTime, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// #1530: best-effort append of <see cref="RoomEvent.ArrestRequestExpired"/> to <c>room.jsonl</c> —
+    /// the arrest ledger's record of a request that was neither delivered nor rejected, just swept
+    /// because the pump that would have serviced it is gone. <paramref name="roomLogPath"/> is
+    /// <c>null</c> for every caller that predates this feature or a test exercising this method
+    /// directly. Deliberately never allowed to fail this call: <see cref="RoomEventLogWriter"/>'s
+    /// constructor can throw <see cref="IOException"/> after its own contention budget, and this runs
+    /// at pump start, before the room's own poller exists — a run must never refuse to start over a
+    /// supplementary ledger fact.
+    /// </summary>
+    private static async Task TryRecordExpiredAsync(
+        string? roomLogPath, string target, DateTime requestedAtUtc, CancellationToken cancellationToken)
+    {
+        if (roomLogPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var roomWriter = new RoomEventLogWriter(roomLogPath);
+            var now = DateTimeOffset.UtcNow;
+            await roomWriter.AppendAsync(
+                    new RoomEvent.ArrestRequestExpired(
+                        target, new DateTimeOffset(DateTime.SpecifyKind(requestedAtUtc, DateTimeKind.Utc)), now),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                Console.Error.WriteLine($"Could not record expired cancel.request to '{roomLogPath}': {ex.Message}");
+            }
+            catch
+            {
+                // F6: swallow broken stderr pipe
+            }
+        }
     }
 
     /// <summary>Fail-closed outcome for unresolvable or undeliverable requests: logs why and records a rejected record with reason in body.</summary>

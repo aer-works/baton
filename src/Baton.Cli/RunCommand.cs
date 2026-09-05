@@ -195,7 +195,8 @@ public static class RunCommand
         // pump before this attempt's poller starts — see CancelRequestFile.DeleteStalePendingRequestAsync,
         // which (#1649) discriminates that from a request a concurrent baton cancel wrote into the
         // window between WorktreeWorkspaces.Provision above and this call.
-        await CancelRequestFile.DeleteStalePendingRequestAsync(options.RoomDirectoryPath, invocationStartUtc, cancellationToken)
+        var roomLogPath = Path.Combine(options.RoomDirectoryPath, BatonPaths.RoomLogFileName);
+        await CancelRequestFile.DeleteStalePendingRequestAsync(options.RoomDirectoryPath, invocationStartUtc, cancellationToken, roomLogPath)
             .ConfigureAwait(false);
 
         // #1495: retained regardless of whether the caller supplied one, so THIS call can poll
@@ -222,7 +223,7 @@ public static class RunCommand
             using var pollCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var pollTask = CancelRequestPoller.RunAsync(
                 options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions,
-                CancelRequestPoller.DefaultPollInterval, pollCancellation.Token);
+                CancelRequestPoller.DefaultPollInterval, pollCancellation.Token, roomLogPath);
 
             // #1549: the content-free progress heartbeat — a sibling fire-and-forget poller sharing
             // this call's own writer and cancellation lifetime, never the pollCancellation token above
@@ -292,7 +293,7 @@ public static class RunCommand
                 try
                 {
                     await CancelRequestPoller.TickAsync(
-                            options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions, CancellationToken.None)
+                            options.RoomDirectoryPath, logPath, snapshot, liveInFlightExecutions, CancellationToken.None, roomLogPath)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
