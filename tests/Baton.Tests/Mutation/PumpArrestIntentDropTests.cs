@@ -10,8 +10,9 @@ namespace Baton.Tests.Mutation;
 /// <summary>
 /// #1556 PR 2: <c>MutationInterface.SettleArrestIntentsAsync</c>'s fail-closed drop path — an arrest
 /// intent the registry's drain hands the pump for an execution
-/// <see cref="Baton.Projection.ArrestableExecutions.Find"/> no longer admits is dropped, named in one
-/// diagnostic line rather than silently discarded. This targets the "already settled" reason
+/// <see cref="Baton.Projection.ArrestableExecutions.Find"/> no longer admits is dropped, named on a
+/// stderr line AND (#1916 fix round 2) appended durably as a <see cref="FlowEvent.CancellationRejected"/>,
+/// rather than silently discarded. This targets the "already settled" reason
 /// specifically: a mark that arrives after the target has already reached a terminal outcome (the
 /// ordinary "the operator's request lost the race to a legitimate finish" case, not a bug).
 /// </summary>
@@ -44,6 +45,10 @@ public class PumpArrestIntentDropTests
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
             var registry = new InFlightExecutionRegistry();
+            // Bound explicitly (StartWorkflowAsync below rebinds it to the same writer regardless) so
+            // the durable append this test asserts on below is provably reachable, not an accident of
+            // StartWorkflowAsync's own internal Bind call landing before the drain that needs it.
+            registry.Bind(writer);
 
             // Round 1: h is accepted, Running (a non-process step dispatches nothing to Core).
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -86,6 +91,14 @@ public class PumpArrestIntentDropTests
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRequested);
             Assert.DoesNotContain(events, e => e is FlowEvent.ExecutionCancelled);
+
+            // #1916 fix round 2: the drop's durable half -- reverting the
+            // RecordCancellationRejectedAsync append in SettleArrestIntentsAsync leaves the stderr
+            // assertions above still green, so this is the one assertion that actually pins it.
+            var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
+            Assert.Equal(hExecutionId, cancellationRejected.ExecutionId);
+            Assert.Contains("already settled", cancellationRejected.Reason, StringComparison.Ordinal);
+            Assert.Contains("test: already succeeded", cancellationRejected.Reason, StringComparison.Ordinal);
         }
         finally
         {
@@ -118,6 +131,8 @@ public class PumpArrestIntentDropTests
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
             var registry = new InFlightExecutionRegistry();
+            // Bound explicitly, same reasoning as the sibling "already settled" test above.
+            registry.Bind(writer);
             registry.MarkArrestIntent(bogusExecutionId, "test: bogus target");
 
             using var stderr = new StringWriter();
@@ -136,6 +151,13 @@ public class PumpArrestIntentDropTests
 
             var events = await reader.ReadAllAsync(TestContext.Current.CancellationToken);
             Assert.DoesNotContain(events, e => e is FlowEvent.CancellationRequested);
+
+            // #1916 fix round 2: same discriminating pin as the sibling test above, for the "unknown
+            // execution id" reason instead of "already settled".
+            var cancellationRejected = Assert.Single(events.OfType<FlowEvent.CancellationRejected>());
+            Assert.Equal(bogusExecutionId, cancellationRejected.ExecutionId);
+            Assert.Contains("unknown execution id", cancellationRejected.Reason, StringComparison.Ordinal);
+            Assert.Contains("test: bogus target", cancellationRejected.Reason, StringComparison.Ordinal);
         }
         finally
         {
