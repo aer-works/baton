@@ -23,6 +23,22 @@ namespace Baton.Cli.Tests;
 /// <c>Program.cs</c> exit path writing <c>terminal.json</c> for a cancellation-settled run exactly as
 /// it does for a natural completion, which is what lets a follow-up <c>redispatch</c> proceed past its
 /// terminal-sentinel guard.
+/// <para>
+/// <b>#1914 — the flake reproducer, recorded so the next reader does not have to rediscover it.</b> The
+/// original failure is invisible on a quiet box; it needs concurrent build load, which is what CI's
+/// shard has and a local run does not. Reproduce by putting a finite sleep back in
+/// <c>UncancellableSleepArgv</c> (<c>["ping", "-n", "4", "127.0.0.1"]</c>, ~3s — the pre-fix budget's
+/// loaded-box equivalent), rebuilding, and running this class while four
+/// <c>dotnet build src/Baton/Baton.csproj --no-incremental -p:OutputPath=C:/temp/loadbuildN/</c> loops
+/// and one <c>python tools/buildlock.py dotnet build --no-incremental</c> loop run against the box:
+/// <code>
+/// dotnet test --project tests/Baton.Cli.Tests/Baton.Cli.Tests.csproj --no-build \
+///   --minimum-expected-tests 1 --filter-class Baton.Cli.Tests.LiveCancelRequestChannelEndToEndTests
+/// </code>
+/// MEASURED 2026-09-05 under that load: 3/3 red on the <c>CancellationRequested</c> assertion with the
+/// finite sleep, 10/10 green with <c>ping -t</c>. The load matters and the filter matters — check each
+/// run reports <c>total: 1</c>, since a mistyped class name is a green run that asserted nothing.
+/// </para>
 /// </summary>
 [Collection(WorkingDirectoryCollection.Name)]
 public class LiveCancelRequestChannelEndToEndTests : IDisposable
@@ -48,16 +64,21 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
     // was a ~5s step, which left ~2s of margin over a quiet-box cancel latency (a cold `dotnet exec` of
     // the CLI) -- and none at all on a loaded one, so the step completed first, the run exited
     // Succeeded, and the CancellationRequested assertion below failed against a journal that legitimately
-    // had nothing to arrest. MEASURED: at a ~3s step this test fails 3/3 on that exact assertion; at ~1s
-    // it fails earlier still, on the fall-through message, because `cancel` then wins flow.lock outright.
-    // 60s is not a tuned margin, it is an unreachable one -- the step cannot end on its own, so the ONLY
-    // thing that ends this run is a real cancellation, and the only failure mode left is the bounded
-    // run-exit wait above, which says so explicitly rather than surfacing a bare cancellation.
-    private static readonly string[] UncancellableSleepArgv = ["ping", "-n", "61", "127.0.0.1"];
+    // had nothing to arrest.
+    // `-t` (ping until interrupted), NOT a widened `-n` count: any finite count is a timing budget that
+    // a slow enough box eventually outruns, so it makes natural completion unlikely rather than
+    // impossible. This step has no natural completion at all -- the ONLY thing that can end it is the
+    // process-tree kill a real cancellation delivers (or the test's own finally), so the arrest is not
+    // racing anything and the sole remaining failure mode is the bounded run-exit wait below, which
+    // says so explicitly rather than surfacing a bare cancellation.
+    private static readonly string[] UncancellableSleepArgv = ["ping", "-t", "127.0.0.1"];
 
-    // Deliberately above UncancellableSleepArgv's own duration, so a failed arrest surfaces as the
-    // bounded wait timing out rather than racing the worker-binding timeout into a second red shape.
-    private static readonly TimeSpan SleepBindingTimeout = TimeSpan.FromMinutes(2);
+    // Derived, not tuned: the arrest arm can spend at most three WaitTimeout windows against this one
+    // clock (wait for ExecutionStarted, run `baton cancel` to exit, wait for the arrested pump to exit),
+    // and the binding timeout starts at step launch and covers all three. 4x leaves one window of margin,
+    // so a failed arrest always surfaces as the bounded run-exit wait rather than racing the worker
+    // binding timeout into a second, less legible red shape.
+    private static readonly TimeSpan SleepBindingTimeout = WaitTimeout * 4;
 
     // The redispatch arm reruns the parent's binding uncancelled and asserts it settles Terminal, so it
     // must actually finish. RedispatchCommand re-reads bindings.json from the parent room at execute
@@ -148,10 +169,10 @@ public class LiveCancelRequestChannelEndToEndTests : IDisposable
         }
         finally
         {
-            // #1914: the sleeping step is now unreachably long, so a pump that failed to be arrested no
-            // longer dies on its own within this test's lifetime. Disposing the Process object does not
-            // kill it -- without this, an assertion failure would leak a live pump and its `ping` child
-            // for the remaining ~60s, holding the room open against the cleanup below and seeding
+            // #1914: the sleeping step never ends on its own, so a pump that failed to be arrested does
+            // not die on its own either -- it lives until its binding timeout above. Disposing the
+            // Process object does not kill it, so without this an assertion failure would leak a live
+            // pump and its `ping` child, holding the room open against the cleanup below and seeding
             // flakiness in whatever runs next.
             KillIfStillRunning(runProcess);
             runProcess?.Dispose();
