@@ -55,4 +55,5 @@ src/Baton.Vendors/CHANGELOG.md
 src/Baton.Cli/CHANGELOG.md
 src/Baton.Daemon/CHANGELOG.md
 src/Baton/CHANGELOG.md
+tools/fleet-glass/README.md
 tools/vendor-verify/README.md
