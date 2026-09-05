@@ -1644,17 +1644,28 @@ def derive_snapshot_and_timelines(dll: str, roots: list, terminal_timeline_cache
     return text, timelines
 
 
-_NEWEST_TIMESTAMP_SKIP_KEYS = frozenset({"exhaustedUntil"})
+_NEWEST_TIMESTAMP_SKIP_KEYS = frozenset({"exhaustedUntil", "live", "pruned"})
 
 
 def newest_timestamp(node, _skip_keys: frozenset = _NEWEST_TIMESTAMP_SKIP_KEYS) -> str:
     """Max ISO-8601-looking string anywhere in the room object -- shape-agnostic on purpose,
     so a fleet_status field rename degrades to 'room has no timestamp' (kept), never a crash.
 
-    `exhaustedUntil` (#1551) is excluded by key, the one deliberate exception to "shape-agnostic":
+    `exhaustedUntil` (#1551) is excluded by key, the first deliberate exception to "shape-agnostic":
     it's a vendor-quota park's reset instant, a FUTURE timestamp by construction while parked.
     Folding it into this scan would make an abandoned parked room's "newest timestamp" always
-    outrun drop_stale_rooms' cutoff below -- a room nobody is watching would never age out."""
+    outrun drop_stale_rooms' cutoff below -- a room nobody is watching would never age out.
+
+    `live`/`pruned` (whole subtrees) are excluded for a different reason: to keep the two projection
+    sources' staleness decisions IDENTICAL (#1557 PR-B2). In `derive` mode these blocks do not exist
+    yet when drop_stale_rooms runs -- `attach_live_telemetry`/`attach_pruned_info` are called
+    afterwards, deliberately, so that `lastActivityAt`/`prunedAt` (real file mtimes, not step
+    timestamps) "play no part in the staleness decision at all" (those functions' own docs). In
+    `file` mode the daemon has already embedded them, so without this skip the same room would be
+    scanned differently by source: one whose newest STEP timestamp is past the cutoff but whose
+    stdout was touched recently would be dropped under `derive` and kept under `file`. Skipping the
+    subtree here restores by exemption what derive mode gets by construction, in the one place both
+    sources share."""
     best = ""
     if isinstance(node, dict):
         for k, v in node.items():
@@ -3707,10 +3718,9 @@ def main() -> None:
                         # field), so today this resolves to {} on every file-mode cycle: the one
                         # named, intentional difference between the two sources' pushed snapshots
                         # (`_selftest`'s byte-identity arm asserts it is the ONLY one, and
-                        # `derive_snapshot_and_timelines`'s removal condition is gated on it). The
-                        # user-visible effect is bounded: glass.html accumulates timelines in
-                        # localStorage across pushes, so already-seen entries persist -- a room
-                        # first seen after the cutover shows none until the daemon writes them.
+                        # `derive_snapshot_and_timelines`'s removal condition is gated on it).
+                        # What an operator actually sees while that holds -- and why it is bounded
+                        # -- is spec/baton.md §6's PR-B2 paragraph, not restated here. #1902.
                         raw_timelines = projection_data.get("timelines")
                         timelines = raw_timelines if isinstance(raw_timelines, dict) else {}
                         last_derived_at = projection_data.get("derived_at")
@@ -6279,6 +6289,38 @@ def _selftest() -> int:
                   "the file side IS reported -- the identity arm above discriminates, it is not "
                   "green because everything volatile was excluded",
                   "rooms" in snapshot_identity_diffs(derive_wrapped, control_wrapped))
+            # -- #1557 PR-B2 found-while-fixing: drop_stale_rooms runs on the room list BEFORE the
+            # live/pruned attach, so in `derive` mode `newest_timestamp` never sees those blocks --
+            # `attach_live_telemetry`'s own doc calls that deliberate. In `file` mode the daemon has
+            # already embedded them, which silently put two real mtimes into the staleness scan and
+            # made the two sources drop DIFFERENT rooms. Fixed by adding `live`/`pruned` to
+            # `_NEWEST_TIMESTAMP_SKIP_KEYS`; this arm is what sees it, since the identity arm above
+            # calls assemble_wrapped directly and never runs the filter.
+            stale_step_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            aged_base = {"name": "room-aged", "path": str(ident_run_room), "state": "Running",
+                         "steps": [{"id": "s1", "state": "Running", "execution": "e1",
+                                    "timestamp": stale_step_ts}]}
+            aged_derive_body = json.dumps({"rooms": [json.loads(json.dumps(aged_base))]})
+            aged_file_room = json.loads(json.dumps(aged_base))
+            aged_file_room["live"] = {"toolCalls": 0,
+                                      "lastActivityAt": datetime.now(timezone.utc).isoformat()}
+            aged_file_room["pruned"] = {"count": 1,
+                                        "prunedAt": datetime.now(timezone.utc).isoformat()}
+            aged_file_body = json.dumps({"rooms": [aged_file_room]})
+            derive_kept, derive_hidden = drop_stale_rooms(aged_derive_body, 3)
+            file_kept, file_hidden = drop_stale_rooms(aged_file_body, 3)
+            check("#1557 PR-B2: a room aged past the cutoff but carrying a FRESH live.lastActivityAt/"
+                  "pruned.prunedAt is dropped by BOTH sources -- the file's embedded live/pruned "
+                  "blocks must not enter the staleness scan the derive path never shows them to",
+                  json.loads(derive_kept)["rooms"] == [] and json.loads(file_kept)["rooms"] == []
+                  and derive_hidden == 1 and file_hidden == 1)
+            check("(control) #1557 PR-B2: the same room with a RECENT step timestamp is kept by both "
+                  "sources -- the arm above is not green because drop_stale_rooms drops everything",
+                  all(len(json.loads(drop_stale_rooms(json.dumps({"rooms": [dict(
+                          r, steps=[{"id": "s1", "state": "Running", "execution": "e1",
+                                     "timestamp": datetime.now(timezone.utc).isoformat()}])]}), 3)[0])["rooms"]) == 1
+                      for r in (json.loads(json.dumps(aged_base)), aged_file_room)))
+
             control_top = dict(file_wrapped, stale_hidden_count=1)
             check("(control) #1557 PR-B2 acceptance: a TOP-LEVEL field difference is reported too "
                   "-- `_diff_room` never sees these, which is why this arm exists alongside it",
