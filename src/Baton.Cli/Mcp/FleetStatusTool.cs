@@ -387,9 +387,23 @@ public sealed class FleetStatusTool : IMcpTool
             // #1530: same two-log read StatusCommand's own JSON path does -- room.jsonl for the two
             // rejection shapes with no ExecutionId to key a flow.jsonl fact on, flow.jsonl (via
             // `entries`, already read above) for every shape that does.
-            var roomLogPath = Path.Combine(roomDir, BatonPaths.RoomLogFileName);
-            var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
-            var arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+            IReadOnlyList<ArrestLedgerEntry> arrestLedger;
+            try
+            {
+                var roomLogPath = Path.Combine(roomDir, BatonPaths.RoomLogFileName);
+                var roomEvents = await new RoomEventLogReader(roomLogPath).ReadAllRoomEventsAsync(cancellationToken).ConfigureAwait(false);
+                arrestLedger = ArrestLedgerProjector.Project(entries, roomEvents);
+            }
+            catch (FlowEventLogReadException)
+            {
+                // #1916 fix round 2: a room.jsonl line this build's RoomEventLogReader cannot
+                // deserialize (an unknown $type from a version-skew write) used to escape uncaught
+                // this far into the room's projection, so the broad catch below collapsed the WHOLE
+                // row -- steps, status, delivery, ledger -- into {name, path, error}, even though only
+                // the ledger read failed. Degrade just the ledger instead, the same posture
+                // StatusCommand's own text/JSON paths take for this identical read.
+                arrestLedger = [];
+            }
 
             // Explicit for readability -- a null/omitted registry now falls back to this same
             // StandardWorkerUsageParsers.Default internally (#1590), so this argument is redundant

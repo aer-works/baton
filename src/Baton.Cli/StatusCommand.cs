@@ -124,7 +124,9 @@ public static class StatusCommand
             // read room.jsonl before this feature, so a version-skew corruption there (a RoomEvent
             // discriminator this build does not know, per RoomEventLogReader's fail-loud replay
             // contract) must degrade the ledger, not turn a probe that used to succeed into a hard
-            // failure -- the same posture FleetStatusTool's own broad catch already takes for this.
+            // failure -- FleetStatusTool's own read of the same file (#1916 fix round 2) now degrades
+            // the same way, rather than the broad per-room catch it used to fall through to, which
+            // collapsed the whole row instead of just the ledger.
             IReadOnlyList<ArrestLedgerEntry> arrestLedger;
             string? arrestLedgerUnavailableReason = null;
             try
@@ -162,7 +164,8 @@ public static class StatusCommand
                 // ledger — one derivation, two renderings. Nothing else reaches stdout in this mode.
                 // #1360: entries is the same list already read above, not a second ledger read.
                 var view = WorkflowStatusProjector.Project(
-                    state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default, arrestLedger);
+                    state, snapshot, options.RoomDirectoryPath, entries, WorkerAdapterRegistry.Default, arrestLedger,
+                    arrestLedgerUnavailableReason);
                 output.WriteLine(JsonSerializer.Serialize(view));
                 return;
             }
@@ -609,9 +612,14 @@ public static class StatusCommand
     }
 
     /// <summary>
-    /// #1530: the room's arrest history — silent (no header, no blank line) for a room that never
-    /// saw a <c>cancel.request</c>, the same "absent means nothing to say" posture <c>Arrests</c>'
-    /// own <c>--json</c> field takes.
+    /// #1530: the room's arrest history, one of three states. Silent (no header, no blank line) for
+    /// a room that never saw a <c>cancel.request</c> — the same "absent means nothing to say" posture
+    /// <c>Arrests</c>' own <c>--json</c> field takes. The entry list, rendered one line per outcome,
+    /// for a room whose ledger read cleanly. <c>Arrests: ledger unavailable (&lt;reason&gt;)</c>
+    /// (#1916 fix round) when <paramref name="unavailableReason"/> is non-null — room.jsonl existed
+    /// but a version-skew build could not read it; <c>--json</c> carries the same reason on
+    /// <see cref="Baton.Status.WorkflowStatusView.ArrestLedgerUnavailableReason"/> rather than
+    /// collapsing to the same absent <c>Arrests</c> a clean empty ledger produces.
     /// </summary>
     private static void PrintArrestLedger(TextWriter output, IReadOnlyList<ArrestLedgerEntry> arrestLedger, string? unavailableReason = null)
     {

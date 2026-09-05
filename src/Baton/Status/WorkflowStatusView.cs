@@ -203,7 +203,15 @@ public sealed record WorkflowStatusView(
     // cancel.request in its history, so a consumer can test presence rather than length.
     [property: JsonPropertyName("arrests")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<ArrestLedgerEntryView>? Arrests = null);
+    IReadOnlyList<ArrestLedgerEntryView>? Arrests = null,
+    // #1916 fix round 2: the text-mode reader already has `Arrests: ledger unavailable (<reason>)`
+    // (StatusCommand.PrintArrestLedger) to tell "the read failed" apart from "no cancel.request in
+    // this room's history" -- both render Arrests absent here, so a --json consumer had no way to
+    // make the same distinction. Present only on the read-failure path; a clean empty ledger keeps
+    // this null.
+    [property: JsonPropertyName("arrestLedgerUnavailableReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ArrestLedgerUnavailableReason = null);
 
 /// <summary>
 /// #1530: the wire shape for one <see cref="ArrestLedgerEntry"/> — plain strings throughout, the
@@ -271,8 +279,9 @@ public static class WorkflowStatusProjector
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
         IReadOnlyDictionary<string, IWorkerUsageParser>? adapters = null,
-        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null) =>
-        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters, arrestLedger);
+        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null,
+        string? arrestLedgerUnavailableReason = null) =>
+        Project<IWorkerUsageParser>(state, snapshot, roomDirectoryPath, entries, adapters, arrestLedger, arrestLedgerUnavailableReason);
 
     public static WorkflowStatusView Project<TParser>(
         FlowState state,
@@ -280,7 +289,8 @@ public static class WorkflowStatusProjector
         string roomDirectoryPath,
         IReadOnlyList<LogEntry>? entries = null,
         IReadOnlyDictionary<string, TParser>? adapters = null,
-        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null)
+        IReadOnlyList<ArrestLedgerEntry>? arrestLedger = null,
+        string? arrestLedgerUnavailableReason = null)
         where TParser : IWorkerUsageParser
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -451,7 +461,8 @@ public static class WorkflowStatusProjector
 
         return new WorkflowStatusView(
             WorkflowOutcome.Describe(state), steps, outputs, firstFailureReason, Rejected: anyRejected,
-            ResolvedBy: resolvedBy, TerminalAt: terminalAt, Arrests: arrestViews);
+            ResolvedBy: resolvedBy, TerminalAt: terminalAt, Arrests: arrestViews,
+            ArrestLedgerUnavailableReason: arrestLedgerUnavailableReason);
     }
 
     /// <summary>
