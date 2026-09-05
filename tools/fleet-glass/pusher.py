@@ -226,8 +226,8 @@ DEFAULT_LOCK_FILE = HERE / "pusher.lock"
 FLEET_GLASS_PROJECTION_SOURCE_ENV = "FLEET_GLASS_PROJECTION_SOURCE"
 PROJECTION_SOURCE_DEFAULT = "file"
 
-# #1557 plan §5 (load-bearing: no scheduled task runs `baton daemon` today, so this fallback is the
-# steady-state path, not an edge case): the file is treated as stale -- and the cycle falls back to
+# #1557 plan §5: the `baton-daemon` scheduled task writes the file every cycle, so the fallback fires
+# only when that task is down or behind: the file is treated as stale -- and the cycle falls back to
 # `derive_snapshot_and_timelines` -- once it is older than 3 of the pusher's own coalescing windows
 # (900s), or when it is absent/unreadable/malformed.
 PROJECTION_STALE_AFTER_S = 900
@@ -1675,10 +1675,10 @@ def derive_snapshot_and_timelines(dll: str, roots: list, terminal_timeline_cache
       2. the projection file carries per-room `timelines`.
     (2) is not satisfiable today and is not a nicety: `timelines` for a non-terminal room needs a
     `room_detail` call per cycle, which is this subprocess, so PR-C cannot delete this path while
-    the file omits them -- see the `timelines` gap issue named in PR-B2's body. Note (1) is also
-    unsatisfiable until `baton daemon` is actually scheduled on the operator's machine (plan §6): no
-    scheduled task runs it today, so the fallback below is the steady state, not an edge case, and
-    the log line it emits every cycle is the honest signal of that.
+    the file omits them -- see the `timelines` gap issue named in PR-B2's body. (1) is measurable
+    now that the `baton-daemon` scheduled task runs on the operator's machine (#1905 made the file
+    the default on that basis): the fallback below is the edge case, and the log line it emits on
+    a stale cycle is the honest signal that the daemon is down or behind.
 
     Returns (the rooms JSON exactly as fleet_status produced it, {room_path: [timeline entries]}
     for every room with one) -- ONE dotnet-mcp process for both, reused across every room_detail

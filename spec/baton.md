@@ -2884,9 +2884,9 @@ definition has no exit event yet and needs every line scanned, not just the last
   `Baton.Status.CodexUsageParser.TryParseToolName` is the canonical home of WHICH item types count;
   the default `file` source reads it directly, while `pusher.py`'s stale-fallback derivation
   deliberately RESTATES the set (and the `turn.completed` usage arithmetic) in Python, because that
-  reader cannot call into the engine and, until `baton daemon` is actually scheduled, the fallback is
-  the steady-state path (#1557 PR-B2's `derive_snapshot_and_timelines` removal condition) — so
-  dropping the copy in favour of absent-not-zero would take codex's live block off the glass entirely,
+  reader cannot call into the engine and the fallback still runs whenever the daemon's file is stale
+  or absent (#1557 PR-B2's `derive_snapshot_and_timelines` removal condition) — so dropping the copy
+  in favour of absent-not-zero would take codex's live block off the glass on every such cycle,
   which is #1886's own symptom; the copy is pinned to the parser by the shared fixture below and is
   deleted with the rest of the derive block by PR-C. The real capture both are pinned against
   (`tests/Baton.Cli.Tests/Fixtures/codex-live-stream.jsonl`) carries only `mcp_tool_call`
