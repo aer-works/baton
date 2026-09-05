@@ -47,7 +47,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-approval-gate");
 
             var pausedState = await MutationInterface.StartWorkflowAsync(
@@ -98,7 +98,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-reject");
 
             var pausedState = await MutationInterface.StartWorkflowAsync(
@@ -150,7 +150,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-retry-with-revision");
 
             var pausedState = await MutationInterface.StartWorkflowAsync(
@@ -238,7 +238,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-architect-critic");
 
             var firstPauseState = await MutationInterface.StartWorkflowAsync(
@@ -328,7 +328,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-architect-critic-chained");
 
             var firstPauseState = await MutationInterface.StartWorkflowAsync(
@@ -416,7 +416,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-human-mid-dag");
 
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -474,7 +474,7 @@ public class PauseDecisionSupersedeHumanEndToEndTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-invalid-decisions");
 
             var pausedState = await MutationInterface.StartWorkflowAsync(

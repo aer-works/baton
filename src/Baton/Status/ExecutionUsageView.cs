@@ -76,6 +76,12 @@ public sealed record ExecutionUsageView(
     /// carrying a billed component) or <c>no-terminal-billed-figure</c> (the terminal line reported
     /// none). Absent — like the triple itself — when the execution simply has no captured stream at
     /// all: that is the pre-#1706 "nothing was read" case, not a number being withheld.
+    /// <para>
+    /// #1885: <c>stream-truncated-by-write-failure</c> now has TWO sources —
+    /// <see cref="FlowEvent.StreamLogLossDeclared"/> as well as the marker file — and the projector below
+    /// implements <c>spec/baton.md</c> §3's two-channel rule over them, which is stated there and not
+    /// restated here.
+    /// </para>
     /// </summary>
     [property: JsonPropertyName("billedReconciliationUnavailable")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -104,6 +110,15 @@ public sealed record ExecutionUsageView(
     /// <summary>The capture is provably not the whole stream — <see cref="Dispatch.ExecutionStreamLogger.StdoutTruncationMarkerFileName"/>.</summary>
     public const string StreamTruncatedByRolloverReason = "stream-truncated-by-rollover";
 
+    /// <summary>
+    /// #1876's reason — see <see cref="BilledReconciliationUnavailable"/> above for what it means.
+    /// #1885 gave it a SECOND producer, the journalled <see cref="FlowEvent.StreamLogLossDeclared"/>,
+    /// which is why the literal now lives here rather than being spelled out at each of the three
+    /// production sites: `record-once`, so a rewording cannot silently make one channel's announcement
+    /// stop matching the other's.
+    /// </summary>
+    public const string StreamTruncatedByWriteFailureReason = "stream-truncated-by-write-failure";
+
     /// <summary>The rolled-over segment exists but could not be read, so no Σ over the whole stream is possible.</summary>
     public const string RolloverSegmentUnreadableReason = "rollover-segment-unreadable";
 
@@ -127,6 +142,7 @@ public sealed record ExecutionUsageView(
     public static IReadOnlySet<string> KnownUnavailableReasons { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         StreamTruncatedByRolloverReason,
+        StreamTruncatedByWriteFailureReason,
         RolloverSegmentUnreadableReason,
         NoLiveBilledFigureReason,
         NoTerminalBilledFigureReason,
@@ -182,6 +198,11 @@ public static class ExecutionUsageProjector
         // stream yielded no terminal reading of its own; see that site for why it is deliberately not
         // allowed to stand in for the AUTHORITATIVE terminal figure.
         var arrestedUsageByExecutionId = new Dictionary<string, WorkerUsage>(StringComparer.Ordinal);
+        // #1885: the JOURNALLED half of the loss announcement, filtered to the one stream that bears on
+        // a billed reconciliation -- spec/baton.md §3 is where that scoping is ruled. Last one wins,
+        // which is the terminal re-announcement when there is one; the reason is identical either way,
+        // so this only decides whose BytesSurrendered/MarkerLanded a future reader would see.
+        var journalledStreamLossByExecutionId = new Dictionary<string, FlowEvent.StreamLogLossDeclared>(StringComparer.Ordinal);
 
         foreach (var entry in entries)
         {
@@ -210,6 +231,12 @@ public static class ExecutionUsageProjector
                 if (flowEntry.Event is FlowEvent.ExecutionArrested { Usage: { } arrestedUsage } arrestedEvent)
                 {
                     arrestedUsageByExecutionId[arrestedEvent.ExecutionId.Value] = arrestedUsage;
+                }
+
+                if (flowEntry.Event is FlowEvent.StreamLogLossDeclared loss
+                    && string.Equals(loss.Stream, ExecutionStreamLogger.StdoutStreamName, StringComparison.Ordinal))
+                {
+                    journalledStreamLossByExecutionId[loss.ExecutionId.Value] = loss;
                 }
             }
 
@@ -277,6 +304,21 @@ public static class ExecutionUsageProjector
             // withheld and the reason string stays whatever it already was.
             var dimensions = usage ?? (arrestedUsageByExecutionId.TryGetValue(executionId, out var fromArrest) ? fromArrest : null);
 
+            // #1885: the other channel, read FIRST (spec/baton.md §3). A journalled loss must SUPPRESS
+            // the reconciliation, not merely fill a reason string that happened to be empty -- so the
+            // live figure is dropped here, which is what makes `reconciled` below false and the reason
+            // reachable. Deliberately AFTER `dimensions`: spec/baton.md §3's shape for a lost stream
+            // keeps them, and
+            // the in-memory arrest fallback above is what supplies them.
+            var journalledReason = journalledStreamLossByExecutionId.TryGetValue(executionId, out var journalledLoss)
+                ? journalledLoss.Reason
+                : null;
+            if (journalledReason is not null)
+            {
+                WarnOnChannelDisagreement(executionId, journalledReason, reading?.LiveUnavailableReason);
+                liveBilled = null;
+            }
+
             // #1706 review M2: ALL THREE or none. The previous shape emitted `billedTokens` alone
             // whenever the terminal figure was computable but the replay was not -- which is exactly
             // the case the rollover guard below exists to SIGNAL, so a consumer following the
@@ -284,12 +326,20 @@ public static class ExecutionUsageProjector
             // one. The reason string is what replaces the number.
             var reconciled = billed is not null && liveBilled is not null;
             string? unavailable = null;
-            if (!reconciled && reading is not null)
+            if (!reconciled)
             {
-                unavailable = reading.LiveUnavailableReason
-                    ?? (billed is null
-                        ? ExecutionUsageView.NoTerminalBilledFigureReason
-                        : ExecutionUsageView.NoLiveBilledFigureReason);
+                // #1885: event first, marker second. The journalled reason also stands alone -- with no
+                // stream file and no marker, `reading` is null and the pre-#1885 shape reported no
+                // reason at all, which is the exact case a host refusing every file create produces.
+                // The `reading is not null` guard is therefore INSIDE the fallback rather than on the
+                // `if` above (where #1883 left it), which is the one place these two changes collide.
+                unavailable = journalledReason
+                    ?? (reading is not null
+                        ? reading.LiveUnavailableReason
+                          ?? (billed is null
+                              ? ExecutionUsageView.NoTerminalBilledFigureReason
+                              : ExecutionUsageView.NoLiveBilledFigureReason)
+                        : null);
             }
 
             long? peakBilledInWindow = peakBilledInWindowByExecutionId.TryGetValue(executionId, out var recordedPeak)
@@ -314,6 +364,61 @@ public static class ExecutionUsageProjector
 
         return result;
     }
+
+    /// <summary>
+    /// #1885: <c>spec/baton.md</c> §3's agreement rule, enforced. The two channels announce one
+    /// write-failure loss off one in-memory latch and carry the same literal, so a mismatch is never
+    /// those two disagreeing about it.
+    /// <para>
+    /// #1888 corrects what this comment used to claim. It said a mismatch was unreachable from one
+    /// execution's own writer, which was false, and the marker-read order was what made it false: with
+    /// rollover checked first, a stream that both double-rolled and lost a chunk announced
+    /// <c>stream-truncated-by-rollover</c> on the file channel against a journalled
+    /// <c>stream-truncated-by-write-failure</c> — one writer, both channels truthful, warning printed.
+    /// <c>TryReadWorkerUsage</c> now reads the write-failure marker first, so that room compares like
+    /// with like and is silent.
+    /// </para>
+    /// <para>
+    /// What stays reachable, and is not a defect: the SAME room with the write-failure marker refused
+    /// (an obstructed output directory) and only the rollover marker on disk. The file channel then
+    /// names the rollover gap while the event names the write-failure one — two gaps, not two accounts
+    /// of one — and the warning fires. Its wording is true of that case: the files may describe a
+    /// different gap than the one the writer declared. Comparing the journalled reason against the SET
+    /// of markers present, rather than against the precedence winner, is what would distinguish it from
+    /// genuine drift; #1888 did not do that, and until something does, the remaining causes of a
+    /// mismatch (hand-edited ledger, mis-keyed execution id, a future third producer) reach the same
+    /// line as that benign one.
+    /// </para>
+    /// <para>
+    /// Once per execution id per process. This projector re-runs on every <c>fleet_status</c> poll over
+    /// an overwhelmingly complete execution set, so an unconditional write would repeat one stale line
+    /// at the poll cadence for the life of the daemon — the same reason
+    /// <c>ExecutionStreamLogger.MarkerFailureWarned</c> exists. The dictionary is uncapped and stays so:
+    /// it now admits a reachable case rather than a provably empty one, but it holds one string per
+    /// execution that announced a loss two ways, which is bounded by the room's own execution count.
+    /// </para>
+    /// </summary>
+    private static void WarnOnChannelDisagreement(string executionId, string journalledReason, string? markerReason)
+    {
+        if (markerReason is null || string.Equals(markerReason, journalledReason, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!DisagreementWarnedExecutionIds.TryAdd(executionId, 0))
+        {
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"Warning: execution '{executionId}' announces its stream-log loss two ways that disagree — the journalled "
+            + $"FlowEvent.StreamLogLossDeclared says '{journalledReason}' and the captured stream's own files say "
+            + $"'{markerReason}'. Reporting the journalled reason; the files may describe a different gap than the one "
+            + "the writer declared.");
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> DisagreementWarnedExecutionIds =
+        new(StringComparer.Ordinal);
 
     private static IReadOnlyDictionary<string, string> TryLoadBindings(string? roomDirectoryPath)
     {
@@ -460,7 +565,7 @@ public static class ExecutionUsageProjector
                 {
                     if (File.Exists(Path.Combine(directory, ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)))
                     {
-                        return new UsageReading(null, null, "stream-truncated-by-write-failure");
+                        return new UsageReading(null, null, ExecutionUsageView.StreamTruncatedByWriteFailureReason);
                     }
                 }
 
@@ -536,18 +641,23 @@ public static class ExecutionUsageProjector
         // ExecutionStreamLogger.StdoutTruncationMarkerFileName. Here: seeing the marker turns a
         // would-be fabricated under-read into an honest "unknown". Not seeing it is only evidence for
         // streams captured since that landed.
+        // #1876: the other announced gap -- same posture as the rollover branch below, deliberately a
+        // DIFFERENT reason string. Why the two are kept apart, and why a failure the retry buffer
+        // absorbed writes no marker and so reaches neither branch as an ordinary whole stream, is in
+        // spec/baton.md §3.
+        //
+        // #1888: and it is read FIRST, which matters only when BOTH markers are on disk. This function
+        // reports one reason, and which of the two outranks the other is spec/baton.md §3's ruling --
+        // not restated here, including its second half about what the order costs the agreement check.
+        // Checking rollover first is what #1888 found: see WarnOnChannelDisagreement.
+        if (File.Exists(writeFailureMarkerPath))
+        {
+            return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByWriteFailureReason));
+        }
+
         if (File.Exists(truncationMarkerPath))
         {
             return Memoize(cacheKey, new UsageReading(terminal, null, ExecutionUsageView.StreamTruncatedByRolloverReason));
-        }
-
-        // #1876: the other announced gap -- same posture as the rollover branch above, deliberately a
-        // DIFFERENT reason string. Why the two are kept apart, and why a failure the retry buffer
-        // absorbed writes no marker and so reaches this branch as an ordinary whole stream, is in
-        // spec/baton.md §3.
-        if (File.Exists(writeFailureMarkerPath))
-        {
-            return Memoize(cacheKey, new UsageReading(terminal, null, "stream-truncated-by-write-failure"));
         }
 
         string[] rolledLines = [];

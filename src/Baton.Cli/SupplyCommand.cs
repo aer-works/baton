@@ -99,7 +99,7 @@ public static class SupplyCommand
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         var (_, executionId) = await MutationInterface.RecordSupplementaryExecutionAsync(
                 workflowId, options.RoomDirectoryPath, snapshot, workerBindings, artifactsRootPath,

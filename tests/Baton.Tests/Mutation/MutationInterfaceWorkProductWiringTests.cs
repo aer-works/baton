@@ -79,7 +79,7 @@ public sealed class MutationInterfaceWorkProductWiringTests : IDisposable
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         var finalState = await MutationInterface.StartWorkflowAsync(
             new WorkflowId("wf-workproduct-wiring"), roomDirectory, snapshot, bindings, artifactsRoot,
@@ -130,7 +130,7 @@ public sealed class MutationInterfaceWorkProductWiringTests : IDisposable
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         var finalState = await MutationInterface.StartWorkflowAsync(
             new WorkflowId("wf-workproduct-wiring-plain"), roomDirectory, snapshot, bindings, artifactsRoot,

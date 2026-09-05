@@ -755,6 +755,77 @@ public sealed class CostLedgerStoreTests
     }
 
     [Fact]
+    public void A_journalled_stream_log_loss_makes_a_row_partial_exactly_as_the_marker_file_does()
+    {
+        // #1885 against #1883's ledger. The loss is announced on two channels (spec/baton.md §3) and
+        // this store reads neither directly -- it reads ExecutionUsageView.BilledReconciliationUnavailable
+        // -- so the claim under test is that the JOURNALLED channel reaches a cost row at all, and lands
+        // the same label and the same reason string the FILE channel does. Same capture in all three
+        // arms; the only thing that varies is which channel (if either) announces the loss, which is
+        // what makes this discriminate the announcement rather than the fixture.
+        var journalled = NewRoom();
+        var markered = NewRoom();
+        var clean = NewRoom();
+        try
+        {
+            var executionId = new ExecutionId("exec-loss");
+
+            // Arm 1: the event, and NO marker file -- the case the marker channel cannot report,
+            // because the marker is created in the very directory whose writes were refused.
+            WriteCapturedStream(journalled, executionId, ClaudeTerminalLine);
+            var withEvent = SettledExecution(executionId, "claude", "claude-opus-5", Start);
+            withEvent.Add(new LogEntry.FlowLogEntry(new FlowEvent.StreamLogLossDeclared(
+                executionId,
+                ExecutionStreamLogger.StdoutStreamName,
+                ExecutionUsageView.StreamTruncatedByWriteFailureReason,
+                BytesSurrendered: 4096,
+                MarkerLanded: false)));
+            Assert.False(File.Exists(Path.Combine(
+                ArtifactManager.ResolveOutputDirectory(
+                    Path.Combine(journalled, ArtifactManager.ArtifactsDirectoryName), executionId),
+                ExecutionStreamLogger.StdoutWriteFailureMarkerFileName)));
+
+            var journalledRow = Assert.Single(CostLedgerStore.BuildEntries(withEvent, journalled, Repository));
+
+            // Arm 2: the marker file, and NO event -- the pre-#1885 channel, unchanged.
+            WriteCapturedStream(markered, executionId, ClaudeTerminalLine);
+            File.WriteAllText(
+                Path.Combine(
+                    ArtifactManager.ResolveOutputDirectory(
+                        Path.Combine(markered, ArtifactManager.ArtifactsDirectoryName), executionId),
+                    ExecutionStreamLogger.StdoutWriteFailureMarkerFileName),
+                "write failed");
+            var markeredRow = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), markered, Repository));
+
+            Assert.Equal(CostCompleteness.Partial, journalledRow.Completeness);
+            Assert.Equal(ExecutionUsageView.StreamTruncatedByWriteFailureReason, journalledRow.CompletenessReason);
+            Assert.Equal(markeredRow.Completeness, journalledRow.Completeness);
+            Assert.Equal(markeredRow.CompletenessReason, journalledRow.CompletenessReason);
+
+            // The reconciliation triple is withheld either way -- partial is not a label pasted over a
+            // Σ that was still computed and reported.
+            Assert.Null(journalledRow.BilledTokens);
+            Assert.Null(journalledRow.LiveBilledTokens);
+            Assert.Null(journalledRow.BilledUnderReadTokens);
+
+            // Arm 3: the control. The identical capture with NEITHER announcement reconciles, so the
+            // two arms above are about the announcement rather than about this fixture being unreadable.
+            WriteCapturedStream(clean, executionId, ClaudeTerminalLine);
+            var cleanRow = Assert.Single(CostLedgerStore.BuildEntries(
+                SettledExecution(executionId, "claude", "claude-opus-5", Start), clean, Repository));
+            Assert.Equal(CostCompleteness.Complete, cleanRow.Completeness);
+            Assert.Null(cleanRow.CompletenessReason);
+        }
+        finally
+        {
+            DirectoryCleanup.DeleteRecursively(journalled);
+            DirectoryCleanup.DeleteRecursively(markered);
+            DirectoryCleanup.DeleteRecursively(clean);
+        }
+    }
+
+    [Fact]
     public async Task A_retry_is_a_second_attempt_and_therefore_a_second_row()
     {
         var room = NewRoom();

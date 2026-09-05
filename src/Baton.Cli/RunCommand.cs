@@ -213,7 +213,7 @@ public static class RunCommand
             // being waited on (FlowJournalHeldException — measured by this PR's own --wait test).
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // #1495: the out-of-band arrest channel's pump-side reader — polls cancel.request at a
             // modest cadence (never flow.lock) for this call's own duration, routing a found request to

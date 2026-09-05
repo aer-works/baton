@@ -57,7 +57,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-1"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -108,7 +108,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-3"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -160,7 +160,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-2"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -216,7 +216,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-tripwire"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -361,7 +361,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -413,7 +413,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-not-run"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -489,7 +489,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-worker-authored"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -571,7 +571,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-drift-on-failure"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -643,7 +643,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-unreviewed"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -694,7 +694,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-override-red"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -751,7 +751,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-skip"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -798,7 +798,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-verify-none"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -985,7 +985,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-peak-succeeded"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -1036,7 +1036,7 @@ public class MutationInterfaceTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             var finalState = await MutationInterface.StartWorkflowAsync(
                 new WorkflowId("wf-peak-no-sample"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher, cancellationToken: TestContext.Current.CancellationToken);
@@ -1154,7 +1154,7 @@ public class MutationInterfaceTests
 
     private sealed class CancellingAtCompletionDispatcher(FlowEventLogWriter writer, CancellationTokenSource cts) : ICoreDispatcher
     {
-        private readonly CoreDispatcher _inner = new(writer);
+        private readonly CoreDispatcher _inner = new(writer, writer);
 
         public async Task<CoreDispatchResult> DispatchAsync(ExecutionRequest request, CoreDispatchTarget target, CancellationToken cancellationToken = default)
         {

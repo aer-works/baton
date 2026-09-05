@@ -38,7 +38,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume");
 
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -81,7 +81,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume-paused");
 
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -119,7 +119,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await Assert.ThrowsAsync<InvalidResumeException>(() => MutationInterface.RecordResumeAsync(
                 new WorkflowId("wf"), roomDirectory, snapshot, bindings, artifactsRoot, "no-such-worker",
@@ -147,7 +147,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             await Assert.ThrowsAsync<InvalidResumeException>(() => MutationInterface.RecordResumeAsync(
                 new WorkflowId("wf"), roomDirectory, snapshot, bindings, artifactsRoot, "shared-worker",
@@ -173,7 +173,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
 
             // No prior events at all -- the step projects as Pending.
             await Assert.ThrowsAsync<InvalidResumeException>(() => MutationInterface.RecordResumeAsync(
@@ -200,7 +200,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf");
 
             // A request accepted with no terminal event: the same shape a genuinely-live dispatch
@@ -237,7 +237,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf");
 
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -280,7 +280,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume-session");
 
             await MutationInterface.StartWorkflowAsync(
@@ -325,7 +325,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume-session-agree");
 
             await MutationInterface.StartWorkflowAsync(
@@ -367,7 +367,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume-retry");
 
             var firstState = await MutationInterface.StartWorkflowAsync(
@@ -430,7 +430,7 @@ public class MutationInterfaceResumeTests
 
             await using var writer = new FlowEventLogWriter(logPath);
             var reader = new FlowEventLogReader(logPath);
-            var dispatcher = new CoreDispatcher(writer);
+            var dispatcher = new CoreDispatcher(writer, writer);
             var workflowId = new WorkflowId("wf-resume-canary");
 
             var firstState = await MutationInterface.StartWorkflowAsync(

@@ -137,7 +137,7 @@ public sealed class MutationInterfaceDeliveryVerificationTests
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         return await MutationInterface.StartWorkflowAsync(
             new WorkflowId("wf-delivery"), roomDirectory, snapshot, bindings, artifactsRoot, reader, writer, dispatcher,

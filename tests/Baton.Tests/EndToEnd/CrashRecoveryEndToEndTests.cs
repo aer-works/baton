@@ -243,7 +243,7 @@ public class CrashRecoveryEndToEndTests
 
         await using var writer = await OpenWriterWithRetryAsync(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         // #891: retry the recovery pump's lock acquisition on WorkflowLockedException for a short
         // window — the same killed-process teardown gap OpenWriterWithRetryAsync (above) handles for the

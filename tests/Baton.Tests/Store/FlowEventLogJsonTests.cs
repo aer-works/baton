@@ -69,6 +69,22 @@ public class FlowEventLogJsonTests
         new FlowEvent.DeliveryMerged(123, Merged: false),
         // #1373: the per-attempt start sha the crash-recovery timeout probe reads back.
         new FlowEvent.ExecutionAttemptStarted(ExecutionId, "0f2b9ac1"),
+        // #1885: both MarkerLanded polarities, for the same reason DeliveryMerged carries both — the
+        // bool has no natural "unset" wire value, and a strip test run only against `false` would read
+        // a fail-open default as a correct replay. `false` is the load-bearing one: it is the durable
+        // record that the marker channel never carried this loss at all.
+        // #1888 adds TerminalReannouncement, whose three states are all on the wire here: the
+        // declaration (false), the terminal re-announcement (true), and the pre-#1888 line that carried
+        // no such field (null, and OMITTED rather than written -- the one WhenWritingNull member in this
+        // union, so a replayed old journal is not re-serialized with a field its writer never had).
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stdout", "stream-truncated-by-write-failure", BytesSurrendered: 4096, MarkerLanded: false,
+            TerminalReannouncement: false),
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stdout", "stream-truncated-by-write-failure", BytesSurrendered: null, MarkerLanded: false,
+            TerminalReannouncement: true),
+        new FlowEvent.StreamLogLossDeclared(
+            ExecutionId, "stderr", "stream-truncated-by-write-failure", BytesSurrendered: 4096, MarkerLanded: true),
     ];
 
     /// <summary>
@@ -194,6 +210,36 @@ public class FlowEventLogJsonTests
         var merged = Assert.IsType<FlowEvent.DeliveryMerged>(deserialized);
         Assert.Equal(123, merged.PullRequestNumber);
         Assert.False(merged.Merged);
+    }
+
+    /// <summary>
+    /// #1888, the same pattern as the arm above and for the same reason: the generic strip test proves
+    /// a line without <c>TerminalReannouncement</c> still replays, never which way it lands. The
+    /// direction is a claim <c>spec/baton.md</c> §3 makes — a pre-#1888 line carried no such field, and
+    /// its absence must read as UNKNOWN rather than as "this was the declaration", which is what a
+    /// non-nullable <c>bool</c> would have asserted about every journal written before the field
+    /// existed.
+    /// </summary>
+    [Fact]
+    public void A_StreamLogLossDeclared_line_that_lost_TerminalReannouncement_replays_as_null_not_false()
+    {
+        var node = JsonNode.Parse(JsonSerializer.Serialize(
+            (FlowEvent)new FlowEvent.StreamLogLossDeclared(
+                ExecutionId, "stdout", "stream-truncated-by-write-failure", BytesSurrendered: 4096,
+                MarkerLanded: false, TerminalReannouncement: false),
+            typeof(FlowEvent),
+            FlowEventLogJson.Options))!.AsObject();
+
+        // Guards the fixture: `false` is WRITTEN (WhenWritingNull only omits null), so a rename or a
+        // widened ignore condition would make this Remove return false and the assertion below would
+        // pass against a line that never carried the member.
+        Assert.True(node.Remove(nameof(FlowEvent.StreamLogLossDeclared.TerminalReannouncement)));
+
+        var deserialized = JsonSerializer.Deserialize<FlowEvent>(node.ToJsonString(), FlowEventLogJson.Options);
+
+        var loss = Assert.IsType<FlowEvent.StreamLogLossDeclared>(deserialized);
+        Assert.False(loss.MarkerLanded);
+        Assert.Null(loss.TerminalReannouncement);
     }
 
     [Fact]

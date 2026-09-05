@@ -96,7 +96,7 @@ public static class DecideCommand
 
         await using var writer = new FlowEventLogWriter(logPath);
         var reader = new FlowEventLogReader(logPath);
-        var dispatcher = new CoreDispatcher(writer);
+        var dispatcher = new CoreDispatcher(writer, writer);
 
         var state = await MutationInterface.RecordDecisionAsync(
                 workflowId,
