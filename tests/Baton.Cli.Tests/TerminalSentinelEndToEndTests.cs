@@ -444,13 +444,16 @@ public class TerminalSentinelEndToEndTests
     }
 
     [Fact]
-    public async Task A_real_CLI_resolve_reject_with_retry_budget_remaining_invalidates_the_stale_sentinel()
+    public async Task A_real_CLI_resolve_reject_with_retry_budget_remaining_keeps_the_room_terminal()
     {
-        // #1608 review finding 1 -- see Program.cs's post-pump `resolve` handling (search "review
-        // finding 1") for why 'baton resolve --reject' with retry budget remaining must invalidate
-        // the stale terminal.json sentinel here. RetryPolicy(3) here matters: every existing resolve
-        // fixture elsewhere uses RetryPolicy(1), which always leaves budget exhausted and so never
-        // exercises this arm at all.
+        // #1877 (was A_real_CLI_resolve_reject_..._invalidates_the_stale_sentinel, #1608 review
+        // finding 1): a reject with retry budget REMAINING used to re-open the step, turn the room
+        // non-Terminal, and so require Program.cs to delete the now-stale terminal.json. It no longer
+        // does -- StateProjector forecloses retry on every rejection -- so the polarity flips here:
+        // the room stays Terminal, the sentinel stays on disk (rewritten with the resolved state),
+        // and stdout must NOT tell the operator the room is incomplete. RetryPolicy(3) still matters:
+        // every other resolve fixture uses RetryPolicy(1), where budget exhaustion alone would settle
+        // the room and this test could not tell the fix from the fixture.
         var testRoot = Path.Combine(Path.GetTempPath(), $"cli-resolve-sentinel-{Guid.NewGuid():N}");
         var roomDirectory = Path.Combine(testRoot, "task");
         try
@@ -492,14 +495,22 @@ public class TerminalSentinelEndToEndTests
             var (stdout, stderr) = await BoundedProcessWait.RunToExitAsync(
                 process, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.False(
+            Assert.True(
                 File.Exists(sentinelPath),
-                $"'baton resolve --reject' with retry budget remaining must invalidate the now-stale sentinel. stderr: {stderr}");
+                $"#1877: 'baton resolve --reject' settles the room terminally, so the sentinel must "
+                + $"still be on disk (rewritten with the resolved state). stderr: {stderr}");
 
-            // #1608 review finding 4: a non-Terminal room must name its follow-up invocation — see
-            // Program.cs's post-`resolve` step (and spec/baton.md §3) for why.
-            Assert.Contains("Room is not yet complete", stdout, StringComparison.Ordinal);
-            Assert.Contains("--room-dir", stdout, StringComparison.Ordinal);
+            // The sentinel really is the RESOLVED one, not the stale pre-resolution file this test's
+            // setup wrote: the discriminating read, without which "still on disk" would pass equally
+            // against a resolve that did nothing at all.
+            var sentinel = await File.ReadAllTextAsync(sentinelPath, TestContext.Current.CancellationToken);
+            Assert.Contains("\"rejected\": true", sentinel, StringComparison.Ordinal);
+            Assert.Contains("not honest advice.md", sentinel, StringComparison.Ordinal);
+
+            // #1608 review finding 4, inverted by #1877: the room IS complete now, so the follow-up
+            // instruction must not be printed — a harness told to run `baton run --room-dir` against a
+            // settled room is the dead end this issue reported from the other side.
+            Assert.DoesNotContain("Room is not yet complete", stdout, StringComparison.Ordinal);
         }
         finally
         {

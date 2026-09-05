@@ -80,7 +80,7 @@ public static class StateProjector
 
         var flowState = DeriveFlowState(state, snapshot);
         var finalByteOffset = logByteOffset > 0 ? logByteOffset : (checkpoint?.ByteOffset ?? 0);
-        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, Version: 4);
+        var newCheckpoint = new ProjectionCheckpoint(totalEventOffset, state.DeepCopy(), finalByteOffset, ProjectionCheckpoint.CurrentVersion);
         return (flowState, newCheckpoint);
     }
 
@@ -315,7 +315,18 @@ public static class StateProjector
                 // MayRetry false at once — DeriveWorkflowStatus's deliverability predicate ORs the two
                 // (`step.RetryNotBefore is not null` / MayRetry), so a half-applied foreclosure can
                 // neither terminate nor retry.
-                if (state.RetryScheduledForExecutionIdByStepId.GetValueOrDefault(foreclosed.StepId) == foreclosed.ForExecutionId)
+                //
+                // #1877: a second arm for the administrative foreclosure `baton resolve --close`
+                // records against an already-rejected capture
+                // (Mutation.MutationInterface.RecordCaptureResolutionAsync), which has no scheduled
+                // retry to name. FlowEvent.StepRetryForeclosed.ForExecutionId's own remarks are the
+                // register for both arms and for why a stale name no-ops under either.
+                var scheduledForStep = state.RetryScheduledForExecutionIdByStepId.TryGetValue(foreclosed.StepId, out var scheduledExecutionId)
+                    ? scheduledExecutionId
+                    : (ExecutionId?)null;
+                var foreclosesLatestUnscheduled = scheduledForStep is null
+                    && state.LatestExecutionIdByStepId.GetValueOrDefault(foreclosed.StepId) == foreclosed.ForExecutionId;
+                if (scheduledForStep == foreclosed.ForExecutionId || foreclosesLatestUnscheduled)
                 {
                     state.RetryForeclosedStepIds.Add(foreclosed.StepId);
                     state.RetryNotBeforeByStepId.Remove(foreclosed.StepId);
@@ -474,20 +485,17 @@ public static class StateProjector
                         state.LatestCapturedResponseFileByStepId[resolvedStepId] = null;
                         state.LatestUnsatisfiedOutputNamesByStepId[resolvedStepId] = null;
                     }
-                    else if (resolvedProducer is IndeterminateProducer.ContractFailure or null)
+                    else
                     {
-                        // F8 (#1593 review): forecloses retry on a ContractFailure reject, the same way
-                        // #1623's VerifyFailed/Arrested producers already foreclose unconditionally in
+                        // F8 (#1593 review): forecloses retry on a reject, the same way #1623's
+                        // VerifyFailed/Arrested producers already foreclose unconditionally in
                         // ApplyIndeterminate -- otherwise CaptureResolved(Accepted: false) alone would
-                        // leave the step retry-eligible again on the very next pump. Deliberately NOT
-                        // applied to a CapturedResponse reject, which #1608's own ruling keeps
-                        // retry-eligible. spec/baton.md §3's producer table has the full reasoning.
+                        // leave the step retry-eligible again on the very next pump.
                         //
-                        // F8 (#1720 review): `or null` covers the legacy no-producer step -- unreachable
-                        // today (no writer of IndeterminateProducerByStepId leaves it null, and a v4
-                        // checkpoint always carries the map), which is exactly why an unforeclosed
-                        // arm here would be invisible if it ever became reachable: the engine would
-                        // re-dispatch a step a conductor had just closed.
+                        // #1877 (ruling): EVERY producer, not just ContractFailure/null. What the old
+                        // narrower arm left behind, the room it was measured on, and how an operator
+                        // asks for a retry now, all live in spec/baton.md §3's settle-shape table --
+                        // the register for this rule, not restated here.
                         state.RetryForeclosedStepIds.Add(resolvedStepId);
                     }
 
@@ -512,12 +520,11 @@ public static class StateProjector
                     }
 
                     // Rejected: Status stays Failed, LatestCapturedResponseFile/UnsatisfiedOutputNames
-                    // stay recorded (the audit trail of what was captured and refused) — only
-                    // IndeterminateAwaitingResolutionStepIds above changes, which is what lets
-                    // WorkflowOutcome.DescribeTerminal read this as an ordinary Failed step again and
-                    // RetryEngine.MayRetry re-apply its ordinary predicate instead of refusing outright
-                    // (CapturedResponse producer) — or stays foreclosed (ContractFailure producer,
-                    // above).
+                    // stay recorded (the audit trail of what was captured and refused) — clearing
+                    // IndeterminateAwaitingResolutionStepIds above is what lets
+                    // WorkflowOutcome.DescribeTerminal read this as an ordinary Failed step again, and
+                    // (#1877) the foreclosure above is what keeps RetryEngine.MayRetry false for every
+                    // producer, so DeriveWorkflowStatus settles the room Terminal rather than Running.
                 }
 
                 break;

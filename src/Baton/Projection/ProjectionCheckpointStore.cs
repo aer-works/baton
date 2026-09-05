@@ -37,9 +37,10 @@ public static class ProjectionCheckpointStore
         {
             var json = File.ReadAllText(filePath);
             var checkpoint = JsonSerializer.Deserialize<ProjectionCheckpoint>(json, FlowEventLogJson.Options);
-            // N3 (#1664 re-review): < 4, not < 3 — see ProjectionCheckpoint.Version's own remarks for
-            // why a Version-3 file must force a full replay rather than deserialize as usable.
-            if (checkpoint is null || checkpoint.Version < 4 || checkpoint.EventOffset < 0 || checkpoint.ByteOffset < 0 ||
+            // N3 (#1664 re-review), bumped again by #1877: < 5, not < 4 — see
+            // ProjectionCheckpoint.Version's own remarks for why each older file must force a full
+            // replay rather than deserialize as usable.
+            if (checkpoint is null || checkpoint.Version < ProjectionCheckpoint.CurrentVersion || checkpoint.EventOffset < 0 || checkpoint.ByteOffset < 0 ||
                 checkpoint.State is null || checkpoint.State.SucceededExecutionIds is null || checkpoint.State.AcceptedRequestByExecutionId is null ||
                 checkpoint.State.CoreStartedExecutionIds is null || checkpoint.State.CoreExitedByExecutionId is null)
             {

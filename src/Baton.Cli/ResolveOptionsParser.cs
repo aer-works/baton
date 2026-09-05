@@ -95,7 +95,8 @@ public static class ResolveOptionsParser
                     : $"'--reject' requires '--reason <text>'. {Usage}",
                 close
                     ? "pass --reason naming why the conductor is closing this without redoing the work."
-                    : "pass --reason naming why the capture cannot honestly become the declared output(s).");
+                    : "pass --reason naming why the capture cannot honestly become the declared output(s). "
+                      + "#1877: a rejection settles the step terminally — re-dispatch explicitly if you want a retry.");
         }
 
         return new ResolveOptions(

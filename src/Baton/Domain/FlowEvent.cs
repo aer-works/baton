@@ -212,10 +212,21 @@ public abstract record FlowEvent
     /// </summary>
     /// <param name="ForExecutionId">
     /// The execution whose retry obligation this forecloses. Guards the apply the same way
-    /// <see cref="ExecutionCancelled"/>'s own retry-field clear already does (#1605): projected only
-    /// when it still matches <see cref="Projection.ProjectionCheckpointState.RetryScheduledForExecutionIdByStepId"/>'s
+    /// <see cref="ExecutionCancelled"/>'s own retry-field clear already does (#1605), through two arms
+    /// that together mean "this event names the obligation the step carries NOW":
+    /// <list type="bullet">
+    /// <item>it matches <see cref="Projection.ProjectionCheckpointState.RetryScheduledForExecutionIdByStepId"/>'s
     /// recorded value for <see cref="StepId"/> — a retry already re-scheduled for a NEWER execution of
-    /// the same step must survive this event.
+    /// the same step must survive this event; or</item>
+    /// <item>#1877: NOTHING is scheduled for the step and it names
+    /// <see cref="Projection.ProjectionCheckpointState.LatestExecutionIdByStepId"/> — a step with no
+    /// scheduled retry has no obligation a newer execution could own, which is what lets an
+    /// administrative foreclosure (<c>baton resolve --close</c> against an already-rejected capture)
+    /// apply.</item>
+    /// </list>
+    /// A stale name no-ops under both arms: a newer execution moves
+    /// <c>LatestExecutionIdByStepId</c> past it, and a retry scheduled for a newer execution fails the
+    /// first arm.
     /// </param>
     /// <param name="Reason">Why the retry was foreclosed — a diagnostic, never parsed back.</param>
     /// <param name="ForeclosedBy">
@@ -474,9 +485,10 @@ public abstract record FlowEvent
     /// capture on the next matching <c>--execution</c>, rather than the mirror gap the opposite order
     /// left open: an orphaned file on disk with no fact and a room still reading Indeterminate).
     /// <c>false</c>: rejected — the step stays
-    /// <see cref="StepStatus.Failed"/>, no file is written, and <see cref="Scheduling.RetryEngine.MayRetry"/>
-    /// re-applies its ordinary predicate rather than refusing unconditionally, since the conductor
-    /// has now made the call this room was blocked on.
+    /// <see cref="StepStatus.Failed"/>, no file is written, and (#1877) retry is foreclosed for every
+    /// producer, so the step is terminal and the room settles rather than re-opening as retry-eligible
+    /// with no worker or pump alive. An operator who wants the work redone dispatches it fresh; see
+    /// spec/baton.md §3's settle-shape table.
     /// </param>
     /// <param name="Reason">
     /// The conductor's own justification — required by <c>ResolveOptionsParser</c> for a rejection,

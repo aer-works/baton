@@ -200,8 +200,13 @@ public static class MutationInterface
     /// This verb does not special-case that step; a conductor deciding not to resolve first gets
     /// whatever ordinary pause-decision consequence follows, still carrying the unresolved flag.
     /// </para>
-    /// A follow-up <c>baton run --room-dir</c> is what re-drives
-    /// the DAG once a rejection leaves the step retry-eligible again.
+    /// #1877: a rejection no longer leaves the step retry-eligible — it forecloses retry for every
+    /// producer (<see cref="Projection.StateProjector"/>'s <see cref="FlowEvent.CaptureResolved"/>
+    /// arm), so a rejected room settles Terminal rather than reading Running with no worker or pump
+    /// alive. A follow-up <c>baton run --room-dir</c> still re-drives the DAG for the OTHER
+    /// non-Terminal shape this verb can leave behind — an accept that makes a downstream step newly
+    /// deliverable; an operator who wants rejected work redone dispatches it fresh
+    /// (<c>baton redispatch</c>, whose Indeterminate-parent refusal this resolution clears).
     /// </summary>
     /// <param name="accepted">
     /// Same boolean as <see cref="FlowEvent.CaptureResolved.Accepted"/> — see its remarks for what
@@ -277,7 +282,8 @@ public static class MutationInterface
         // N3 (#1664 re-review): a null IndeterminateProducer on a step that IS awaiting resolution and
         // DOES carry a captured response file is the legacy pre-#1593 shape — the same fallback
         // RedispatchCommand.cs already applies to a pre-field terminal.json — not "a producer no verb
-        // admits". ProjectionCheckpointStore's Version bump (checkpoint.Version < 4) means this can now
+        // admits". ProjectionCheckpointStore's Version gate (checkpoint.Version <
+        // ProjectionCheckpoint.CurrentVersion, the single spelling of the current version) means this can now
         // only be reached via a full replay off an old flow.jsonl that genuinely predates the field, so
         // treating it as CapturedResponse is a correct read of the journal, not a workaround for a stale
         // checkpoint.
@@ -329,6 +335,35 @@ public static class MutationInterface
                             // "second resolution throws" pin).
                             break;
                     }
+                }
+            }
+
+            // #1877: the administrative close of an ALREADY-rejected capture. A room resolved under
+            // the pre-#1877 rule (a CapturedResponse reject left the step retry-eligible) has no
+            // unresolved capture left to target, yet its step is the one still dangling — every other
+            // verb refused it, and the operator's remaining options were to redispatch real vendor
+            // work, delete the evidence, or hand-edit the ledger. The admission predicate below (and
+            // spec/baton.md §3, which holds why it is shaped this way) reads only durable journal
+            // facts. Records FlowEvent.StepRetryForeclosed rather
+            // than re-resolving the capture — see that event's own remarks for the exactly-once claim
+            // this respects, and spec/baton.md §3 for why a foreclosure is the right shape for an
+            // administrative close. Idempotent: re-running appends another foreclosure, same state.
+            if (close && target is not null && target.LatestExecutionId == executionId
+                && target.Status != StepStatus.Succeeded)
+            {
+                var priorEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                var priorRejection = priorEvents.OfType<FlowEvent.CaptureResolved>()
+                    .LastOrDefault(resolved => resolved.ExecutionId == executionId && resolved.StepId == target.StepId);
+                if (priorRejection is { Accepted: false })
+                {
+                    await eventLogWriter.AppendAsync(
+                            new FlowEvent.StepRetryForeclosed(
+                                target.StepId, executionId, reason!, ForeclosedBy: "resolve --close"),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    var closedEvents = await eventLogReader.ReadAllAsync(cancellationToken).ConfigureAwait(false);
+                    return StateProjector.Project(closedEvents, snapshot);
                 }
             }
 

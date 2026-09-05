@@ -46,10 +46,14 @@ public static class RetryEngine
     /// (<see cref="Domain.FlowEvent.VerifyFailed"/>, <see cref="Domain.FlowEvent.ExecutionArrested"/>)
     /// the same arm is what makes "never a blind retry" explicit rather than an accident of the
     /// <see cref="FailureClassification.Permanent"/> those two also record. For a captured-response
-    /// settle, only a recorded <c>baton resolve</c> clears the flag; once cleared (accepted, or
-    /// rejected with budget remaining), the predicate below applies exactly as it would to any other
-    /// Failed step. A verify-failed or arrested step is not a <c>baton resolve</c> target at all (it
-    /// has no captured response to accept or reject) — it reopens only through a fresh dispatch.
+    /// settle, only a recorded <c>baton resolve</c> clears the flag; once cleared by an ACCEPT the
+    /// predicate below applies exactly as it would to any other Failed step. #1877: a REJECT no longer
+    /// re-arms it — <see cref="Projection.StateProjector"/>'s <see cref="Domain.FlowEvent.CaptureResolved"/>
+    /// arm forecloses retry for every producer, so <see cref="StepState.RetryForeclosed"/> above is
+    /// what refuses a rejected step here, and the room settles Terminal instead of reading Running
+    /// with nothing alive to drive it. A verify-failed or arrested step is not a
+    /// <c>--accept-capture</c>/<c>--reject</c> target at all (it has no captured response to accept or
+    /// reject) — it is closed by <c>baton resolve --close</c>, or reopens through a fresh dispatch.
     /// </summary>
     public static bool MayRetry(StepState stepState, RetryPolicy retryPolicy)
     {
