@@ -361,7 +361,7 @@ through `RoleDispatch.Materialize` against the real role catalog.
 | Verb | Usage | Source |
 |---|---|---|
 | `run` | `baton run <workflow-file> --bindings <bindings-file> [--room-dir <dir>] [--workflow-id <id>] [--echo-worker] [--register] [--wait] [--wait-timeout <minutes>]` | `RunOptionsParser.cs` |
-| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true\|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
+| `dispatch` | `baton dispatch <name> [--spec <spec-file> \| --spec - \| --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true\|false>] [--continue <room-dir>] [--override-runway <reason>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]` | `DispatchOptionsParser.cs` |
 | `redispatch` | `baton redispatch <room-dir> [--spec <amended-brief>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--workspace <dir>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--label <text>] [--workstream <slug>]` | `RedispatchOptionsParser.cs` |
 | `resume` | `baton resume <room-dir> --worker <role> (--message <text> \| --message-file <path>) --bindings <bindings-file> [--workflow-id <id>]` | `ResumeOptionsParser.cs` |
 | `decide` | `baton decide <room-dir> --execution <execution-id> --type resume\|reject\|retry-with-revision\|supersede [--target-step <step-id>] [--supplementary <execution-id>] --bindings <bindings-file> [--workflow-id <id>]` | `DecideOptionsParser.cs` |
@@ -3540,6 +3540,76 @@ for the `agy` half recorded in `docs/vendor-capabilities.md` (the vendor registe
 this paragraph on vendor facts). Nothing in `src/` at HEAD implements a `/usage` poll for either
 vendor yet — the measurement is the settled basis the quota ledger is built against, not a shipped
 code path. Both vendors participate in the ledger.
+
+### Runway hold (#1848) — shipped
+
+The **enforcement** half of the runway work, and the only place in the tree that gates on a vendor's
+own `/usage` counters. It consumes the per-vendor projection #1391/#1869 already persists and adds no
+second harvest path: the daemon harvests, `baton dispatch` reads the persisted snapshot
+(`BatonPaths.VendorUsageSnapshotFile`). A gate check therefore spends no subscription usage and can
+never itself be what exhausts the runway it protects. The harvester's own `/usage` call is exempt from
+everything below — it is how the counters are measured.
+
+**Hold new admissions; never arrest for fleet reasons** (operator ruling, 2026-09-04). A dispatch that
+would start new vendor spend is refused before the room is provisioned; work already running always
+finishes. This gate arrests nothing, throttles nothing mid-flight, and reserves nothing across rooms.
+
+**Which entry points consult it.** `baton dispatch` from cold, per distinct adapter it would spawn on
+— and nothing else:
+
+| Entry point | Gated? | Why |
+|---|---|---|
+| `baton dispatch <role\|template>` | **yes** | The one entry point that admits new vendor spend from cold. |
+| `baton dispatch --continue <room>` | no | Rehires a worker the fleet already admitted; continuation, not a new admission. `--override-runway` alongside it is refused (below), never silently dropped. |
+| `baton redispatch` / `baton resolve` | no | Both continue work an earlier admission already started. |
+| `baton run` / `baton resume` / `baton decide` / `baton supply` | no | Drive an already-provisioned room's own bindings; the admission decision was taken at dispatch. |
+| A composed template's later phases | no | Admitted once, at the dispatch that materialised the whole DAG — a phase boundary is not a new admission. |
+| Retry / retry-with-continuation (#1373) | no | Same execution's own recovery inside an admitted lane, not new work. |
+| Fallback-on-exhaustion rebind (#802) | no | Rebinding an admitted step onto a declared fallback vendor; the lane is already running. |
+| Daemon `/usage` harvest | **exempt** | It is the measurement this gate reads. |
+
+**The decision.** `RunwayGate.Evaluate(vendor, snapshot, thresholds, now)` → Admit or Hold, per vendor
+and independently: a claude hold never holds an agy or codex dispatch (operator ruling, 2026-09-05).
+It holds when the vendor's **week (all models)** window is at or above `weekHoldPct` (default 85), when
+its **session / five-hour** window is at or above `sessionHoldPct` (default 90), or when the counters
+are not readable at all — a missing or corrupt snapshot file, a snapshot carrying no window this
+gate's table recognises, a recognised window whose percentage did not parse, or a snapshot older than
+`maxSnapshotAgeHours` (default 6). Stale holds for the same reason unreadable does, stated once on
+`RunwayThresholds.EffectiveMaxSnapshotAge`'s own doc comment: a stale counter is not evidence of
+headroom. claude's **`week (Fable)`** counter is deliberately not a gate while no worker runs on Fable,
+which is why the window table matches vendor window names exactly rather than by prefix. A vendor with
+no `IVendorUsageSource` at all (codex today) is admitted, recorded as `runway: unmeasured` — unmeasured
+is a different claim from unreadable, and holding on a vendor Baton has never been able to read would
+block work the counters say nothing about.
+
+**The harvest is a prerequisite, and its absence is a Hold.** On a machine where the daemon has never
+run (or has not harvested within `maxSnapshotAgeHours`), every `claude` and `agy` dispatch is refused
+until one harvests or the operator passes `--override-runway`. That is the ruling's own consequence,
+not an oversight: unreadable holds, and "no snapshot yet" is the most common way counters are
+unreadable. A vendor with no usage source at all is unaffected — it is admitted as unmeasured.
+
+**Thresholds are operator config**, in the settings file baton already has —
+`{BatonPaths.Root}/settings.json`, `DaemonSettings.RunwayHold` — fleet-wide with per-vendor overrides
+keyed by adapter tag. There is no second config file. A malformed settings file, and any out-of-range
+value in a well-formed one, leaves the shipped defaults in force rather than disabling the gate.
+
+**`--override-runway "<reason>"` is the only bypass.** Per dispatch, reason mandatory (blank is a parse
+error), no global switch and no silent config bump. On a Hold the dispatch proceeds and the room's
+`bindings.json` carries `"RunwayOverride": {"Vendor", "Reason", "Used": true, "Counters":
+[{"Window", "PercentUsed"}], "HoldReason"}` — PascalCase, because `WorkerBindingConfigWriter`
+serializes that file with no naming policy and every other binding field is spelled the same way; the
+`#1849` cost-ledger row for each of that room's executions carries `runwayOverrideReason` (camelCase
+there, and deliberately: every cost-ledger field declares its own `JsonPropertyName`). On an Admit
+the flag is still recorded, as `"Used": false` — "offered and not needed" stays distinguishable from
+"never offered", and no ledger row is stamped, because that override bypassed nothing. Passed together
+with `--continue` the flag is **refused**, not discarded: that dispatch consults no gate, so there is
+nothing to bypass and no decision its reason would annotate.
+
+**Without the flag, a Hold exits non-zero** (`ValidationRefused`, the same code every other pre-run
+refusal uses), printing the counters and the exact flag to use, once. **No flow event is emitted for
+any of the three decisions**: a Hold refuses before the room's journal exists, so there is no ledger to
+write to. All three surface as a stdout status line, plus the durable `bindings.json` record for an
+override.
 
 ### The burn ledger — shipped (#1570)
 

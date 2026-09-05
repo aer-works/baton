@@ -19,8 +19,100 @@ public sealed record DaemonSettings
     /// </summary>
     public int? RoomsRetentionDays { get; init; }
 
+    /// <summary>
+    /// #1848: the runway hold's thresholds, read by <c>baton dispatch</c> before it admits new vendor
+    /// spend. Never null — an absent <c>RunwayHold</c> key in <c>settings.json</c> leaves the
+    /// operator-approved defaults (week ≥85%, session ≥90%) in force, so the gate exists on a machine
+    /// that has never been configured.
+    /// </summary>
+    /// <remarks>
+    /// <b>An explicit <c>"RunwayHold": null</c> falls back to those same defaults</b>, which is why this
+    /// reads through a nullable backing field rather than relying on the initializer. A well-formed file
+    /// carrying an explicit null parses cleanly — <see cref="DaemonSettingsStore.LoadAsync"/>'s
+    /// defaults-on-failure arm only fires for an absent, unreadable, or malformed file — so without this
+    /// the deserializer would hand back a null here and the first <c>For(vendor)</c> would throw where
+    /// the operator's typo should simply have left the gate at its shipped thresholds.
+    /// </remarks>
+    public RunwayHoldSettings RunwayHold
+    {
+        get => _runwayHold ?? DefaultRunwayHold;
+
+        // Coalesced on the way IN as well as out, and the field carries the default from the start:
+        // this is a record, so the synthesized equality compares the FIELD. Leaving it null on an
+        // instance nobody configured would make `new DaemonSettings()` unequal to the same settings
+        // round-tripped through the store, which is what DaemonSettingsStoreTests asserts.
+        init => _runwayHold = value ?? DefaultRunwayHold;
+    }
+
+    private static readonly RunwayHoldSettings DefaultRunwayHold = new();
+
+    private readonly RunwayHoldSettings? _runwayHold = DefaultRunwayHold;
+
     public const int DefaultGlobalConcurrencyCap = 3;
     public const int DefaultPerVendorConcurrencyCap = 2;
+}
+
+/// <summary>
+/// The operator's runway-hold configuration (#1848), living in the settings file baton already has
+/// (<see cref="BatonPaths.SettingsFile"/>) rather than a second config file. Fleet-wide defaults plus
+/// per-vendor overrides under <see cref="Vendors"/>, keyed by adapter tag:
+/// <code>
+/// { "RunwayHold": { "WeekHoldPct": 80, "Vendors": { "agy": { "SessionHoldPct": 95 } } } }
+/// </code>
+/// </summary>
+/// <remarks>
+/// <b>An out-of-range value falls back to the default rather than being clamped or honoured.</b> A
+/// percentage outside 1–100 and a non-positive age are operator typos, and both plausible typos are
+/// dangerous in opposite directions — <c>0</c> would hold every dispatch forever, <c>150</c> would
+/// disable the gate silently. Neither is a setting anyone means, so the shipped default applies
+/// instead; the same posture <see cref="DaemonSettingsStore"/> already takes for a malformed file.
+/// </remarks>
+public sealed record RunwayHoldSettings
+{
+    public int WeekHoldPct { get; init; } = RunwayThresholds.DefaultWeekHoldPct;
+    public int SessionHoldPct { get; init; } = RunwayThresholds.DefaultSessionHoldPct;
+    public int MaxSnapshotAgeHours { get; init; } = RunwayThresholds.DefaultMaxSnapshotAgeHours;
+
+    /// <summary>Per-adapter-tag overrides; any field a vendor entry leaves null keeps the fleet-wide value above.</summary>
+    public IReadOnlyDictionary<string, RunwayVendorHoldSettings>? Vendors { get; init; }
+
+    /// <summary>The thresholds in force for one adapter tag, after the per-vendor overlay.</summary>
+    public RunwayThresholds For(string vendor)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(vendor);
+
+        RunwayVendorHoldSettings? perVendor = null;
+        if (Vendors is not null)
+        {
+            // Deserialized dictionaries carry an ordinal comparer; the adapter tag an operator types
+            // into settings.json should not have to match its case exactly to take effect.
+            foreach (var (key, value) in Vendors)
+            {
+                if (string.Equals(key, vendor, StringComparison.OrdinalIgnoreCase))
+                {
+                    perVendor = value;
+                    break;
+                }
+            }
+        }
+
+        return new RunwayThresholds(
+            Percent(perVendor?.WeekHoldPct ?? WeekHoldPct, RunwayThresholds.DefaultWeekHoldPct),
+            Percent(perVendor?.SessionHoldPct ?? SessionHoldPct, RunwayThresholds.DefaultSessionHoldPct),
+            TimeSpan.FromHours(Hours(perVendor?.MaxSnapshotAgeHours ?? MaxSnapshotAgeHours)));
+    }
+
+    private static int Percent(int value, int fallback) => value is > 0 and <= 100 ? value : fallback;
+
+    private static int Hours(int value) => value > 0 ? value : RunwayThresholds.DefaultMaxSnapshotAgeHours;
+}
+
+/// <summary>One vendor's overrides of <see cref="RunwayHoldSettings"/>; every field is null-for-inherit.</summary>
+public sealed record RunwayVendorHoldSettings
+{
+    public int? WeekHoldPct { get; init; }
+    public int? SessionHoldPct { get; init; }
+    public int? MaxSnapshotAgeHours { get; init; }
 }
 
 /// <summary>

@@ -399,7 +399,16 @@ try
             if (repository is not null)
             {
                 var costLedgerPath = BatonPaths.CostLedgerFile(repository.FileSlug);
-                var costEntries = CostLedgerStore.BuildEntries(terminalEntries, terminalRoomDirectoryPath, repository);
+
+                // #1848: the audited runway override, read back off this room's own bindings.json so a
+                // row that only exists because a hold was bypassed says so. Fail-open by construction
+                // (RunwayOverrideReasons' own doc) -- an unreadable bindings file costs the stamp, never
+                // the row.
+                var runwayOverrides = await RunwayOverrideReasons
+                    .ReadForRoomAsync(terminalRoomDirectoryPath, CancellationToken.None).ConfigureAwait(false);
+                var costEntries = CostLedgerStore.BuildEntries(
+                    terminalEntries, terminalRoomDirectoryPath, repository,
+                    runwayOverrideReasonByWorker: runwayOverrides);
                 await CostLedgerStore.AppendAsync(costEntries, costLedgerPath, CancellationToken.None).ConfigureAwait(false);
             }
             else

@@ -639,4 +639,47 @@ public class DispatchOptionsParserTests
         Assert.Contains("--spec-text <text>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
         Assert.Contains("--spec -", DispatchOptionsParser.Usage, StringComparison.Ordinal);
     }
+
+    /// <summary>#1848: the reason is the audit record, so the flag cannot be passed without one.</summary>
+    [Fact]
+    public void The_override_runway_flag_carries_its_reason()
+    {
+        var options = DispatchOptionsParser.Parse(
+            ["review", "--spec", "t.md", "--override-runway", "  conductor lane, week resets in 2h  "]);
+
+        Assert.Equal("conductor lane, week resets in 2h", options.OverrideRunwayReason);
+    }
+
+    [Fact]
+    public void Omitting_override_runway_leaves_it_null()
+    {
+        Assert.Null(DispatchOptionsParser.Parse(["review", "--spec", "t.md"]).OverrideRunwayReason);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void A_blank_override_runway_reason_is_a_parse_error(string reason)
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--override-runway", reason]));
+
+        Assert.Contains("--override-runway", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("needs a reason", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_override_runway_flag_with_no_value_throws()
+    {
+        var ex = Assert.Throws<CliArgumentException>(
+            () => DispatchOptionsParser.Parse(["review", "--spec", "t.md", "--override-runway"]));
+
+        Assert.Contains("--override-runway", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_usage_line_advertises_the_override_runway_flag()
+    {
+        Assert.Contains("--override-runway <reason>", DispatchOptionsParser.Usage, StringComparison.Ordinal);
+    }
 }

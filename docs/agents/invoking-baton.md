@@ -507,8 +507,20 @@ role/adapter pair.
 
 ```
 baton dispatch <role> --spec <spec-file> --room-dir <fresh-dir> [--adapter agy|claude] [--workspace <dir>]
-                    [--output <path>]
+                    [--output <path>] [--override-runway "<reason>"]
 ```
+
+**A dispatch can be refused for a short vendor runway** (#1848). When the vendor's own `/usage`
+counters say its week (all models) window is at or above 85% or its session window at or above 90% —
+or when those counters cannot be read at all — `baton dispatch` starts nothing and exits `2`
+(`ValidationRefused`), printing the counters and the flag. Work already running is untouched, and
+holds are per vendor: a held `claude` does not hold an `agy` dispatch. **"Cannot be read" includes
+"never harvested"** — on a machine whose daemon has not harvested in the last six hours, a `claude` or
+`agy` dispatch is held until it does, or until you override. The only bypass is
+`--override-runway "<reason>"`, with a mandatory reason that is written to the room record and the
+cost ledger. `baton dispatch --continue`, `baton redispatch`, and `baton resolve` are not gated —
+they continue work the fleet already admitted; passing `--override-runway` with `--continue` is a
+typed argument error rather than a no-op, since there is no gate there to override. Contract: `spec/baton.md` §7, "Runway hold (#1848)".
 
 A quick read-only scoping question doesn't need a brief file at all: `--spec-text <text>` (or
 `--spec -` to pipe the prompt in over stdin) is a drop-in alternative to `--spec <spec-file>` — same

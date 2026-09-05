@@ -58,8 +58,11 @@ Event type → ntfy priority (`NTFY_EVENT_TIERS`, spec/baton.md §6): `lane_fail
 Fleet Glass (`tools/fleet-glass/glass.html`) and `fleet_status` also show each authenticated vendor's
 own headless `/usage` report — session/weekly percent used, reset instant, and the vendor's own
 machine-local caveat — as **advisory runway**, harvested by the daemon on a slow, lane-gated cadence
-(`spec/baton.md` §6, "`vendors[]`", issue #1391). Nothing in this reporting slice gates dispatch on
-it.
+(`spec/baton.md` §6, "`vendors[]`", issue #1391). That reporting slice gates nothing itself; the
+counters it harvests are what `baton dispatch`'s **runway hold** reads (#1848) before admitting new
+work — held at week ≥85% or session ≥90% per vendor, bypassable only with
+`--override-runway "<reason>"`, which is recorded. `spec/baton.md` §7, "Runway hold (#1848)", is the
+contract.
 
 Each window row also carries two derived cells (#1746): the **burn rate** in percentage points per
 hour and the **minutes to exhaustion** at that rate, both computed by the daemon's projection from a

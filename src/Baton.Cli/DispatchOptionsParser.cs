@@ -15,7 +15,7 @@ public static class DispatchOptionsParser
 {
     /// <summary>The one copy of <c>baton dispatch</c>'s usage line, printed here on error and by <c>Program</c>.</summary>
     public const string Usage =
-        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true|false>] [--continue <room-dir>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
+        "Usage: baton dispatch <name> [--spec <spec-file> | --spec - | --spec-text <text>] [--attach <file>] [--adapter <name>] [--model <name>] [--effort <name>] [--room-dir <dir>] [--workspace <dir>] [--workflow-id <id>] [--output <path>] [--timeout <minutes>] [--token-budget <n>] [--max-tool-steps <n>] [--billed-rate-limit <n>] [--verify <cmd>] [--verify-cmd <cmd>] [--verify-timeout <minutes>] [--expect-pr <true|false>] [--continue <room-dir>] [--override-runway <reason>] [--label <text>] [--workstream <slug>] [--repo <checkout-dir>] [--list-capabilities]";
 
     /// <summary>
     /// <c>--label</c>'s cap (#1499) — a Fleet Glass room title, not a description; long enough for "the
@@ -77,6 +77,7 @@ public static class DispatchOptionsParser
         string? workstream = null;
         string? repoPath = null;
         string? continueFromRoomDirectoryPath = null;
+        string? overrideRunwayReason = null;
         var attachments = new List<string>();
         var listCapabilities = false;
 
@@ -172,6 +173,9 @@ public static class DispatchOptionsParser
                 case "--continue":
                     continueFromRoomDirectoryPath = RequireValue(args, ref i, arg);
                     break;
+                case "--override-runway":
+                    overrideRunwayReason = RequireOverrideRunwayReason(RequireValue(args, ref i, arg));
+                    break;
                 case "--list-capabilities":
                     listCapabilities = true;
                     i++;
@@ -263,7 +267,8 @@ public static class DispatchOptionsParser
             expectPr,
             continueFromRoomDirectoryPath is null ? null : RoomDirectoryPath.Resolve(continueFromRoomDirectoryPath),
             verifyCommands.Count > 0 ? verifyCommands : null,
-            verifyTimeout);
+            verifyTimeout,
+            overrideRunwayReason);
     }
 
     /// <summary>
@@ -309,6 +314,24 @@ public static class DispatchOptionsParser
         }
 
         return TimeSpan.FromMinutes(minutes);
+    }
+
+    /// <summary>
+    /// #1848: <c>--override-runway</c>'s reason is mandatory and non-blank. The flag is the ONLY bypass
+    /// of the runway hold and every use of it is written to the room record, so a blank reason would
+    /// leave an audit row that records nothing — refused here rather than accepted and stored empty.
+    /// </summary>
+    private static string RequireOverrideRunwayReason(string rawValue)
+    {
+        if (rawValue.Trim().Length == 0)
+        {
+            throw new CliArgumentException(
+                $"'--override-runway' needs a reason — it is the audited bypass of the runway hold, and a "
+                + $"blank reason records nothing. {Usage}",
+                """pass the reason inline, e.g. --override-runway "conductor lane, week resets in 2h".""");
+        }
+
+        return rawValue.Trim();
     }
 
     /// <summary>
